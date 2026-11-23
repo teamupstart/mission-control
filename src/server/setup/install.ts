@@ -209,6 +209,9 @@ export async function executeSetupInstall(
       // The desktop app installs Mission Control's own integrations in-process; there is no
       // terminal for this route to open.
       return refused(body.id, info.label, "This setup remedy is installed by the Mission Control desktop app and opens no terminal.");
+    case "feature-flags":
+      // The dashboard switches flags through `PUT /api/feature-flags`; nothing runs in a window.
+      return refused(body.id, info.label, "This setup remedy turns on preview features and opens no terminal.");
     case "provider-installer": {
       const repoRoots = await deps.listRepoRoots();
       const installers = await deps.listProviderInstallers(remedy.provider, repoRoots);

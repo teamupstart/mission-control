@@ -8,6 +8,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
+import { wireVoiceStateEvents } from "./voice/state.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -246,6 +247,8 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// The voice state reaches open windows and the shell the same way, behind its flag.
+const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
 // The shapers folder is read at start, and again at every shaping run: never watched.
 if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
@@ -1108,6 +1111,7 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  stopVoiceState();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();

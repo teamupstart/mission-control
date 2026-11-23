@@ -146,6 +146,9 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  unchangedRepository?: boolean;
+  unchangedRepositoryProblem?: string;
+  readUnchangedRepository?: WorkflowManagerOptions["readUnchangedRepository"];
   realLedger?: boolean;
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
   readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
@@ -225,6 +228,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         sha256: createHash("sha256").update("report").digest("hex"),
       }] : [],
     }) } : {}),
+    readUnchangedRepository: options.readUnchangedRepository ?? (async (_root, headOid) => {
+      if (options.unchangedRepositoryProblem) throw new Error(options.unchangedRepositoryProblem);
+      return options.unchangedRepository
+        ? { headOid, baseOid: headOid, baseRef: "origin/main", treeOid: contentTree.oid } : null;
+    }),
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -2497,8 +2505,13 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
       h.runActionTurn();
-      await h.manager.sweepSessionActions(SETTLED());
+      const firstProofRead = SETTLED();
+      await h.manager.sweepSessionActions(firstProofRead);
       assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      if (proof === "missing-review") {
+        await h.manager.sweepSessionActions(firstProofRead + 60_000);
+        assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+      }
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(reads, proof === "missing-review" ? 0 : 1);
       const failures = warnings.filter(line => line.includes("event=session_action_publication_tree_unavailable"));
@@ -2603,3 +2616,303 @@ test("overlapping sweep and Inspector observations share a pending publication-t
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "shared proof did not complete the action");
   } finally { release(); await h.stop(); }
 });
+
+
+for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(`an unchanged PR action releases sibling feedback with ${proof} proof`, async () => {
+  const h = await harness(`no-change-queue-${proof}`, { pullRequest: true, unchangedRepository: true,
+    omitContentTree: proof === "missing-tree",
+    unchangedRepositoryProblem: proof === "missing-base" ? "The default base could not be resolved." : undefined });
+  try {
+    h.repository.branch = null;
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    const attempt = waitingAttempt(h, runId)!;
+    const parent = h.store.latestSubmission(runId)!;
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const sibling = h.store.insertBinding({ ...binding, id: `no-change-sibling-${proof}`, sessionId: h.sessionId, repoRoot: "/sibling",
+      sessionCwd: "/sibling", sessionRepoRoot: "/sibling", now: Date.now() });
+    h.setVerdict(() => "fail");
+    const submitted = await h.manager.submit(sibling.id, { requestId: "sibling-feedback" });
+    assert.ok(submitted.ok, JSON.stringify(submitted));
+    const siblingRun = submitted.value.run.id;
+    await waitFor(() => h.store.listDeliveries(siblingRun).length > 0, "sibling feedback not prepared");
+    const packet = h.store.listDeliveries(siblingRun)[0]!;
+    assert.equal(h.store.getDelivery(packet.id)?.state, "prepared");
+    assert.equal(h.store.conversationDeliveryHold(packet)?.runId, runId);
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting", "pre-pickup idle is not completion");
+    h.runActionTurn();
+    const firstProofRead = SETTLED();
+    await h.manager.sweepSessionActions(firstProofRead);
+    if (proof !== "verified") {
+      assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+      await h.manager.sweepSessionActions(firstProofRead + 15_000);
+      await h.manager.stop();
+      h.manager.start();
+      await h.manager.sweepSessionActions(firstProofRead + 59_999);
+      const state = h.store.sessionActionState(h.store.getAttempt(attempt.id)!);
+      assert.equal(state?.wait, "awaiting_proof", "a transient read must retain its grace period across restart");
+      assert.equal(state?.settledAt, firstProofRead, "later sweeps must not reset the retry deadline");
+      await h.manager.sweepSessionActions(firstProofRead + 60_000);
+    }
+    await h.settle();
+    assert.equal(h.store.getAttempt(attempt.id)?.state, proof === "verified" ? "completed" : "error");
+    if (proof === "verified") {
+      assert.equal((h.store.getAttempt(attempt.id)!.output as { expectation: { kind: string } }).expectation.kind, "no_change");
+    } else {
+      assert.ok(h.store.runSummary(runId)?.recovery?.operations.includes("resubmit"));
+      const detail = h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.blocked?.detail;
+      assert.match(detail ?? "", proof === "missing-base" ? /default base/ : /accepted content tree/);
+    }
+    assert.equal(h.store.latestSubmission(runId)?.round, parent.round);
+    assert.equal(h.store.conversationDeliveryHold(packet), null);
+    assert.equal(h.store.getDelivery(packet.id)?.state, "delivered");
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.listSubmissions(runId).length, proof === "verified" ? 2 : 1, "no duplicate continuation");
+  } finally { await h.stop(); }
+});
+
+test("proof retry starts on a new failure, resets on recovery, and allows a delayed PR adoption", async () => {
+  const options: HarnessOptions = { pullRequest: true };
+  const h = await harness("transient-pr-proof", options);
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    const attempt = waitingAttempt(h, runId)!;
+    h.runActionTurn();
+    const first = SETTLED();
+    await h.manager.sweepSessionActions(first);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    options.unchangedRepositoryProblem = "Git timed out";
+    await h.manager.sweepSessionActions(first + 120_000);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof", "an old settled turn gets a fresh read retry window");
+    options.unchangedRepositoryProblem = undefined;
+    await h.manager.sweepSessionActions(first + 120_001);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    options.unchangedRepositoryProblem = "HEAD changed while reading";
+    await h.manager.sweepSessionActions(first + 240_000);
+    assert.equal(h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.settledAt, first + 240_000);
+    h.adoptPr();
+    await h.manager.sweepSessionActions(first + 240_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption did not complete during proof retry");
+    assert.equal(h.injected.length, 1, "retry must never repeat the action instruction");
+  } finally { await h.stop(); }
+});
+
+test("known changed detached work completes after adoption arrives on a later sweep", async () => {
+  const h = await harness("detached-changed-pr", { pullRequest: true });
+  try {
+    h.repository.branch = null;
+    h.head.sha = "detached-ahead";
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    await h.manager.sweepSessionActions(now + 120_000);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(now + 120_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late detached adoption did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+
+for (const changed of [false, true]) test(`missing accepted-tree proof allows late adoption with known changed work=${changed}`, async () => {
+  const h = await harness(`missing-accepted-tree-adoption-${changed}`, { pullRequest: true, omitContentTree: true, unchangedRepository: !changed });
+  try {
+    h.repository.branch = null;
+    h.head.sha = "detached-ahead";
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    const later = now + (changed ? 120_000 : 59_999);
+    await h.manager.sweepSessionActions(later);
+    assert.equal(h.store.runSummary(runId)?.actionWait, changed ? "awaiting_pull_request" : "awaiting_proof");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(later);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption with missing accepted tree did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+
+test("clean checkout returned to base completes when adoption arrives on a later sweep", async () => {
+  const h = await harness("returned-to-base-adoption", { pullRequest: true, unchangedRepository: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    // Publication can finish before its adoption hook arrives, with the checkout back on main.
+    h.repository.branch = "main";
+    h.head.sha = "base-head";
+    h.contentTree.oid = h.full("base-tree");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    await h.manager.sweepSessionActions(now + 59_999);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(now + 59_999);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption after checkout returned to base did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+test("a short active turn between sweeps resets proof retry without replacing pickup", async (t) => {
+  const h = await harness("short-proof-retry", { pullRequest: true, resumptionSettleMs: 0,
+    unchangedRepositoryProblem: "Git timed out" });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    let clock = Date.now() + 1_000;
+    t.mock.method(Date, "now", () => clock++);
+    h.runActionTurn();
+    const first = clock;
+    await h.manager.sweepSessionActions(first);
+    const attemptId = waitingAttempt(h, runId)!.id;
+    const initial = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(initial.wait, "awaiting_proof");
+    clock = first + 60_001;
+    h.runActionTurn(); // Both lifecycle events occur before the next sweep.
+    const afterActivity = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(afterActivity.wait, "working");
+    assert.equal(afterActivity.settledAt, null);
+    assert.deepEqual(afterActivity.anchor, initial.anchor);
+    assert.equal(afterActivity.pickedUpAt, initial.pickedUpAt);
+    const restarted = clock;
+    await h.manager.sweepSessionActions(restarted);
+    await h.manager.sweepSessionActions(restarted + 59_999);
+    const retried = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(retried.wait, "awaiting_proof");
+    assert.equal(retried.settledAt, restarted, "idle sweeps retain the new deadline");
+    assert.equal(h.store.listEvents(runId).filter(e => e.kind === "session_action_picked_up").length, 1);
+    await h.manager.sweepSessionActions(restarted + 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked", "a new turn must not remove the retry bound");
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+for (const publication of ["none", "adopted", "candidate"]) test(`Inspector completion policy handles no-change continuation with PR=${publication}`, async () => {
+  const h = await harness(`no-change-inspector-${publication}`, { pullRequest: true, unchangedRepository: true, inspector: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    if (publication === "adopted") h.adoptPr();
+    if (publication === "candidate") {
+      h.registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: `agent-${h.sessionId}`,
+        cwd: "/repo", transcriptPath: null, env: { tmuxPane: `%${h.sessionId.length}` },
+        prUrl: "https://github.com/owner/repo/pull/8", prCreated: true });
+      h.reportIdle();
+      assert.equal(h.registry.getSession(h.sessionId)?.prUrl, "https://github.com/owner/repo/pull/8");
+    }
+    await h.manager.sweepSessionActions(SETTLED());
+    await h.settle();
+    assert.equal(h.store.getRun(runId)?.status, publication === "none" ? "completed" : "waiting_for_pr");
+    assert.equal(h.store.listEvents(runId).some(e => e.kind === "inspector_gate_entered"), publication !== "none");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+  } finally { await h.stop(); }
+});
+
+for (const retryAge of [null, 5_000, 60_000]) test(`activity during proof read discards a stale sweep: retry age ${retryAge}`, async (t) => {
+  let hold: { started: () => void; released: Promise<void> } | null = null;
+  let release: (() => void) | undefined;
+  let pending: Promise<void> | undefined;
+  const h = await harness(`concurrent-proof-${retryAge}`, { pullRequest: true, resumptionSettleMs: 0,
+    readUnchangedRepository: async () => {
+      if (hold) { hold.started(); await hold.released; }
+      throw new Error("Git timed out");
+    } });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    let clock = Date.now() + 1_000;
+    t.mock.method(Date, "now", () => clock++);
+    h.runActionTurn();
+    const first = clock;
+    if (retryAge !== null) await h.manager.sweepSessionActions(first);
+    const attemptId = waitingAttempt(h, runId)!.id;
+    let started!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    hold = { started, released: new Promise<void>(resolve => { release = resolve; }) };
+    clock = first + (retryAge ?? 0);
+    pending = h.manager.sweepSessionActions(clock);
+    await reading;
+    h.runActionTurn(); // This whole turn occurs while the earlier observation is awaiting Git.
+    const restarted = clock;
+    release!();
+    await pending;
+    const state = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    assert.equal(state.wait, "working", "stale proof must not overwrite newer lifecycle state");
+    assert.equal(state.settledAt, null);
+    hold = null;
+    await h.manager.sweepSessionActions(restarted);
+    const retry = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(retry.wait, "awaiting_proof");
+    assert.equal(retry.settledAt, restarted);
+    await h.manager.sweepSessionActions(restarted + 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+  } finally { release?.(); await pending; await h.stop(); }
+});
+
+for (const prompt of ["pane", "review"] as const) for (const outcome of ["complete", "block"] as const) {
+  test(`${prompt} prompt during proof read prevents ${outcome} until the operator answers`, async () => {
+    let hold: { started: () => void; released: Promise<void> } | null = null;
+    let release: (() => void) | undefined;
+    let pending: Promise<void> | undefined;
+    const h = await harness(`proof-prompt-${prompt}-${outcome}`, { pullRequest: true,
+      readUnchangedRepository: async () => {
+        if (hold) { hold.started(); await hold.released; }
+        if (outcome === "block") throw new Error("Git timed out");
+        return null;
+      } });
+    const setPrompt = (open: boolean) => {
+      if (prompt === "pane") {
+        h.registry.applyDiscovery([{ ...discovered(h.sessionId), paneDialog: open ? {
+          prompt: "Continue?", options: [{ number: 1, label: "Yes" }], highlighted: 1,
+        } : null }]);
+      } else {
+        h.registry.upsertReview({ id: `question-${h.sessionId}`, sessionId: h.sessionId,
+          kind: "input", title: "Continue?", body: "Continue?", status: open ? "pending" : "answered",
+          response: open ? null : "Yes", createdAt: 1, resolvedAt: open ? null : 2 });
+      }
+    };
+    try {
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+      h.runActionTurn();
+      const first = SETTLED();
+      if (outcome === "block") await h.manager.sweepSessionActions(first);
+      else h.adoptPr();
+      const attemptId = waitingAttempt(h, runId)!.id;
+      const before = h.registry.getSession(h.sessionId)!;
+      let started!: () => void;
+      const reading = new Promise<void>(resolve => { started = resolve; });
+      hold = { started, released: new Promise<void>(resolve => { release = resolve; }) };
+      pending = h.manager.sweepSessionActions(first + 60_000);
+      await reading;
+      setPrompt(true);
+      const asking = h.registry.getSession(h.sessionId)!;
+      assert.equal(asking.state, before.state);
+      assert.equal(asking.lastActivity, before.lastActivity, "operator gates can change without lifecycle activity");
+      release!();
+      await pending;
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      assert.equal(h.store.sessionActionState(h.store.getAttempt(attemptId)!)?.wait, "needs_operator");
+      assert.equal(h.store.listSubmissions(runId).length, 1, "no continuation can capture through the operator gate");
+      hold = null;
+      setPrompt(false);
+      h.adoptPr();
+      await h.manager.sweepSessionActions(first + 60_001);
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "answering the prompt should allow publication to complete");
+      assert.equal(h.injected.length, 1);
+    } finally { release?.(); await pending; await h.stop(); }
+  });
+}

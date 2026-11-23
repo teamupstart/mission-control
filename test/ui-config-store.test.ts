@@ -283,7 +283,10 @@ test("saving the defaults on purpose still counts as configured", () => {
   // Board has configured this, and adoption must not fire over the top of that choice.
   setUiConfig({ layout: "board" });
   assert.equal(uiConfigView().configured, true);
-  assert.deepEqual(uiConfigView().config, UI_CONFIG_DEFAULTS);
+  // The `voice` flag is off here, so the view withholds `ui.voice`; the stored record keeps it.
+  const { voice: _withheld, ...withoutVoice } = UI_CONFIG_DEFAULTS;
+  assert.deepEqual(uiConfigView().config, withoutVoice);
+  assert.deepEqual(getUiConfig(), UI_CONFIG_DEFAULTS);
 });
 
 test("a patch merges over the stored config rather than replacing it", () => {

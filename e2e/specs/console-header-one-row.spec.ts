@@ -639,5 +639,5 @@ test("a collapsed control is still the control it was, and still names itself", 
   expect(drawn(state, "arrow"), "rung 1 did not shed the arrow").toBe(false);
   expect(drawn(state, "review"), "the review button itself went").toBe(true);
   await dashboard.keyboard.press("e");
-  await expect(dashboard.getByRole("dialog", { name: "Review request" })).toBeVisible();
+  await expect(dashboard.getByRole("dialog", { name: "Attention inbox" })).toBeVisible();
 });

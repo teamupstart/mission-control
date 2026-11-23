@@ -2,9 +2,11 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupFamilyFlagOn,
   type SetupDependencyId,
   type SetupFamilyId,
 } from "./setup-catalog.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
 
 // The one switch for the ai-conductor pipeline integration.
 //
@@ -70,17 +72,28 @@ export function availableSetupDependencyIds(
 export function setupFamilyAvailable(
   family: SetupFamilyId,
   enabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+  /** The resolved flags, for a family that follows one (Voice). See `setupFamilyFlagOn`. */
+  flagOn?: (flag: FeatureFlagId) => boolean,
 ): boolean {
+  if (!setupFamilyFlagOn(family, flagOn)) return false;
   const members = SETUP_DEPENDENCY_IDS.filter((id) => SETUP_DEPENDENCY_INFO[id].family === family);
   return members.length === 0 || members.some((id) => setupDependencyAvailable(id, enabled));
 }
 
-/** The Setup families the rail draws, in catalog order. */
+/**
+ * The Setup families the rail draws, in catalog order.
+ *
+ * A row keeps its family drawn, so a family is never withheld while it has something to show -
+ * except a family behind a preview flag that is off. Its rows may still be in a snapshot read
+ * while the flag was on, and the live flag outranks them until the next read replaces them.
+ */
 export function visibleSetupFamilyIds(
   rows: readonly { family: SetupFamilyId }[] = [],
   enabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+  flagOn?: (flag: FeatureFlagId) => boolean,
 ): SetupFamilyId[] {
   return SETUP_FAMILY_IDS.filter(
-    (family) => setupFamilyAvailable(family, enabled) || rows.some((row) => row.family === family),
+    (family) => setupFamilyFlagOn(family, flagOn)
+      && (setupFamilyAvailable(family, enabled, flagOn) || rows.some((row) => row.family === family)),
   );
 }

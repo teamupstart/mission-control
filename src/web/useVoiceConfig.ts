@@ -1,0 +1,115 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch } from "@shared/voice.ts";
+import { api, fetchVoiceConfig } from "./lib/api.ts";
+
+// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
+// `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
+// The voice STATE is not here; it is the event stream's (`MissionState.voice`).
+
+const POLL_MS = 5000;
+
+function whyItFailed(error: string | undefined): string {
+  const flat = (error ?? "").replace(/\s+/g, " ").trim();
+  if (!flat) return "That change didn't stick - the daemon refused it.";
+  return `That change didn't stick: ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}`;
+}
+
+export interface VoiceConfigState {
+  /**
+   * What the panel draws: the config the daemon last confirmed, with every edit still waiting
+   * for its answer applied on top in the order it was made. Null until the first read lands.
+   */
+  config: VoiceConfig | null;
+  /**
+   * Make an edit. It shows at once and is saved after every earlier edit has been answered;
+   * resolves to whether the daemon kept it. A refused edit leaves the panel, and nothing else.
+   */
+  update: (patch: VoiceConfigPatch) => Promise<boolean>;
+  /** Why the last edit didn't stick, or null. Cleared by an edit made after it that does. */
+  error: string | null;
+}
+
+interface PendingEdit {
+  id: number;
+  patch: VoiceConfigPatch;
+}
+
+/**
+ * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
+ *
+ * Edits are saved one at a time, in the order they were made. Each controls a different field,
+ * and the panel allows a second edit while the first is still being saved, so answers settling in
+ * another order could otherwise put an older config over a newer one: a refused first edit rolling
+ * the panel back over a second edit the daemon kept, or a late answer replacing a later one. In
+ * order, every answer the panel adopts is the daemon's config as of that edit, and a refusal only
+ * drops its own edit from what is drawn.
+ */
+export function useVoiceConfig(enabled: boolean): VoiceConfigState {
+  const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
+  const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const confirmedRef = useRef<VoiceConfig | null>(null);
+  const pendingRef = useRef<readonly PendingEdit[]>([]);
+  // The tail of the save queue: each edit's request starts once the one before it is answered.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const nextEdit = useRef(0);
+  // The newest edit made when the current error was set. Only an edit made after it clears it, so
+  // an edit already waiting behind the refused one cannot wipe the sentence before it is read.
+  const errorAfter = useRef(0);
+
+  const setConfirmed = useCallback((next: VoiceConfig): void => {
+    confirmedRef.current = next;
+    setConfirmedState(next);
+  }, []);
+  const setPending = useCallback((next: readonly PendingEdit[]): void => {
+    pendingRef.current = next;
+    setPendingState(next);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const tick = async (): Promise<void> => {
+      // A read taken while an edit is waiting, or answered after one was made, can predate it.
+      if (pendingRef.current.length > 0) return;
+      const at = nextEdit.current;
+      const read = await fetchVoiceConfig();
+      if (alive && read && nextEdit.current === at && pendingRef.current.length === 0) setConfirmed(read.config);
+    };
+    void tick();
+    const id = setInterval(() => void tick(), POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [enabled, setConfirmed]);
+
+  const update = useCallback((patch: VoiceConfigPatch): Promise<boolean> => {
+    if (!confirmedRef.current) return Promise.resolve(false);
+    const edit: PendingEdit = { id: ++nextEdit.current, patch };
+    setPending([...pendingRef.current, edit]);
+    const save = async (): Promise<boolean> => {
+      const res = await api.setVoiceConfig(patch);
+      const kept = res.ok && res.config !== undefined;
+      if (kept) setConfirmed(res.config!);
+      setPending(pendingRef.current.filter((candidate) => candidate !== edit));
+      if (!kept) {
+        errorAfter.current = nextEdit.current;
+        setError(whyItFailed(res.error));
+      } else if (edit.id > errorAfter.current) {
+        setError(null);
+      }
+      return kept;
+    };
+    const result = queue.current.then(save, save);
+    queue.current = result.catch(() => undefined);
+    return result;
+  }, [setConfirmed, setPending]);
+
+  const config = useMemo(
+    () => (confirmed ? pending.reduce((shown, edit) => applyVoiceConfigPatch(shown, edit.patch), confirmed) : null),
+    [confirmed, pending],
+  );
+
+  return { config, update, error };
+}

@@ -167,6 +167,21 @@ windows through it. Identical frames are suppressed by canonical JSON. The confi
 maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
 folds them. See [Task shaping](task-shaping.md#settings).
 
+## Voice
+
+`voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
+`mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
+or one of them lapsed, which a daemon timer publishes with no request. The reconnect snapshot's
+`voice` field is present only while the `voice` flag is on, computed at that moment. While the
+flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
+shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are
+suppressed by a canonical form. `MissionState.voice` is the only browser owner, null before the
+snapshot and while the flag was off at connect time. `wireVoiceStateEvents` in
+`src/server/voice/state.ts` is the one bridge, wired once at daemon start. The state is a handful
+of scalars, at most seven capabilities with bounded reasons, and a roster that is empty until the
+names phase fills it. It is not a `LINE_INPUT_EVENTS` member. See [Voice addressing](voice.md).
+
 ## Agent reports
 
 `report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a

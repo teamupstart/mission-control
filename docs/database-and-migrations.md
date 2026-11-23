@@ -32,7 +32,7 @@ eviction. A replacement points at its chain's first report (`root_id`) and sets 
 row's `superseded_by`. `read_at` and `read_by` are written once, by `ReportManager.markRead` in
 `src/server/reports.ts`, the table's only writer. `announced_as` (`back` or `working`) and
 `announced_at` are written once, when the report's notification wording is settled, and stay null
-on a report read or replaced before then. `counted_in_digest_at` (schema 48) records when an Away
+on a report read or replaced before then. `counted_in_digest_at` (schema 49) records when an Away
 return digest counted the report, so it raises no notification afterwards. It is written when a
 dashboard claims that digest; until then the mark is held in memory, like the digest itself. `follow_up_task_id` and
 `published_archive_key` stay null until later phases write them. An attached document is copied to

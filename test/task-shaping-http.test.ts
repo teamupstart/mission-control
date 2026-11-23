@@ -57,7 +57,10 @@ test("a record that names the current session is in every read, and the route re
   assert.equal(listed?.shaping?.sessionId, "s1");
   const route = await app.request("/api/tasks/current/shaping", { headers });
   assert.equal(route.status, 200);
-  assert.deepEqual(await route.json(), { summary: record("s1"), text: "## Task context\n\nbody", afterWork: null });
+  const body = await route.json() as { summary: TaskShaping };
+  const { deliveryId, ...summary } = body.summary;
+  assert.ok(deliveryId, "the record carries the delivery it describes");
+  assert.deepEqual({ ...body, summary }, { summary: record("s1"), text: "## Task context\n\nbody", afterWork: null });
   const mcp = (await (await mcpGet("current")).json()) as { shaping?: TaskShaping };
   assert.equal(mcp.shaping?.sessionId, "s1");
 });
@@ -100,21 +103,17 @@ test("with the flag off, task reads and MCP reads hide a saved record without de
   assert.equal(back?.shaping?.sessionId, "s1", "turning the flag back on shows it again");
 });
 
-test("the shaping route serves no superseded record from a durable row while its clean-up is pending", async () => {
+test("the shaping route serves no record from a durable row bound under a later delivery to the same session", async () => {
   const db = await import("../src/server/db.ts");
-  const reads = await import("../src/server/shaping/reads.ts");
   // A task no longer in the live registry, whose row still holds an earlier delivery's record.
   db.upsertTask(mkTask({ id: "durable-only", status: "done", sessionId: "s1" }));
   assert.equal(db.commitTaskShaping("durable-only", record("s1"), "## Task context\n\nearlier delivery", 1), true);
-  assert.equal((await app.request("/api/tasks/durable-only/shaping", { headers })).status, 200, "served while nothing is pending");
-  // A failed commit to the same session whose clean-up has not succeeded yet.
-  reads.noteSupersededShaping("durable-only", "s1");
-  try {
-    const route = await app.request("/api/tasks/durable-only/shaping", { headers });
-    assert.equal(route.status, 404, "the earlier delivery's text is not served as this session's");
-  } finally {
-    reads.forgetSupersededShaping("durable-only");
-  }
+  assert.equal((await app.request("/api/tasks/durable-only/shaping", { headers })).status, 200, "served while it is the binding's delivery");
+  // A later delivery to the same session whose commit failed: only its binding landed, under its own id.
+  db.upsertTask(db.getTask("durable-only")!, { shapingDelivery: "later-delivery" });
+  assert.equal(db.getTask("durable-only")?.shaping?.sessionId, "s1", "the earlier record is still on disk");
+  const route = await app.request("/api/tasks/durable-only/shaping", { headers });
+  assert.equal(route.status, 404, "the earlier delivery's text is not served as this session's");
 });
 
 test("task reads carry the routed skills, and the after-work prompt while it names the record's session", async () => {

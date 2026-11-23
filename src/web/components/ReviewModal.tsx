@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -136,6 +136,7 @@ export function ReviewModal({
  */
 export function ReviewCard({
   review,
+  titleRef,
   session = null,
   note: sessionNote,
   onMovedToChat,
@@ -143,6 +144,8 @@ export function ReviewCard({
   onOpenPath,
 }: {
   review: ReviewItem;
+  /** The inbox uses this to land the keyboard at a particular question. */
+  titleRef?: Ref<HTMLHeadingElement>;
   /**
    * The session that asked, live. A message-mode question (`async-input`) reads it for its status
    * line: whether the agent is still working past the question or has stopped on it. Every other
@@ -276,7 +279,7 @@ export function ReviewCard({
         </span>
         {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
         {namesOn && session && <AgentName view={asker} className="review-agent" />}
-        <h3>{review.title}</h3>
+        <h3 ref={titleRef} tabIndex={titleRef ? -1 : undefined}>{review.title}</h3>
         <RevisionTag review={review} />
         {foremanAvailable && (
           <ForemanRecommendationButton

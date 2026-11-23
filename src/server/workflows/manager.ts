@@ -1,3 +1,4 @@
+import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
@@ -123,6 +124,7 @@ import {
 } from "@shared/workflow-lifecycle.ts";
 import {
   PersonaVerdictSchema,
+  SessionActionCompletedOutputSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
 } from "@shared/protocol.ts";
@@ -388,6 +390,7 @@ export interface WorkflowManagerOptions {
    * database, and the proof it feeds has to be provable without one.
    */
   readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  readUnchangedRepository?: typeof readUnchangedRepository;
   readRepositoryId?: typeof readWorkflowRepositoryId;
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
@@ -3052,6 +3055,16 @@ export class WorkflowManager {
     }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const candidateUrl = this.gateCandidateUrl(binding, session);
+    // A sealed no-change continuation has no publication for Inspector to review. Its
+    // completed action already verified this exact child's clean HEAD and content tree.
+    const sourceAction = submission.continuationNodeAttemptId
+      ? this.store.getAttempt(submission.continuationNodeAttemptId) : null;
+    const completedAction = SessionActionCompletedOutputSchema.safeParse(sourceAction?.output);
+    if (!candidateUrl && sourceAction?.state === "completed"
+      && sourceAction.sessionAction?.completion.kind === "pull_request"
+      && sourceAction.submissionId === submission.parentSubmissionId
+      && completedAction.success && completedAction.data.continuationSubmissionId === submission.id
+      && completedAction.data.expectation?.kind === "no_change") return false;
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
     const adopted = candidate ? getInspectorPr(candidate.key) : null;
     const cfg = getInspectorConfig();
@@ -6142,7 +6155,12 @@ export class WorkflowManager {
     const blocked = this.store.blockSessionActionAttempt({ attemptId, code, detail, now });
     if (!blocked) return;
     const submission = this.store.getSubmission(blocked.submissionId);
-    if (submission) this.publishRun(submission.runId);
+    if (submission) {
+      this.publishRun(submission.runId);
+      const run = this.store.getRun(submission.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    }
     workflowLog("error", { event: "session_action_blocked", call: attemptId, error: code });
   }
 
@@ -6234,7 +6252,7 @@ export class WorkflowManager {
     };
     if (!state.anchor) {
       this.setSessionActionWait(attempt.id, "awaiting_pickup", { anchor }, now);
-      state = { ...state, anchor };
+      state = { ...state, wait: "awaiting_pickup", anchor };
     }
 
     if (binding.state !== "active" || !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey)) {
@@ -6264,6 +6282,7 @@ export class WorkflowManager {
     }
     if (state.pickedUpAt === null) {
       this.setSessionActionWait(attempt.id, "working", { pickedUpAt }, now);
+      state = { ...state, wait: "working", pickedUpAt };
     }
     // A session parked on a question reads as idle and is the last thing that should be
     // treated as a finished turn - it has not started, it is stuck on a human.
@@ -6299,6 +6318,36 @@ export class WorkflowManager {
     const acceptedContentTreeOid = parentContext.success
       ? workflowPublicationTree(parentContext.data.evidence)
       : null;
+    let unchangedRepository = null;
+    let unchangedRepositoryProblem: string | null = null;
+    if (snapshot.completion.kind === "pull_request" && repository?.headOid) {
+      try {
+        unchangedRepository = await (this.options.readUnchangedRepository ?? readUnchangedRepository)(repository.root, repository.headOid);
+      } catch (error) {
+        unchangedRepositoryProblem = error instanceof Error ? error.message : "Repository publication proof could not be read.";
+      }
+    }
+    const adoptedPullRequests = await this.adoptedPullRequestsForAction(
+      anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now,
+    );
+    // Git reads may outlive an entire active turn or another proof observation. Only the
+    // still-current observation may advance the action, especially to a terminal block.
+    const current = this.resolveSessionAction(attempt.id);
+    const currentSession = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    if (!current || current.binding.state !== "active" || current.binding.sessionId !== binding.sessionId
+      || JSON.stringify(current.state) !== JSON.stringify(state)
+      || !currentSession || currentSession.lastActivity !== session.lastActivity
+      || currentSession.state !== session.state || noteKeyFor(currentSession) !== anchor.noteKey) return;
+    // Discovery dialogs and pending reviews can change without lifecycle activity.
+    if (reportBucket(currentSession, this.registry.snapshot().sessions) === "needs-you") {
+      this.setSessionActionWait(attempt.id, "needs_operator", { pickedUpAt }, now);
+      return;
+    }
+    // Only Pull Request owns a bounded no-change proof retry. Other adapters retain the
+    // current settled observation; the existing durable wait preserves this window on restart.
+    const proofRetryStartedAt = snapshot.completion.kind === "pull_request"
+      ? state.wait === "awaiting_proof" ? state.settledAt ?? now : now
+      : undefined;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -6306,18 +6355,23 @@ export class WorkflowManager {
       deliveredAt: anchor.deliveredAt,
       pickedUpAt,
       settledAt: now,
+      proofRetryStartedAt,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
+      adoptedPullRequests,
       capturedHeadOid,
       acceptedContentTreeOid,
+      unchangedRepository,
+      unchangedRepositoryProblem,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
       return;
     }
     if (decision.kind === "waiting") {
-      this.setSessionActionWait(attempt.id, decision.reason, { pickedUpAt, settledAt: now }, now);
+      this.setSessionActionWait(attempt.id, decision.reason, {
+        pickedUpAt, settledAt: decision.reason === "awaiting_proof" ? proofRetryStartedAt ?? now : now,
+      }, now);
       return;
     }
     this.setSessionActionWait(attempt.id, "capturing", {
@@ -6494,7 +6548,7 @@ export class WorkflowManager {
   }
 
   /**
-   * Record pickup the moment the bound session goes ACTIVE after a confirmed send.
+   * Record pickup and restart a proof retry when the bound session goes ACTIVE.
    *
    * Driven by the registry's own session stream - the existing lifecycle source, not a second
    * poller - because a turn can start and finish between two sweeps. A sampled observer would
@@ -6509,10 +6563,18 @@ export class WorkflowManager {
     if (!agentActive(session)) return;
     for (const attempt of this.store.waitingActionAttemptsForSession(session.id)) {
       const state = this.store.sessionActionState(attempt);
-      if (!state?.anchor || state.pickedUpAt !== null) continue;
+      if (!state?.anchor) continue;
       if (noteKeyFor(session) !== state.anchor.noteKey) continue;
       const activity = session.lastActivity ?? null;
       if (activity === null || activity <= state.anchor.deliveredAt) continue;
+      if (state.pickedUpAt !== null) {
+        // A short turn can begin and end between sweeps. Preserve the original pickup
+        // and delivery anchor, but let its next settled sweep start a fresh retry window.
+        if (state.wait === "awaiting_proof" && activity > (state.settledAt ?? state.pickedUpAt)) {
+          this.store.updateSessionActionState(attempt.id, { ...state, wait: "working", settledAt: null });
+        }
+        continue;
+      }
       this.store.updateSessionActionState(attempt.id, {
         ...state,
         wait: "working",
@@ -6678,13 +6740,19 @@ export class WorkflowManager {
         completion: snapshot.completion.kind,
       }),
     }));
-    return Boolean(this.store.completeSessionActionContinuation({
+    const completed = Boolean(this.store.completeSessionActionContinuation({
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
       warnings,
       now: Date.now(),
     }));
+    // Capture starts while the action still holds the conversation. Re-offer only after
+    // its completion is durable, including when sealing a captured child after restart.
+    const run = completed ? this.store.getRun(child.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    return completed;
   }
 
   private trackBackgroundTask(task: Promise<void>): void {

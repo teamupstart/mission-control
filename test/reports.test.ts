@@ -64,7 +64,7 @@ test("a database from before reports gains the empty table on open, at the curre
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 48);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
   const columns = (upgraded.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>).map((c) => c.name);
   for (const column of [
     "id", "session_id", "task_id", "repository", "author_key", "author_name", "author_resident_profile_id",

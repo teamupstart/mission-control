@@ -1,6 +1,8 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import { voiceStateStore } from "./voice/state.ts";
 import { reportToRead, type ReportItem } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -24,14 +26,7 @@ import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES, SESSION_AWAITING_LIMITS } from "@shared/types.ts";
 import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
-import {
-  forgetSupersededShaping,
-  hasSupersededShaping,
-  noteSupersededShaping,
-  sessionShapingForReads,
-  supersededShapingFor,
-  taskShapingForReads,
-} from "./shaping/reads.ts";
+import { sessionShapingForReads, taskShapingForReads } from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -342,9 +337,9 @@ import {
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
   rekeyTaskLaunch as dbRekeyTaskLaunch,
-  clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
+  taskShapingState as dbTaskShapingState,
   storedTaskWorkUnitId,
   inTransaction,
   upsertUsageCell,
@@ -679,6 +674,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
+// voice_state is not one: whether voice is listening is no stage figure.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1306,6 +1302,11 @@ export class Registry extends EventEmitter {
    * first clear is never mistaken for a repeat.
    */
   private lastShaping: string | null | undefined = undefined;
+  /**
+   * The last `voice_state` frame, canonical. Starts as the `off` state, so a daemon that starts
+   * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
+   */
+  private lastVoice: string = canonicalVoiceState(voiceStateOff());
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1447,6 +1448,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
+    voice?: VoiceState;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1496,6 +1498,8 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
+      // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
+      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1625,6 +1629,32 @@ export class Registry extends EventEmitter {
     if (this.lastShaping !== undefined && this.lastShaping === key) return;
     this.lastShaping = key;
     this.emitEvent({ type: "shaping_config", config });
+  }
+
+  /**
+   * Publish the voice state, suppressing a frame that restates the last one. The store
+   * recomputes on every flag change, config write, hello, report and lapse, so without this an
+   * unrelated flag toggle or a listener's steady hello would wake every follower.
+   * `wireVoiceStateEvents` is the caller.
+   */
+  emitVoiceState(state: VoiceState): void {
+    const key = canonicalVoiceState(state);
+    if (key === this.lastVoice) return;
+    this.lastVoice = key;
+    this.emitEvent({ type: "voice_state", state });
+  }
+
+  /**
+   * The voice state a connecting window is handed, published first when it differs from the last
+   * frame. A lapse is published by a timer, and a snapshot taken after the lapse but before that
+   * timer fires computes the lapsed state already; without this the next frame, a fresh hello's
+   * `listening`, would match the stale `lastVoice` and be dropped, leaving that window on
+   * `unavailable`. Publishing keeps every follower and `lastVoice` on the state just handed out.
+   */
+  private voiceStateForSnapshot(): VoiceState {
+    const state = voiceStateStore.state();
+    this.emitVoiceState(state);
+    return state;
   }
 
   /**
@@ -2285,7 +2315,8 @@ export class Registry extends EventEmitter {
     // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
     // (see `withShaping`).
     // A session's task card is gated the same way.
-    const e: ServerEvent = event.type === "task_upsert" && (event.task.shaping !== undefined || event.task.shapingContext !== undefined)
+    const e: ServerEvent = event.type === "task_upsert"
+      && (event.task.shaping !== undefined || event.task.shapingContext !== undefined || event.task.shapingDelivery !== undefined)
       ? { ...event, task: taskShapingForReads(event.task) }
       : event.type === "session_upsert" && event.session.task?.shaping !== undefined
         ? { ...event, session: sessionShapingForReads(event.session) }
@@ -7909,9 +7940,6 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
-    // The row just persisted, so the database is taking writes again: settle a superseded
-    // shaping record a failed clean-up left on disk (see `hideSupersededShaping`).
-    if (hasSupersededShaping()) this.retryShapingClear(task.id);
   }
 
   /**
@@ -7997,26 +8025,31 @@ export class Registry extends EventEmitter {
   /**
    * A task with its shaping record and "Shaping context" mark applied.
    *
-   * The record is owned by `commitTaskShaping`, never by the caller: a writer that built its
-   * row from a snapshot taken before the latest commit would otherwise publish the superseded
-   * record, and `upsertTask` does not write the column, so memory and disk would disagree. The
-   * in-memory value carries forward; a task not in memory reads the stored one. Both keys are
-   * absent when there is nothing to show, so an unshaped task's payload is unchanged.
+   * The record and its delivery id (`shapingDelivery`) are owned by `commitTaskShaping`, never
+   * by the caller: a writer that built its row from a snapshot taken before the latest commit
+   * would otherwise publish the superseded pair, and `upsertTask` writes neither column, so
+   * memory and disk would disagree. The in-memory values carry forward; a task not in memory
+   * reads the stored ones. Every key is absent when there is nothing to show, so an unshaped
+   * task's payload is unchanged.
    */
   private withShaping(task: Task, previous: Task | undefined): Task {
     // A record re-keyed inside a caller's transaction is read back from the database here, at
     // the first publish after that commit: memory is never told about a write that could still
     // roll back (see `carryShapingToSuccessor`).
     const carried = this.carriedShaping.delete(task.id);
-    const shaping = previous && !carried ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
+    const owned = previous && !carried ? previous : dbTaskShapingState(task.id);
+    const shaping = owned.shaping ?? null;
+    const delivery = owned.shapingDelivery ?? null;
     // Set by a dispatch or a handover for exactly as long as its step runs, and cleared in that
     // step's `finally`, so it needs no status of its own: a handed-over task is still `backlog`.
     const startedAt = this.shapingStartedAt.get(task.id) ?? null;
-    if (!shaping && startedAt === null && task.shaping === undefined && task.shapingContext === undefined) return task;
-    const { shaping: _record, shapingContext: _mark, ...rest } = task;
+    if (!shaping && !delivery && startedAt === null && task.shaping === undefined
+      && task.shapingContext === undefined && task.shapingDelivery === undefined) return task;
+    const { shaping: _record, shapingContext: _mark, shapingDelivery: _binding, ...rest } = task;
     return {
       ...rest,
       ...(shaping ? { shaping } : {}),
+      ...(delivery ? { shapingDelivery: delivery } : {}),
       ...(startedAt !== null ? { shapingContext: { startedAt } } : {}),
     };
   }
@@ -8037,38 +8070,67 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Settle a launch's shaping record once its turn one reached the worker: the summary,
-   * stamped here with `sessionId`, the session it was delivered to, and the delivered text, in
-   * one transaction. A null summary clears both. A commit that fails is logged and keeps a
-   * record naming an earlier session, which `currentShaping` then shows nowhere; one naming
-   * `sessionId` itself is hidden (`hideSupersededShaping`), whether or not this launch was
-   * shaped. It never throws: a launch that reached its worker is not failed by its own bookkeeping.
+   * Settle a turn-one delivery once it reached the worker: its shaping record and the task's
+   * binding, in one transaction. The delivery gets a fresh id. The summary is stamped with
+   * `sessionId`, the session it was delivered to, and that id, and written with the delivered
+   * text; a null summary clears the record. The id is written to the task's binding
+   * (`shapingDelivery`) whether or not there is a record, and `binding` - the row naming the
+   * receiving session, a launch's or a handover's - is written in the same transaction, so no
+   * stop between them leaves the record and the binding out of step. Without `binding`, the task
+   * row as it stands is the binding.
+   *
+   * A commit that fails is logged, and the delivery binds under its own id all the same: the
+   * binding row is written on its own, carrying the id, in one write. The record an earlier
+   * delivery left then carries an id the binding does not, so `currentShaping` rejects it even
+   * when it names this same session, with no clean-up that must succeed and nothing a restart
+   * forgets. Returns whether the record was committed. A commit failure never throws - a launch
+   * that reached its worker is not failed by its own bookkeeping - but a binding that cannot be
+   * written at all throws, as `upsertTask` does, and leaves the task as it was in memory and on
+   * disk alike. Memory takes the new id only once it is on disk.
    */
-  commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
-    const summary = unstamped ? { ...unstamped, sessionId } : null;
+  commitTaskShaping(
+    taskId: string,
+    sessionId: string,
+    unstamped: TaskShaping | null,
+    text: string,
+    binding: Task | null = null,
+  ): boolean {
+    const deliveryId = randomUUID();
+    const summary = unstamped ? { ...unstamped, sessionId, deliveryId } : null;
+    const current = this.tasks.get(taskId);
+    const bound = binding ?? current ?? null;
+    let displaced: string[] = [];
+    let committed = true;
     try {
-      // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
-      // prompt an earlier launch into this session left.
-      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId);
-      // This commit settled the row, so no earlier clean-up may touch it now.
-      forgetSupersededShaping(taskId);
+      inTransaction(() => {
+        // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
+        // prompt an earlier launch into this session left.
+        (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId, deliveryId);
+        if (bound) displaced = dbUpsertTask(bound);
+      });
+    } catch (error) {
+      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
+      committed = false;
+    }
+    // The binding still has to land: without the record, under the delivery's own id, in one write.
+    // A write that throws here leaves memory as it was, matching the row, which it left as it was.
+    if (bound && !committed) displaced = dbUpsertTask(bound, { shapingDelivery: deliveryId });
+    if (current) {
+      // Only now that the delivery id is on disk: bound under it from here on, with its record,
+      // or keeping the earlier record when this one could not be written, whose id is not this
+      // delivery's. Live readers never move ahead of what durable readers see.
+      const { shaping: _previous, shapingDelivery: _binding, ...rest } = current;
+      const record = committed ? summary : current.shaping ?? null;
+      this.tasks.set(taskId, { ...rest, ...(record ? { shaping: record } : {}), shapingDelivery: deliveryId });
+    }
+    if (committed) {
       // An earlier launch's after-work turn may have just left this session's outbox.
       const delivered = this.sessions.get(sessionId);
       if (delivered) this.refreshPendingTurns(noteKeyFor(delivered));
-    } catch (error) {
-      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
-      this.hideSupersededShaping(taskId, sessionId);
-      return false;
     }
-    const current = this.tasks.get(taskId);
-    if (!current) return true;
-    if (JSON.stringify(current.shaping ?? null) === JSON.stringify(summary)) return true;
-    const { shaping: _previous, ...rest } = current;
-    const next: Task = summary ? { ...rest, shaping: summary } : rest;
-    this.tasks.set(taskId, next);
-    this.emitEvent({ type: "task_upsert", task: next });
-    if (next.sessionId) this.resyncSessionTask(next.sessionId);
-    return true;
+    // Published as `upsertTask` publishes, with the record and id just set carried over it.
+    if (bound) this.publishTask(bound, displaced, false);
+    return committed;
   }
 
   /**
@@ -8101,41 +8163,8 @@ export class Registry extends EventEmitter {
     return { ...record, sessionId: toSessionId };
   }
 
-  /**
-   * After a failed commit: a record left by an earlier delivery to the SAME session (a handover
-   * back to the session it already ran on) would read as this delivery's context. Drop it from
-   * what readers see now, and try once more to clear it on disk; a reader never shows context
-   * this delivery did not receive.
-   */
-  private hideSupersededShaping(taskId: string, sessionId: string): void {
-    const current = this.tasks.get(taskId);
-    if (current?.shaping?.sessionId !== sessionId) return;
-    // Memory drops it now. On disk it is cleared only while it still names this session, and a
-    // clear that fails too is retried after the task's next persisted write - the handover's
-    // own, a moment later - so a restart does not read the earlier delivery back as this one's.
-    noteSupersededShaping(taskId, sessionId);
-    this.retryShapingClear(taskId);
-    const { shaping: _stale, ...rest } = current;
-    this.tasks.set(taskId, rest);
-    this.emitEvent({ type: "task_upsert", task: rest });
-    this.resyncSessionTask(sessionId);
-  }
-
-  /** Try once more to clear a superseded record whose on-disk clear is still pending. */
-  private retryShapingClear(taskId: string): void {
-    const sessionId = supersededShapingFor(taskId);
-    if (sessionId === undefined) return;
-    try {
-      (this.shapingClearer ?? dbClearTaskShapingFor)(taskId, sessionId);
-      forgetSupersededShaping(taskId);
-    } catch (error) {
-      console.warn(`[shaping] could not clear task ${taskId}'s superseded shaping record yet:`, error);
-    }
-  }
-
-  /** Test seams for a commit, or a clean-up, that fails. Production always takes the database functions. */
+  /** Test seam for a commit that fails. Production always takes the database function. */
   shapingCommitter: typeof dbCommitTaskShaping | null = null;
-  shapingClearer: typeof dbClearTaskShapingFor | null = null;
 
   /**
    * Carry a task's shaping record to the session that continues its conversation. Called where
@@ -8300,8 +8329,6 @@ export class Registry extends EventEmitter {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
     dbDeleteTask(id);
-    // Its row and record are gone, so a clean-up still pending for it has nothing left to clear.
-    forgetSupersededShaping(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
@@ -8510,7 +8537,8 @@ export class Registry extends EventEmitter {
           // Present only when the session emits one, so every other card's payload is what it
           // was before work units existed.
           ...(workUnitId ? { workUnitId } : {}),
-          ...(shaping ? { shaping } : {}),
+          // The binding rides with the record, so the card's readers check one against the other.
+          ...(shaping ? { shaping, ...(t.shapingDelivery ? { shapingDelivery: t.shapingDelivery } : {}) } : {}),
         }
       : null;
   }

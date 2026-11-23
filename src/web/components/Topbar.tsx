@@ -181,7 +181,7 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
             placeholder={`Filter (${formatChord(bindings.filter)})`}
             aria-label={page === "library"
               ? "Filter Library cards"
-              : "Filter sessions by title, status, agent, or PR number"}
+              : "Filter sessions and resident cards"}
             value={filter}
             onChange={(e) => onFilterChange(e.target.value)}
             onKeyDown={(e) => {

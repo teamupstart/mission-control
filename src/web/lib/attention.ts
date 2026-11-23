@@ -649,3 +649,14 @@ export function foldAttention(input: AttentionInput): AttentionFold {
 }
 
 const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The fold while the operator's dismissals are unknown: still loading, or unreadable for as long
+ * as the read keeps failing. Every row that can be dismissed is held back, because drawing one
+ * over "nothing dismissed" would bring back rows the operator hid. A report row is never
+ * dismissed (Mark read is how it leaves), so reports fold exactly as they always do: the Reports
+ * section and the to read figure do not wait on a read they do not depend on.
+ */
+export function foldWhileDismissalsUnknown(reports?: readonly ReportItem[]): AttentionFold {
+  return foldAttention({ sessions: [], reviews: [], ensembles: [], ...(reports ? { reports } : {}) });
+}

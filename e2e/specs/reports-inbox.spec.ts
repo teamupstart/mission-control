@@ -273,3 +273,35 @@ test("a refused Mark read keeps the report and says why beneath it; trying again
   await expect(toRead(page)).toHaveCount(0);
   expect((await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`)).reports[0]!.readBy).toBe("mark-read");
 });
+
+test("while the inbox dismissals cannot be read, reports are still counted and listed, and the inbox says answers are held", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  const title = "Trace the memory leak";
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title, intent: "trace the memory leak", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  await setInbox(daemon, true);
+  await report(daemon, session.cwd!, { title: "Leak is in the image cache", body: "Entries are never evicted." });
+
+  // The dashboard's read of the operator's dismissals fails, and keeps failing. Scripted in the
+  // browser because that failure is what is under test; every other request reaches the daemon.
+  const dismissals = "**/api/attention/dismissals";
+  await page.route(dismissals, (route) => route.request().method() === "GET"
+    ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unreadable" }) })
+    : route.continue());
+  await page.reload();
+  await expect(page.locator(".pulse-seg", { hasText: "inbox unavailable" })).toBeVisible({ timeout: 30_000 });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  const inbox = await openInboxFromToRead(page);
+  await expect(inbox.locator(".modal-head strong")).toHaveText("Answers held");
+  await expect(inbox.locator(".modal-head")).not.toContainText("Nothing to answer");
+  await expect(inbox.getByRole("region", { name: `Reports from ${title}` })
+    .getByRole("button", { name: "Leak is in the image cache" })).toBeVisible();
+  await capture(page, "08-dismissals-unreadable-reports-shown", page);
+  await page.unroute(dismissals);
+});

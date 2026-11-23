@@ -128,7 +128,7 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -2913,14 +2913,15 @@ export function App(): React.JSX.Element {
   // popping back up on the next frame, the next reload or in a second window. The fold applies
   // them, so the figure and the list still cannot disagree.
   //
-  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
-  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
-  // count after a reload, which is the pop-back dismissing exists to prevent.
+  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
+  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
+  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
+  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? NO_ATTENTION_YET
+        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
         : foldAttention({
             sessions,
             reviews: answerableReviews,
@@ -5333,6 +5334,7 @@ export function App(): React.JSX.Element {
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
                   reports={reportControls}
+                  held={attentionDismissals.dismissed === null}
                 />
               )}
 
@@ -5543,9 +5545,6 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
-
-/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
-const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0, toRead: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

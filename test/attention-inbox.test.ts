@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { attentionDismissalKeys, foldAttention, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
+import { attentionDismissalKeys, foldAttention, foldWhileDismissalsUnknown, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
 import { mkReport, mkReportControls } from "./helpers/report-fixture.ts";
@@ -601,6 +601,37 @@ test("a dismissal of an unrelated row leaves the Reports row and the to read fig
     dismissed: new Map([["agent-reports:session:s1", ""]]),
   });
   assert.equal(ownId.toRead, 1);
+});
+
+test("while dismissals are unknown, reports are still folded and counted, and nothing else is", () => {
+  const held = foldWhileDismissalsUnknown([mkReport({ id: "r-1" }), mkReport({ id: "r-2", readAt: 3, readBy: "mark-read" })]);
+  assert.deepEqual(held.items.map((item) => item.kind), ["agent_reports"]);
+  assert.equal(held.toRead, 1);
+  assert.equal(held.total, 0);
+  // With the flag off the caller passes no reports, and the held fold is empty, as it always was.
+  assert.deepEqual(foldWhileDismissalsUnknown(undefined), { items: [], total: 0, toRead: 0 });
+});
+
+test("a held inbox says its answers are held rather than that there is nothing to answer", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const draw = (held: boolean) => renderToStaticMarkup(withOverlayHost(createElement(AttentionInbox, {
+    fold: foldWhileDismissalsUnknown([mkReport({ id: "r-1" })]),
+    onClose: () => {},
+    onDismiss: async () => null,
+    onOpenEnsemble: () => {},
+    onOpenSession: () => {},
+    reports: mkReportControls().controls,
+    held,
+  })));
+  const heldHtml = draw(true);
+  assert.match(heldHtml, /<strong>Answers held<\/strong>/);
+  assert.match(heldHtml, /once your inbox dismissals can be read/);
+  assert.doesNotMatch(heldHtml, /Nothing to answer/);
+  assert.match(heldHtml, /<h4 class="inbox-section">Reports<\/h4>/);
+  assert.match(draw(false), /<strong>Nothing to answer<\/strong>/);
 });
 
 test("with no reports passed the fold is the one every older caller gets", () => {

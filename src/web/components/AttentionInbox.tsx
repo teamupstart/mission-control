@@ -98,6 +98,7 @@ export function AttentionInbox({
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
   reports,
+  held = false,
 }: {
   fold: AttentionFold;
   /**
@@ -122,6 +123,12 @@ export function AttentionInbox({
    * Reports row whose toggle and Mark read did nothing would look like a working inbox.
    */
   reports: InboxReportControls;
+  /**
+   * The operator's dismissals are not known yet (still loading, or unreadable), so every row
+   * that can be dismissed is held back and only reports are listed. The heading then says the
+   * answers are held rather than claiming there is nothing to answer.
+   */
+  held?: boolean;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
   // A refused Mark read, by report, drawn under its card until it is tried again.
@@ -189,7 +196,8 @@ export function AttentionInbox({
             on a panel headed `3 need you` made the operator reconcile two labels for one
             figure at the moment they were trying to drain it.
           */}
-          <strong>{fold.total > 0 ? `${fold.total} to answer` : "Nothing to answer"}</strong>
+          <strong>{fold.total > 0 ? `${fold.total} to answer` : held ? "Answers held" : "Nothing to answer"}</strong>
+          {held && <span className="dim"> · they appear once your inbox dismissals can be read</span>}
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}

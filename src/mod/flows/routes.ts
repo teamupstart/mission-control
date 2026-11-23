@@ -49,6 +49,7 @@ async function send<T>(
   schema: ZodType<T>,
   unreadable: string,
   allowWhenEnded = false,
+  keepReply = false,
 ): Promise<Outcome<T>> {
   if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
   let reply;
@@ -61,7 +62,9 @@ async function send<T>(
   }
   // The session may have ended while the daemon answered. Whatever the flow would do next (fill
   // the prompt, show a summary, open a dialog) belongs to a session that is gone, so it stops here.
-  if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
+  // A reply to a request that already took effect (a confirm that filed or started a task) is the
+  // truth whether or not the session is still there; only replies that lead to more UI are dropped.
+  if (!allowWhenEnded && !keepReply && session.live && !session.live()) return { ok: false, kind: "ended" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(reply.text);
@@ -123,5 +126,5 @@ export function confirmDraft(
   draftId: string,
   choice: "start" | "backlog" | "cancel",
 ): Promise<Outcome<HomeDispatchConfirmResult>> {
-  return send(host, session, `/dispatch/drafts/${encodeURIComponent(draftId)}/confirm`, { sessionId: session.sessionId, cwd: session.cwd, choice }, HomeDispatchConfirmResultSchema, "Mission Control sent a result this build cannot read.", choice === "cancel");
+  return send(host, session, `/dispatch/drafts/${encodeURIComponent(draftId)}/confirm`, { sessionId: session.sessionId, cwd: session.cwd, choice }, HomeDispatchConfirmResultSchema, "Mission Control sent a result this build cannot read.", choice === "cancel", true);
 }

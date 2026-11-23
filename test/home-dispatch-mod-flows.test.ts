@@ -861,3 +861,35 @@ test("a session that ended during the waiting-draft write or a dismissed dialog 
   await runDispatchCommand(present.fake.host, SESSION, "ship add retries");
   assert.equal(present.fake.notices.at(-1), "Cancelled. Nothing was created.");
 });
+
+test("a confirm the daemon answered is reported as it happened, even when the session ended mid-request", async () => {
+  for (const choice of ["Start now", "Save to backlog"]) {
+    let ended = false;
+    const { fake, filed } = world({
+      host: { answers: (q) => q.header === "Confirm" ? { kind: "pick", label: choice } : { kind: "pick", label: q.options[0]!.label } },
+    });
+    const real = fake.host.fetch;
+    fake.host.fetch = async (path, init) => {
+      const reply = await real(path, init);
+      // The session ends while the confirm is in flight; the daemon has already acted.
+      if (path.endsWith("/confirm")) ended = true;
+      return reply;
+    };
+    const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "ship add retries");
+    assert.deepEqual(filed.map((f) => f.choice), [choice === "Start now" ? "start" : "backlog"]);
+    assert.equal(result.outcome, choice === "Start now" ? "started" : "backlog", choice);
+    assert.equal(result.taskId, "mc-new1", choice);
+    assert.match(result.line, /mc-new1/, choice);
+  }
+  // The tool gives the model the real receipt, not "cancelled".
+  let ended = false;
+  const tool = world();
+  const realFetch = tool.fake.host.fetch;
+  tool.fake.host.fetch = async (path, init) => {
+    const reply = await realFetch(path, init);
+    if (path.endsWith("/confirm")) ended = true;
+    return reply;
+  };
+  const line = await runStartDispatchTool(tool.fake.host, { ...SESSION, live: () => !ended }, { brief: "add retries" });
+  assert.match(line, /^Started mc-new1: /);
+});

@@ -81,6 +81,16 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
   },
+  {
+    id: "filed-plan-decisions",
+    label: "File plan decisions",
+    description:
+      "request_plan_decisions files the plan form in the attention inbox instead of holding a tool call open. " +
+      "The agent still stops and waits on it, and your answer reaches it later as a message. Takes effect only " +
+      "while Ask without stopping is on.",
+    stage: "preview",
+    keywords: ["request_plan_decisions", "plan", "decisions", "inbox", "asynchronous", "approval"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */

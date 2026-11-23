@@ -1,6 +1,6 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
-import { ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
+import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
 import { daemonShapingView } from "./shaping/revisions.ts";
@@ -7363,27 +7363,29 @@ export class Registry extends EventEmitter {
   // ---- reviews (used by phase 3) ----
 
   /**
-   * Pending reviews this session's agent waits on inside a tool call. A message-mode question
-   * (`async-input`) is counted by `countOpenQuestions` instead, so every reader of
-   * `pendingReviews` keeps the meaning it has always had: an agent stopped inside a call.
+   * Pending reviews this session's agent has stopped on: one it waits on inside a tool call, or a
+   * filed plan form (`isFiledGate`), which is a gate though its call returned. A message-mode
+   * question (`async-input`) is counted by `countOpenQuestions` instead, so every reader of
+   * `pendingReviews` keeps the meaning it has always had: an agent stopped on the operator. That
+   * is what turns a filed plan form's session amber and counts it in "to answer" from filing.
    */
   private countPending(sessionId: string): number {
     let n = 0;
     for (const r of this.reviews.values())
-      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode !== "message") n++;
+      if (r.sessionId === sessionId && r.status === "pending" && !agentKeepsWorking(r)) n++;
     return n;
   }
 
-  /** Pending message-mode questions: filed by an agent that kept working. Snoozed ones excluded. */
+  /** Pending questions filed by an agent that kept working (`agentKeepsWorking`). Snoozed ones excluded. */
   private countOpenQuestions(sessionId: string): number {
     let n = 0;
     for (const r of this.reviews.values())
-      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode === "message") n++;
+      if (r.sessionId === sessionId && r.status === "pending" && agentKeepsWorking(r)) n++;
     return n;
   }
 
   /**
-   * Whether an outstanding `request_input` question holds this session's completion: prompted
+   * Whether an outstanding `request_input` question or filed plan form holds this session's completion: prompted
    * completion, workflow resumption and automatic evidence preparation refuse while it does.
    *
    * Read from the reviews themselves, not from the bucket, because a snoozed question turns

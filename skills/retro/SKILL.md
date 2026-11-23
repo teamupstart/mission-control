@@ -129,7 +129,10 @@ reviewer the whole of memory. And a memory nobody finishes reading is a memory n
 ## 3. Ask before you write
 
 Call the Mission Control MCP tool **`request_plan_decisions`**. It renders your proposals in
-the dashboard, **blocks until the human submits or dismisses**, and returns their selections.
+the dashboard and is a **gate until the human submits or dismisses**. It either returns their
+selections, or a receipt saying the proposals are filed and not answered. On a receipt, commit
+nothing: say what is waiting and end your turn, and act on the selections when they arrive as a
+message.
 
 - `title` - name the session the retro is about.
 - `plan` - the **full proposed text of every memory**, exactly as it would be committed,

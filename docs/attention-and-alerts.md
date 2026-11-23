@@ -56,6 +56,13 @@ until they are settled. The row's own
 **Dismiss** says the questions stay open and, like the cards, whether the agent keeps working or
 has stopped on them, rather than that it keeps waiting.
 
+A plan form filed with [File plan decisions](sessions.md#filed-plan-decisions) is a gate, not a
+question its agent works past. Its session is amber, reading **to review**, and the form counts in
+**to answer** from the moment it is filed, even while the agent is still finishing its turn. Its
+card reads **Waiting on your decisions**, its row is listed with the stopped sessions, and the
+"needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
+request closes it unanswered with the reason `merged`.
+
 ### Snoozed questions
 
 After the sections above, a **Snoozed** section lists the `request_input` questions you chose

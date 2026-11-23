@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { STANDING_APPROVAL_NOTE, isConversationResolvedReview, isHumanResolvedReview } from "../src/shared/review-item.ts";
@@ -26,17 +26,27 @@ const { closeDb, openDb, loadConversationResolvedReviews, loadPendingReviews } =
 const { savePlan } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { STANDING_FOLLOW_UP_NOTE } = await import("../src/server/plans/publication.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { filedPlanReceipt } = await import("../src/shared/async-input.ts");
+
+/** Both flags on: `request_plan_decisions` files its form (`filed-plan-decisions`). */
+function fileForms(enabled: boolean): void {
+  for (const id of ["async-input", "filed-plan-decisions"]) {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id, enabled }).ok, true);
+  }
+}
 
 const managers: InstanceType<typeof WorkflowManager>[] = [];
-afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
+afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); fileForms(false); });
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 
-async function fixture() {
+async function fixture(options: { messageable?: boolean } = {}) {
   const id = randomUUID(), repo = join(home, id);
   seedGitRepo(repo, { branch: "main", files: {}, message: "initial", name: "Test", email: "test@example.com", storeIdentity: false });
   const registry = new Registry();
-  registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null, terminals: [], startedAt: 1 }]);
+  registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null,
+    terminals: options.messageable ? [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: `%${id.slice(0, 4)}` })] : [], startedAt: 1 }]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: id, cwd: repo, transcriptPath: null, env: {} });
   const session = registry.getSession(id)!;
   const task = mkTask({ id: `task-${id}`, kind: "plan", status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha: git(repo, "rev-parse", "HEAD"), workflowId: null,
@@ -52,18 +62,18 @@ async function fixture() {
   const input: PlanIdentity = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: 1 };
   const service = workflows.localPlanPublication(tasks);
   const headers = { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() };
-  const ask = async (decisions?: object[]): Promise<ReviewItem> => {
+  const post = async (decisions?: object[], extra: object = {}) => {
     const res = await app.request("/mcp/v2/reviews", { method: "POST", headers, body: JSON.stringify({ env: {}, sessionId: id, cwd: repo,
       kind: "plan-decisions", title: "Approve bundle", body: "Inspect complete Markdown and HTML", decisions,
-      managedPlan: { repoSlot: "repo-01", planId: input.planId, revision: input.revision } }) });
+      managedPlan: { repoSlot: "repo-01", planId: input.planId, revision: input.revision }, ...extra }) });
     assert.equal(res.status, 200, await res.clone().text());
-    const { id: reviewId } = await res.json() as { id: string };
-    return registry.getReview(reviewId)!;
+    return await res.json() as { id: string; sessionId: string; wait?: string; receipt?: string };
   };
+  const ask = async (decisions?: object[]): Promise<ReviewItem> => registry.getReview((await post(decisions)).id)!;
   const resolve = (reviewId: string, body: object) => app.request(`/api/reviews/${reviewId}/resolve`, { method: "POST", headers, body: JSON.stringify(body) });
   const approve = { action: "answer", response: "Approved", selections: [{ decisionId: "approve-final-bundle", selected: ["approve"], other: null }] };
   const grants = () => openDb().prepare("SELECT task_id, review_id FROM managed_plan_standing_approvals WHERE task_id = ?").all(task.id).map((row) => ({ ...row }));
-  return { id, task, registry, reviews, service, input, ask, resolve, approve, grants };
+  return { id, task, registry, reviews, service, authority, input, ask, post, resolve, approve, grants };
 }
 
 test("ticking approve all future bundles approves later final bundles without prompting and logs them", async () => {
@@ -215,4 +225,104 @@ test("a grant that fails to persist leaves the review pending so the checked app
   assert.equal(retried.status, 200, await retried.clone().text());
   assert.equal(f.registry.getReview(bundle.id)?.status, "answered");
   assert.equal(f.grants().length, 1);
+});
+
+// ---- Filed plan decisions (`filed-plan-decisions`): managed approval on the filed path ----
+
+test("a filed final-bundle approval is bound, approves, grants the standing approval, and its answer names the plan", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const messages = new Map<string, string>();
+  f.reviews.startContinuationRecovery((review, text) => { messages.set(review.id, text); return true; });
+  const filed = await f.post(undefined, { asyncCapable: true });
+  assert.equal(filed.wait, "message");
+  assert.equal(filed.receipt, filedPlanReceipt({ id: filed.id }));
+  const review = f.registry.getReview(filed.id)!;
+  assert.equal(review.waitMode, "message");
+  assert.equal(review.standingApprovalEligible, true, "the checkbox is still offered");
+  assert.ok(openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ?").get(filed.id), "bound at creation, as today");
+  assert.equal(f.registry.getSession(f.id)!.pendingReviews, 1, "a gate the session stops on");
+  assert.equal(f.service.readiness(f.input).state === "approved", false, "a receipt is not approval");
+
+  const res = await f.resolve(filed.id, { ...f.approve, approveFutureBundles: true });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(f.grants(), [{ task_id: f.task.id, review_id: filed.id }], "the grant commits with the filed answer");
+  assert.equal(f.service.readiness(f.input).state, "approved", "publication accepts the filed approval");
+  const answer = messages.get(filed.id)!;
+  assert.match(answer, /answer to your filed plan/);
+  assert.match(answer, /\n\nApproved\n\n/, "the decision as the operator gave it");
+  assert.match(answer, new RegExp(`Managed plan: local-plan \\(plan ${f.input.planId}, revision 1\\)\\. This answer approved that exact final bundle\\.`));
+
+  // Standing approval with nothing remaining: unchanged, born settled and said as `call`.
+  const later = await f.post(undefined, { asyncCapable: true });
+  assert.equal(later.wait, "call");
+  assert.equal(later.receipt, undefined);
+  assert.equal(f.registry.getReview(later.id)?.resolvedBy, "standing-approval");
+
+  // Standing approval with other decisions: the follow-up is filed, its receipt says the bundle is approved.
+  const scope = { id: "scope", question: "Which scope?", options: [{ id: "a", label: "A" }] };
+  const followUp = await f.post([scope], { asyncCapable: true });
+  assert.equal(followUp.wait, "message");
+  assert.equal(followUp.receipt, filedPlanReceipt({ id: followUp.id }, { bundleApproved: true }));
+  assert.equal((await f.resolve(followUp.id, { action: "answer", response: "• Which scope?\n  → A", selections: [{ decisionId: "scope", selected: ["a"], other: null }] })).status, 200);
+  const followUpAnswer = messages.get(followUp.id)!;
+  assert.ok(followUpAnswer.includes(STANDING_FOLLOW_UP_NOTE), "the follow-up's answer keeps its note");
+  assert.match(followUpAnswer, /already approved by standing approval; this answer covers only the remaining decisions/);
+});
+
+test("publishing after a filed final-bundle approval issues the receipt for that review, and nothing publishes before it is answered", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  // Withdrawn and dismissed filed forms leave publication refused.
+  const withdrawn = await f.post(undefined, { asyncCapable: true });
+  assert.equal(withdrawn.wait, "message");
+  f.reviews.withdrawQuestion(f.id, withdrawn.id, "Scope changed");
+  await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+  const dismissed = await f.post(undefined, { asyncCapable: true, title: "Approve bundle again" });
+  assert.equal((await f.resolve(dismissed.id, { action: "dismiss" })).status, 200);
+  await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+
+  // A filed form still open: the receipt is not approval, so publication refuses.
+  const filed = await f.post(undefined, { asyncCapable: true, title: "Approve bundle, filed" });
+  assert.equal(filed.wait, "message");
+  assert.equal(f.registry.getReview(filed.id)?.waitMode, "message");
+  await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+
+  // Answered from the dashboard's resolve route: publication succeeds on the filed review.
+  assert.equal((await f.resolve(filed.id, f.approve)).status, 200);
+  const receipt = await f.service.publish(f.authority, f.input);
+  assert.equal(receipt.reviewId, filed.id, "the receipt names the filed review that approved it");
+  assert.equal(receipt.planId, f.input.planId);
+  assert.equal(receipt.revision, f.input.revision);
+  assert.equal(receipt.storage, "local");
+  assert.deepEqual(await f.service.publish(f.authority, f.input), receipt, "publishing again returns the same receipt");
+  process.stdout.write(`FILED PUBLICATION RECEIPT ${JSON.stringify({ reviewId: receipt.reviewId, planId: receipt.planId, revision: receipt.revision, storage: receipt.storage, publishedAt: receipt.publishedAt })}\n`);
+});
+
+test("a withdrawn or dismissed filed final-bundle approval never approves", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const messages = new Map<string, string>();
+  f.reviews.startContinuationRecovery((review, text) => { messages.set(review.id, text); return true; });
+  const withdrawn = await f.post(undefined, { asyncCapable: true });
+  f.reviews.withdrawQuestion(f.id, withdrawn.id, "Scope changed");
+  assert.equal(f.registry.getReview(withdrawn.id)?.status, "withdrawn");
+  assert.equal(f.service.readiness(f.input).state === "approved", false);
+  assert.equal(messages.has(withdrawn.id), false, "no answer message for a withdrawal");
+
+  const dismissed = await f.post(undefined, { asyncCapable: true, title: "Approve bundle again" });
+  assert.equal((await f.resolve(dismissed.id, { action: "dismiss" })).status, 200);
+  assert.equal(f.service.readiness(f.input).state === "approved", false);
+  assert.match(messages.get(dismissed.id)!, /did not approve that final bundle/);
+  assert.match(messages.get(dismissed.id)!, /nothing was approved/);
+});
+
+test("with either flag off a managed final-bundle approval still blocks in the call", async () => {
+  const f = await fixture({ messageable: true });
+  const call = await f.post(undefined, { asyncCapable: true });
+  assert.equal(call.wait, "call");
+  assert.equal(f.registry.getReview(call.id)?.waitMode, undefined);
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  const still = await f.post(undefined, { asyncCapable: true, title: "Approve bundle twice" });
+  assert.equal(still.wait, "call", "filed-plan-decisions alone is off");
 });

@@ -62,10 +62,11 @@ type and size before requesting any payload, including objects needed only by th
 HEAD or source base. An oversized required payload fails the whole capture.
 All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
 storage allowance, including their Git headers. Capture checks the combined blob sizes
-before copying any blob. Pending candidates share a 2 GiB allowance for object files
-and manifests. Each write reserves its bytes before it starts, and a sealed candidate
-holds its share until publication or discard cleans its pending directory. Writes also
-leave 64 MiB free on the state volume and account for in-flight filesystem allocations.
+before copying any blob. Pending candidates and private reader leases share a 2 GiB
+allowance for object files, manifests and lease data. Each write reserves its bytes
+before it starts. A candidate or lease holds its share until its directory is removed.
+Writes also leave 64 MiB free on the state volume and account for in-flight filesystem
+allocations.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
@@ -94,7 +95,9 @@ Missing objects inside the selected prefix fail sealing. Changing the source's s
 boundary also changes the stable capture fingerprint.
 
 Each tree walk can expand up to 200,000 entries and 64 MiB of raw path names. A
-subtree mounted at two paths contributes both sets of names. Across history the same
+streamed index and untracked listing enforces the same limits before opening working
+files. The listing counts implicit directories, sensitive names and unaddressable names.
+A subtree mounted at two paths contributes both sets of names. Across history the same
 limits apply to newly retained leaf paths and tree locations. Editing a known file
 can reuse its path. An oversized HEAD or selected base fails capture. An oversized
 historical revision ends the retained prefix before any of its new paths are published.

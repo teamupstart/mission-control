@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { mkdir, lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  MAX_REPOSITORY_VIEW_ENTRIES,
   REPOSITORY_HISTORY_POLICY_V1 as policy,
   type RepositoryViewDescriptor,
 } from "@shared/repository-access.ts";
@@ -17,7 +16,8 @@ import {
   type Layer,
 } from "./checkout.ts";
 import { checkoutGit, openObjectReader } from "./git.ts";
-import { RepositoryCandidateStorage } from "./storage.ts";
+import { RepositoryArtifactStorage } from "./storage.ts";
+import { chargePath, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import {
   decodedPath,
   descriptor,
@@ -70,38 +70,23 @@ async function scanWorking(
   return layer;
 }
 
-export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal) {
+export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
-  const state = await sample(git.path, checkout, signal);
+  const state = await sample(git.path, checkout, signal, limits);
   const work = await scanWorking(git.path, state, signal);
-  if (metadataBoundary(state) !== metadataBoundary(await sample(git.path, checkout, signal))) {
+  if (metadataBoundary(state) !== metadataBoundary(await sample(git.path, checkout, signal, limits))) {
     throw new RepositoryCaptureChanged();
   }
   return checkoutBoundary(state, work);
 }
 
-const treeExpansionLimit = { entries: MAX_REPOSITORY_VIEW_ENTRIES, pathBytes: 64 * 1024 * 1024 };
-
-function chargePath(budget: typeof treeExpansionLimit, pathBytes: number) {
-  if (budget.entries >= 1 && budget.pathBytes >= pathBytes) {
-    budget.entries--;
-    budget.pathBytes -= pathBytes;
-    return true;
-  }
-  return false;
-}
-
-type SealOptions = Partial<typeof treeExpansionLimit> & { storage?: RepositoryCandidateStorage };
+type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage };
 export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
-  { entries = treeExpansionLimit.entries, pathBytes = treeExpansionLimit.pathBytes, storage = new RepositoryCandidateStorage() }: SealOptions = {}) {
-  const expansionBudget = () => ({
-    entries: Math.min(entries, treeExpansionLimit.entries),
-    pathBytes: Math.min(pathBytes, treeExpansionLimit.pathBytes),
-  });
+  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions = {}) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
-  const state = await sample(git.path, input.checkout, signal);
+  const state = await sample(git.path, input.checkout, signal, limits);
   const { index, head, format, root, common } = state;
   // Workflow displays an abbreviated id. Expand that exact selection while the checkout
   // is still sampled, refusing ambiguous prefixes and never resolving a moving branch.
@@ -147,7 +132,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   const needed = new Set<string>();
   const sizes = new Map<string, number>();
   const capturedPaths = new Set<string>();
-  const historyExpansion = expansionBudget();
+  const historyExpansion = expansionBudget(limits);
 
   const hash = (data: Buffer) => createHash(format).update(data).digest("hex");
   async function save(type: ObjectRecord["type"], body: Buffer, expected?: string, required = true) {
@@ -155,7 +140,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const id = hash(bytes);
     if (expected && expected !== id) unavailable();
     if (!table.has(id)) {
-      await storage.write(pending, join(output, id), bytes, required, signal);
+      await storage.write(pending, join(output, id), bytes, required ? "required" : "additional", signal);
       table.set(id, { id, type, mode: 0o400, size: body.length, sha256: sha256(bytes) });
       if (type === "blob" && (body.includes(0) || !isUtf8(body))) binary.add(id);
     }
@@ -183,7 +168,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return { data, record: { id, tree, parents } };
   }
 
-  async function scanTree(id: string, prefix: Buffer, layer: Layer, budget: typeof treeExpansionLimit, incremental: boolean) {
+  async function scanTree(id: string, prefix: Buffer, layer: Layer, budget: PathBudget, incremental: boolean) {
     const { data } = await reader.get(id, "tree");
     if (createHash(format).update(`tree ${data.length}\0`).update(data).digest("hex") !== id) unavailable();
     const directories: { id: string; prefix: Buffer }[] = [];
@@ -223,7 +208,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
 
   const includedTrees = new Set<string>();
   async function flatten(tree: string, incremental = false) {
-    const budget = expansionBudget();
+    const budget = expansionBudget(limits);
     const layer: Layer = new Map();
     const treeIds = new Set<string>();
     async function visit(id: string, prefix: Buffer): Promise<boolean> {
@@ -300,7 +285,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (!anchor) continue;
       const revision = await commit(anchor);
       const { layer, treeIds, complete } = await flatten(revision.record.tree);
-      if (!complete) throw Object.assign(new Error("Required Git tree exceeds path expansion limit"), { code: "tree_expansion_limit" });
+      if (!complete) expansionExceeded();
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
     }
@@ -365,7 +350,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     if (JSON.stringify([...finalWork]) !== JSON.stringify([...worktree]))
       throw new RepositoryCaptureChanged();
     for (const id of needed) if (!table.has(id)) await save("blob", (await reader.get(id, "blob")).data, id, requiredBlobs.has(id));
-    const after = await sample(git.path, input.checkout, signal);
+    const after = await sample(git.path, input.checkout, signal, limits);
     if (metadataBoundary(state) !== metadataBoundary(after)) throw new RepositoryCaptureChanged();
 
     type Classifications = RepositoryViewDescriptor["worktree"][number]["classifications"];
@@ -453,7 +438,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const json = JSON.stringify(manifestSchema.parse(manifest));
     const digest = sha256(json);
     descriptor(manifest, digest, "candidate");
-    await storage.write(pending, join(output, "manifest.json"), json, false, signal);
+    await storage.write(pending, join(output, "manifest.json"), json, "additional", signal);
     return { digest, boundary: checkoutBoundary(state, worktree) };
   } finally {
     reader.close();

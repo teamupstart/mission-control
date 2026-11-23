@@ -34,7 +34,7 @@ import {
 } from "./format.ts";
 import { locatorFor, RepositoryOwnership } from "./ownership.ts";
 import { seal, sampleCheckoutBoundary, type RepositoryCaptureInput } from "./seal.ts";
-import { RepositoryCandidateStorage } from "./storage.ts";
+import { RepositoryArtifactStorage } from "./storage.ts";
 
 export interface WorkflowRepositoryArtifactCandidate {
   readonly boundary: string;
@@ -90,7 +90,7 @@ function removeMarkedDirectory(path: string) {
 
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
   private static readonly services = new Map<string, WorkflowRepositoryArtifactService>();
-  static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories"), storage?: RepositoryCandidateStorage) {
+  static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories"), storage?: RepositoryArtifactStorage) {
     const path = resolve(root);
     const canonical = join(realpathSync(dirname(path)), basename(path));
     let service = this.services.get(canonical);
@@ -110,7 +110,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   private failures = 0;
   private activeRequest?: ActiveRequestLookup;
 
-  private constructor(store: WorkflowStore, private readonly root: string, private readonly storage = new RepositoryCandidateStorage()) {
+  private constructor(store: WorkflowStore, private readonly root: string, private readonly storage = new RepositoryArtifactStorage()) {
     this.ownership = new RepositoryOwnership(store);
   }
 
@@ -336,7 +336,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     this.checkClaim(request);
   }
   private verifyPublished(digest: string, signal: AbortSignal, lease?: string) {
-    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, lease,
+    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, lease ? { root: lease, storage: this.storage } : undefined,
       () => this.ownership.unavailable(digest));
   }
   verify(snapshot: WorkflowRepositoryProvisionalSnapshot, signal: AbortSignal) {
@@ -397,7 +397,6 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       let deleted = 0,
         orphans = 0;
       if (!this.started) this.ownership.recoverProvisional();
-      const root = this.namespace("digests", false);
       for (const kind of ["pending", "leases"] as const) {
         const directory = this.namespace(kind, false);
         if (!directory) continue;
@@ -416,6 +415,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       }
       this.ownership.queueUnclaimed();
       const rows = this.ownership.artifacts();
+      const root = this.namespace("digests", false);
       const present = new Set(root ? readdirSync(root) : []);
       for (const row of rows) {
         if (row.state === "cleanup_pending") {

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, lstat, mkdir, readdir, writeFile, type FileHandle } from "node:fs/promises";
+import { open, lstat, readdir, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { deflate } from "node:zlib";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { approvedPath } from "@shared/repository-policy.ts";
+import type { RepositoryArtifactStorage } from "./storage.ts";
 import {
   RepositoryViewFieldsSchema,
   RepositoryViewDescriptorSchema,
@@ -164,7 +165,7 @@ async function readObject(root: string, entry: ObjectRecord, signal: AbortSignal
 
 /** Only verified source bytes enter a lease. Destination errors do not describe the source. */
 export async function verifyDirectory(root: string, digest: string, signal: AbortSignal,
-  lease?: string, onIntegrityFailure?: () => void) {
+  lease?: { root: string; storage: RepositoryArtifactStorage }, onIntegrityFailure?: () => void) {
   const sourceFailure = (error: unknown): never => {
     if (!signal.aborted && isArtifactIntegrityFailure(error)) onIntegrityFailure?.();
     throw error;
@@ -175,13 +176,13 @@ export async function verifyDirectory(root: string, digest: string, signal: Abor
     signal.throwIfAborted();
     const data = await readObject(root, entry, signal).catch(sourceFailure);
     if (lease) {
-      const dir = join(lease, "objects", entry.id.slice(0, 2));
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      await writeFile(join(dir, entry.id.slice(2)), await compress(data), { flag: "wx", mode: 0o400 });
+      const path = join(lease.root, "objects", entry.id.slice(0, 2), entry.id.slice(2));
+      await lease.storage.write(lease.root, path, await compress(data), "lease", signal);
     }
   }
   if (lease && manifest.view.frontier.length)
-    await writeFile(join(lease, "shallow"), manifest.view.frontier.map((r) => r.revision + "\n").join(""));
+    await lease.storage.write(lease.root, join(lease.root, "shallow"),
+      manifest.view.frontier.map((r) => r.revision + "\n").join(""), "lease", signal);
   signal.throwIfAborted();
   return manifest;
 }

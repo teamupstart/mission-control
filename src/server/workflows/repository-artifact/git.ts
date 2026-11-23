@@ -2,6 +2,7 @@ import { spawn, execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MAX_CAPTURE_OBJECT_BYTES, oid, unavailable } from "./format.ts";
+import { expansionExceeded } from "./path-budget.ts";
 
 const env = {
   PATH: "/usr/bin:/bin",
@@ -27,17 +28,10 @@ const flags = [
   "-c",
   "core.hooksPath=/dev/null",
 ];
-export async function checkoutGit(
-  executable: string,
-  cwd: string,
-  args: string[],
-  signal: AbortSignal,
-  missing = false,
-): Promise<Buffer> {
+function checkoutEnvironment(configRead: boolean) {
   // Query the effective excludes file through Git's config reader only. All commands that
   // inspect the index and object database run with system and global configuration disabled.
-  const configRead = args[0] === "config";
-  const childEnv = {
+  return {
     ...env,
     HOME: process.env.HOME,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
@@ -48,11 +42,19 @@ export async function checkoutGit(
         }
       : {}),
   };
+}
+export async function checkoutGit(
+  executable: string,
+  cwd: string,
+  args: string[],
+  signal: AbortSignal,
+  missing = false,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
       executable,
       [...flags, ...args],
-      { cwd, env: childEnv, signal, timeout: 30_000, maxBuffer: 128 << 20, encoding: "buffer" },
+      { cwd, env: checkoutEnvironment(args[0] === "config"), signal, timeout: 30_000, maxBuffer: 128 << 20, encoding: "buffer" },
       (error, stdout) => {
         if (missing && Number(error?.code) === 1) resolve(Buffer.alloc(0));
         else if (error) reject(error);
@@ -60,6 +62,41 @@ export async function checkoutGit(
       },
     );
   });
+}
+
+/** Consume NUL-delimited Git output with backpressure and stop Git on the first refused path. */
+export async function checkoutRecords(executable: string, cwd: string, args: string[], signal: AbortSignal,
+  maxRecordBytes: number, accept: (record: Buffer) => void) {
+  const child = spawn(executable, [...flags, ...args], {
+    cwd, signal, env: checkoutEnvironment(false), timeout: 30_000, stdio: ["ignore", "pipe", "ignore"],
+  });
+  const finished = new Promise<Error | number | null>(done => {
+    child.once("error", done);
+    child.once("close", done);
+  });
+  let parts: Buffer[] = [], size = 0;
+  try {
+    for await (const chunk of child.stdout) {
+      for (let start = 0; start < chunk.length;) {
+        const nul = chunk.indexOf(0, start);
+        const part = chunk.subarray(start, nul < 0 ? chunk.length : nul);
+        size += part.length;
+        if (size > maxRecordBytes) expansionExceeded();
+        if (nul < 0) { parts.push(part); break; }
+        accept(parts.length ? Buffer.concat([...parts, part], size) : part);
+        parts = [];
+        size = 0;
+        start = nul + 1;
+      }
+    }
+    const status = await finished;
+    signal.throwIfAborted();
+    if (status instanceof Error) throw status;
+    if (status !== 0 || size) unavailable();
+  } finally {
+    child.kill();
+    await finished;
+  }
 }
 
 /** One persistent batch process reads only literal object ids. No source config or refs

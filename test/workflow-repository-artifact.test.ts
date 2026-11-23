@@ -23,12 +23,12 @@ import {
 import { deflateSync } from "node:zlib";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
-import { seal } from "../src/server/workflows/repository-artifact/seal.ts";
-import { RepositoryCandidateStorage } from "../src/server/workflows/repository-artifact/storage.ts";
+import { sampleCheckoutBoundary, seal } from "../src/server/workflows/repository-artifact/seal.ts";
+import { RepositoryArtifactStorage } from "../src/server/workflows/repository-artifact/storage.ts";
 import { descriptor, manifestSchema, MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
@@ -38,7 +38,7 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 ensureNativeStateLockAddon();
 const signal = new AbortController().signal;
-function fixture(t: TestContext, format = "sha1", storage?: RepositoryCandidateStorage) {
+function fixture(t: TestContext, format = "sha1", storage?: RepositoryArtifactStorage) {
   const temp = mkdtempSync(join(tmpdir(), "artifact-fixture-")),
     checkout = join(temp, "source");
   const root = join(temp, "store");
@@ -537,7 +537,7 @@ test("oversized required Git objects in the index, HEAD or base are rejected bef
 });
 
 test("aggregate required storage is checked across layers before copying any blobs", async (t) => {
-  const f = fixture(t, "sha1", new RepositoryCandidateStorage(12_000, 100_000));
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(12_000, 100_000));
   f.write("file", "a".repeat(5_000));
   f.git("add", "file");
   f.git("commit", "-qm", "first");
@@ -569,7 +569,7 @@ test("aggregate required storage is checked across layers before copying any blo
 });
 
 test("concurrent and sealed candidates retain their storage reservations until cleanup", async (t) => {
-  const f = fixture(t, "sha1", new RepositoryCandidateStorage(128_000, 180_000));
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 180_000));
   f.write("file", Buffer.alloc(96_000, 0x61));
   const fs = (await import("node:fs/promises")).default;
   const { syncBuiltinESMExports } = await import("node:module");
@@ -609,6 +609,48 @@ test("concurrent and sealed candidates retain their storage reservations until c
     writes.mock.restore();
     syncBuiltinESMExports();
   }
+});
+
+test("reader leases share storage with pending candidates until their directories are removed", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
+  f.write("file", randomBytes(96_000));
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const request = f.request(snapshot);
+  const first = await f.service.materialize(request, signal);
+  await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
+  await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  assert.ok(f.service.activeSnapshot(snapshot.submissionId));
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const remove = fs.rmdirSync;
+  const blocked = t.mock.method(fs, "rmdirSync", (...args: Parameters<typeof remove>) => {
+    if (args[0] === first.objectDirectory) throw Object.assign(new Error("lease still busy"), { code: "EBUSY" });
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(first.release(), { code: "EBUSY" });
+    await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
+  } finally {
+    blocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal((await f.service.reconcile()).orphans, 0);
+  const disk = t.mock.method(fs, "statfsSync", () => ({ bsize: 4096, bavail: 1 }));
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
+    assert.deepEqual(readdirSync(join(f.root, "leases")), []);
+    assert.ok(f.service.activeSnapshot(snapshot.submissionId));
+  } finally {
+    disk.mock.restore();
+    syncBuiltinESMExports();
+  }
+  const retry = await f.service.materialize(request, signal);
+  await retry.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
 });
 
 test("capture leaves free space on the state volume and releases failed reservations", async (t) => {
@@ -968,6 +1010,8 @@ for (const when of ["before", "after"]) {
     assert.equal(readFileSync(join(pending, "promotion"), "utf8"), holder.digest);
     assert.equal(existsSync(join(pending, "previous")), false);
     assert.equal(existsSync(dest), when === "after");
+    // Recovery may have to recreate the entire digest namespace as well as the leaf.
+    if (when === "before") rmSync(join(f.root, "digests"), { recursive: true });
     assert.equal(f.service.activeSnapshot(holder.submissionId), null);
     if (when === "after") {
       const blob = join(dest, f.git("hash-object", "file"));
@@ -1388,6 +1432,41 @@ test("2,048-commit breadth-first merge prefix survives source deletion with shal
   await f.service.release(s.submissionId);
   await f.service.reconcile();
 });
+
+for (const layer of ["staged", "untracked", "mixed"]) {
+  test(`checkout path budgets reject ${layer} names before reading working bytes`, async (t) => {
+    const f = fixture(t);
+    mkdirSync(join(f.checkout, "dir"));
+    const files = ["dir/a", "dir/.env", "dir/a:b"];
+    for (const file of files) f.write(file, "contents");
+    if (layer === "staged") f.git("add", ".");
+    if (layer === "mixed") f.git("add", "dir/a");
+    const pathBytes = "dir".length + files.reduce((n, path) => n + Buffer.byteLength(path), 0);
+    const fs = (await import("node:fs/promises")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const open = fs.open;
+    let reads = 0;
+    const watch = t.mock.method(fs, "open", (...args: Parameters<typeof open>) => {
+      if (String(args[0]).startsWith(realpathSync(f.checkout) + "/dir/")) reads++;
+      return open(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      for (const limits of [{ entries: 3, pathBytes }, { entries: 4, pathBytes: pathBytes - 1 }]) {
+        await assert.rejects(sampleCheckoutBoundary(f.checkout, signal, limits), { code: "tree_expansion_limit" });
+        await assert.rejects(seal({ checkout: f.checkout, sourceBase: null }, f.root, signal, limits),
+          { code: "tree_expansion_limit" });
+      }
+      assert.equal(reads, 0);
+      assert.equal(existsSync(join(f.root, "artifact")), false);
+      await sampleCheckoutBoundary(f.checkout, signal, { entries: 4, pathBytes });
+      assert.equal(reads, 3);
+    } finally {
+      watch.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
 
 for (const limit of [{ entries: 4, pathBytes: 100 }, { entries: 100, pathBytes: 12 }]) {
   test(`tree expansion bounds ${limit.entries === 4 ? "entry count" : "path bytes"} across shared subtrees`, async (t) => {

@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { checkoutGit } from "./git.ts";
+import { checkoutGit, checkoutRecords } from "./git.ts";
+import { chargePath, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
@@ -13,17 +14,19 @@ export type Entry = { mode: string; id: string };
 export type Layer = Map<string, Entry>;
 export const allowed = (key: string) => approvedPath(decodedPath(key) ?? "");
 export function validPath(raw: Buffer) {
-  if (
-    raw
-      .toString("latin1")
-      .split("/")
-      .some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
-  )
-    unavailable();
+  for (let start = 0; start <= raw.length;) {
+    const slash = raw.indexOf(47, start);
+    const end = slash < 0 ? raw.length : slash;
+    if (end - start <= 4) {
+      const part = raw.toString("latin1", start, end).toLowerCase();
+      if (!part || part === "." || part === ".." || part === ".git") unavailable();
+    }
+    start = end + 1;
+  }
   return raw.toString("hex");
 }
 
-export async function sample(executable: string, cwd: string, signal: AbortSignal) {
+export async function sample(executable: string, cwd: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
   const git = (args: string[], missing = false) => checkoutGit(executable, cwd, args, signal, missing);
   const line = (buf: Buffer) => {
     if (buf.at(-1) !== 10 || !Buffer.from(buf.toString()).equals(buf)) unavailable();
@@ -61,19 +64,38 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   const excludes = await git(["config", "--includes", "--path", "-z", "--get", "core.excludesFile"], true);
   if (!Buffer.from(excludes.toString()).equals(excludes)) unavailable();
   const override = excludes.length ? ["-c", "core.excludesFile=" + excludes.subarray(0, -1).toString()] : [];
-  const list = (args: string[]) =>
-    checkoutGit(executable, root, [...override, "ls-files", "-z", ...args], signal);
+  const budget = expansionBudget(limits);
+  // A staged record includes the mode, OID, stage and tag before the path.
+  const maxRecordBytes = budget.pathBytes + 100;
+  const records = (args: string[], accept: (row: Buffer) => void) =>
+    checkoutRecords(executable, root, args, signal, maxRecordBytes, accept);
+  const paths = new Set<string>();
+  const directories = new Set<string>();
+  function collectPath(raw: Buffer) {
+    if (!chargePath(budget, raw.length)) expansionExceeded();
+    // Each implicit directory becomes a node when the worktree and index trees
+    // are built. All ancestors above a known prefix have already been charged.
+    for (let end = raw.lastIndexOf(47); end > 0; end = raw.lastIndexOf(47, end - 1)) {
+      const prefix = raw.toString("hex", 0, end);
+      if (directories.has(prefix)) break;
+      if (!chargePath(budget, end)) expansionExceeded();
+      directories.add(prefix);
+    }
+    const key = validPath(raw);
+    paths.add(key);
+    return key;
+  }
   // Neither command inspects file content. In particular no status/diff command
   // gets a chance to run an attribute-selected clean or textconv driver.
-  for (const row of (await list(["-t", "--stage"])).toString("latin1").split("\0").filter(Boolean)) {
-    const tab = row.indexOf("\t");
-    const [tag, mode, id, stage] = row.slice(0, tab).split(" ");
-    if (tab < 0 || stage !== "0" || !/^(100644|100755|120000|160000)$/.test(mode!)) unavailable();
-    const key = validPath(Buffer.from(row.slice(tab + 1), "latin1"));
+  await records([...override, "ls-files", "-z", "-t", "--stage"], row => {
+    const tab = row.indexOf(9);
+    if (tab < 0 || tab > 100) unavailable();
+    const [tag, mode, id, stage] = row.toString("ascii", 0, tab).split(" ");
+    if (stage !== "0" || !/^(100644|100755|120000|160000)$/.test(mode!)) unavailable();
+    const key = collectPath(row.subarray(tab + 1));
     index.set(key, { mode: mode!, id: oid.parse(id) });
     if (tag === "S") skipWorktree.add(key);
-  }
-  const paths = new Set(index.keys());
+  });
   // Intent-to-add has the id of the empty blob in ls-files, but no entry in the
   // staged tree. Ask Git for index names against its virtual empty tree only when
   // there is an ambiguous empty entry. A cached, names-only diff reads no worktree.
@@ -81,9 +103,8 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   const emptyBlob = createHash(format).update("blob 0\0").digest("hex");
   if ([...index.values()].some((e) => e.id === emptyBlob)) {
     const emptyTree = createHash(format).update("tree 0\0").digest("hex");
-    const names = await checkoutGit(
-      executable,
-      root,
+    const ambiguous = new Set([...index].filter(([, e]) => e.id === emptyBlob).map(([key]) => key));
+    await records(
       [
         "diff",
         "--cached",
@@ -96,31 +117,20 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
         emptyTree,
         "--",
       ],
-      signal,
+      row => { ambiguous.delete(row.toString("hex")); },
     );
-    const staged = new Set(
-      names
-        .toString("latin1")
-        .split("\0")
-        .map((p) => Buffer.from(p, "latin1").toString("hex")),
-    );
-    for (const [key, entry] of index)
-      if (entry.id === emptyBlob && !staged.has(key)) {
-        index.delete(key);
-        intent.push(key);
-      }
+    for (const key of ambiguous) {
+      index.delete(key);
+      intent.push(key);
+    }
   }
   const embedded: string[] = [];
-  for (const raw of (await list(["--others", "--exclude-standard"]))
-    .toString("latin1")
-    .split("\0")
-    .filter(Boolean)) {
+  await records([...override, "ls-files", "-z", "--others", "--exclude-standard"], raw => {
     // Git enumerates an untracked embedded repository as one trailing-slash entry.
-    const directory = raw.endsWith("/");
-    const key = validPath(Buffer.from(directory ? raw.slice(0, -1) : raw, "latin1"));
+    const directory = raw.at(-1) === 47;
+    const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
-    paths.add(key);
-  }
+  });
   return { root, common, format, emptyBlob, head, shallow, index, skipWorktree, intent, embedded, paths: [...paths].sort() };
 }
 

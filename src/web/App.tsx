@@ -6,6 +6,8 @@ import { resolveFeatureFlag } from "@shared/feature-flags.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -409,9 +411,15 @@ export function App(): React.JSX.Element {
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
+  // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
+  // resident runs; the daemon's Away watcher passes them on the same flag.
+  const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
   const alertScope = useMemo(
-    () => ({ sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({
+      sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      ...(inboxNames ? { names: residentRuns } : {}),
+    }),
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
@@ -4603,6 +4611,7 @@ export function App(): React.JSX.Element {
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
+      <ResidentNamesContext.Provider value={residentRuns}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -5484,6 +5493,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>

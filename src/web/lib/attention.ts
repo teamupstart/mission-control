@@ -158,6 +158,34 @@ export type AttentionItem =
       error: string;
     };
 
+/**
+ * The inbox's sections, in the order they are drawn: the one rule the fold emits by. Derivation
+ * order is a separate matter (the backstop must run after every section that claims a session),
+ * so the fold builds its rows in whatever order it must and then sorts them by this.
+ *
+ * A later section is inserted at its fixed place, never appended by push order: Stuck goes
+ * directly after Waiting on you, and Reports directly after Stuck finalizations as the final
+ * entry. Snoozed is not a fold kind: the inbox draws it after every fold section, so Reports
+ * always sits immediately before it.
+ */
+export const INBOX_SECTION_ORDER = [
+  "ensemble_decision",
+  "session_reviews",
+  "session_dialog",
+  "pipeline_commission",
+  "pipeline_halt",
+  "session_blocked",
+  "parked_finalization",
+] as const satisfies readonly AttentionItem["kind"][];
+
+// Every kind has a place: a kind missing from the order fails to compile here.
+const _everyKindOrdered: Exclude<AttentionItem["kind"], (typeof INBOX_SECTION_ORDER)[number]> extends never ? true : never = true;
+void _everyKindOrdered;
+
+const SECTION_RANK: ReadonlyMap<AttentionItem["kind"], number> = new Map(
+  INBOX_SECTION_ORDER.map((kind, rank) => [kind, rank]),
+);
+
 export interface AttentionFold {
   items: AttentionItem[];
   /**
@@ -334,18 +362,20 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  * The queue, in the order it is drained.
  *
  * Sections are fixed and never interleave, because they are different kinds of obligation and
- * a mixed list would sort a one-click gate above a run that has been parked for an hour:
+ * a mixed list would sort a one-click gate above a run that has been parked for an hour. The
+ * order is `INBOX_SECTION_ORDER`:
  *
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
  *     Sessions stopped on their questions lead it; one still working past message-mode
  *     questions follows (`stoppedOnQuestions`).
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
- *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
- *  5. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  6. **Parked finalizations** - a stuck destructive step.
+ *  4. **Pipeline lifecycle** - a commission whose provider lifecycle needs a person.
+ *  5. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
+ *  6. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  7. **Parked finalizations** - a stuck destructive step.
  *
- * The five that predate pipelines keep their relative order exactly: the new section was
+ * The five that predate pipelines keep their relative order exactly: the pipeline sections were
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
  *
  * Within a section the oldest wait leads, so draining top-to-bottom answers whoever has been
@@ -357,7 +387,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const dismissed = input.dismissed ?? NOTHING_DISMISSED;
   const sessionById = new Map(input.sessions.map((s) => [s.id, s]));
   const summaryByRun = new Map(input.ensembles.map((e) => [e.id, e]));
-  /** Sessions that already own a row, so the section (4) backstop cannot double-count them. */
+  /** Sessions that already own a row, so the section (6) backstop cannot double-count them. */
   const represented = new Set<string>();
   const contextFor = (session: Session): string | null => {
     const link = session.task?.ensemble ?? null;
@@ -389,7 +419,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // A question the operator dismissed is dropped here, one question at a time, so a new one on
   // the same session is still shown. Its session is still CLAIMED, though: a session whose
   // every question was dismissed is amber, and leaving it unclaimed would let the backstop in
-  // section (5) redraw it as "Waiting on you" - the dismissed row popping back under a new name.
+  // section (6) redraw it as "Waiting on you" - the dismissed row popping back under a new name.
   const bySession = new Map<string, ReviewItem[]>();
   for (const review of input.reviews) {
     const session = sessionById.get(review.sessionId);
@@ -459,7 +489,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (4) Pipelines an external engine stopped for a person.
+  // (4) and (5) Pipelines whose lifecycle or engine stopped for a person.
   //
   // BEFORE the backstop below, deliberately. The backstop's whole job is to claim what
   // nothing else did, so any section derived after it would be a section whose rows had
@@ -503,7 +533,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
+  // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
   // A `needs-you` pause is not a reason of its own. Older daemons wrote it to mirror the session,
@@ -527,7 +557,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (6) A finalization that stopped on an error. The run is past its decision and holding a
+  // (7) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)
@@ -545,6 +575,9 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // the reason section (2) gives: a dismissed menu or Pipeline row filtered out any earlier
   // would leave its session unclaimed, and the backstop would draw it again as "Waiting on you".
   // Questions were already filtered one by one above, so their rows are never dropped here.
+  // Drawn in the section order, whatever order the sections had to be derived in. The sort is
+  // stable, so each section keeps the order it was built in.
+  items.sort((a, b) => SECTION_RANK.get(a.kind)! - SECTION_RANK.get(b.kind)!);
   const visible =
     dismissed.size === 0
       ? items

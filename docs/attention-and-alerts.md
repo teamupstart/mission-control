@@ -63,6 +63,28 @@ card reads **Waiting on your decisions**, its row is listed with the stopped ses
 "needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
 request closes it unanswered with the reason `merged`.
 
+### One name for an agent
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, one rule names an agent
+wherever the inbox and its alerts name one: alert titles (the toast and the Away digest alike),
+the inbox's row headers, a snoozed question's row, the review modal's header, and a line at the
+head of each question card. The first of these that is set wins:
+
+1. a call sign or a resident's reference name (reserved for voice, not set yet);
+2. a resident's profile name, drawn in its board colour;
+3. the task title;
+4. the session name;
+5. "a session".
+
+With the flag off every surface names an agent exactly as it did before: the inbox, the snoozed
+row and the review modal print the session name, alert titles print the task title or else the
+session name, and question cards print no name line. The tray shows counts only, so it has no
+name to change.
+
+The inbox's sections follow one fixed order, `INBOX_SECTION_ORDER` in
+`src/web/lib/attention.ts`, whatever order the fold derives them in. Later sections are inserted at
+fixed places in it rather than appended.
+
 ### Snoozed questions
 
 After the sections above, a **Snoozed** section lists the `request_input` questions you chose

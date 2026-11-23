@@ -8,8 +8,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
-[Work unit id](work-units.md#the-launch-environment) (`work-unit-id`)
-and [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) as previews.
+[Work unit id](work-units.md#the-launch-environment) (`work-unit-id`),
+[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`) and
+[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 **File plan decisions** (`filed-plan-decisions`) files a `request_plan_decisions` form instead of
@@ -184,11 +185,16 @@ gates, not by resolving an unknown id as on.
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, and its launch record, which the session detail's "work unit" row shows. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
+| `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards. Agent reports and Stuck rows join it in later releases | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
 `e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
 a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/inbox-flag.spec.ts` checks that the `inbox` row appears off, that a toggle is stored
+and reaches a second window without a reload, and that the panel's filter finds it.
+`e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
+modal header, the question card, an alert's title, and a resident's board colour.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
 

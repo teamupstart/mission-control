@@ -25,7 +25,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { foldAttention, ensembleRunContext } from "../src/web/lib/attention.ts";
+import { foldAttention, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
+import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
 import {
   mkEnsembleLink,
@@ -444,4 +445,55 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
   ]) {
     assert.ok(css.includes(`.${cls}`), `${cls} has no rule in styles.css`);
   }
+});
+
+test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they are derived in", () => {
+  // R24: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts,
+  // Waiting on you, Stuck finalizations. Later phases insert Stuck and Reports at fixed places.
+  assert.deepEqual([...INBOX_SECTION_ORDER], [
+    "ensemble_decision",
+    "session_reviews",
+    "session_dialog",
+    "pipeline_commission",
+    "pipeline_halt",
+    "session_blocked",
+    "parked_finalization",
+  ]);
+  const commission: PipelineCommission = {
+    id: "commission-1", taskId: "pipeline-task", provider: "ai-conductor", repoRoot: "/repo",
+    correlationId: "commission-1", lifecycle: "authoring", attempts: [], activeAttempt: 1, steps: [],
+    currentStep: null, tier: null, track: null, project: null, authoringWorktree: null,
+    authoringBranch: null, planSlug: null, handoff: null, linkedRun: null, blocker: null, error: null,
+    createdAt: 1, updatedAt: 1, readinessRequired: true,
+    readiness: {
+      status: "blocked", code: "authentication_required", summary: "GitHub authentication is required",
+      checkedCapabilities: ["gh"], retryable: true, remedy: "Authenticate GitHub", diagnostic: null,
+      fingerprint: "blocked", permitted: false, checkedAt: "2026-09-04T12:00:00.000Z",
+    },
+  };
+  const halted: PipelineRun = {
+    provider: "ai-conductor", repoRoot: "/repo", slug: "fix-the-thing", worktree: "/repo/.worktrees/fix",
+    tier: "L", track: "technical", steps: [], lastStep: null,
+    halt: { class: "needs-human", reason: "the build review found two blocking defects" },
+    group: "halted", prUrl: null, costTokens: null, updatedAt: 5,
+  };
+  const result = foldAttention({
+    sessions: [
+      mkSession({ id: "s-ask", name: "Asking" }),
+      mkSession({
+        id: "s-menu", name: "Menu",
+        paneDialog: { options: [], highlighted: 0, prompt: "Allow?" } as Session["paneDialog"],
+      }),
+      mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" }),
+      mkSession({ id: "s-pipe", name: "Pipe", task: mkTaskSummary({ id: "pipeline-task", kind: "pipeline" }) }),
+    ],
+    reviews: [review({ id: "r-1", sessionId: "s-ask" })],
+    ensembles: [
+      mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" }),
+      mkEnsembleSummary({ id: "run-decide", status: "awaiting_decision" }),
+    ],
+    pipelineCommissions: [commission],
+    pipelineRuns: [halted],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), [...INBOX_SECTION_ORDER]);
 });

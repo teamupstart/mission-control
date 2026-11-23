@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReviewItem } from "../src/shared/types.ts";
+import type { ReviewItem, Session } from "../src/shared/types.ts";
+import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
+import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
+import { ResidentNamesContext } from "../src/web/lib/agent-names.ts";
 import { SnoozeReviewSchema } from "../src/shared/protocol.ts";
 import { reviewToolResult } from "../src/shared/review-item.ts";
 import {
@@ -18,7 +21,7 @@ import { mergeConversation } from "../src/web/lib/episodes.ts";
 import { attentionDismissalKeys, foldAttention } from "../src/web/lib/attention.ts";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import { SnoozedInboxRow, SnoozedReviewCard, SnoozeSheet } from "../src/web/components/ReviewSnooze.tsx";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 const HOUR = 60 * 60_000;
 const NOW = Date.UTC(2026, 10, 17, 14, 30);
@@ -205,4 +208,41 @@ test("a question hidden from the inbox shows again when its reminder brings it b
   const fold = foldAttention({ sessions: [session], reviews: [back], ensembles: [], dismissed: hidden });
   assert.equal(fold.total, 1);
   assert.equal(fold.items[0]?.kind, "session_reviews");
+});
+
+// ---- the snoozed row's name (`inbox` flag): the same rule as every other inbox row ----
+
+/** The row's header name, with the `inbox` flag on or off and the given live resident runs. */
+function snoozedRowHead(session: Session, inbox: boolean, residentRuns: { taskId: string; colorId: string; name: string }[] = []): string {
+  const config: FeatureFlagsConfig = { enableAll: false, overrides: inbox ? { inbox: true } : {} };
+  const runs = residentRuns.map((run) => ({
+    taskId: run.taskId,
+    settings: { identity: { name: run.name }, board: { colorId: run.colorId } },
+  }));
+  const html = renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: config },
+      createElement(ResidentNamesContext.Provider, { value: runs },
+        createElement(SnoozedInboxRow, { review: snoozed("judgment"), session }))),
+  );
+  return /<div class="inbox-head">.*?(<strong[^>]*>[^<]*<\/strong>)/.exec(html)![1]!;
+}
+
+test("with the inbox flag off, a snoozed row names its session exactly as before", () => {
+  const named = mkSession({ id: "s1", name: "add-lint", task: mkTaskSummary({ id: "t1", title: "Add a linter" }) });
+  assert.equal(snoozedRowHead(named, false), "<strong>add-lint</strong>");
+  // Off, a resident run changes nothing either.
+  assert.equal(snoozedRowHead(named, false, [{ taskId: "t1", name: "Linter watcher", colorId: "teal" }]), "<strong>add-lint</strong>");
+  // The row's own fallback for a session with no name is kept.
+  assert.equal(snoozedRowHead(mkSession({ id: "s2", name: "", task: null }), false), "<strong>(unnamed)</strong>");
+});
+
+test("with the inbox flag on, a snoozed row names its agent by the one rule, a resident in its board colour", () => {
+  const named = mkSession({ id: "s1", name: "add-lint", task: mkTaskSummary({ id: "t1", title: "Add a linter" }) });
+  assert.equal(snoozedRowHead(named, true), "<strong>Add a linter</strong>");
+  assert.equal(
+    snoozedRowHead(named, true, [{ taskId: "t1", name: "Linter watcher", colorId: "teal" }]),
+    '<strong class="agent-name-resident" style="--resident:var(--resident-teal)">Linter watcher</strong>',
+  );
+  // With nothing to name it, the rule's own fallback replaces the row's.
+  assert.equal(snoozedRowHead(mkSession({ id: "s2", name: "", task: null }), true), "<strong>a session</strong>");
 });

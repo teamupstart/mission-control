@@ -142,11 +142,18 @@ async function cancel(host: FlowHost, session: FlowSession, draftId: string): Pr
 
 /** A dismissed dialog counts as Cancel (7.11); before a draft exists there is nothing to cancel. */
 /** The session ended under the flow: there is no one left to tell, so it ends quietly (cf. fail() for `ended`). */
+/** Whether the Claude session that started the flow has ended. */
+function gone(session: FlowSession): boolean {
+  return session.live !== undefined && !session.live();
+}
+
 function ended(): FlowResult {
   return { outcome: "cancelled", line: CANCELLED_LINE };
 }
 
-function stop(host: FlowHost): FlowResult {
+function stop(host: FlowHost, session: FlowSession): FlowResult {
+  // A session that has ended is not told it was cancelled.
+  if (gone(session)) return ended();
   host.notice(CANCELLED_NOTICE);
   return { outcome: "cancelled", line: CANCELLED_LINE };
 }
@@ -247,12 +254,14 @@ async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchD
 type RepoAnswer = { kind: "none" } | { kind: "cancelled" } | { kind: "repo"; value: string };
 
 /** Asks the Repo page, or the free-text question when the page's own Other is picked. */
-async function askRepo(host: FlowHost, pages: ReturnType<typeof pagesOf>): Promise<RepoAnswer> {
+async function askRepo(host: FlowHost, session: FlowSession, pages: ReturnType<typeof pagesOf>): Promise<RepoAnswer> {
   if (pages.length === 0) return { kind: "none" };
   const pick = await askPages(host, pages);
   if (pick.kind === "dismissed") return { kind: "cancelled" };
   if (pick.kind === "other") return { kind: "repo", value: pick.text };
   if (pick.value !== "other") return { kind: "repo", value: pick.value };
+  // No second dialog for a session that ended under the first.
+  if (gone(session)) return { kind: "cancelled" };
   const typed = await askText(host, "Repo", NEEDS_REPO_QUESTION);
   return typed === undefined ? { kind: "cancelled" } : { kind: "repo", value: typed };
 }
@@ -304,7 +313,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   const start = pagesOf(first.value.questions, "start");
   if (start.length > 0) {
     const pick = await askPages(host, start);
-    if (pick.kind !== "pick") return stop(host);
+    if (pick.kind !== "pick") return stop(host, session);
     if (pick.value === "check-in") {
       if (session.live && !session.live()) return ended();
       const placed = await host.paneOpen({ tab: "needs-you", focus: true, ...(session.live ? { guard: session.live } : {}) });
@@ -315,13 +324,15 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
       return { outcome: "pane", line: "" };
     }
     // Work in this session: the person goes on with their own work.
-    if (pick.value === "work-here") return stop(host);
+    if (pick.value === "work-here") return stop(host, session);
+    // The Start answer may have arrived after the session ended: no Kind dialog for a session that is gone.
+    if (gone(session)) return ended();
   }
 
   let kind = input.kind;
   if (!kind) {
     const pick = await askPages(host, pagesOf(first.value.questions, "kind"));
-    if (pick.kind !== "pick") return stop(host);
+    if (pick.kind !== "pick") return stop(host, session);
     kind = pick.value as TaskKind;
   }
 
@@ -334,13 +345,15 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   const afterPages = pagesOf(next.value.questions, "after-work");
   if (afterPages.length > 0) {
     const pick = await askPages(host, afterPages);
-    if (pick.kind !== "pick") return stop(host);
+    if (pick.kind !== "pick") return stop(host, session);
     workflowId = pick.value;
+    // Likewise before the Repo dialog.
+    if (gone(session)) return ended();
   }
   let repo = input.repo;
   if (repo === undefined) {
-    const picked = await askRepo(host, pagesOf(next.value.questions, "repo"));
-    if (picked.kind === "cancelled") return stop(host);
+    const picked = await askRepo(host, session, pagesOf(next.value.questions, "repo"));
+    if (picked.kind === "cancelled") return stop(host, session);
     if (picked.kind === "repo") repo = picked.value;
   }
 
@@ -352,7 +365,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
     ...(input.context === undefined ? {} : { context: input.context }),
     ...(input.intent === undefined ? {} : { intent: input.intent }),
   });
-  if (!created.ok) return created.kind === "cancelled" ? stop(host) : fail(host, created);
+  if (!created.ok) return created.kind === "cancelled" ? stop(host, session) : fail(host, created);
 
   return completeDraft(host, session, created.value, input.intent);
 }

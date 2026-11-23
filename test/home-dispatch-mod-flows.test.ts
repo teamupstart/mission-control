@@ -924,3 +924,39 @@ test("a description typed while the daemon is briefly down keeps the waiting dra
   assert.deepEqual(filed.map((f) => [f.draftId, f.choice]), [[draftId, "start"]]);
   assert.equal(await fake.host.paneState.get("draftId"), null);
 });
+
+test("a dialog answered after the session ended opens no further dialog and posts no cancel notice", async () => {
+  const headers = (fake: ReturnType<typeof world>["fake"]) => fake.dialogs.map((d) => d.header);
+
+  // The Start answer arrives after the session ended: no Kind dialog follows.
+  let endedStart = false;
+  const start = world({ host: { answers: (q) => { endedStart = true; return { kind: "pick", label: q.options[0]!.label }; } } });
+  const startResult = await runDispatchCommand(start.fake.host, { ...SESSION, live: () => !endedStart }, "");
+  assert.deepEqual(headers(start.fake), ["Start"]);
+  assert.equal(startResult.outcome, "cancelled");
+  assert.deepEqual(start.fake.notices, []);
+
+  // The After work answer arrives after the session ended: no Repo dialog follows.
+  let endedAfter = false;
+  const after = world({
+    host: { answers: (q) => { if (q.header === "After work") endedAfter = true; return { kind: "pick", label: q.options[0]!.label }; } },
+  });
+  await runDispatchCommand(after.fake.host, { sessionId: FAKE_SESSION_ID, cwd: FAKE_NO_REPO_CWD, live: () => !endedAfter }, "ship add retries");
+  assert.equal(headers(after.fake).includes("Repo"), false);
+  assert.deepEqual(after.fake.notices, []);
+
+  // A dialog dismissed after the session ended posts no cancellation.
+  for (const header of ["Start", "Kind", "After work"]) {
+    let ended = false;
+    const dismissed = world({
+      host: { answers: (q) => { if (q.header === header) { ended = true; return { kind: "dismissed" }; } return { kind: "pick", label: q.options[0]!.label }; } },
+    });
+    await runDispatchCommand(dismissed.fake.host, { ...SESSION, live: () => !ended }, "");
+    assert.ok(dismissed.fake.notices.every((n) => n !== "Cancelled. Nothing was created."), header);
+  }
+
+  // With the person still there a dismissal still says so.
+  const present = world({ host: { answers: () => ({ kind: "dismissed" }) } });
+  await runDispatchCommand(present.fake.host, { ...SESSION, live: () => true }, "");
+  assert.equal(present.fake.notices.at(-1), "Cancelled. Nothing was created.");
+});

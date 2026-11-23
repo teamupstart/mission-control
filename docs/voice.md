@@ -33,10 +33,12 @@ can address Release Captain, while “Release, Captain needs help” can address
 “Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
-a candidate when exactly one option across all open unsure cards matches. Multiple matches
+a candidate when exactly one option matches across open unsure cards captured by the time
+the name was spoken. Multiple matches
 leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
-no matching option records `no-message`.
+no matching option records `no-message`. This includes “Release Captain” when both Release
+and Release Captain are on the roster.
 Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
 

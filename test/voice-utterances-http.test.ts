@@ -231,6 +231,24 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
 });
 
+test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const now = Date.now();
+  const postAt = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  const before = queued("Will");
+  await postAt("newer", "Steven ask Will about tomorrow", now - 100);
+  await postAt("too-early", "Will", now - 400);
+  assert.deepEqual(queued("Will"), before);
+  assert.equal((await readHeard())[0]?.rule, "no-message");
+  await postAt("older", "Steven ask Will about yesterday", now - 300);
+  await postAt("between", "Will", now - 200);
+  assert.deepEqual(queued("Will"), [...before, "ask Will about yesterday"]);
+  assert.equal((await readHeard())[0]?.rule, "pick");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "unsure"]]);
+});
+
 test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
   await say('Will,"ship it"', "quote");
   assert.equal(cards[0]?.parts[0]?.text, '"ship it"');

@@ -135,3 +135,18 @@ test("a bare name without an unsure card has no message", () => {
     assert.deepEqual(route(text, ["Steve", "Will", "Release Captain"]), { kind: "ignored", reason: "no-message" });
   }
 });
+
+test("a bare multiword call sign can pick a card but sends no message to its prefix", () => {
+  const roster = ["Release", "Release Captain"];
+  const unsure: VoiceCard = { id: "choice", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
+    candidates: [{ kind: "agent", id: "captain", title: "Release Captain", detail: "" }] };
+  for (const text of ["Release Captain", "“RELEASE   Captain?”"]) {
+    assert.deepEqual(route(text, roster), { kind: "ignored", reason: "no-message" });
+    assert.deepEqual(route(text, roster, [], [unsure]), {
+      kind: "control", command: "pick", cardId: "choice", candidateId: "captain",
+    });
+  }
+  assert.deepEqual(route("Release, Captain", roster), {
+    kind: "addressed", target: agent("Release"), match: "exact", text: "Captain", pauseMs: null,
+  });
+});

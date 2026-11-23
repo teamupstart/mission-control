@@ -70,7 +70,9 @@ export class VoiceRouter {
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
-    const unsureCards = this.activeCards().filter((card) => card.state === "unsure");
+    const unsureCards = Array.from(this.open.values())
+      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= utterance.capturedAt)
+      .map(({ card }) => card);
     const decision = routeUtterance(utterance, { roster, unsureCards });
     const entry: HeardEntry = { id, time: utterance.capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };

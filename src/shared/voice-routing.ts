@@ -120,6 +120,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
+  if (names.some(({ name }) => name === phrase)) return { kind: "ignored", reason: "no-message" };
   const leadingNames = namesStartingAt(text, firstToken, secondToken);
   let count = 1;
   let match: "exact" | "phonetic" = "exact";

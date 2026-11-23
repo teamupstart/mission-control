@@ -80,10 +80,6 @@ const mixed = (joinId: string | null, members: EvaluationStage["members"]): Stag
   ({ kind: "evaluation", joinId, members });
 
 /** A singleton session action stage, the only shape the union allows for one. */
-const action = (sessionActionId: string, nodeId: string | null = sessionActionId): Stage => ({
-  kind: "session_action",
-  member: { nodeId, kind: "session_action", sessionActionId },
-});
 
 /**
  * Narrow to the evaluation arm with an assertion rather than a cast, so a test that reads

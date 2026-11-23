@@ -50,9 +50,7 @@ async function shot(page: Page, locator: Locator, name: string, observed: string
   // Animations left running on purpose: "disabled" parks an infinite animation at its first
   // frame, which puts the reply box's sweeping bar one full width off its left edge.
   await locator.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${observed}`);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/working-indicator/${name}.png`);
 }
 
@@ -328,7 +326,6 @@ test("Display offers both marks checked, spaced like the groups above, and the p
       path: join(EVIDENCE, "display-shipped.png"),
       clip: { x: bottom.x, y: top.y - 8, width: bottom.width, height: bottom.y + bottom.height - top.y + 16 },
     });
-    // eslint-disable-next-line no-console
     console.log("OBSERVED Display > Working indicator ships with both marks checked, its heading spaced like the Conversation header's");
   }
 

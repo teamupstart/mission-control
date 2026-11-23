@@ -862,7 +862,7 @@ export class HibernationManager {
           try {
             do {
               again = false;
-              for (const candidate of [...candidates.values()]) {
+              for (const candidate of Array.from(candidates.values())) {
                 if (finished) return;
                 const ours = await prove(candidate).catch(() => false);
                 if (ours && !finished) {

@@ -112,8 +112,15 @@ without the plugin remain free of Upstart-specific setup chrome.
 The **Voice** family appears only while the **Voice addressing** preview is on. Its **Voice
 previews** row checks the three previews voice needs - Ask without stopping, Reports and inbox
 upgrades and File plan decisions - names which are on and which are off, and offers a button that
-turns on exactly the ones that are off. The row is optional, so it never raises the Setup banner,
-and the panel re-reads the machine when any of those flags changes. See [Voice addressing](voice.md).
+turns on exactly the ones that are off. The panel re-reads the machine when any of those flags
+changes. **Microphone access** reads the permission the voice listener or the desktop app last
+reported, reads **Not checked yet** until one has, and says where macOS keeps the switch.
+**Voice speech model** reads **Missing** with **Download** while the model is not on disk.
+Download shows a progress bar and Cancel, and verifies every file against its pinned SHA-256
+checksum. When a download fails, or a file already on disk is the wrong size or the wrong digest,
+the row reads **Needs setup** with the reason and **Retry**. It follows the download live, in
+every window, without a Re-check. All three rows are optional, so none raises the Setup banner. See
+[Voice addressing](voice.md#the-speech-model).
 
 The **Runtime** family identifies the process serving this dashboard: the app's bundled
 Electron runtime, development Electron, or standalone Node. Connecting an Electron window to

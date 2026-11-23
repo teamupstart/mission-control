@@ -138,7 +138,6 @@ test("Cmd+Enter respects Workflow Binding validation and evidence guards then su
   expect(bindingWrites).toHaveLength(2);
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // eslint-disable-next-line no-console
     console.log("OBSERVED bind-and-submit returned 202 with a durable capturing run");
   }
 
@@ -158,13 +157,11 @@ test("Cmd+Enter respects Workflow Binding validation and evidence guards then su
   );
 
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log('OBSERVED the accepted run detail page says "Capturing evidence"');
     await dashboard.screenshot({
       path: `${EVIDENCE}workflow-submit-accepted.png`,
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-submit-accepted/workflow-submit-accepted.png");
   }
 });

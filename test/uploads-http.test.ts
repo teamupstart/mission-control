@@ -9,9 +9,7 @@ process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-upload-http-"));
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { ReviewManager } = await import("../src/server/reviews.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const { QueueManager } = await import("../src/server/queue.ts");
+
 const { buildApp } = await import("../src/server/routes.ts");
 const { MAX_UPLOAD_BYTES, UPLOADS_DIR, UPLOAD_TTL_MS, resolveImageUpload } = await import("../src/server/uploads.ts");
 

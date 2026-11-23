@@ -179,7 +179,6 @@ async function seedFailingCheckRun(
       })
       .toBe(options.infrastructure ? "infrastructure-with-output" : "failed");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

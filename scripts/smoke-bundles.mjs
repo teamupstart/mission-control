@@ -885,5 +885,12 @@ else {
 }
 await smokePiSdkBundle();
 await smokeMermaidRenderer();
+// This server is a separate capability boundary from the Mission MCP smoke above.
+try {
+  await (await import("./smoke-repository-mcp.mjs")).smokeRepositoryMcp();
+} catch (error) {
+  fail(`repository MCP: ${error instanceof Error ? error.message : String(error)}`);
+}
+
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[smoke] ok");

@@ -44,7 +44,6 @@ async function shoot(
   // whole job is to show that the control draws correctly.
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   if (restore) await page.setViewportSize(restore);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/plan-kind/${name}.png`);
 }
 

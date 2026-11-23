@@ -1033,7 +1033,7 @@ for (const [kind, code, expectedState] of [
       ? store.getRun(`run-${id}`)?.status === "blocked"
       : store.latestAttemptForNode(`submission-${id}`, "p")?.state === "retry_wait");
     error = expectedState === "blocked"
-      ? (store.getRun(`run-${id}`)?.gateState as { error: string }).error
+      ? (store.getRun(`run-${id}`)?.gateState as { error: string })?.error
       : store.latestAttemptForNode(`submission-${id}`, "p")?.error ?? "";
   } finally {
     if (expectedState === "retry_wait") store.cancelRun(`run-${id}`, "test_cleanup");

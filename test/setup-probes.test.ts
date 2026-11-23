@@ -18,6 +18,8 @@ import {
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView, setupProbeResult, voicePreviewsStatus } from "../src/server/setup/index.ts";
+import { VOICE_MODEL_STATE_NONE, type VoiceModelState } from "../src/shared/voice.ts";
+import { VOICE_MICROPHONE_NOT_CHECKED, type VoiceMicrophoneReading } from "../src/shared/voice-models.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -75,6 +77,17 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     conductorIntegration: () => true,
     // And every flag-gated family (Voice), with every flag on.
     flagEnabled: () => true,
+    voiceModel: () => ({
+      status: "ready",
+      backend: "fluidaudio",
+      revision: "fixture-revision",
+      totalBytes: 10,
+      doneBytes: 10,
+      bytesPerSecond: null,
+      directory: "/home/operator/.mission-control/voice/models/fluidaudio/fixture-revision",
+      error: null,
+    }),
+    voiceMicrophone: () => ({ permission: "granted", source: "listener" }),
     ...overrides,
   };
 }
@@ -735,16 +748,64 @@ test("the Voice family is probed and listed only while the voice flag is on", as
   assert.equal(off.rows.some((row) => row.family === "voice"), false);
   // With the Voice family off the reading carries no flags stamp, so the response is unchanged.
   assert.equal("flagsKey" in off, false);
-  const on = await setupChecksView(deps({ flagEnabled: (id) => id === "voice" }));
+  const on = await setupChecksView(deps({
+    flagEnabled: (id) => id === "voice",
+    voiceModel: () => ({ ...VOICE_MODEL_STATE_NONE, backend: "fluidaudio", revision: "r1", totalBytes: 10 }),
+    voiceMicrophone: () => null,
+  }));
   // With it on, the reading names the flags it was taken under, as the dashboard computes them.
   assert.equal(on.flagsKey, setupReadingFlags((id) => id === "voice"));
   assert.equal(on.flagsKey, "1000");
-  const row = on.rows.find((candidate) => candidate.family === "voice");
-  assert.deepEqual(row?.rowId, { source: "dependency", id: "voice-previews" });
-  assert.equal(row?.requirement, "optional", "an optional row never raises the Setup banner");
-  assert.equal(row?.label, "Voice previews");
-  assert.equal(row?.status.state, "needs-setup");
-  assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id === "voice-previews"), false);
+  const rows = on.rows.filter((candidate) => candidate.family === "voice");
+  assert.deepEqual(rows.map((row) => row.rowId), [
+    { source: "dependency", id: "voice-previews" },
+    { source: "dependency", id: "voice-microphone" },
+    { source: "dependency", id: "voice-model" },
+  ], "previews, then microphone beneath them, then the model");
+  assert.deepEqual(rows.map((row) => row.label), ["Voice previews", "Microphone access", "Voice speech model"]);
+  assert.ok(rows.every((row) => row.requirement === "optional"), "optional rows never raise the Setup banner");
+  assert.deepEqual(rows.map((row) => row.status.state), ["needs-setup", "unknown", "missing"]);
+  assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id.startsWith("voice-")), false);
+});
+
+test("voice-model reads the manager: missing, each stage, a refusal with its reason, and ready", async () => {
+  const model = (overrides: Partial<VoiceModelState>): VoiceModelState => ({
+    ...VOICE_MODEL_STATE_NONE, backend: "fluidaudio", revision: "r1", totalBytes: 100, ...overrides,
+  });
+  const read = (state: VoiceModelState) => probed("voice-model", { voiceModel: () => state });
+  assert.deepEqual((await read(model({ status: "missing" }))).status, { state: "missing" });
+  assert.deepEqual((await read(model({ status: "downloading", doneBytes: 40 }))).status, {
+    state: "needs-setup", why: "Downloading the speech model.", evidence: null,
+  });
+  assert.deepEqual((await read(model({ status: "verifying", doneBytes: 40 }))).status, {
+    state: "needs-setup", why: "Checking the speech model on disk against its pinned checksums.", evidence: null,
+  });
+  const failed = await read(model({ status: "failed", error: "The download of a.bin did not match its checksum and was deleted." }));
+  assert.deepEqual(failed.status, {
+    state: "needs-setup", why: "The download of a.bin did not match its checksum and was deleted.", evidence: null,
+  });
+  assert.equal(failed.remedy, undefined, "the catalog's download remedy stands; the panel draws Retry from the live state");
+  assert.deepEqual((await read(model({ status: "ready", doneBytes: 100, directory: "/state/voice/models/fluidaudio/r1" }))).status, {
+    state: "satisfied", evidence: "/state/voice/models/fluidaudio/r1 · checksum verified",
+  });
+  // A backend with no published model has nothing to download, and says so instead of "Missing".
+  const none = await read({ ...VOICE_MODEL_STATE_NONE, backend: "sherpa-onnx", error: "No speech model for sherpa-onnx is available in this build yet." });
+  assert.deepEqual(none.status, { state: "needs-setup", why: "No speech model for sherpa-onnx is available in this build yet.", evidence: null });
+});
+
+test("voice-microphone reads the latest report, and reads not checked yet until one arrives", async () => {
+  const read = (reading: VoiceMicrophoneReading | null) => probe("voice-microphone", { voiceMicrophone: () => reading });
+  assert.deepEqual(await read(null), { state: "unknown", why: VOICE_MICROPHONE_NOT_CHECKED, evidence: null });
+  assert.ok(VOICE_MICROPHONE_NOT_CHECKED.startsWith("Not checked yet"));
+  assert.deepEqual(await read({ permission: "granted", source: "shell" }), { state: "satisfied", evidence: "Allowed, as the desktop app reports" });
+  assert.deepEqual(await read({ permission: "denied", source: "listener" }), {
+    state: "needs-setup", why: "macOS denied the microphone to Mission Control.", evidence: "As the voice listener reports",
+  });
+  assert.equal((await read({ permission: "not-determined", source: "shell" })).state, "needs-setup");
+  assert.equal((await read({ permission: "restricted", source: "shell" })).state, "needs-setup");
+  assert.deepEqual(await read({ permission: "unknown", source: "listener" }), {
+    state: "unknown", why: "The voice listener could not read the microphone permission.", evidence: null,
+  });
 });
 
 test("a reading uses the flags as they were when it started, even if one switches while probes run", async () => {

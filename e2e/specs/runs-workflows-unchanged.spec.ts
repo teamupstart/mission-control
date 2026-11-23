@@ -125,7 +125,6 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
     { message: "round 1 should settle completed", timeout: 40_000 }).toBe("completed");
   } catch (caught) {
     // The seeding failure that matters here is server-side and invisible to a browser trace.
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

@@ -1,3 +1,4 @@
+import { INSPECTOR_DENY_PATHS } from "@shared/repository-policy.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
 import { observeCodeRabbit } from "./code-rabbit.ts";
 import { recordCodeRabbit, failCodeRabbit } from "../db.ts";
@@ -311,23 +312,7 @@ export const REVIEW_TOOLS = "Read,Grep,Glob";
  * protects nothing it names; `Glob` confirms the files exist. The grant is what pays
  * for the tool access, so it has to cover the whole grant.
  */
-export const DENY_PATHS = [
-  "**/.env",
-  "**/.env.*",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.p12",
-  "**/id_rsa*",
-  "**/id_ed25519*",
-  "**/.git/config",
-  "**/.npmrc",
-  "**/.netrc",
-  "**/credentials*",
-  "//Users/*/.aws/**",
-  "//Users/*/.ssh/**",
-  "//Users/*/.claude/**",
-  "//Users/*/.mission-control/**",
-];
+export const DENY_PATHS = INSPECTOR_DENY_PATHS;
 
 /**
  * Exported alongside `REVIEW_TOOLS` and `DENY_PATHS` so `llm-runner-contract.test.ts` can
@@ -1692,7 +1677,6 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const cfg = getInspectorConfig();
       // Stacked children are observed even with both review sources off: a child keeps its
       // lifecycle (base reconciliation, broken-stack detection, the prompts it needs) whatever
       // any setting says. Only rows with lineage, so the Inspector being off still costs

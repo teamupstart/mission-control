@@ -1,6 +1,6 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
-import { workUnitEnv } from "./agent-work-unit.ts";
+import { withWorkUnit, workUnitEnv } from "./agent-work-unit.ts";
 import { launchWorkUnitId } from "./work-unit.ts";
 import {
   expectTerminalLaunchWorkUnit,
@@ -2605,15 +2605,17 @@ export class Dispatcher {
             ],
             // What the agent's process holds: the terminal server's environment, which the
             // daemon started and so passed its own, overlaid with what the launch wrapper exports.
-            env: {
+            // The wrapper unsets any inherited `WORK_UNIT_ID` and exports only this launch's, so
+            // the budget counts exactly that one: a daemon started from an agent's shell must not
+            // be charged for a variable its launches never carry (`withWorkUnit`).
+            env: withWorkUnit({
               ...process.env,
               ...isolatedAgentEnvironment({
                 cwd: provisioned.worktreePath ?? provisioned.repoRoot,
                 stateHome: launch.terminal!.stateHome,
-                // As the terminal arm spawns it, the work unit included.
-                extraEnv: { ...launch.terminal!.advisorEnv, ...workUnitEnv(launch.workUnitId) },
+                extraEnv: { ...launch.terminal!.advisorEnv },
               }),
-            },
+            }, launch.workUnitId),
             argMax: await (this.deps.argMax ?? platformArgMax)(),
           })
         : null,

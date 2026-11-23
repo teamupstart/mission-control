@@ -6,6 +6,7 @@ import { buildSync } from "esbuild";
 import type { Page } from "@playwright/test";
 import type { Session } from "../../src/shared/types.ts";
 import { test, expect } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { api, connect, dispatch } from "../fixtures/session-control.ts";
@@ -33,7 +34,19 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: join(artifactsDir("session-control-requests"), `${name}.png`) });
 }
 
-test("a session's ask shows as a card; the browser cannot accept it, Decline answers the agent, and the flag hides it", async ({ dashboard, daemon }) => {
+async function openRequestInbox(page: Page, surface: "browser" | "desktop") {
+  const button = page.getByRole("button", { name: /1 to answer/ });
+  await expect(button).toBeVisible();
+  await expect(page.getByRole("region", { name: "Session control request" })).toHaveCount(0);
+  await shoot(page, `${surface}-conversation-pending`);
+  await button.click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox.getByRole("heading", { name: "Session control requests" })).toBeVisible();
+  await expectContentClearsBorder(inbox);
+  return inbox.getByRole("region", { name: "Session control request" });
+}
+
+test("a session's ask appears only in the inbox; the browser cannot accept it, Decline answers the agent, and the flag hides it", async ({ dashboard, daemon }) => {
   await setFlag(daemon, true);
   const asker = await dispatch(daemon, "Asker");
   const client = await connect(daemon, asker);
@@ -42,7 +55,7 @@ test("a session's ask shows as a card; the browser cannot accept it, Decline ans
     await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: "Asker" }).click();
     const asked = client.callTool({ name: "request_session_control", arguments: { reason: LONG_REASON } }, undefined, { timeout: 120_000 });
 
-    const card = dashboard.getByRole("region", { name: "Session control request" });
+    const card = await openRequestInbox(dashboard, "browser");
     await expect(card.getByRole("heading", { name: "Asker asks to control your other sessions" })).toBeVisible();
     await expect(card).toContainText(REASON);
     const accept = card.getByRole("button", { name: "Accept", exact: true });
@@ -74,6 +87,7 @@ test("a session's ask shows as a card; the browser cannot accept it, Decline ans
 
     await decline.click();
     await expect(card).toHaveCount(0);
+    await expect(dashboard.getByRole("dialog", { name: "Attention inbox" })).toContainText("Nothing to answer");
     const answer = await asked;
     expect(answer.isError).toBe(false);
     expect(toolText(answer)).toContain("Declined: the operator chose not to let this session control other sessions.");
@@ -144,7 +158,7 @@ test("only the operator's own click on Accept in the desktop app grants a sessio
       expect((await client.callTool({ name: "read_sessions", arguments: {} })).isError).toBe(true);
       const asked = client.callTool({ name: "request_session_control", arguments: { reason: REASON } }, undefined, { timeout: 120_000 });
 
-      const card = dashboard.getByRole("region", { name: "Session control request" });
+      const card = await openRequestInbox(dashboard, "desktop");
       await expect(card).toContainText(REASON);
       const accept = card.getByRole("button", { name: "Accept", exact: true });
       await expect(accept).toBeEnabled();
@@ -168,6 +182,7 @@ test("only the operator's own click on Accept in the desktop app grants a sessio
       const list = await client.callTool({ name: "read_sessions", arguments: {} });
       expect(list.isError).toBe(false);
       expect(JSON.stringify(list)).toContain(target.id);
+      await dashboard.getByRole("button", { name: "Close (esc)" }).click();
       await expect(dashboard.getByRole("button", { name: "Session control: On" })).toBeVisible();
       await shoot(dashboard, "desktop-granted");
 

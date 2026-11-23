@@ -90,7 +90,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   // A hovered control's tooltip would cover what the shot is for.
   await ("mouse" in target ? target : target.page()).mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/session-blocker/${name}.png`);
 }
 

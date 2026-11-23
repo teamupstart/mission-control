@@ -76,7 +76,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   // frames here are of a panel whose controls sit under the cursor's last position.
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/foreman-note-retires-on-your-answer/${name}.png`);
 }
 

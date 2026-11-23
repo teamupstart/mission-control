@@ -140,7 +140,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // would sit over the very cells this picture is of.
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-card-customization/${name}.png`);
 }
 

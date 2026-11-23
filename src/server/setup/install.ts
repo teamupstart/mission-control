@@ -212,6 +212,10 @@ export async function executeSetupInstall(
     case "feature-flags":
       // The dashboard switches flags through `PUT /api/feature-flags`; nothing runs in a window.
       return refused(body.id, info.label, "This setup remedy turns on preview features and opens no terminal.");
+    case "voice-model-download":
+      return refused(body.id, info.label, "This setup remedy downloads the speech model in the daemon and opens no terminal.");
+    case "microphone-access":
+      return refused(body.id, info.label, "This setup remedy is a macOS permission and opens no terminal.");
     case "provider-installer": {
       const repoRoots = await deps.listRepoRoots();
       const installers = await deps.listProviderInstallers(remedy.provider, repoRoots);

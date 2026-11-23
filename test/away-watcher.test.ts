@@ -964,3 +964,39 @@ test("the daemon's repeat-offender channel reaches the buffer", () => {
   );
   w.stop();
 });
+
+test("a muted author's reports are never buffered, one muted after buffering leaves, and the digest neither counts nor marks them", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const author = (key: string, name: string) => ({ key, name, residentProfileId: null });
+  let reports: ReportItem[] = [];
+  let reportMutes: { authorKey: string; authorName: string; mutedAt: number }[] = [{ authorKey: "session:loud", authorName: "Loud", mutedAt: 900 }];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports, reportMutes }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  // Loud is muted: its stamped report is never buffered. Quiet's is.
+  reports = [
+    mkReport({ id: "r-1", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: author("session:loud", "Loud") }),
+    mkReport({ id: "r-2", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: author("session:quiet", "Quiet") }),
+  ];
+  clock = 2000;
+  w.tick();
+  assert.deepEqual(w.buffer()!.events.map((e) => e.key), ["report:r-2"]);
+  assert.equal(rollupLine(w.buffer()!), "1 report waiting: Quiet");
+  // Quiet is muted too, after its report was buffered: it leaves at the next read.
+  reportMutes = [...reportMutes, { authorKey: "session:quiet", authorName: "Quiet", mutedAt: 2500 }];
+  clock = 3000;
+  w.tick();
+  assert.deepEqual(w.buffer()!.events.map((e) => e.key), []);
+  // An unannounced report posted while away from a muted author is not added when the window closes.
+  reports = [...reports, mkReport({ id: "r-3", createdAt: 3500, author: author("session:loud", "Loud") })];
+  setAwayConfig({ away: false }, 4000);
+  w.flush();
+  const digest = w.takePending();
+  assert.equal(digest ? rollupLine(digest) : "", "");
+  assert.deepEqual(counted, [], "a report the digest did not count is not marked counted, so it would still notify once unmuted");
+  w.stop();
+});

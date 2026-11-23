@@ -65,7 +65,10 @@ import { servingRuntime } from "../owned-runtime.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import { VOICE_REQUIRED_FLAGS } from "@shared/voice.ts";
+import { voiceMicrophoneSetupStatus, voiceModelSetupStatus } from "@shared/voice-models.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
+import { voiceModelManager } from "../voice/models.ts";
+import { voiceStateStore } from "../voice/state.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -562,6 +565,8 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "acli-auth": acliAuthStatus,
   "coderabbit-auth": codeRabbitAuthStatus,
   "voice-previews": async (deps) => voicePreviewsStatus(deps.flagEnabled ?? featureEnabled),
+  "voice-model": async (deps) => voiceModelSetupStatus((deps.voiceModel ?? (() => voiceModelManager.state()))()),
+  "voice-microphone": async (deps) => voiceMicrophoneSetupStatus((deps.voiceMicrophone ?? (() => voiceStateStore.microphoneReading()))()),
 };
 
 function reasonOf(error: unknown): string {

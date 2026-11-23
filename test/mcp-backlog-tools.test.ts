@@ -62,6 +62,9 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     port: 0,
     fetch: (req) => {
       const path = new URL(req.url).pathname;
+      // The MCP child reads the report guidance once as it starts (`post_report`'s description); these
+      // tests count the tool requests, so that startup read is answered and not recorded.
+      if (path === "/mcp/reports/guidance") return app.fetch(req);
       paths.push(path);
       if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete" || path === "/mcp/tasks/cancel")) {
         return new Response("Not Found", { status: 404 });
@@ -106,8 +109,10 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
   function disconnectHttp() {
-    // Keep the port reserved but terminate connections before any HTTP response can exist.
+    // Keep the port reserved but terminate connections before any HTTP response can exist. The
+    // child's startup read may have left a keep-alive socket open, so that one is dropped too.
     server.on("connection", (socket) => socket.destroy());
+    (server as unknown as { closeAllConnections(): void }).closeAllConnections();
   }
   return { client, call, create, registry, tasks, app, paths, reviews, disconnectHttp };
 }
@@ -1213,7 +1218,7 @@ test("read tools include durable attached-repository PRs without live session fe
 test("the MCP tools carry the work unit: a plan's phase task shares it, and list_tasks filters by it", async (t) => {
   const f = await fixture(t);
   const createTool = (await f.client.listTools()).tools.find((tool) => tool.name === "create_task")!;
-  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] }).enum, ["inherit", "new"]);
+  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] })?.enum, ["inherit", "new"]);
   const listTool = (await f.client.listTools()).tools.find((tool) => tool.name === "list_tasks")!;
   assert.ok(listTool.inputSchema.properties?.workUnitId);
 

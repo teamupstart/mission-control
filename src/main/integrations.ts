@@ -115,7 +115,7 @@ function editHooks(uninstall: boolean, runtime: Runtime, hook: string, statuslin
 
     const formatting = {
       insertSpaces: !/^\t/m.test(original),
-      tabSize: (original.match(/\n( +)\S/) ?? [, "  "])[1]?.length ?? 2,
+      tabSize: original.match(/\n( +)\S/)?.[1]?.length ?? 2,
       eol: (original.includes("\r\n") ? "\r\n" : "\n") as "\n" | "\r\n",
     };
     const apply = (text: string, jsonPath: (string | number)[], value: unknown): string =>

@@ -45,7 +45,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     path: `${EVIDENCE}${name}.png`,
     animations: "disabled",
   });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/pi-model-catalog/${name}.png`);
 }
 

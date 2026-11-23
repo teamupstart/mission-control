@@ -687,3 +687,27 @@ test("one definition of the flag-off answer serves every daemon call: only a 404
   assert.equal(isFlagOffAnswer(200, { feature: "headless-mode" }), false);
   assert.equal(isFlagOffAnswer(401, { feature: "headless-mode" }), false);
 });
+
+test("the write queue runs a read-modify-write after the writes queued before it, so none is overwritten", async () => {
+  const { runQueued } = await import("../src/mod/write-queue.ts");
+  const queue = { writes: Promise.resolve() as Promise<void> };
+  const store = { value: 0 };
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  // A write is in flight (held); an update is queued behind it and must read what the write left.
+  const write = runQueued(queue, undefined, async () => { await held; store.value = 10; });
+  const update = runQueued(queue, undefined, async () => { const current = store.value; store.value = current + 1; });
+  release();
+  await Promise.all([write, update]);
+  assert.equal(store.value, 11);
+
+  // A turn whose guard has gone false is skipped, and a task that throws does not stop the queue.
+  let alive = true;
+  const skipped = runQueued(queue, () => alive, async () => { store.value = -1; });
+  alive = false;
+  await skipped;
+  assert.equal(store.value, 11);
+  await runQueued(queue, undefined, async () => { throw new Error("refused"); });
+  await runQueued(queue, undefined, async () => { store.value = 12; });
+  assert.equal(store.value, 12);
+});

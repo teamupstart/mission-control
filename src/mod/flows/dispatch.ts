@@ -192,8 +192,8 @@ export async function describeDraft(host: FlowHost, session: FlowSession, draftI
   // The waiting marker goes only when the draft is spent or gone. A daemon that was briefly down,
   // or any other refusal, leaves the draft (and its kind, after work and repo) waiting, so typing
   // the description again reaches it instead of starting over.
-  const gone = updated.ok || isNoSuchDraft(updated);
-  if (gone) {
+  const spent = updated.ok || isNoSuchDraft(updated);
+  if (spent) {
     session.reminded?.delete(draftId);
     // Only this session's own marker is cleared: a replacement session may have its own by now.
     if (!session.live || session.live()) await host.paneState.set("draftId", null);

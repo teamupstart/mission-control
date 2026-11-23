@@ -6,6 +6,7 @@ import { FLOW_FAILED_TEXT, reportFlowFailure } from "./flows/failure.ts";
 import { FLOW_BUSY_TEXT, createFlowGate, type FlowGate } from "./flows/gate.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
+import { runQueued } from "./write-queue.ts";
 
 /**
  * The hooks module (spec 7.10): a thin adapter from the engine's `$` and events to the pure
@@ -229,12 +230,18 @@ interface Engine {
 
 /** One shared pane-state write, in order after those before it; dropped if `guard` says its session is gone when its turn comes. */
 function queuedStateSet($: Engine, pane: PaneHolder, key: FlowStateKey, value: unknown, guard?: () => boolean): Promise<void> {
-  const run = pane.writes.then(async () => {
-    if (guard && !guard()) return;
-    await stateSet($, key, value).catch(() => undefined);
+  return runQueued(pane, guard, () => stateSet($, key, value).catch(() => undefined));
+}
+
+/**
+ * A read-modify-write of one pane-state key. The read is inside the queue, after every write queued
+ * before it, so `fn` sees what those writes left and its own result cannot overwrite them.
+ */
+function queuedStateUpdate($: Engine, pane: PaneHolder, key: FlowStateKey, fn: (current: unknown) => unknown, guard?: () => boolean): Promise<void> {
+  return runQueued(pane, guard, async () => {
+    const current = await stateGet($, key).catch(() => undefined);
+    await stateSet($, key, fn(current)).catch(() => undefined);
   });
-  pane.writes = run.catch(() => undefined);
-  return run.catch(() => undefined);
 }
 
 /** The pane values the mod writes: the controller's three, and the draft waiting for its description. */
@@ -473,8 +480,7 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
         (isFlowStateKey(key) ? await stateGet($, key).catch(() => undefined) : undefined) as ModState[K] | undefined,
       update: async <K extends keyof ModState>(key: K, fn: (value: ModState[K] | undefined) => ModState[K]) => {
         if (!isFlowStateKey(key)) return;
-        const current = (await stateGet($, key).catch(() => undefined)) as ModState[K] | undefined;
-        await queuedStateSet($, session.pane, key, fn(current), () => session.mine === session.current());
+        await queuedStateUpdate($, session.pane, key, (current) => fn(current as ModState[K] | undefined), () => session.mine === session.current());
       },
     },
   };

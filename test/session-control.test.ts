@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
+import { CONVERSATION_TEXT_MAX_LENGTH, SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
 import type { SessionQueue } from "../src/shared/types.ts";
 import type { SessionRequestAnswer } from "../src/server/harness/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
@@ -1194,6 +1194,29 @@ test("delegated completion records the task before it asks the session to stop",
   assert.deepEqual(f.events, [`complete:${taskId}`, `stop:${f.target.id}`]);
 });
 
+test("a target that leaves while its task completes is reported closed and is not asked to stop", async (t) => {
+  // Runs inside the task completion, after it was recorded and before the route decides on a stop.
+  let leaveDuringCompletion = () => {};
+  const f = completionFixture(() => { leaveDuringCompletion(); return null; });
+  await f.grant(true);
+  const taskId = `complete-left-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home }));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  leaveDuringCompletion = () => {
+    // The ordinary way an SDK session goes: exited, then evicted once its linger elapses.
+    f.registry.applyDriverEvent(f.target.id, { kind: "exited", reason: "finished", resumable: false });
+    t.mock.timers.tick(60_000);
+    assert.equal(f.registry.getSession(f.target.id), undefined, "the target was evicted during completion");
+  };
+  const response = await f.act({ action: "complete", outcome: "done" });
+  t.mock.timers.reset();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, taskId, taskStatus: "done", session: "closed" });
+  assert.deepEqual(f.calls.map((call) => call.id), [taskId]);
+  assert.deepEqual(f.stops, []);
+  assert.deepEqual(f.events, [`complete:${taskId}`]);
+});
+
 test("delegated completion forwards the outcome and explicit confirmations, and sends no second stop when completion closes the session", async () => {
   const f = completionFixture(); await f.grant(true);
   const taskId = `complete-worktree-${serial}`;
@@ -1249,5 +1272,9 @@ test("the complete action schema bounds and trims its outcome and rejects unknow
   assert.deepEqual(parse({ action: "complete", outcome: "  shipped  " }).data, { action: "complete", outcome: "shipped" });
   assert.equal(parse({ action: "complete", taskId: "someone-else" }).success, false);
   assert.equal(parse({ action: "complete", requireStopped: true }).success, false);
-  assert.equal(parse({ action: "complete", outcome: "x".repeat(100_001) }).success, false);
+  // Both sides of the limit, so lowering it by accident fails here as surely as raising it.
+  const atLimit = parse({ action: "complete", outcome: "x".repeat(CONVERSATION_TEXT_MAX_LENGTH) });
+  assert.equal(atLimit.success, true);
+  assert.equal(atLimit.data?.action === "complete" && atLimit.data.outcome?.length, CONVERSATION_TEXT_MAX_LENGTH);
+  assert.equal(parse({ action: "complete", outcome: "x".repeat(CONVERSATION_TEXT_MAX_LENGTH + 1) }).success, false);
 });

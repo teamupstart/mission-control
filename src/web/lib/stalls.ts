@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, type Stall } from "@shared/stall.ts";
+import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, stallFingerprint, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -24,21 +24,39 @@ export function captureStalls(stalls: Stall[], sessions: readonly Session[]): Ob
   });
 }
 
-/** A session update can retire a cached stall. Only a fresh poll can report a new occurrence. */
+/** Keep a polled stall's controls and dismissal key in sync with live session updates. */
+function currentStall(stall: ObservedStall, session: Session | undefined): ObservedStall | null {
+  if (!session) return stall.legacy ? null : stall;
+  const activity = session.lastActivity ?? session.firstSeen;
+  if (isIdleStall(stall) && stall.since !== undefined && activity > stall.since) return null;
+  const facts = stall.facts;
+  if (facts?.kind !== "unfinished-work") {
+    return stall.legacy && legacyStallFingerprint(stall, session) !== stall.fingerprint ? null : stall;
+  }
+
+  const queueOpen = openStallQueueCount(session);
+  if (facts.task && (facts.task.id !== session.task?.id || !hasOpenStallTask(session))) return null;
+  if (!facts.task && !queueOpen) return null;
+  if (stall.legacy && stall.since === undefined) return null;
+  const task = facts.task && session.task && facts.task.title !== session.task.title
+    ? { id: session.task.id, title: session.task.title } : facts.task;
+  const updated = task === facts.task && queueOpen === facts.queueOpen ? facts : { ...facts, task, queueOpen };
+  if (updated === facts && !stall.legacy) return stall;
+  const fingerprint = stall.legacy
+    ? legacyStallFingerprint({ ...stall, facts: updated }, session)
+    : stallFingerprint(updated, stall.since ?? activity);
+  return updated === facts && fingerprint === stall.fingerprint ? stall : { ...stall, facts: updated, fingerprint };
+}
+
 export function currentStalls(stalls: ObservedStall[] | undefined, sessions: readonly Session[]): Stall[] | undefined {
   if (!stalls?.length) return stalls;
   const byId = new Map(sessions.map(session => [session.id, session]));
-  const current = stalls.filter(stall => {
-    const session = byId.get(stall.sessionId);
-    if (stall.legacy && (!session || legacyStallFingerprint(stall, session) !== stall.fingerprint)) return false;
-    if (session && isIdleStall(stall) && stall.since !== undefined &&
-        (session.lastActivity ?? session.firstSeen) > stall.since) return false;
-    if (!session || stall.facts?.kind !== "unfinished-work") return true;
-    // The work named by the poll can disappear before the next poll reaches the browser.
-    const task = stall.facts.task;
-    return task ? task.id === session.task?.id && hasOpenStallTask(session) : openStallQueueCount(session) > 0;
-  });
-  return current.length === stalls.length ? stalls : current;
+  const current: ObservedStall[] = [];
+  for (const stall of stalls) {
+    const latest = currentStall(stall, byId.get(stall.sessionId));
+    if (latest) current.push(latest);
+  }
+  return current.length === stalls.length && current.every((stall, i) => stall === stalls[i]) ? stalls : current;
 }
 
 /**

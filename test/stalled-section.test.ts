@@ -5,7 +5,7 @@
 // dismissed stall back when the flag is switched.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isIdleStall, legacyStallFingerprint, type Stall } from "../src/shared/stall.ts";
+import { isIdleStall, legacyStallFingerprint, stallFingerprint, type Stall, type StallFacts } from "../src/shared/stall.ts";
 import { inboxStalls, NO_STALLED_DRAWN, NO_STALLED_SESSIONS, stalledSessions } from "../src/web/lib/stalled.ts";
 import { captureStalls, currentStalls } from "../src/web/lib/stalls.ts";
 import { orderSessions, stalledInOrder } from "../src/web/lib/fleet-order.ts";
@@ -162,6 +162,18 @@ test("a cached open-task stall expires when the session changes or closes its ta
 test("a queue-only stall expires when the last open item leaves the session", () => {
   const cached: Stall[] = [{ ...IDLE_WORK, facts: { kind: "unfinished-work", task: null, queueOpen: 1 } }];
   assert.deepEqual(currentStalls(cached, [idleSession("s-idle")]), []);
+});
+
+test("a task-backed stall keeps the task and its current dismissal key when the queue drains", () => {
+  const task = mkTaskSummary();
+  const session = { ...idleSession("s-idle"), task };
+  const facts: StallFacts = { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 2 };
+  const remaining = { ...facts, queueOpen: 0 };
+  const since = session.firstSeen;
+  const cached = [{ ...IDLE_WORK, facts, since, fingerprint: stallFingerprint(facts, since) }];
+  const current = currentStalls(cached, [session]);
+  assert.deepEqual(current?.[0]?.facts, remaining);
+  assert.equal(current?.[0]?.fingerprint, stallFingerprint(remaining, since));
 });
 
 test("a new activity episode retires an idle stall even if the session returns to the same task", () => {

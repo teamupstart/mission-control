@@ -207,10 +207,12 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   }, { timeout: 60_000 }).toBe("idle");
 
   // The poll still names a previous assignment until it catches up with the live session.
+  const queuePath = `/api/sessions/${encodeURIComponent(session.id)}/queue`;
+  const item = await api<{ id: string }>(daemon, queuePath, { intent: "Review the changelog" });
   let observedTask = { id: "previous-task", title: "Previous assignment" };
   await page.route("**/api/away/stalls", (route) => route.fulfill({ json: [{
     sessionId: session.id, kind: "unfinished-work", forMs: 21 * 60_000, reason: "idle 21m with work unfinished",
-    facts: { kind: "unfinished-work", task: observedTask, queueOpen: 0 }, fingerprint: observedTask.id,
+    facts: { kind: "unfinished-work", task: observedTask, queueOpen: 1 }, fingerprint: observedTask.id,
   } satisfies Stall] }));
   const completions: unknown[] = [];
   page.on("request", (request: Request) => {
@@ -231,6 +233,12 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   await expect(card).toHaveCount(0);
   observedTask = { id: task.id, title: task.title };
   await expect(card).toContainText("Tidy the changelog", { timeout: 15_000 });
+  const queue = card.getByRole("button", { name: "Open queue" });
+  await expect(queue).toBeVisible();
+  await api(daemon, `${queuePath}/${item.id}`, undefined, "DELETE");
+  await expect(queue).toHaveCount(0);
+  await expect(card).not.toContainText("1 open item");
+  await expect(card.getByRole("button", { name: "Mark done", exact: true })).toBeEnabled();
   expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
 
   const message = card.getByRole("button", { name: "Message…" });

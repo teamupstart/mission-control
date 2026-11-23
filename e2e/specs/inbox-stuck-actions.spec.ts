@@ -312,6 +312,9 @@ test("each Stuck control sends its request and lands its effect, a failure shows
 
   // 10. A facts-only change: the sentence stays the same, the fingerprint and the open work do
   //    not, and the row redraws what is open.
+  for (const intent of ["Review parser warnings", "Rerun parser checks"]) {
+    await api(daemon, `/api/sessions/${encodeURIComponent(id)}/queue`, { intent });
+  }
   served = [stall(id, reason, { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 2 }, "open-2")];
   await expect(row()).toContainText('Open: the task "Fix the parser" and 2 open queue items.', { timeout: 15_000 });
   await expect(row()).toContainText(reason);

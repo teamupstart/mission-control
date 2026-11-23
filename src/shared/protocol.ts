@@ -52,6 +52,7 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
+import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
 import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
@@ -4612,6 +4613,11 @@ export const UI_CONFIG_DEFAULTS = {
    * button and the state badge's split half with its paused band, out of the box.
    */
   pauseConsoleControls: ["toolbar", "badge"] as readonly string[],
+  /**
+   * Voice's half of the UI config (contract A): the floating pill for confirmations and the
+   * status line as the one in-window indicator. Read only while the `voice` flag is on.
+   */
+  voice: VOICE_UI_DEFAULTS,
 } as const;
 
 /**
@@ -4857,6 +4863,11 @@ export const UiConfigSchema = z.object({
    */
   pauseCardControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseCardControls]),
   pauseConsoleControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseConsoleControls]),
+  /**
+   * Where voice confirmations appear and which in-window voice indicators are drawn. Owned whole
+   * by Settings > Voice. See `src/shared/voice.ts`.
+   */
+  voice: VoiceUiConfigSchema,
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4901,6 +4912,8 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: an unknown confirmation placement is a 400.
+    voice: VoiceUiConfigPatchSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -4920,7 +4933,11 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
-  config: UiConfigSchema,
+  /**
+   * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
+   * voice surface, so the response is the one an install without voice gave.
+   */
+  config: UiConfigSchema.omit({ voice: true }).extend({ voice: VoiceUiConfigSchema.optional() }),
 });
 export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
 

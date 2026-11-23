@@ -1,6 +1,8 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import { voiceStateStore } from "./voice/state.ts";
 import { reportToRead, type ReportItem } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -679,6 +681,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
+// voice_state is not one: whether voice is listening is no stage figure.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1306,6 +1309,11 @@ export class Registry extends EventEmitter {
    * first clear is never mistaken for a repeat.
    */
   private lastShaping: string | null | undefined = undefined;
+  /**
+   * The last `voice_state` frame, canonical. Starts as the `off` state, so a daemon that starts
+   * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
+   */
+  private lastVoice: string = canonicalVoiceState(voiceStateOff());
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1447,6 +1455,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
+    voice?: VoiceState;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1496,6 +1505,8 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
+      // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
+      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1625,6 +1636,32 @@ export class Registry extends EventEmitter {
     if (this.lastShaping !== undefined && this.lastShaping === key) return;
     this.lastShaping = key;
     this.emitEvent({ type: "shaping_config", config });
+  }
+
+  /**
+   * Publish the voice state, suppressing a frame that restates the last one. The store
+   * recomputes on every flag change, config write, hello, report and lapse, so without this an
+   * unrelated flag toggle or a listener's steady hello would wake every follower.
+   * `wireVoiceStateEvents` is the caller.
+   */
+  emitVoiceState(state: VoiceState): void {
+    const key = canonicalVoiceState(state);
+    if (key === this.lastVoice) return;
+    this.lastVoice = key;
+    this.emitEvent({ type: "voice_state", state });
+  }
+
+  /**
+   * The voice state a connecting window is handed, published first when it differs from the last
+   * frame. A lapse is published by a timer, and a snapshot taken after the lapse but before that
+   * timer fires computes the lapsed state already; without this the next frame, a fresh hello's
+   * `listening`, would match the stale `lastVoice` and be dropped, leaving that window on
+   * `unavailable`. Publishing keeps every follower and `lastVoice` on the state just handed out.
+   */
+  private voiceStateForSnapshot(): VoiceState {
+    const state = voiceStateStore.state();
+    this.emitVoiceState(state);
+    return state;
   }
 
   /**

@@ -88,6 +88,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // The shipped topbar: every item drawn, every control expanded.
   assert.deepEqual(config.hiddenTopbarItems, []);
   assert.deepEqual(config.compactTopbarItems, []);
+  // Voice's half: the floating pill, and the status line as the one indicator.
+  assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] });
 });
 
 test("a written cache round-trips", () => {
@@ -144,6 +146,8 @@ test("a written cache round-trips", () => {
     // Off their defaults: one is emptied, the other picks a set the build does not ship.
     pauseCardControls: [],
     pauseConsoleControls: ["composer", "badge"],
+    // Off both defaults, so only a copied field round-trips it.
+    voice: { confirmation: "toast", indicators: ["topbar", "edge"] },
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -173,6 +177,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
   assert.equal(config.sessionRailFolded, true);
+  assert.deepEqual(config.voice, { confirmation: "toast", indicators: ["topbar", "edge"] });
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
   // An emptied list is the operator's answer, never the default coming back.
@@ -439,4 +444,25 @@ test("switching a ships-hidden item on survives the next cold paint", () => {
     ["cost"],
     "a seeded record was seeded again, re-hiding an item the operator switched on",
   );
+});
+
+test("a cached ui.voice this build cannot read falls back alone, keeping every other cached preference", () => {
+  const unreadable = [
+    // A newer build's longer list: over the 32-entry bound.
+    { confirmation: "toast", indicators: Array.from({ length: 40 }, (_, i) => `indicator-${i}`) },
+    // An id that is not a string, and one over 64 characters.
+    { confirmation: "toast", indicators: ["status-line", 7] },
+    { confirmation: "toast", indicators: ["x".repeat(65)] },
+  ];
+  for (const voice of unreadable) {
+    store.set("mission-control.ui", JSON.stringify({ layout: "console", richText: false, keybindings: { select: "shift+Tab" }, voice }));
+    const config = readCache();
+    assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] }, "only the voice field falls back");
+    assert.equal(config.layout, "console", "the rest of the cache is kept");
+    assert.equal(config.richText, false);
+    assert.deepEqual(config.keybindings, { select: "shift+Tab" });
+  }
+  // A readable value is kept, and an unknown placement alone reads as the pill.
+  store.set("mission-control.ui", JSON.stringify({ voice: { confirmation: "banner", indicators: ["edge"] } }));
+  assert.deepEqual(readCache().voice, { confirmation: "pill", indicators: ["edge"] });
 });

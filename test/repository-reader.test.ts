@@ -5,6 +5,7 @@ import {
   mkdtemp,
   writeFile,
   mkdir,
+  rename,
   rm,
   symlink,
 } from "node:fs/promises";
@@ -278,6 +279,29 @@ test("raw-byte evidence is exact and missing allowed objects fail closed", async
     (await f.make().query("read", { path: "src/a.txt" })).code,
     "unavailable",
   );
+});
+test("read refuses an allowed blob stored only in an external Git alternate", async (t) => {
+  const content = "external fixture content";
+  const f = await fixture(t, content);
+  const alternate = await mkdtemp(join(tmpdir(), "alternate-objects-"));
+  t.after(() => rm(alternate, { recursive: true, force: true }));
+  const objects = join(f.root, ".git", "objects");
+  const blob = f.git("rev-parse", "HEAD:src/a.txt");
+  const looseObject = join(blob.slice(0, 2), blob.slice(2));
+  await mkdir(join(alternate, blob.slice(0, 2)));
+  await rename(join(objects, looseObject), join(alternate, looseObject));
+  await writeFile(join(objects, "info", "alternates"), alternate + "\n");
+  assert.equal(f.git("cat-file", "blob", blob), content);
+
+  const result = await f.make().query("read", { path: "src/a.txt" });
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "unavailable");
+  assert.deepEqual(result.items, []);
+  assert.equal(f.audit.length, 1);
+  const [audit] = f.audit;
+  assert.equal(audit?.operationId, result.operationId);
+  assert.equal(audit.code, "unavailable");
+  assert.deepEqual(audit.handles, []);
 });
 test("audit failure, cancellation and attempt limits never return evidence", async (t) => {
   const f = await fixture(t);

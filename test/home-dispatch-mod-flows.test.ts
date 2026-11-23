@@ -6,6 +6,7 @@ import test from "node:test";
 import { LAUNCHER_ENABLED } from "../src/mod/constants.ts";
 import { runDispatchCommand, runLauncher } from "../src/mod/flows/command.ts";
 import { PANE_WIDER_NOTICE } from "../src/mod/flows/command.ts";
+import { createFlowGate } from "../src/mod/flows/gate.ts";
 import { FLOW_FAILED_TEXT, reportFlowFailure } from "../src/mod/flows/failure.ts";
 import { DESCRIBE_NOTICE, EXPIRED_NOTICE } from "../src/mod/flows/dispatch.ts";
 import { START_DISPATCH_DESCRIPTION, intentNudge, runStartDispatchTool } from "../src/mod/flows/tool.ts";
@@ -623,4 +624,16 @@ test("a pane command carries its session's guard to the host, and opens nothing 
   const checkin = world({ host: { answers: (q) => ({ kind: "pick", label: q.options.find((o) => o.label === "Check in on my tasks")?.label ?? q.options[0]!.label }) } });
   await runDispatchCommand(checkin.fake.host, { ...SESSION, live }, "");
   assert.equal(checkin.fake.paneOpens[0]!.guard, live);
+});
+
+test("the flow gate runs one flow at a time and frees itself when a flow ends or throws", async () => {
+  const gate = createFlowGate();
+  let release!: () => void;
+  const first = gate.run(() => new Promise<string>((resolve) => { release = () => resolve("one"); }));
+  assert.deepEqual(await gate.run(async () => "two"), { busy: true });
+  release();
+  assert.deepEqual(await first, { busy: false, value: "one" });
+  assert.deepEqual(await gate.run(async () => "three"), { busy: false, value: "three" });
+  await assert.rejects(gate.run(async () => { throw new Error("x"); }));
+  assert.deepEqual(await gate.run(async () => "four"), { busy: false, value: "four" });
 });

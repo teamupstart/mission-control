@@ -4,3 +4,4 @@ export interface ModCallsAllowlist {
 }
 export function isAllowedModCall(path: string, allowed: ModCallsAllowlist): boolean;
 export function findDisallowedModCalls(root: string): { file: string; path: string }[];
+export function stripComments(text: string): string;

@@ -394,3 +394,27 @@ test('a pane target write held across a session replacement leaves the replaceme
   expect(seen.state.selectedTaskId).toBe(null)
   expect(seen.state.paneView).toBe('list')
 })
+
+test('a second dispatch while one is open is refused, so only one draft is made', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const draft = JSON.stringify({ draftId: 'd1', repoRoot: '/repo', kind: 'ship', kindLabel: 'ship', afterWork: 'None', afterWorkApplies: true, words: 'x', context: null, needs: [], brief: 'x', text: 'Repo: /repo' })
+  seen.reply = (url) => url.endsWith('/dispatch/dispatch-options') ? JSON.stringify({ questions: [] })
+    : url.endsWith('/dispatch/drafts') ? draft
+    : url.endsWith('/confirm') ? JSON.stringify({ choice: 'cancel', taskId: null, started: false })
+    : undefined
+  let release
+  const held = new Promise((resolve) => { release = resolve })
+  // The confirm dialog (AskUserQuestion) stays open until released.
+  on('tool.call', async (_, e) => { if (e.tool === 'AskUserQuestion') await held; return { isError: true, result: 'dismissed', text: 'dismissed' } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const drafts = () => seen.urls.filter((u) => u.endsWith('/dispatch/drafts')).length
+  await $.command.run(COMMAND('ship add retries'))
+  await settle(() => drafts() >= 1)
+  const second = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'another task' })
+  expect(JSON.stringify(second)).toMatch(/already open/)
+  await $.command.run(COMMAND('ship a third'))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  expect(drafts()).toBe(1)
+  release()
+})

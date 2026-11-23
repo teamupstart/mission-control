@@ -10,7 +10,10 @@ import { createModCore, DAEMON_DOWN_NOTICE, type ModSessionFacts } from "../src/
 import { daemonBaseUrl, readDaemonToken, tokenFileCandidates } from "../src/mod/daemon-link.ts";
 import type { ModState } from "../src/mod/host.ts";
 import type { HomeDispatchInbox } from "../src/shared/home-dispatch.ts";
-import { findDisallowedModCalls, isAllowedModCall } from "../scripts/mod-calls.mjs";
+import { findDisallowedModCalls, isAllowedModCall, stripComments } from "../scripts/mod-calls.mjs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CANNED_INBOX,
   CANNED_REGISTRATION,
@@ -578,4 +581,25 @@ test("registration tells the daemon the launcher is off while its gate is closed
   await core.start();
   const registration = daemon.requests.find((r) => r.pattern === "/dispatch/sessions")!;
   assert.equal((registration.body as { launcherDisabled: boolean }).launcherDisabled, true);
+});
+
+test("the mod-calls scan ignores a path quoted in a comment and still catches a real call", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    writeFileSync(join(root, "src/mod/prose.ts"), [
+      '// Once it called "/api/removed" and may call "/dispatch/ok".',
+      '/** An example: `/api/planned` in a block comment, and "/api/also-planned". */',
+      'export const url = "http://127.0.0.1:1/dispatch/real"; // trailing "/api/nope"',
+    ].join("\n"));
+    assert.deepEqual(findDisallowedModCalls(root), []);
+    writeFileSync(join(root, "src/mod/call.ts"), 'export const bad = "/api/secret"; // fine\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/secret"]);
+    // A `//` inside a string is not a comment.
+    assert.equal(stripComments('const u = "http://x/api/y"; // gone').includes("gone"), false);
+    assert.equal(stripComments('const u = "http://x/api/y";').includes("/api/y"), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -442,8 +442,12 @@ archive.
   as unreadable. It is never rewritten. Delete it from the Scouts page to publish the report
   again. A press that finds such a bundle at its key with no key recorded refuses with that
   instruction and writes nothing. A library that cannot be read right now (a permission error,
-  or a volume briefly unmounted) is not an absence either: every key is kept, and a Publish
-  press answers with the error instead of publishing again.
+  an I/O error, running out of file descriptors) is not an absence either: every key is kept,
+  and a Publish press answers with the error instead of publishing again. A library root that is
+  missing, or empty because its volume is not mounted, does count as absence: Mission Control
+  cannot tell it from a deleted library, so the startup check clears those keys. Nothing is
+  lost: once the volume is back, a Publish press finds the bundle at the report's key, verifies
+  it and records the key again without writing anything.
 
 ## Cleanup asks first
 

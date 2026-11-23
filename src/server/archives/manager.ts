@@ -858,10 +858,11 @@ export class ArchiveManager {
    * is cleared only when its bundle is absent; a bundle that is present but no longer verifies
    * keeps its key and shows as unreadable on the Scouts page, where it can be deleted.
    *
-   * Answers false only for a real absence (`ENOENT`/`ENOTDIR`, from the library root or the
-   * bundle). Any other error - permission, descriptor exhaustion, a volume briefly unmounted -
-   * is thrown, so a library that cannot be read right now is never taken for one whose bundles
-   * are gone.
+   * Answers false only for an absence (`ENOENT`/`ENOTDIR`, from the library root or the bundle).
+   * Any other error - permission, descriptor exhaustion, I/O - is thrown, so a library that
+   * cannot be read right now is never taken for one whose bundles are gone. A root that is
+   * missing, or an empty mount point, is indistinguishable from a deleted library and counts as
+   * absent; a later press restores the key through `publishReportPage`'s replay.
    */
   async archivePresent(key: string): Promise<boolean> {
     const identity = parseArchiveKey(key);

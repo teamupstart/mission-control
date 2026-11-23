@@ -301,13 +301,15 @@ export class ReportManager {
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
     this.stopEvents = registry.subscribe((event) => this.observe(event));
+    // Muted authors are handed to the registry before any report, so the first snapshot after a
+    // restart never lists a muted author's reports.
+    this.registry.setReportMutes(this.listMutes());
     // Every report still waiting to be read is handed to the registry once, so the snapshot
     // carries it from the first connect after a restart. One the daemon stopped before stamping
     // is stamped from its session's state: sessions are re-adopted after startup, so that state
     // is read when the session is first seen, or when the grace period ends. The grace period
     // keeps its original deadline, 20 seconds after the post: a restart neither extends it nor
     // restarts it.
-    this.registry.setReportMutes(this.listMutes());
     //
     // Only a report whose deadline passed at most one more grace period ago is recovered: that
     // is a post the restart interrupted. Anything older stays unstamped and silent - every report

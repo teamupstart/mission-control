@@ -118,6 +118,8 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
   if (session.live && !session.live()) return ended();
   if (filled) {
     await host.paneState.set("draftId", summary.draftId);
+    // The write may have outlasted the session (the host drops a stale session's write): say nothing.
+    if (session.live && !session.live()) return ended();
     host.notice(DESCRIBE_NOTICE);
     return { outcome: "waiting", line: DESCRIBE_NOTICE };
   }
@@ -130,6 +132,8 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
 async function cancel(host: FlowHost, session: FlowSession, draftId: string): Promise<FlowResult> {
   // A cancel the daemon never hears leaves a draft that expires on its own (7.6).
   await confirmDraft(host, session, draftId, "cancel");
+  // The draft is cancelled either way; only a session that is still there is told.
+  if (session.live && !session.live()) return ended();
   host.notice(CANCELLED_NOTICE);
   return { outcome: "cancelled", line: CANCELLED_LINE };
 }

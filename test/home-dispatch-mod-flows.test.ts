@@ -832,3 +832,32 @@ test("a session that ended under a description request or a check-in open ends q
   await runDispatchCommand(dismissed.fake.host, SESSION, "");
   assert.equal(dismissed.fake.notices.at(-1), "Cancelled. Nothing was created.");
 });
+
+test("a session that ended during the waiting-draft write or a dismissed dialog says nothing, and the draft is still cancelled", async () => {
+  // The draftId write outlasts the session.
+  let ended = false;
+  const writing = world();
+  const realSet = writing.fake.host.paneState.set;
+  writing.fake.host.paneState.set = (async (key: "draftId", value: string | null) => {
+    await realSet(key, value);
+    ended = true;
+  }) as typeof realSet;
+  const result = await runDispatchCommand(writing.fake.host, { ...SESSION, live: () => !ended }, "");
+  assert.equal(result.outcome, "cancelled");
+  assert.ok(writing.fake.notices.every((n) => n !== DESCRIBE_NOTICE));
+
+  // A confirm dismissed after the session ended: the draft is cancelled at the daemon, quietly.
+  let endedConfirm = false;
+  const confirming = world({
+    host: { answers: (q) => { if (q.header === "Confirm") { endedConfirm = true; return { kind: "dismissed" }; } return { kind: "pick", label: q.options[0]!.label }; } },
+  });
+  const dismissed = await runDispatchCommand(confirming.fake.host, { ...SESSION, live: () => !endedConfirm }, "ship add retries");
+  assert.equal(dismissed.outcome, "cancelled");
+  assert.deepEqual(confirming.filed.map((f) => f.choice), ["cancel"]);
+  assert.ok(confirming.fake.notices.every((n) => n !== "Cancelled. Nothing was created."));
+
+  // The same dismissal with the person still there still says so.
+  const present = world({ host: { answers: (q) => q.header === "Confirm" ? { kind: "dismissed" } : { kind: "pick", label: q.options[0]!.label } } });
+  await runDispatchCommand(present.fake.host, SESSION, "ship add retries");
+  assert.equal(present.fake.notices.at(-1), "Cancelled. Nothing was created.");
+});

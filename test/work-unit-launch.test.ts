@@ -33,6 +33,7 @@ const { codexAppServerEnv } = await import("../src/server/harness/codex/sdk-deps
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
@@ -297,6 +298,205 @@ test("an embedded launch's record is installed before its first event, and a res
   assert.equal(storedRecord("wu-conversation"), null);
 });
 
+test("a managed Pipeline host's agent carries its task's work unit with the preview on, and none with it off", async (t) => {
+  // The real dispatch, supervisor and Claude adapter; only the SDK's query is scripted, so the
+  // environment observed is the one the host's agent process would be started with - over a
+  // base environment that already holds another unit's id.
+  const envs: Array<Record<string, string | undefined>> = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = claudeSdkSpec({
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin", WORK_UNIT_ID: WU_B }),
+    query: async ({ options }) => {
+      envs.push(options.env ?? {});
+      // Ends when the host is stopped, so teardown does not wait on a turn that never comes.
+      let end: (() => void) | null = null;
+      const ended = new Promise<IteratorResult<never>>((resolve) => { end = () => resolve({ done: true, value: undefined as never }); });
+      return {
+        [Symbol.asyncIterator]: () => ({ next: () => ended, return: async () => { end?.(); return ended; } }),
+        interrupt: async () => { end?.(); },
+        close: () => { end?.(); },
+      } as unknown as ClaudeSdkQuery;
+    },
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  t.after(async () => {
+    HARNESSES.claude.sdk = real;
+    preview(false);
+    for (const session of registry.snapshot().sessions) await supervisor.stop(session.id).catch(() => {});
+  });
+  const dispatcher = new Dispatcher(registry, async () => assert.fail("a managed Pipeline host owns no worktree"), {
+    supervisor,
+    missionMcpDescriptor: async () => MISSION_MCP,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true, launchRuntime: "agent-sdk", cwd: "/repo/pipeline",
+      pipelineRun: { provider: "ai-conductor" as const, repoRoot: "/repo/pipeline", slug: "work-unit-host" },
+    }),
+    spawn: async () => assert.fail("the managed host opens no terminal"),
+  });
+  for (const [enabled, id] of [[true, "pipeline-on"], [false, "pipeline-off"]] as const) {
+    preview(enabled);
+    registry.upsertTask(mkTask({
+      id, agent: "claude", kind: "pipeline", repoRoot: "/repo/pipeline", title: "Host a pipeline",
+      intent: "Host a pipeline", workflowId: null, workUnitId: WU_A,
+    }));
+    await dispatcher.dispatch(id);
+    const task = registry.getTask(id)!;
+    assert.equal(task.status, "running", task.error ?? "");
+    const env = envs.at(-1)!;
+    const host = registry.getSession(task.sessionId!)!;
+    if (enabled) {
+      assert.equal(env.WORK_UNIT_ID, WU_A, "the host's agent carries its task's work unit");
+      assert.equal(host.launchWorkUnitId, WU_A, "and its record says so");
+    } else {
+      assert.equal("WORK_UNIT_ID" in env, false, "off: none, and not the inherited one either");
+      assert.equal(host.launchWorkUnitId ?? null, null);
+    }
+    registry.upsertTask({ ...task, status: "done" });
+  }
+  assert.equal(envs.length, 2);
+});
+
+test("a restore carries the work unit of the task that owns the session now, not the one that launched it", async (t) => {
+  const calls: SdkLaunchOptions[] = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = { answersRequests: true, launch: async (opts) => { calls.push(opts); return idleHandle(); } };
+  t.after(() => { HARNESSES.claude.sdk = real; preview(false); });
+  preview(true);
+  // Launched for one task (provenance in the row), since assigned another unit's task.
+  upsertTask(mkTask({ id: "launched-for", workUnitId: WU_A, status: "done", sessionId: null }));
+  upsertTask(mkTask({ id: "owns-it-now", workUnitId: WU_B, status: "running", sessionId: "sdk:wu-owner" }));
+  upsertSdkSession({
+    id: "sdk:wu-owner", agent: "claude", agentSessionId: "owner-conversation", cwd: "/wt/wu-owner",
+    taskId: "launched-for", model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  await supervisor.restore();
+  await supervisor.stop("sdk:wu-owner").catch(() => {});
+  const restored = calls.find((call) => call.resume === "owner-conversation");
+  assert.ok(restored, "the suspended row was relaunched");
+  assert.equal(restored.workUnitId, WU_B, "the task it will run, not the task that launched it");
+  assert.equal(storedRecord("owner-conversation"), WU_B);
+});
+
+test("a hibernation wake carries the woken task's work unit, and a restore finds an owner the registry dropped", async (t) => {
+  const calls: SdkLaunchOptions[] = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = { answersRequests: true, launch: async (opts) => { calls.push(opts); return idleHandle(); } };
+  t.after(() => { HARNESSES.claude.sdk = real; preview(false); });
+  preview(true);
+
+  // Hibernating cleared the woken task's session pointer, so the wake names it.
+  const checkout = mkdtempSync(join(home, "hibernated-"));
+  upsertTask(mkTask({ id: "hib-launched-for", workUnitId: WU_A, status: "done", sessionId: null }));
+  upsertTask(mkTask({ id: "hib-woken", workUnitId: WU_B, status: "hibernated", sessionId: null }));
+  upsertSdkSession({
+    id: "sdk:wu-hibernated", agent: "claude", agentSessionId: "hibernated-conversation", cwd: checkout,
+    taskId: "hib-launched-for", model: null, effort: null, permissionMode: null, status: "hibernated", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  await supervisor.wake("sdk:wu-hibernated", "hibernated-conversation", "hib-woken");
+  await supervisor.stop("sdk:wu-hibernated").catch(() => {});
+  assert.equal(calls.at(-1)?.workUnitId, WU_B, "the task it is woken for, not the one that launched it");
+
+  // A launch task the registry no longer holds is read from SQLite.
+  const later = new Registry();
+  upsertTask(mkTask({ id: "only-durable", workUnitId: WU_A, status: "done", sessionId: null }));
+  assert.equal(later.getTask("only-durable"), undefined);
+  upsertSdkSession({
+    id: "sdk:wu-durable", agent: "claude", agentSessionId: "durable-conversation", cwd: "/wt/wu-durable",
+    taskId: "only-durable", model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const laterSupervisor = new SdkSupervisor(later, MISSION_TEST_MCP_DEPS);
+  await laterSupervisor.restore();
+  await laterSupervisor.stop("sdk:wu-durable").catch(() => {});
+  assert.equal(calls.find((call) => call.resume === "durable-conversation")?.workUnitId, WU_A);
+});
+
+test("a restore whose adoption fails stops the driver it started", async (t) => {
+  let stopped = 0;
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    answersRequests: true,
+    launch: async () => {
+      const handle = idleHandle();
+      const stop = handle.stop.bind(handle);
+      handle.stop = async () => { stopped += 1; await stop(); };
+      return handle;
+    },
+  };
+  t.after(() => { HARNESSES.claude.sdk = real; });
+  upsertSdkSession({
+    id: "sdk:wu-adopt-fails", agent: "claude", agentSessionId: "adopt-fails-conversation", cwd: "/wt/wu-adopt-fails",
+    taskId: null, model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const register = registry.registerSdkSession.bind(registry);
+  registry.registerSdkSession = (input) => {
+    if (input.id === "sdk:wu-adopt-fails") throw new Error("scripted: registration failed");
+    return register(input);
+  };
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
+  assert.equal(stopped, 1, "nothing else owns that driver, so a retried wake would start a second one");
+});
+
+test("a restore whose adoption fails and whose driver will not stop logs that stop", async (t) => {
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    answersRequests: true,
+    launch: async () => {
+      const handle = idleHandle();
+      handle.stop = async () => { throw new Error("scripted: stop failed"); };
+      return handle;
+    },
+  };
+  t.after(() => { HARNESSES.claude.sdk = real; });
+  const logged = t.mock.method(console, "error", () => {});
+  upsertSdkSession({
+    id: "sdk:wu-stop-fails", agent: "claude", agentSessionId: "stop-fails-conversation", cwd: "/wt/wu-stop-fails",
+    taskId: null, model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const register = registry.registerSdkSession.bind(registry);
+  registry.registerSdkSession = (input) => {
+    if (input.id === "sdk:wu-stop-fails") throw new Error("scripted: registration failed");
+    return register(input);
+  };
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
+  const lines = logged.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.ok(
+    lines.some((line) => line.includes("could not stop the unadopted driver for sdk:wu-stop-fails") && line.includes("scripted: stop failed")),
+    lines.join("\n"),
+  );
+});
+
+test("an SDK registration that throws before publishing puts back the record it replaced", () => {
+  const registry = new Registry();
+  const register = (id: string, conversation: string, workUnitId: string | null) => registry.registerSdkSession({
+    id, agent: "claude", name: id, cwd: "/wt/register-fails", agentSessionId: conversation, launchWorkUnitId: workUnitId,
+  });
+  // The conversation's previous process left its record.
+  register("sdk:wu-before", "register-fails-conversation", WU_A);
+  assert.equal(storedRecord("register-fails-conversation"), WU_A);
+
+  const internals = registry as unknown as { workspaceFor: (...args: unknown[]) => unknown };
+  const workspaceFor = internals.workspaceFor;
+  internals.workspaceFor = () => { throw new Error("scripted: publishing failed"); };
+  try {
+    assert.throws(() => register("sdk:wu-replacing", "register-fails-conversation", WU_B), /publishing failed/);
+    assert.throws(() => register("sdk:wu-fresh", "register-fails-fresh", WU_B), /publishing failed/);
+  } finally {
+    internals.workspaceFor = workspaceFor;
+  }
+  assert.equal(storedRecord("register-fails-conversation"), WU_A, "the stopped driver's value is not left behind");
+  assert.equal(storedRecord("register-fails-fresh"), null);
+  assert.equal(registry.getSession("sdk:wu-replacing"), undefined);
+});
+
 // ---- the launch record: terminal launches ----
 
 let paneN = 0;
@@ -395,10 +595,10 @@ test("a failed dispatch whose agent is still running keeps its record, so the re
   // A launch that definitely started nothing withdraws its decision.
   const refused = launchHome();
   handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(refused, WU_A), "not-started");
-  assert.equal(handOver.takeTerminalLaunchWorkUnit(refused, () => () => {}), null);
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(refused, () => {}), null);
 });
 
-test("a failed launch whose agent is gone leaves the records as they were; a confirmed resume replaces them", () => {
+test("a seen launch's record is final: a failure keeps it, and the conversation's next launch replaces it", () => {
   const registry = new Registry();
   // The conversation's previous agent was started with WU_A.
   const first = launchHome();
@@ -406,24 +606,22 @@ test("a failed launch whose agent is gone leaves the records as they were; a con
   idleAgent(registry, discovered("/wt/reopen", { missionLaunched: true, missionLaunchHome: first }), "reopened-conversation");
   assert.equal(storedRecord("reopened-conversation"), WU_A);
 
-  // A resume with the preview off, seen, whose agent then died before the launch failed: the
-  // reopened key gets its record back, and the session is re-published without the new one.
+  // A resume carrying WU_B, seen beneath its own guard: its record replaces the stopped
+  // process's under the reopened key, and stays after the launch fails and its agent is gone.
   const failed = launchHome();
-  const failing = handOver.expectTerminalLaunchWorkUnit(failed, null, "reopened-conversation");
+  const failing = handOver.expectTerminalLaunchWorkUnit(failed, WU_B, "reopened-conversation");
   const pane = discovered("/wt/reopen", { missionLaunched: true, missionLaunchHome: failed });
   registry.applyDiscovery([pane]);
-  assert.equal(storedRecord("reopened-conversation"), null, "removed before the rebind could find it");
+  assert.equal(storedRecord("reopened-conversation"), WU_B, "installed before the rebind could find the old one");
   registry.applyDiscovery([]);
-  const left = registry.getSession(pane.syntheticId);
-  assert.ok(!left || left.state === "exited", "the failed launch's agent is gone");
   handOver.settleTerminalLaunchWorkUnit(failing, "failed");
-  assert.equal(storedRecord("reopened-conversation"), WU_A, "restored: that launch left no agent behind");
+  assert.equal(storedRecord("reopened-conversation"), WU_B, "it describes the agent that started, now ended");
 
-  // A resume whose terminal opened confirms before its agent appears; when it does, the record
-  // is final at once.
-  const confirmed = launchHome();
-  handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(confirmed, null, "reopened-conversation"), "succeeded");
-  registry.applyDiscovery([discovered("/wt/reopen", { missionLaunched: true, missionLaunchHome: confirmed })]);
+  // The next launch of the conversation replaces it. One whose terminal opened confirms before
+  // its agent appears, and its record is installed when it does.
+  const next = launchHome();
+  handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(next, null, "reopened-conversation"), "succeeded");
+  registry.applyDiscovery([discovered("/wt/reopen", { missionLaunched: true, missionLaunchHome: next })]);
   assert.equal(storedRecord("reopened-conversation"), null);
 });
 
@@ -447,16 +645,94 @@ test("an unclaimed decision waits as long as its launch home exists, with no tim
   Date.now = realNow;
 
   // Taken once; a pane beneath no launch takes nothing.
-  const install = () => () => {};
+  const install = (): void => {};
   assert.equal(handOver.takeTerminalLaunchWorkUnit(slow, install), null);
   assert.equal(handOver.takeTerminalLaunchWorkUnit(null, install), null);
   // A launch whose home is gone is over - its wrapper, and any agent beneath it, has exited -
-  // so its decision is forgotten at the next sweep.
+  // so its decision is forgotten at the next sweep, with no further launch needed.
   const ended = launchHome();
   handOver.expectTerminalLaunchWorkUnit(ended, WU_A);
   rmSync(ended, { recursive: true, force: true });
-  handOver.expectTerminalLaunchWorkUnit(launchHome(), null);
   assert.equal(handOver.takeTerminalLaunchWorkUnit(ended, install), null);
+
+  // A verdict sweeps too, and so does a sighting of a pane beneath no launch: once their homes
+  // are gone, nothing waits, while a launch whose home still exists keeps its decision.
+  handOver.resetTerminalLaunchWorkUnits();
+  const live = launchHome();
+  const finished = launchHome();
+  const failed = handOver.expectTerminalLaunchWorkUnit(finished, WU_A);
+  handOver.expectTerminalLaunchWorkUnit(live, WU_B);
+  rmSync(finished, { recursive: true, force: true });
+  handOver.settleTerminalLaunchWorkUnit(failed, "failed");
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), 1);
+  const abandoned = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(abandoned, WU_A);
+  rmSync(abandoned, { recursive: true, force: true });
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(null, install), null);
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), 1);
+  // An install that throws leaves the decision waiting for the next sighting.
+  const retried = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(retried, WU_A);
+  assert.throws(() => handOver.takeTerminalLaunchWorkUnit(retried, () => { throw new Error("scripted: write failed"); }));
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(retried, install)?.workUnitId, WU_A);
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(live, install)?.workUnitId, WU_B);
+});
+
+test("hand-overs left behind past the sanity threshold are logged once, and none is dropped", (t) => {
+  handOver.resetTerminalLaunchWorkUnits();
+  const warned = t.mock.method(console, "warn", () => {});
+  const homes = Array.from({ length: handOver.TERMINAL_LAUNCH_WORK_UNITS_WARN_AT + 2 }, () => launchHome());
+  for (const leftBehind of homes) handOver.expectTerminalLaunchWorkUnit(leftBehind, WU_A);
+  const lines = warned.mock.calls.map((call) => call.arguments.map(String).join(" ")).filter((line) => line.includes("hand-overs are waiting"));
+  assert.equal(lines.length, 1);
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), homes.length);
+  handOver.resetTerminalLaunchWorkUnits();
+});
+
+test("a /clear no daemon saw still carries the launch record to the conversation the process is in now", () => {
+  const home = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(home, WU_A);
+  const pane = discovered("/repo", { missionLaunched: true, missionLaunchHome: home });
+  const before = new Registry();
+  idleAgent(before, pane, "before-restart-conversation");
+  assert.equal(storedRecord("before-restart-conversation"), WU_A);
+
+  // The daemon restarts; while it was down the agent ran /clear, so its first sight names the
+  // new conversation and only the stored binding knows the old one.
+  const after = new Registry();
+  after.applyDiscovery([{ ...pane, agentSessionId: "after-clear-conversation" }]);
+  const session = after.getSession(pane.syntheticId)!;
+  assert.equal(session.launchWorkUnitId, WU_A);
+  assert.equal(storedRecord("after-clear-conversation"), WU_A);
+  assert.equal(storedRecord("before-restart-conversation"), null);
+
+  // Not when another live session holds the old conversation: it was reopened there, and the
+  // record under it is that agent's.
+  const heldHome = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(heldHome, WU_B);
+  const original = discovered("/repo", { missionLaunched: true, missionLaunchHome: heldHome });
+  idleAgent(new Registry(), original, "held-conversation");
+  assert.equal(storedRecord("held-conversation"), WU_B);
+  const restarted = new Registry();
+  const reopened = discovered("/repo", { agentSessionId: "held-conversation" });
+  restarted.applyDiscovery([reopened]);
+  restarted.applyDiscovery([reopened, { ...original, agentSessionId: "original-after-clear" }]);
+  assert.equal(storedRecord("held-conversation"), WU_B);
+  assert.equal(storedRecord("original-after-clear"), null);
+
+  // Nor when the session holding it comes later in the same sweep: after a restart both are
+  // first sights, and the moving process may be merged first.
+  const sweepHome = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(sweepHome, WU_B);
+  const mover = discovered("/repo", { missionLaunched: true, missionLaunchHome: sweepHome });
+  idleAgent(new Registry(), mover, "held-in-sweep");
+  const holder = discovered("/repo", { agentSessionId: "held-in-sweep" });
+  const oneSweep = new Registry();
+  const published = firstPublished(oneSweep);
+  oneSweep.applyDiscovery([{ ...mover, agentSessionId: "mover-after-clear" }, holder]);
+  assert.equal(storedRecord("held-in-sweep"), WU_B);
+  assert.equal(storedRecord("mover-after-clear"), null);
+  assert.equal(published.get(holder.syntheticId)?.launchWorkUnitId, WU_B, "the holder publishes with its record");
 });
 
 test("discovery names the exact launch an agent runs beneath", () => {
@@ -491,8 +767,7 @@ test("a managed resume decides once in resumeContext and hands its decision over
       beginLaunch: () => {}, dispose: () => revokeResumeLease(lease),
     };
   };
-  const undone: string[] = [];
-  const install = (decision: { launchHome: string }) => () => { undone.push(decision.launchHome); };
+  const install = (): void => {};
   const refused = prepared("/wt/resume-refused");
   await launchPreparedResume({ name: "r", prepared: refused }, async () => ({ outcome: "refused", value: null }));
   assert.equal(handOver.takeTerminalLaunchWorkUnit(refused.stateHome, install), null, "a refused launch withdraws it");
@@ -502,9 +777,6 @@ test("a managed resume decides once in resumeContext and hands its decision over
   assert.equal(handOver.takeTerminalLaunchWorkUnit("/wt/resume-ok", install), null);
   const taken = handOver.takeTerminalLaunchWorkUnit(opened.stateHome, install);
   assert.deepEqual([taken?.workUnitId, taken?.conversationKey], [WU_A, "resume-conversation"]);
-  // Confirmed when the terminal opened, so there is nothing left to undo.
-  handOver.settleTerminalLaunchWorkUnit(taken, "failed");
-  assert.deepEqual(undone, []);
 });
 
 // ---- the reuse guard (decision D7) ----

@@ -8337,6 +8337,102 @@ a.btn {
   color: var(--fg);
   font-weight: 600;
 }
+/* A message-mode question's status line (`async-input`): whether its agent is still working past
+   it, in the working blue, or has stopped on it, in the attention gold. Wraps rather than clips,
+   so a long meanwhile line on a narrow inbox card stays readable in full. */
+.review-wait {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: -4px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-wait-state {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.review-wait-working .review-wait-state {
+  color: var(--working);
+}
+.review-wait-stopped .review-wait-state {
+  color: var(--attention);
+}
+.review-wait-meanwhile {
+  min-width: 0;
+  color: var(--fg);
+}
+.review-wait-tag {
+  color: var(--muted);
+}
+.review-wait-asked {
+  font: 500 11px/1.5 var(--mono);
+  white-space: nowrap;
+}
+/* A filed question in the conversation (`async-input`): the answer card's shape, in the working
+   blue while it is open, quieter once it has ended. Scoped like `.review-snoozed`, because
+   `.review-answer-who` paints the byline gold further down this file. */
+.review-asked {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 94%, var(--working) 6%);
+}
+.review-asked:not(.is-open) {
+  border-left-color: var(--border);
+  background: var(--panel-2);
+}
+.review-asked .review-asked-who {
+  color: var(--working);
+}
+.review-asked:not(.is-open) .review-asked-who {
+  color: var(--muted);
+}
+.review-asked-question {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-asked-meanwhile {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.review-asked-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.review-asked-outcome {
+  font-weight: 600;
+}
+.review-asked.is-open .review-asked-outcome {
+  color: var(--working);
+}
+.review-asked-status::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--muted);
+}
+.review-asked-detail {
+  overflow-wrap: anywhere;
+}
 /* A snoozed question in the conversation: the answer card's shape, in the blue of "not now". */
 .review-snoozed {
   display: flex;
@@ -12643,6 +12739,9 @@ button.dispatch-guided-rung .dispatch-guided-num {
   border-radius: 0 0 8px 8px;
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
+}
+.dispatch-more-body[hidden] {
+  display: none;
 }
 
 /* The task-level scheduling choice belongs with the backlog metadata, but it is not another
@@ -31664,6 +31763,19 @@ span.line-run-prov {
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
+.workflow-action-wait {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+.workflow-action-wait strong { color: var(--fg); }
+.rail-row > .workflow-action-wait { grid-column: 1 / -1; }
+
 .fleet-section-why {
   font-size: 10px;
   line-height: 1.45;
@@ -34800,7 +34912,8 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--attention) 13%, transparent);
   color: var(--attention);
 }
-.tile-flag.tf-pending {
+.tile-flag.tf-pending,
+.tile-flag.tf-question {
   border-color: color-mix(in oklab, var(--working) 48%, var(--border));
   background: color-mix(in oklab, var(--working) 12%, transparent);
   color: var(--working);
@@ -37120,6 +37233,41 @@ body.foreman-sidecar-open .modal-backdrop {
   overflow-wrap: anywhere;
   font: 13px/1.5 var(--sans);
   color: var(--fg);
+}
+/* How an answer filed as a message (async-input) reached its agent: "On its way to the
+   agent" while it waits in the outbox, then "Delivered to the agent" at the turn it went in
+   with. Quiet on purpose - it is the card's footnote, not a second byline. */
+.review-delivery {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--dim);
+}
+.review-delivery .turn-time {
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+}
+/* Exactly what the agent read, one click away, so the card hides nothing for good. */
+.review-received > summary {
+  cursor: pointer;
+  width: fit-content;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--muted);
+}
+.review-received-text {
+  margin-top: 6px;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
 }
 
 /* --- the rail + drawer --- */
@@ -41985,6 +42133,143 @@ body.foreman-sidecar-open .modal-backdrop {
 .feature-flag-row .settings-grant { flex: none; }
 .feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
 
+/* Task shaping: what a session's turn one received. The chip sits beside the standing
+   instructions mark and is shed with the header's other conditional chips at rung 7; the
+   amber state is the one tone that asks for attention, because a degraded step means a
+   shaper failed and the worker started with less context than it was configured to get. */
+.task-context-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid color-mix(in oklab, var(--muted) 26%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.task-context-chip:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--muted) 48%, transparent);
+}
+.task-context-chip:focus-visible {
+  outline: 1px solid var(--select);
+  outline-offset: 2px;
+}
+.task-context-chip.is-degraded {
+  color: color-mix(in oklab, var(--attention) 84%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--attention) 34%, transparent);
+}
+.task-context-chip.is-degraded:hover {
+  background: color-mix(in oklab, var(--attention) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--attention) 58%, transparent);
+}
+.task-context-modal {
+  max-width: 760px;
+}
+.task-context-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(64vh, 640px);
+  overflow: auto;
+  /* Its own scrollport, so it bleeds to the border and keeps the shell's inset itself. */
+  padding: 4px var(--modal-inset, 18px) 12px;
+}
+.task-context-body p {
+  margin: 0;
+}
+.task-context-state {
+  font-weight: 600;
+}
+.task-context-state.is-degraded,
+.task-context-shaper:not(.is-ok) .task-context-outcome {
+  color: var(--attention);
+}
+.task-context-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-context-shapers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.task-context-shaper,
+.task-context-delivered {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.task-context-shaper-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-context-outcome {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.task-context-shaper-facts,
+.task-context-reason {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.task-context-reason {
+  color: var(--fg);
+}
+.task-context-definition {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.task-context-definition code {
+  font: 11.5px/1.5 var(--mono);
+}
+.task-context-delivered-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.task-context-delivered-text {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-context-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.tile-flag.tf-shaping {
+  border-color: color-mix(in oklab, var(--attention) 48%, var(--border));
+  background: color-mix(in oklab, var(--attention) 13%, transparent);
+  color: var(--attention);
+  cursor: help;
+}
+.rail-shaping {
+  font-size: 9.5px;
+  color: var(--attention);
+  cursor: help;
+}
+
 /* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
    add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
 .task-shaping { display: flex; flex-direction: column; gap: 16px; }
@@ -41997,6 +42282,16 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
 .shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+/* Inset like the rows below it, so the text never meets the list border. */
+.shaping-list-outcome { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px 2px; overflow-wrap: anywhere; }
+.shaping-list-outcome [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Baseline: the Dismiss label lines up with the first line of the message beside it. */
+.shaping-orphan-outcome { display: flex; align-items: baseline; gap: 12px; }
+.shaping-revisions-missing { font-size: 12px; color: var(--attention); }
+.shaping-orphan-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* The shaper's id, as its row would show it, at its own width rather than the column's. */
+.shaping-orphan-copy > .shaping-row-id { align-self: flex-start; }
+.shaping-outcome-dismiss { flex: none; }
 .shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
 .shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
 .shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
@@ -42013,7 +42308,20 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 .shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
 .shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+/* A folder shaper's path: the one place it is installed, so it reads whole and wraps anywhere. */
+.shaping-row-path { margin: 0; font-size: 11.5px; color: var(--dim); overflow-wrap: anywhere; }
+.shaping-row-path code { font: 11.5px/1.5 var(--mono); }
+/* A folder shaper that is not run says so in the warning colour, beside its origin. */
+.shaping-chip.is-invalid, .shaping-chip.is-refused, .shaping-chip.is-shadowed { color: var(--attention); border-color: color-mix(in srgb, var(--attention) 45%, transparent); }
+.shaping-folder-note { margin: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
+.shaping-folder-note code { font: 11.5px/1.5 var(--mono); }
 .shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
+   gap, yet stays in the accessibility tree, which display: none would not. */
+.shaping-earlier-live:empty { position: absolute; }
+/* Older outcomes, apart from the current one: the same warning colour, quieter, one per line. */
+.shaping-earlier-outcomes { margin: 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.shaping-earlier-outcomes li { font-size: 11.5px; color: var(--attention); opacity: 0.85; overflow-wrap: anywhere; }
 .shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
 .shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
 .shaping-env li.is-set span { color: var(--idle); }
@@ -42053,3 +42361,17 @@ body.foreman-sidecar-open .modal-backdrop {
 .pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
 .pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
 .pr-check-results li { margin-block: 8px; }
+
+/* Exact pin changes sit inside the backlog field, using the editor's existing controls. */
+.pinned-plan-change {
+  min-inline-size: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pinned-plan-change legend { padding: 0 6px; font-weight: 600; color: var(--muted); }
+.pinned-plan-change .field { margin: 10px 0; }
+.pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.pinned-plan-change p { margin: 10px 0; }

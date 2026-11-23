@@ -10,6 +10,13 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Work unit id](work-units.md#the-launch-environment) (`work-unit-id`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
+**Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
+[atomic pin change](dispatch-and-backlog.md#change-a-pinned-plan-revision-preview). Turning it off
+refuses `planInputChange` and `previewOnly` requests; it does not change saved pins or dependencies.
+This release also adds raw `planInputs` and `dependencies` edits to MCP `update_task`, independently
+of this flag. Those edits remain subject to authentication and existing task, repository, and
+dependency validation. The dashboard task-update endpoint already supported these raw atomic edits.
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
@@ -161,7 +168,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
-| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the session detail's "work unit" row. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
+| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, and its launch record, which the session detail's "work unit" row shows. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and

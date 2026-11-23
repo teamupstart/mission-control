@@ -12,13 +12,15 @@ import {
   canonicalJson,
   compareShapingOrder,
   moveInShapingOrder,
-  shapingEntryRevision,
   ShaperManifestSchema,
   ShaperSchema,
   shaperIsLocal,
   shaperSwitchedOn,
   shapingReferences,
+  shapingViewHasRevisions,
+  shapingViewRevision,
   TaskShapingSchema,
+  type DiscoveredShaper,
   type Shaper,
   type ShapingConfigView,
   type ShapingIntent,
@@ -28,15 +30,33 @@ import {
   type UnsupportedShaperView,
 } from "@shared/shaping.ts";
 
+/**
+ * What became of one write: the daemon stored it, refused it (or the panel refused to send it),
+ * its answer never arrived so the daemon may or may not have stored it, or it was not sent because
+ * another write was in flight or the panel had no connection. A control keeps what the operator
+ * entered unless the write was saved or refused, so an unconfirmed one can be compared and retried.
+ */
+export type ShapingWriteOutcome = "saved" | "refused" | "unconfirmed" | "not_sent";
+
 /** An entry this build cannot run, as the view carries it: id, label and reason only. */
 export function isUnsupportedShaper(entry: Shaper | UnsupportedShaperView): entry is UnsupportedShaperView {
   return "unsupported" in entry;
 }
 
-/** One registered shaper's row in the list. */
+/** One shaper's row in the list, registered or found in the shapers folder. */
 export interface ShapingListRow {
   id: string;
   label: string;
+  /** Registered in Settings or the API, or found on disk in the shapers folder. */
+  origin: "registered" | "discovered";
+  /** The folder a discovered shaper was read from. Null for a registered one. */
+  path: string | null;
+  /** What the folder scan said about a discovered shaper. Null for a registered one. */
+  folderState: DiscoveredShaper["state"] | null;
+  /** The SHA-256 of a discovered shaper's manifest, sent with a switch so it acts on what was shown. */
+  manifest: string | null;
+  /** A discovered shaper whose manifest asks to start switched off, with no stored choice yet. */
+  startsOff: boolean;
   /** The definition, or null for an entry that cannot run. */
   shaper: Shaper | null;
   /**
@@ -46,43 +66,109 @@ export interface ShapingListRow {
   on: boolean;
   /** Why it cannot run, or null when it can. */
   problem: string | null;
-  /** The entry's `shapingEntryRevision`, sent with any intent that acts on what this row shows. */
-  revision: string;
+  /**
+   * The daemon's revision of the stored definition, sent as `expect` with any intent that acts on
+   * what this row shows. Null only while an optimistic import awaits the frame that brings it.
+   */
+  revision: string | null;
+  /**
+   * A later stored entry with an id an earlier one already owns. It never runs and has no
+   * revision of its own, so it is drawn for information only: every intent naming its id acts
+   * on the owning row, and removing that row removes this entry too.
+   */
+  duplicate: boolean;
+  /** How many later stored entries repeat this row's id: removing this row removes them too. */
+  repeats: number;
 }
 
-/** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
+/**
+ * Rows for one stage, in run order, or the stored entries this build cannot run (`stage: null`),
+ * or the folder's shapers that are not run (`stage: null, folder: true`).
+ */
 export interface ShapingListGroup {
   stage: ShapingStage | null;
+  folder?: true;
   rows: ShapingListRow[];
+}
+
+const REGISTERED = { origin: "registered", path: null, folderState: null, manifest: null, startsOff: false } as const;
+
+/** A manifest's definition, as the list shows it: without the manifest's own `enabled`. */
+function manifestDefinition(manifest: NonNullable<DiscoveredShaper["shaper"]>): Shaper {
+  const { enabled: _enabled, ...shaper } = manifest;
+  return shaper;
 }
 
 /**
  * The list Settings draws: one group per stage in stage order, each in the order a launch runs
- * it, then the entries this build cannot run, in stored order. Every stage is listed, empty or
- * not, so the operator can see where a new shaper will land.
+ * it, registered and found-on-disk shapers together, then the entries this build cannot run, in
+ * stored order, then the folder's shapers that are not run, by id. Every stage is listed, empty
+ * or not, so the operator can see where a new shaper will land.
  */
-export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
+export function shapingList(view: ShapingConfigView, discovered: readonly DiscoveredShaper[] = []): ShapingListGroup[] {
   const known: Array<ShapingListRow & { position: number; stage: string }> = [];
   const unsupported: ShapingListRow[] = [];
+  const owners = new Map<string, ShapingListRow>();
   view.shapers.forEach((entry, position) => {
-    if (isUnsupportedShaper(entry)) {
+    const owner = owners.get(entry.id);
+    if (owner) {
+      // The daemon classifies a repeat as unsupported; it is drawn without controls of its own.
+      owner.repeats += 1;
       unsupported.push({
-        id: entry.id, label: entry.label, shaper: null,
-        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision: shapingEntryRevision(entry),
+        id: entry.id, label: entry.label, ...REGISTERED, shaper: null, on: false,
+        problem: isUnsupportedShaper(entry) ? entry.unsupported : null, revision: null, duplicate: true, repeats: 0,
       });
       return;
     }
-    known.push({
-      id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
-      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision: shapingEntryRevision(entry),
-    });
+    const revision = shapingViewRevision(view, entry.id);
+    if (isUnsupportedShaper(entry)) {
+      const row: ShapingListRow = {
+        id: entry.id, label: entry.label, ...REGISTERED, shaper: null,
+        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision, duplicate: false, repeats: 0,
+      };
+      owners.set(entry.id, row);
+      unsupported.push(row);
+      return;
+    }
+    const row = {
+      id: entry.id, label: entry.label, ...REGISTERED, shaper: entry, stage: entry.stage as string, position,
+      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision, duplicate: false, repeats: 0,
+    };
+    owners.set(entry.id, row);
+    known.push(row);
   });
+  const blocked: ShapingListRow[] = [];
+  for (const entry of discovered) {
+    const shaper = entry.shaper ? manifestDefinition(entry.shaper) : null;
+    const stored = Object.hasOwn(view.overrides, entry.id);
+    const base = {
+      id: entry.id, label: shaper?.label ?? entry.id, origin: "discovered" as const, path: entry.path, folderState: entry.state,
+      manifest: entry.sha256, shaper, revision: null, duplicate: false, repeats: 0,
+    };
+    // A registered id shadows it, and owns the id's stored choice: there is nothing to switch here.
+    if (entry.state === "shadowed" || owners.has(entry.id)) {
+      blocked.push({ ...base, folderState: "shadowed", on: false, startsOff: false,
+        problem: entry.problem ?? `A registered shaper has the id "${entry.id}", so it runs instead and this one does not.` });
+      continue;
+    }
+    if (entry.state !== "ok" || !shaper) {
+      // It never runs, but a stored on can still be switched off.
+      blocked.push({ ...base, on: view.overrides[entry.id] === true, startsOff: false, problem: entry.problem ?? "It cannot run." });
+      continue;
+    }
+    known.push({
+      ...base, stage: shaper.stage, position: Number.MAX_SAFE_INTEGER, problem: null,
+      on: shaperSwitchedOn(view, entry.id, "discovered", entry.shaper?.enabled),
+      startsOff: !stored && entry.shaper?.enabled === false,
+    });
+  }
   known.sort(compareShapingOrder(view.order));
   const strip = ({ position: _position, stage: _stage, ...row }: (typeof known)[number]): ShapingListRow => row;
   const groups: ShapingListGroup[] = SHAPING_STAGES.map((stage) => ({
     stage, rows: known.filter((row) => row.stage === stage).map(strip),
   }));
   if (unsupported.length > 0) groups.push({ stage: null, rows: unsupported });
+  if (blocked.length > 0) groups.push({ stage: null, folder: true, rows: blocked.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) });
   return groups;
 }
 
@@ -94,15 +180,21 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
  * intent changes nothing, a shaper the list does not draw keeps its slot, and the daemon, which
  * knows the folder's shapers, decides what may make room when the order is full.
  */
-export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "move" }> | null {
+export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "place" }> | null {
+  // Only registered shapers are placed: the daemon refuses a move relative to a folder's shaper.
   const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === id));
   if (!group) return null;
-  const rows = group.rows.map((row) => row.id);
+  const rows = group.rows.filter((row) => row.origin === "registered").map((row) => row.id);
   const at = rows.indexOf(id);
+  if (at === -1) return null;
   const to = at + offset;
   if (to < 0 || to >= rows.length) return null;
   const others = rows.filter((row) => row !== id);
-  return { kind: "move", id, after: to === 0 ? null : others[to - 1]! };
+  // Bound to the definition shown, like a switch: a replacement written meanwhile is not moved.
+  // A row with no revision, as from a daemon older than this dashboard, offers no move at all.
+  const expect = shapingViewRevision(view, id);
+  if (expect === null) return null;
+  return { kind: "place", id, after: to === 0 ? null : others[to - 1]!, expect };
 }
 
 /**
@@ -111,6 +203,10 @@ export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1):
  * replaces this either way. An upsert that this build would refuse draws nothing.
  */
 export function previewShapingIntent(view: ShapingConfigView, intent: ShapingIntent): ShapingConfigView {
+  // An intent bound to a revision applies only to that definition. Once another window has
+  // replaced it, drawing the click by id would show the replacement switched or removed, which the
+  // daemon will refuse: the view is drawn as stored while the request's answer is awaited.
+  if (shapingIntentSuperseded(view, intent)) return view;
   const overrides = { ...view.overrides };
   switch (intent.kind) {
     case "upsert": {
@@ -121,27 +217,32 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       if (at === -1) shapers.push(parsed.data);
       else shapers[at] = parsed.data;
       overrides[parsed.data.id] = false;
-      return { ...view, shapers, overrides };
+      // The stored definition's revision is the daemon's to derive; it arrives with the frame.
+      return { ...view, shapers, overrides, ...withoutRevision(view, parsed.data.id) };
     }
-    case "remove":
+    case "remove": {
       delete overrides[intent.id];
       return {
         ...view,
+        ...withoutRevision(view, intent.id),
         shapers: view.shapers.filter((entry) => entry.id !== intent.id),
         overrides,
         order: view.order.filter((id) => id !== intent.id),
       };
+    }
     case "enable":
       overrides[intent.id] = intent.enabled;
       return { ...view, overrides };
     case "reorder":
       return { ...view, order: [...new Set(intent.order)] };
-    case "move": {
+    case "move":
+    case "place": {
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
       if (!group) return view;
       // No pruning here: only the daemon knows which stored ids still name a shaper. A move it
       // has to make room for draws nothing until its frame arrives.
-      const placed = moveInShapingOrder({ rows: group.rows.map((row) => row.id), order: view.order, id: intent.id, after: intent.after });
+      const rows = group.rows.filter((row) => row.origin === "registered").map((row) => row.id);
+      const placed = moveInShapingOrder({ rows, order: view.order, id: intent.id, after: intent.after });
       return placed.ok ? { ...view, order: placed.order } : view;
     }
     case "settings":
@@ -151,6 +252,130 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
         limits: { ...view.limits, ...intent.limits },
       };
   }
+}
+
+/** The view's revisions without `id`'s, or nothing at all for a view that carries none. */
+function withoutRevision(view: ShapingConfigView, id: string): Partial<Pick<ShapingConfigView, "revisions">> {
+  if (!shapingViewHasRevisions(view)) return {};
+  const { [id]: _dropped, ...revisions } = view.revisions;
+  return { revisions: revisions as Record<string, string> };
+}
+
+/**
+ * Whether `view` shows that `intent` can no longer apply: it is bound to a revision, and the
+ * definition it was sent for has since been replaced or removed. The daemon will refuse it, and
+ * nothing it does can reach what is stored now, so the panel need not wait on it to take the next
+ * edit; its answer is still awaited, and shown when it comes.
+ */
+export function shapingIntentSuperseded(view: ShapingConfigView, intent: ShapingIntent): boolean {
+  return (intent.kind === "enable" || intent.kind === "remove" || intent.kind === "place") && intent.expect !== undefined
+    && shapingViewRevision(view, intent.id) !== intent.expect;
+}
+
+/** The lock every move within `stage` holds while it awaits its answer. */
+export function shapingStageLockKey(stage: string): string {
+  return `stage:${stage}`;
+}
+
+/** A daemon commit: the process that made it, and its number in that process. */
+export interface ShapingCommit {
+  instance: string;
+  commit: number;
+}
+
+/** The commit a view shows, or null for a view that names none, from a daemon older than commits. */
+export function shapingViewCommit(view: { readonly instance?: unknown; readonly commit?: unknown }): ShapingCommit | null {
+  const { instance, commit } = view;
+  return typeof instance === "string" && typeof commit === "number" && Number.isSafeInteger(commit) ? { instance, commit } : null;
+}
+
+/**
+ * Whether `view` shows `awaited` or a later commit. A view from another daemon process is past it
+ * too: that process sent its own snapshot, which is what is stored now, whatever came before.
+ */
+export function shapingViewReached(view: ShapingConfigView, awaited: ShapingCommit): boolean {
+  const shown = shapingViewCommit(view);
+  return shown === null || shown.instance !== awaited.instance || shown.commit >= awaited.commit;
+}
+
+/**
+ * The commit a row waits for, given the one it already waits for and the one a newly arrived answer
+ * made. Answers can arrive in any order, so a late answer for an earlier commit never lowers what
+ * the row waits for: within one daemon process the later commit stands. An answer from another
+ * process was compared against a view from that process (`shapingRowsAhead`), so it is the one
+ * the stream will deliver, and stands.
+ */
+export function shapingLaterCommit(held: ShapingCommit | undefined, made: ShapingCommit): ShapingCommit {
+  return held !== undefined && held.instance === made.instance && held.commit >= made.commit ? held : made;
+}
+
+/**
+ * What a frame is measured against before it counts as an import's receipt: whether the view
+ * already showed the import stored when it was sent, the shaper's revision then, and the daemon
+ * process that issued that revision.
+ */
+export interface ShapingReceiptBaseline {
+  shown: boolean;
+  revision: string | null;
+  instance: string | null;
+}
+
+/** The baseline for `request`, an import, as `view` stood when it was sent. */
+export function shapingReceiptBaseline(view: ShapingConfigView | null, request: ShapingIntent): ShapingReceiptBaseline {
+  const id = request.kind === "upsert" ? (request.shaper as { id: string }).id : null;
+  return {
+    shown: view !== null && shapingIntentReflected(view, request),
+    revision: view !== null && id !== null ? shapingViewRevision(view, id) : null,
+    instance: view !== null ? shapingViewCommit(view)?.instance ?? null : null,
+  };
+}
+
+/**
+ * Whether `config`, a frame that shows the import stored, is evidence of the import itself. When
+ * the view already showed it stored as it was sent, as an identical reimport is, any frame would
+ * show it: only one where the shaper's revision has moved on from the one it had then counts, and
+ * only when the same daemon process issued both, since a restarted daemon issues every revision
+ * anew. With no revision or process to compare, as from a daemon that sends none, no frame counts,
+ * and only the daemon's answer can settle the outcome.
+ */
+export function shapingFrameIsReceipt(baseline: ShapingReceiptBaseline, config: ShapingConfigView, id: string): boolean {
+  if (!baseline.shown) return true;
+  const now = shapingViewRevision(config, id);
+  const instance = shapingViewCommit(config)?.instance ?? null;
+  return baseline.revision !== null && now !== null && now !== baseline.revision
+    && baseline.instance !== null && instance === baseline.instance;
+}
+
+/**
+ * The shapers an accepted write's `answer` shows at a revision `view` does not, when `view` shows
+ * an earlier commit than the answer. A write's answer can arrive before the frame that carries it,
+ * and a frame from another writer can land in between, moving a row's revision on without reaching
+ * this write's: either way, until the stream reaches the answer's commit, an action on such a row
+ * would name a revision the daemon has moved past, and be refused.
+ */
+export function shapingRowsAhead(view: ShapingConfigView, answer: ShapingConfigView): string[] {
+  const made = shapingViewCommit(answer);
+  if (made === null || shapingViewReached(view, made) || !shapingViewHasRevisions(answer)) return [];
+  return Object.keys(answer.revisions).filter((id) => shapingViewRevision(answer, id) !== shapingViewRevision(view, id));
+}
+
+/**
+ * Every control a write can affect, all locked while it awaits its answer and all required free
+ * before it is sent. An import stores its shaper switched off, so it also holds that shaper's row:
+ * a switch on sent while it waits could otherwise be undone by the import landing after it, and an
+ * import is not sent while a write on that row awaits its own answer. A move places its shaper
+ * among the rest of its stage, so it holds that stage: a move of another row there, sent while it
+ * waits, could otherwise be undone by it landing after. A whole reorder holds every stage.
+ */
+export function shapingLockKeys(intent: ShapingIntent, key: string, view: ShapingConfigView | null = null): string[] {
+  const keys = new Set([key]);
+  if (intent.kind === "upsert") keys.add(`row:${(intent.shaper as { id?: unknown }).id}`);
+  if (intent.kind === "move" || intent.kind === "place") {
+    const entry = view?.shapers.find((candidate) => candidate.id === intent.id && !isUnsupportedShaper(candidate));
+    if (entry && !isUnsupportedShaper(entry)) keys.add(shapingStageLockKey(entry.stage));
+  }
+  if (intent.kind === "reorder") for (const stage of SHAPING_STAGES) keys.add(shapingStageLockKey(stage));
+  return [...keys];
 }
 
 export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boolean {
@@ -169,16 +394,29 @@ export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingI
       // The registration is gone. What the daemon kept for a folder shaper of that id is its own.
       return !view.shapers.some((entry) => entry.id === intent.id);
     case "enable":
-      return view.overrides[intent.id] === intent.enabled;
-    case "move": {
-      // The shaper sits right after the named neighbour, or first, among its stage's rows.
+      // The choice alone is not this request's outcome: a peer may have replaced the shaper and
+      // switched the replacement the same way. Bound to a revision, it counts only for the
+      // definition it was sent for; an enable never changes a revision, so a stored one keeps it.
+      return view.overrides[intent.id] === intent.enabled
+        && (intent.expect === undefined || shapingViewRevision(view, intent.id) === intent.expect);
+    case "move":
+    case "place": {
+      // The shaper sits right after the named neighbour, or first, among its stage's rows, and for
+      // a placement it is still the definition sent for: a replacement placed there is not its outcome.
+      if (intent.kind === "place" && shapingViewRevision(view, intent.id) !== intent.expect) return false;
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
       if (!group) return false;
       const rows = group.rows.map((row) => row.id);
       const at = rows.indexOf(intent.id);
       return intent.after === null ? at === 0 : at > 0 && rows[at - 1] === intent.after;
     }
-    case "upsert":
+    case "upsert": {
+      // The definition is stored as sent, and switched off. Its revision is the daemon's.
+      const parsed = ShaperSchema.safeParse(intent.shaper);
+      if (!parsed.success) return false;
+      const stored = view.shapers.find((entry) => entry.id === parsed.data.id);
+      return stored !== undefined && canonicalJson(stored) === canonicalJson(parsed.data) && view.overrides[parsed.data.id] === false;
+    }
     case "reorder":
     case "settings":
       return sameShapingView(previewShapingIntent(view, intent), view);
@@ -197,6 +435,40 @@ export interface ShaperReachLine {
 /** Quote an argument only when it needs it, so the common case reads as typed. */
 function shellWord(word: string): string {
   return word === "" || /[\s"'\\$`]/.test(word) ? JSON.stringify(word) : word;
+}
+
+/** What an intent did, in words, so a refusal that lands after a newer write names its own action. */
+export function describeShapingIntent(intent: ShapingIntent): string {
+  switch (intent.kind) {
+    case "upsert": return `importing ${intent.shaper.id}`;
+    case "remove": return `removing ${intent.id}`;
+    case "enable": return `switching ${intent.id} ${intent.enabled ? "on" : "off"}`;
+    case "move":
+    case "place": return `moving ${intent.id}`;
+    case "reorder": return "reordering the shapers";
+    case "settings": return "saving the caller identity and budgets";
+  }
+}
+
+/**
+ * The text a refusal shows. A refusal for a write that a newer one has since followed says it
+ * belongs to the earlier action, so it never reads as the outcome of the change just made.
+ */
+export function shapingRefusalText(intent: ShapingIntent, reason: string, superseded: boolean): string {
+  return superseded ? `An earlier change, ${describeShapingIntent(intent)}, was refused: ${reason}` : reason;
+}
+
+/**
+ * The text for a write whose answer never arrived. Not a refusal: the daemon may have stored it.
+ * `shown` is whether an event stream update showed the change stored at the time. It says what
+ * that update showed, in the past tense: a later write may have changed it, and the list shows
+ * what is stored now.
+ */
+export function shapingUnconfirmedText(intent: ShapingIntent, shown: boolean, superseded: boolean, cause: string): string {
+  const outcome = shown
+    ? `${cause} An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.`
+    : `${cause} Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.`;
+  return superseded ? `An earlier change, ${describeShapingIntent(intent)}, is unconfirmed: ${outcome}` : outcome;
 }
 
 function commandLine(command: string, args: readonly string[]): string {

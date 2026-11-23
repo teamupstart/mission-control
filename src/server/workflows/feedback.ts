@@ -70,6 +70,7 @@ export interface InspectorFeedbackInput {
   inspectorRound: number;
   reviewPosture: InspectorPosture | null;
   policy: InspectorFindingsPolicy;
+  freshPublishedReview?: boolean;
   findings: InspectorComment[];
   /** The pinned immutable workflow version contains at least one Persona. */
   workflowEvidence: boolean;
@@ -538,7 +539,9 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     truncated ||= result.truncated;
     return result.value;
   };
-  const policyInstruction = input.policy === "restart_workflow"
+  const policyInstruction = input.freshPublishedReview
+    ? "Address the findings and reply to their GitHub threads with evidence. The published tree differs from the earlier reviewed tree, so a fresh full workflow review is required even if no code changes are needed. Verify and push any repairs, then finish this turn so Mission Control can review the published work."
+    : input.policy === "restart_workflow"
     // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
     // `inspector_only` arm below still ends in "wait for Inspector to review that new head",
     // which remains literally true: that policy is resolved by the Inspector poller observing

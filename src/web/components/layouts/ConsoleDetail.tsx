@@ -1,7 +1,6 @@
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
-import { WORK_UNIT_ID_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { WorkUnitRow } from "../WorkUnitRow.tsx";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
@@ -24,6 +23,7 @@ import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
+import { ShapingChip } from "../ShapingChip.tsx";
 import { SessionScoutsPane } from "../scouts/SessionScoutsPane.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -490,11 +490,12 @@ export function ConsoleDetail({
   // `silent` is already true for a session with no task, so this needs no separate guard.
   const showTaskChip = !pill.silent;
   const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
-  // The id this session emits, and only while the preview is on: with it off the detail is
-  // exactly what it was before work units existed. `task.workUnitId` is already the emitted
-  // id (the agent's launch record while the task has the same one), never the task's own.
-  const workUnitsShown = useFeatureFlag(WORK_UNIT_ID_FLAG_ID);
-  const workUnitId = workUnitsShown ? (session.task?.workUnitId ?? null) : null;
+  // The id this session emits. `task.workUnitId` is already that id - the agent's launch
+  // record while the task has the same one, never the task's own - so the row follows the
+  // agent, not the live preview: an agent started while it was on keeps the variable until its
+  // next start, and switching the preview off must not hide an id it is still sending. With
+  // the preview never on, no agent has a record and the detail is exactly as before.
+  const workUnitId = session.task?.workUnitId ?? null;
   // Guarded as an element rather than with CSS `:empty`. The band carries padding and a
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
@@ -615,6 +616,7 @@ export function ConsoleDetail({
             chip that re-resolved would quote it text it never saw the moment the operator
             edits the rule, which is exactly when they are most likely to be reading it. */}
         <StandingInstructionsChip sessionId={session.id} />
+        <ShapingChip session={session} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />
@@ -960,7 +962,9 @@ export function ConsoleDetail({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={visibleEpisodes}
-              reviews={timelineReviews}
+              reviews={timelineReviews.reviews}
+              reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
+              onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               onCommentInFiles={view.onCommentInFiles

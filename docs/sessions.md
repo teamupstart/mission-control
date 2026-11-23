@@ -2725,7 +2725,9 @@ The MCP tools are:
 - `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
   plan inputs, regardless of status or whether the task remains on the live board. Both read
   tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
-  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps, and `shaping` (`state`,
+  `sessionId` and a one-line `summary`) when [task shaping](task-shaping.md#the-record) added
+  context to the launch the linked session received. Pull request references come from
   durable work-episode bindings, so running work can report a PR before completion. See
   [MCP task-read access](security.md#mcp-task-reads) for the security contract.
   Neither tool launches, modifies, or reorders work.
@@ -2939,8 +2941,9 @@ restored after restart is treated as detached because the stdio request owned by
 process cannot have survived it.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
-session's conversation, at the point in time you answered. What the entry shows depends on
-how you were asked:
+session's conversation, at the point in time you answered (or, for an answer delivered as a
+message, where the agent received it; see [Asking without stopping](#asking-without-stopping)).
+What the entry shows depends on how you were asked:
 
 | You answered | The entry shows |
 |---|---|
@@ -3036,6 +3039,22 @@ question it carried on without: an answer comes with the instruction to reconcil
 meanwhile, and a dismissal with the instruction to keep what it chose. A snoozed question whose
 session goes away is settled as `orphaned`, like a pending one.
 
+A question filed with [Ask without stopping](#asking-without-stopping) has an agent that never
+waited on it, so the sheet reads differently. Its first **Meanwhile** choice is **Keep doing what
+it said**, which quotes the agent's own `meanwhile` line and stays the default. Choosing it sends
+the agent nothing: it was already told to carry on when it filed the question. A provisional
+option or **Hold work that depends on this** changes what the agent does, so either is sent as a
+message, as for any question whose call has ended. Because "Keep doing what it said" tells the
+agent nothing, it does not count as the one time the agent is told: when the question comes back
+and you snooze it again, the Meanwhile choice is offered again, and a provisional option or Hold
+chosen then is still sent. The button's hint and the sheet follow the
+card's status line: while the agent is still working they say it keeps working, and once it has
+stopped on the question they say so, and that it hears nothing unless you choose a provisional
+option or **Hold**. The snoozed row and the reminder line on the returned question say what you
+chose. For **Keep doing what it said** that is "You left it to do what it said it would when it
+asked", never a claim that the agent kept working: by the time the question comes back it may have
+stopped, which the card's own status line says.
+
 Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
 you select and have no agent told how to carry on: a public product issue confirmation, a
 workflow Command override and a resident's proposed instruction changes. The operator alone can
@@ -3063,15 +3082,75 @@ of waiting inside the call:
   where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
   standing approval, is delivered the same way.
 - That message is Mission Control's, not yours, whoever answered. It is never captured as a new
-  Goal prompt for the session and is not drawn as a turn you typed; your answer already appears
-  in the conversation as the gold answer entry. An answer to a question that waited inside the
-  call and lost it keeps today's behavior.
+  Goal prompt for the session and is not drawn as a turn you typed. Its first line is a marker,
+  `[mission-control:answer review=<id>]` (or `reviews=<id>,<id>` when several answers travel
+  together), followed by a blank line and the answer text; the agent reads both. A **Remind me
+  later** instruction carries `[mission-control:remind-later review=<id>]`. With the flag on, an
+  answer to a question that waited inside the call and lost it, and a Remind me later instruction
+  sent as a message, carry the line too; with the flag off they are sent exactly as before.
+- In the conversation, the message is drawn as the gold answer entry, once, at the point the agent
+  received it, with **Delivered to the agent** and its time, and the agent's reply directly below.
+  Until the outbox delivers it, the entry stays where you answered and reads **On its way to the
+  agent**. Several answers delivered together draw one entry each on that one turn. A delivered
+  Remind me later instruction is drawn as the blue **Snoozed** entry rather than as its text.
+  **What the agent received** on the entry opens exactly the text the agent read, and find in
+  conversation searches it. This holds after a daemon restart and on a reload of an old
+  conversation.
+- Only a turn Mission Control recorded delivering is drawn this way. The daemon records each
+  delivery before it sends it and binds it to the turn it wrote, so a message you type that
+  starts with the same marker line, or a copy of a delivered message you send, stays your own
+  visible message and still moves the Goal. If another send of the same words races a delivery,
+  neither turn is drawn as an entry. A delivered message naming a question the dashboard can no
+  longer find (after a database restore, say) is still drawn as an entry, reading **This question
+  is no longer available**, with the delivery time and **What the agent received**. While the
+  conversation's history is still loading, or a read of it failed and is being retried (backing
+  off, for a few minutes at most), the same entry reads **Loading the question…** instead. If
+  those retries run out without an answer, or the daemon refuses the read (it no longer holds the
+  session), it reads **Couldn't load the question**: the question may still exist, so **This
+  question is no longer available** is kept for a history that was read.
 - While the agent works past its question, its session is not amber. Once it stops with the
   question still pending, it is amber and reads **waiting on your answer**, and it holds queue
   sends and backlog assignment like any session that needs you. A resident is the exception: it
   keeps iterating on its cadence while its questions wait in the inbox.
 - Every new question alerts. The title says whether the agent **has a question, still working**
   or **needs your answer**.
+- The question's card, its conversation entry and its session's state badge say which; the board
+  tile and the Residents drawer show it by the colour the session already wears. The card, in the
+  inbox and the review modal, carries a line under the title: **Still working** with the agent's `meanwhile` line, or
+  **Stopped, waiting on this answer**, and how long ago it was asked. While the agent works, the
+  state badge reads **N questions open** in the working colour and opens them, as **e** does once
+  every stopped session has been reached (or at once, when it is the selected session); a board tile carries the same count as a flag. The
+  conversation shows an **Asked** entry where the question was filed. While it is open, the entry
+  says **Still working** or **Stopped, waiting on this answer** and offers **Answer**; once it has
+  ended, the entry says how instead: answered (your answer is the gold entry, where its agent
+  received it when it went as a message, or where you gave it when the call returned it; see
+  "Your answer stays in the conversation" under [Review channel (MCP)](#review-channel-mcp)), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
+  the agent** with its reason. A question that waited in a call and was closed by a merge shows the
+  same merge line in a **Closed** entry: in place of its Snoozed entry if it had been snoozed, or
+  at the moment the merge closed it if it never was. These Closed entries show only while the flag
+  is on, because such a question was never in the conversation before this feature. All of these
+  entries come back after a reload.
+
+Each answer restates the full question and context, the agent's `meanwhile` plan, and the elapsed
+time since the ask. It tells the agent to reconcile its work and resume anything interrupted;
+a dismissal tells it to keep its provisional choice. Message-mode answers for the same
+conversation coalesce into one message only at the unclaimed answer tail of the queue, without
+passing an intervening message. Claimed deliveries keep their original text, and call-mode
+answers keep their existing delivery behavior.
+
+With the flag on, a session may have at most ten open `request_input` questions in either wait
+mode, including snoozed ones. Existing questions above the limit are retained, but new asks
+cannot grow the set. With the flag off, call-mode asks keep their previous behavior. An exact
+duplicate reattaches to the existing question even at the limit: message mode returns its
+receipt, while call mode waits on that question through the existing call path. A new ask beyond
+the limit returns an error with the open titles and tells the agent to work on what it can or
+end its turn.
+With the flag on, `list_open_questions` lists the caller's pending and snoozed `request_input`
+questions in either wait mode, including id, title, asked time and `meanwhile`.
+`withdraw_question(id, reason)` settles the caller's own open message-mode question as
+`withdrawn`, records the reason, and sends no answer. It releases that question's completion
+hold. Questions belonging to other sessions and call-mode questions cannot be withdrawn.
+The receipt names the question id and both tools; listing is for housekeeping, not polling.
 
 The daemon decides how each ask waits and says so in its response. A question is filed this way
 only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept

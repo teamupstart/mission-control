@@ -8,6 +8,7 @@ import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   InspectorRailMark,
   PrRailMark,
   ScheduleOriginRailMark,
@@ -18,6 +19,7 @@ import {
   PipelineCommissionRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { ShapingRailMark } from "../ShapingChip.tsx";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
@@ -147,6 +149,9 @@ export function RailRow({
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }`;
   const descriptionId = useId();
+  const actionWaitId = useId();
+  const actionWaitRuns = (workflowRuns ?? (workflowRun ? [workflowRun] : []))
+    .filter(run => run.status === "waiting_for_action" && run.actionWait);
 
   return (
     <>
@@ -157,7 +162,8 @@ export function RailRow({
         }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
         aria-current={selected}
-        aria-describedby={descriptionId}
+        aria-label={session.name || "(unnamed)"}
+        aria-describedby={[descriptionId, ...actionWaitRuns.map(run => `${actionWaitId}-${run.id}`)].join(" ")}
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
            the rail is the row itself rather than a button stretched over a card. */
@@ -216,6 +222,7 @@ export function RailRow({
                 is nothing outstanding. The DECISION and the tooltip are the shared ones;
                 only the rendering is this terse. */}
             <InspectorRailMark session={session} />
+            <ShapingRailMark session={session} />
             <WorkflowRailMark
               run={workflowRun}
               onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
@@ -257,6 +264,7 @@ export function RailRow({
             </span>
           </span>
         </span>
+        <WorkflowActionWait runs={actionWaitRuns} idPrefix={actionWaitId} />
       </button>
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>

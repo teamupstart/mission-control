@@ -1,4 +1,4 @@
-import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import {
   existsSync,
   lstatSync,
@@ -60,7 +60,26 @@ function sharedGoBuildCache(): string {
   return SHARED_GO_BUILD_CACHE;
 }
 
-/** Remove only expired Pipeline caller files left by a previous daemon crash. */
+/**
+ * How long a turn-one outcome is kept after its wrapper wrote it, whoever owns it. A dispatch reads
+ * its outcome seconds after the launch, so this outlasts any in-flight dispatch of another daemon
+ * sharing the disposable root, while still reclaiming the ones a dead daemon left behind.
+ */
+const TURN_ONE_OUTCOME_GRACE_MS = 10 * 60 * 1000;
+
+function outcomeIsStale(path: string, now: number): boolean {
+  try {
+    return now - statSync(path).mtimeMs >= TURN_ONE_OUTCOME_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove only expired Pipeline caller files left by a previous daemon crash, and turn-one outcome
+ * files (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
+ * and the dispatch that would have read and removed them died with that daemon.
+ */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   let entries: string[];
   try {
@@ -70,6 +89,20 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   }
   for (const entry of entries) {
     if (!entry.startsWith("session-")) continue;
+    const outcomeOf = entry.endsWith(".turn-one") ? join(DISPOSABLE_STATE_ROOT, entry.slice(0, -".turn-one".length)) : null;
+    if (outcomeOf) {
+      // Still running under a live wrapper, still owned by this daemon, or young enough that another
+      // daemon's dispatch may not have read it yet: leave it.
+      if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf) && outcomeIsStale(join(DISPOSABLE_STATE_ROOT, entry), now)) {
+        try {
+          rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+        } catch (error) {
+          // One entry that cannot be removed never stops the rest of the scan.
+          console.warn(`[launch] could not remove the orphaned turn-one outcome ${entry}:`, error);
+        }
+      }
+      continue;
+    }
     const stateHome = join(DISPOSABLE_STATE_ROOT, entry);
     if (liveDisposableStateHomes.has(stateHome)) continue;
     try {
@@ -234,7 +267,12 @@ export function agentSubprocessEnv(
  *     removed. Running it as an ordinary command also leaves the agent's exit status as the
  *     script's, which is what a backend reports.
  */
-function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[], preserveShellGoCache: boolean): string {
+function launchAndCleanupScript(
+  env: Record<string, string>,
+  argv: readonly string[],
+  preserveShellGoCache: boolean,
+  fallbackArgv: readonly string[] | null = null,
+): string {
   return [
     "#!/bin/sh",
     // The pane already holds the terminal server's environment, so a variable the launch
@@ -250,9 +288,61 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
     }),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
     `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
-    shellCommand(argv),
+    ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",
   ].join("\n");
+}
+
+/**
+ * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
+ * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
+ * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
+ * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
+ * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
+ * resolved interpreter's own path, which a version manager can make long.
+ */
+function probePadding(program: string): string {
+  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
+  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
+}
+
+/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
+const PATH_MAX_BYTES = 4096;
+
+/**
+ * Run `argv` only if it fits under the platform's argument limit in THIS shell's environment -
+ * the pane's, which the daemon cannot see before the launch - and otherwise run `fallbackArgv`.
+ * Either way `outcome` (`turnOneOutcomePath`) says which ran, before the agent starts.
+ *
+ * The check is an exec of `/bin/sh -c :` carrying every word of `argv` plus padding for the real
+ * exec's image overhead, under the same environment: it fails with `E2BIG` exactly when the
+ * agent's own exec would, and costs one fork of a shell that does nothing. The agent's exit
+ * status after a launch is never read as an exec failure, so the task is never run twice.
+ */
+function fittingLaunch(argv: readonly string[], fallbackArgv: readonly string[], outcome: string): string[] {
+  const probe = shellCommand([FIXED_OS_EXECUTABLES.sh, "-c", ":", "mission-turn-one-probe", probePadding(argv[0] ?? ""), ...argv]);
+  const record = (which: string) => `printf '%s' ${which} > ${shellCommand([outcome])}`;
+  return [
+    `if ${probe} 2>/dev/null; then`,
+    `  ${record("shaped")}`,
+    `  ${shellCommand(argv)}`,
+    "else",
+    `  ${record("original")}`,
+    `  ${shellCommand(fallbackArgv)}`,
+    "fi",
+  ];
+}
+
+/**
+ * The environment `isolatedAgentArgv`'s wrapper exports to the agent, for a caller that has to
+ * measure it before the launch: a launch argument shares `ARG_MAX` with every one of these.
+ * Writes the same loopback token file into `options.stateHome` the wrapper's own call writes,
+ * so `options.stateHome` should be the launch's, already created.
+ */
+export function isolatedAgentEnvironment(
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+): Record<string, string> {
+  return agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
 }
 
 /**
@@ -266,13 +356,21 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
  */
 export function isolatedAgentArgv(
   argv: readonly string[],
-  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> & {
+    /**
+     * The launch to run instead when `argv` would not fit under the platform's argument limit
+     * in the pane's environment (see `fittingLaunch`). Only a launch whose argv carries
+     * optional text - a shaped turn one - has one; every other launch's script is unchanged.
+     */
+    fallbackArgv?: readonly string[] | null;
+  } = {},
 ): string[] {
-  const env = agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
+  const { fallbackArgv = null, ...envOptions } = options;
+  const env = isolatedAgentEnvironment(envOptions);
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {
-    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE), { mode: 0o700 });
+    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE, fallbackArgv), { mode: 0o700 });
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;

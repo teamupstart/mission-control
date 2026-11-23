@@ -2973,3 +2973,209 @@ test("daemon authorship does not exempt a filed question's answer from the inter
   f.manager.stop();
   clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
 });
+
+// Phase 2 exercises the same delivery owner with the new text and durable coalescing.
+for (const count of [1, 5]) {
+  test(`${count} self-contained answers wake once with daemon authorship and no Goal or human echo`, async (t) => {
+    const { asyncInputAnswer } = await import("../src/shared/async-input.ts");
+    const f = sdkFixture(`self-contained-${count}`, async () => "started");
+    const episode = scoutEpisode(f.registry, f.id);
+    observeInjections((sessionId, text, origin) => journalScoutPrompt(f.registry, sessionId, text, origin));
+    t.after(() => observeInjections(null));
+    const texts: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = `self-contained-${count}-${i}`;
+      settledQuestion(id, f.id, "foreman", "message");
+      const text = asyncInputAnswer({ id, sessionId: f.id, kind: "input", title: "Which?", body: `Question ${i}?`,
+        status: "answered", response: "eslint", meanwhile: "Prepare the tests", createdAt: 1, resolvedAt: 2 });
+      texts.push(text);
+      assert.equal(f.manager.submitReviewContinuation(id, f.id, text).ok, true);
+    }
+    const combined = texts.join("\n\n---\n\n");
+    idle(f.registry, f.id);
+    await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(f.calls, [combined]);
+    assert.equal(f.registry.getGoal(f.id), null);
+    assert.equal(originOf(f.id, combined), "harness");
+    assert.equal(claimHumanEcho(f.id, f.key, combined).kind, "none");
+    assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId).map((turn) => turn.origin), ["harness"]);
+    f.manager.stop(); clearPendingTurns(f.key); clearScoutPromptContext(episode.taskId, episode.episodeId);
+  });
+}
+
+for (const mode of ["steer", "interrupt"] as const) test(`coalescing preserves the first answer's ${mode} deadline`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 2000000 });
+  const f = steeringFixture(`coalesced-${mode}`, mode === "interrupt" ? { beforeSteer: async () => { throw new Error("steer refused"); } } : {});
+  settledQuestion(`first-${mode}`, f.id, "human", "message");
+  f.manager.submitReviewContinuation(`first-${mode}`, f.id, "First answer");
+  t.mock.timers.tick(30000);
+  settledQuestion(`second-${mode}`, f.id, "foreman", "message");
+  f.manager.submitReviewContinuation(`second-${mode}`, f.id, "Second answer");
+  const deadline = mode === "steer" ? 60000 : 180000;
+  t.mock.timers.tick(deadline - 30001);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") assert.deepEqual(f.sends, []);
+  else assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") {
+    assert.deepEqual(f.sends, ["First answer\n\n---\n\nSecond answer"]);
+    assert.equal(f.registry.getGoal(f.id), null);
+    assert.equal(originOf(f.id, f.sends[0]!), "harness");
+  } else assert.equal(f.interrupts(), 1);
+  f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});
+
+// ---- async-input answer cards: a marked row records its own delivery -----------------------
+
+const { openDb } = await import("../src/server/db.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { parseReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+const deliveriesFor = (key: string) => openDb().prepare(
+  "SELECT id, review_ids AS reviewIds, confirmed_at AS confirmedAt FROM session_review_deliveries WHERE note_key = ?",
+).all(key) as Array<{ id: string; reviewIds: string; confirmedAt: number | null }>;
+
+test("a marked answer reserves exactly one delivery before the send and confirms it on acceptance", async () => {
+  let atSend: Array<{ confirmedAt: number | null }> | null = null;
+  const f = sdkFixture("marked-answer", async () => {
+    atSend = deliveriesFor(f.key);
+    return "started";
+  });
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  const text = "Mission Control answer to question: Answered: eslint";
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, text).ok, true);
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.equal(f.calls.length, 1);
+  const envelope = parseReviewEnvelope(f.calls[0]!);
+  assert.deepEqual(envelope && { ids: envelope.reviewIds, rest: envelope.rest }, { ids: [reviewId], rest: text },
+    "the agent reads exactly the old text below one marker line");
+  assert.equal(atSend!.length, 1, "reserved before the runtime was handed the text");
+  assert.equal(atSend![0]!.confirmedAt, null);
+  const [row] = deliveriesFor(f.key);
+  assert.deepEqual(JSON.parse(row!.reviewIds), [reviewId]);
+  assert.notEqual(row!.confirmedAt, null, "confirmed once the driver accepted it");
+  assert.equal(deliveriesFor(f.key).length, 1);
+  assert.equal(f.registry.getGoal(f.id), null);
+  assert.equal(originOf(f.id, f.calls[0]!), "harness", "still daemon-authored");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a refused marked delivery releases its reservation", async () => {
+  const f = sdkFixture("marked-refused", async () => null);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  idle(f.registry, f.id);
+  await until(() => f.calls.length >= 1, "the refused attempt");
+  await until(() => deliveriesFor(f.key).length === 0, "the refused delivery's reservation to be released");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a marked call-mode late answer (flag on) is never captured as a Goal revision at the send door", async (t) => {
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false }));
+  const f = sdkFixture("marked-call-answer", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human");
+  const text = `Mission Control review ${reviewId} was answered after its MCP wait ended. Answered: biome`;
+  const queued = f.manager.submitReviewContinuation(reviewId, f.id, text);
+  assert.equal(queued.ok && queued.pendingTurn?.id, `review-continuation:${reviewId}`, "the turn id is unchanged");
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.equal(parseReviewEnvelope(f.calls[0]!)?.rest, text);
+  assert.equal(f.registry.getGoal(f.id), null, "a delivery is nobody's ask");
+  assert.equal(claimHumanEcho(f.id, f.key, f.calls[0]!).kind, "none");
+  assert.equal(deliveriesFor(f.key).length, 1);
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+for (const mode of ["steer", "interrupt"] as const) test(`a marked answer keeps the ${mode} at ${mode === "steer" ? 60 : 180} s`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 3000000 });
+  const f = steeringFixture(`marked-${mode}`, mode === "interrupt" ? { beforeSteer: async () => { throw new Error("steer refused"); } } : {});
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "foreman", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  const deadline = mode === "steer" ? 60000 : 180000;
+  t.mock.timers.tick(deadline - 1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") assert.deepEqual(f.sends, []);
+  else assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") {
+    assert.equal(f.sends.length, 1);
+    assert.deepEqual(parseReviewEnvelope(f.sends[0]!)?.reviewIds, [reviewId]);
+    assert.equal(originOf(f.id, f.sends[0]!), "harness");
+    assert.equal(f.registry.getGoal(f.id), null);
+  } else assert.equal(f.interrupts(), 1);
+  f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});
+
+/** Make every write of a delivery's confirmation fail, as a full disk or a locked file would. */
+function failConfirmationWrites(t: { after: (fn: () => void) => void }): void {
+  openDb().exec(`CREATE TEMP TRIGGER fail_review_confirmation BEFORE UPDATE OF confirmed_at ON session_review_deliveries
+    BEGIN SELECT RAISE(ABORT, 'confirmation write failed'); END;`);
+  t.after(() => openDb().exec("DROP TRIGGER IF EXISTS temp.fail_review_confirmation"));
+}
+
+test("an SDK answer the runtime accepted is retired even when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  const f = sdkFixture("marked-confirm-fails", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  idle(f.registry, f.id);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the accepted answer to leave the outbox");
+  assert.equal(f.calls.length, 1, "accepted once, and never made retryable");
+  assert.equal(deliveriesFor(f.key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a pasted terminal answer still completes pickup when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  let key = "";
+  const f = terminalFixture("marked-terminal-confirm-fails", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  key = noteKeyFor(f.registry.getSession(f.id)!);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the verified paste to complete pickup");
+  assert.equal(f.injected.length, 1, "pasted once");
+  assert.equal(deliveriesFor(key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(key);
+});
+
+test("an operator message that begins with a review marker is the operator's: no delivery is reserved for it", async () => {
+  const f = sdkFixture("operator-marker", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  const pasted = `[mission-control:answer review=${reviewId}]\n\nI pasted this marker myself.`;
+  assert.equal(f.manager.submit(f.id, pasted).ok, true);
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(f.calls, [pasted]);
+  assert.equal(deliveriesFor(f.key).length, 0, "the marker proves nothing; only the daemon's own rows are recorded");
+  assert.notEqual(f.registry.getGoal(f.id), null, "and it reaches the Goal like any operator message");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+for (const refused of [false, true]) test(`a marked answer pasted into a terminal ${refused ? "releases its reservation when the pane refuses it" : "reserves before the paste and confirms on success"}`, async () => {
+  let atPaste = -1;
+  let key = "";
+  const f = terminalFixture(`marked-terminal-${refused}`, async () => {
+    atPaste = deliveriesFor(key).length;
+    return refused ? { ok: false, pasted: false, submitVerified: false, error: "pane refused" } : { ok: true, pasted: true, submitVerified: true };
+  });
+  key = noteKeyFor(f.registry.getSession(f.id)!);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  await until(() => f.injected.length >= 1, "the paste");
+  assert.equal(atPaste, 1, "reserved before the text reached the pane");
+  assert.equal(parseReviewEnvelope(f.injected[0]!)?.rest, "Answered: eslint");
+  if (refused) await until(() => deliveriesFor(key).length === 0, "the refused paste's reservation to be released");
+  else await until(() => deliveriesFor(key)[0]?.confirmedAt != null, "the pasted delivery to be confirmed");
+  f.manager.stop(); clearPendingTurns(key);
+});

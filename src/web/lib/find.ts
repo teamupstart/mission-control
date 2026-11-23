@@ -165,7 +165,8 @@ export function toolLineText(t: ToolCall): string {
 /**
  * Walk the rendered conversation and collect every occurrence, in document order.
  *
- * Episodes and review answers are skipped: they are cards rather than transcript turns,
+ * Episodes and review answers are skipped (except the text a delivered answer disclosed,
+ * below): they are cards rather than transcript turns,
  * they are not part of the conversation the agent had, and they carry their own
  * structure that a flat offset could not address. A review answer in particular is a
  * question, its options, and a selection among them - there is no single string whose
@@ -196,7 +197,26 @@ export function collectHits(
   const hits: FindHit[] = [];
 
   for (const row of rows) {
-    if (row.kind === "episode" || row.kind === "review") continue;
+    // One exception to skipping cards: a review message's delivered text. Before it was drawn
+    // as a card it was a turn, and it is still on screen inside "What the agent received", so
+    // it stays searchable, addressed by its turn's id and found as Mission Control's words.
+    if ((row.kind === "review" || row.kind === "delivered") && row.delivery?.last) {
+      const { text, turnId } = row.delivery;
+      for (const { start, end } of matchesIn(text, re)) {
+        hits.push({
+          key: `${turnId}:t:${start}`,
+          rowId: turnId,
+          toolIndex: null,
+          start,
+          end,
+          scope: "injected",
+          who: ORIGIN_LABEL.harness,
+          ...snippet(text, start, end),
+        });
+      }
+      continue;
+    }
+    if (row.kind === "episode" || row.kind === "review" || row.kind === "asked" || row.kind === "closed" || row.kind === "delivered") continue;
 
     if (row.kind === "turn") {
       const who = turnWho(row.message, agentLabel);

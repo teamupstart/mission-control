@@ -1,8 +1,10 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { OpenQuestionLimitError } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
+import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -38,6 +40,7 @@ import { registerSessionControlRoutes, sessionControlActor, sessionControlCaller
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
   localPlanAuthorityContext,
@@ -56,7 +59,7 @@ import {
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
-import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
@@ -69,13 +72,13 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
-  isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
   taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "@shared/plan-publication.ts";
 import {
   dismissLaunchFailures,
   launchFailureGroupFor,
@@ -113,6 +116,8 @@ import {
   CostConfigPatchSchema,
   CreateReviewSchema,
   DetachReviewWaitSchema,
+  ListOpenQuestionsSchema,
+  WithdrawQuestionSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
@@ -313,6 +318,7 @@ import {
   type ProductIssueSubmitResult,
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
+import { deliveredReviewIds } from "./review-deliveries.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
@@ -375,7 +381,7 @@ import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
-  type StandingInstructionsDelivery,
+  type StandingInstructionsResponse,
 } from "@shared/standing-instructions.ts";
 import {
   standingInstructionsConfig,
@@ -612,6 +618,7 @@ import {
   retryWritebacks,
   getSkillsAcks,
   loadConversationResolvedReviews,
+  loadReviewsByIds,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   loadOpenInspectorInspections,
@@ -4402,7 +4409,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
-  app.get("/api/tasks", (c) => c.json(tasks.list()));
+  // Every task read applies the one shaping reader rule: a record left by an earlier launch
+  // describes another session and is not returned.
+  app.get("/api/tasks", (c) => c.json(tasks.list().map(taskShapingForReads)));
   app.get("/api/tasks/:id/plan-dependencies", (c) => {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
@@ -4971,7 +4980,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       text: snapshot.text,
       mechanism: snapshot.mechanism,
       sources: snapshot.sources,
-    } satisfies StandingInstructionsDelivery);
+      // Present only for a launch that included or skipped a repository task skill, so a
+      // session without one answers exactly as it did before.
+      ...(snapshot.repoTaskSkills ? { repoTaskSkills: snapshot.repoTaskSkills } : {}),
+    } satisfies StandingInstructionsResponse);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).
@@ -5240,7 +5252,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return review.waitMode === "message"
         ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
         : c.json({ id: review.id, sessionId: session.id, wait: "call" });
-    } catch (error) { return planFailure(c, error); }
+    } catch (error) {
+      if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
+      return planFailure(c, error);
+    }
   }
   app.post("/mcp/reviews", (c) => createMcpReview(c, false));
   app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
@@ -5479,6 +5494,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await tasks.completeRetroNoChange(session.id, cwd);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
+  });
+
+  app.post("/mcp/questions/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, ListOpenQuestionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    return c.json({ questions: reviews.openQuestions(session.id).map(({ id, title, createdAt, meanwhile, status }) =>
+      ({ id, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+  });
+
+  app.post("/mcp/questions/:id/withdraw", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, WithdrawQuestionSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, reason } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const review = reviews.withdrawQuestion(session.id, c.req.param("id"), reason);
+      return c.json({ id: review.id, status: review.status });
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
@@ -7186,7 +7230,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadConversationResolvedReviews(session.id));
+    // `?lineage=1`: the same history for the sessions this conversation was transferred from,
+    // never this one's own. The dashboard reads it only to draw an answer delivered here whose
+    // question a predecessor asked (`mergeConversation`), never as entries of this session.
+    const lineage = c.req.query("lineage") === "1";
+    const owners = lineage
+      ? runtimeTransferPredecessors(session.id, noteKeyFor(session)).filter((id) => id !== session.id)
+      : [session.id];
+    const history = owners.flatMap((id) => loadConversationResolvedReviews(id));
+    // The history is capped to its newest rows. A review an answer delivered into this
+    // conversation names is added whatever its age, so the delivered turn can always draw its
+    // card rather than "no longer available" while the review still exists.
+    const present = new Set(history.map((review) => review.id));
+    const owned = new Set(owners);
+    const delivered = loadReviewsByIds(deliveredReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
+      .filter((review) => owned.has(review.sessionId));
+    return c.json([...history, ...delivered]);
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -7411,11 +7470,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const queue = queues.get(session.id);
     const task = registry.getTask(parsed.data.taskId);
+    // The same live publication read the worker made: a plan is claimable only while its
+    // `foreman_complete` workflow still waits on Foreman's completion claim.
+    const planStartsWorkflow = task?.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
     if (
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !heldGapRecoveryApplies(task.kind, planStartsWorkflow)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
@@ -7425,6 +7488,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // The session can report a blocker while the diff runs; the decision below reads the
     // object taken before the await, so ask the live one first.
     if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan
+    // ownership so a stale foreman_complete answer cannot authorize this attempt.
+    const livePlanStartsWorkflow = task.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
+    if (!heldGapRecoveryApplies(task.kind, livePlanStartsWorkflow)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
     const cfg = getForemanConfig();
@@ -7441,6 +7511,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      planStartsWorkflowOnCompletion: livePlanStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -8941,7 +9012,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // Task shaping, behind its preview flag. See docs/task-shaping.md.
-  registerShapingRoutes(app);
+  registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.
@@ -10192,29 +10263,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   return app;
 }
 
-/** True when the Host header names a loopback address (defeats DNS-rebinding). */
-export function hostIsLoopback(host: string | undefined): boolean {
-  if (!host) return false;
-  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
-  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
-
-/** Guard browser-write routes that accept an otherwise empty JSON object. */
-function trustedLoopbackJsonRequest(c: Context): boolean {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return false;
-  }
-  const origin = c.req.header("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
+export { hostIsLoopback } from "./loopback.ts";
 
 /**
  * What a write into somebody's session is attributed to.

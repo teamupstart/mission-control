@@ -15,6 +15,15 @@ import { isResumeLeaseId, resumeLeaseRootPath } from "./resume-lease.ts";
 
 export const LAUNCH_SCRIPT_FILE = "launch-and-cleanup.sh";
 export const LAUNCH_PID_FILE = "terminal-launch.pid";
+/**
+ * Where a launch wrapper with a fallback argv writes which one it ran: `shaped` or `original`.
+ * Beside the state home rather than in it, because the wrapper removes its state home when the
+ * agent exits, and an agent that exits right after readiness would otherwise take the answer
+ * with it. The dispatcher reads it before recording what the launch delivered, then removes it.
+ */
+export function turnOneOutcomePath(stateHome: string): string {
+  return `${stateHome}.turn-one`;
+}
 export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
 
 /**

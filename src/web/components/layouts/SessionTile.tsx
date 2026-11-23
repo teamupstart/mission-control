@@ -25,10 +25,13 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { openQuestionsLabel } from "../../lib/async-questions.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   CostChip,
   InspectorTileFlag,
   PrTileFlag,
@@ -39,6 +42,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ShapingTileFlag } from "../ShapingChip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -515,6 +519,8 @@ export function SessionTile({
           choice (`workflowDetails`, off by default); the rung, the stage track and the repair
           budget are not. So the collapsed peek is what a card says about a run unless someone
           asks it for more. */}
+      <WorkflowActionWait runs={workflowRuns ?? (workflowRun ? [workflowRun] : [])} />
+
       {shown("workflow") && workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}
@@ -568,6 +574,12 @@ export function SessionTile({
           </span>
         )}
         {session.pendingReviews > 0 && <span className="tile-flag tf-review">review</span>}
+        {/* Message-mode questions (`async-input`): listed while the agent keeps working, in the
+            working blue rather than amber. Once the agent stops on them the tile's tone turns
+            amber through `stateDisplay`, and the flag stays to say what it is waiting on. */}
+        {openQuestionCount(session) > 0 && (
+          <span className="tile-flag tf-question">{openQuestionsLabel(openQuestionCount(session))}</span>
+        )}
         {session.queue && session.queue.openCount > 0 && (
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}
@@ -582,6 +594,7 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <ShapingTileFlag session={session} />
         {/* Stacked pull requests: why this child is held and what moves it - the same
             component, label and actions as its merge-queue row. */}
         {session.inspector?.stack?.label && (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SHAPING_LIMITS, type Shaper, type ShapingConfigView, type ShapingRun } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, shapingViewHasRevisions, type Shaper, type ShapingConfigView, type ShapingRun } from "@shared/shaping.ts";
 import {
   isUnsupportedShaper,
   readShaperManifest,
@@ -22,7 +22,7 @@ const MANIFEST_INPUT_MAX_CHARS = 4 * SHAPING_LIMITS.entryJsonBytes;
 
 /** Runs one dry run for the dialog. A failed request, as opposed to a failed shaper, is `ok: false`. */
 export type ShapingTestRunner = (
-  request: { id: string; repository: string; prompt: string; expect: string },
+  request: { id: string; repository: string; prompt: string; expect?: string },
   signal: AbortSignal,
 ) => Promise<{ ok: true; run: ShapingRun } | { ok: false; aborted: boolean; reason: string }>;
 
@@ -59,36 +59,88 @@ export function ShaperReview({ shaper }: { shaper: Shaper }): React.JSX.Element 
 }
 
 /**
+ * Outcomes of earlier writes under one control that arrived after a newer write went out: a
+ * refusal, or a write whose answer was lost and which the daemon may have stored, so the list is
+ * named for outcomes, not refusals. They are listed apart from the control's current outcome,
+ * which stays the result of its latest action. The polite live region is always present, so one
+ * that arrives while the current one is unchanged is still announced: a region inserted together
+ * with its content often is not.
+ */
+export function EarlierOutcomes({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element {
+  return (
+    <div className="shaping-earlier-live" aria-live="polite">
+      {messages && messages.length > 0 && (
+        <ul className="shaping-earlier-outcomes" aria-label="Earlier outcomes">
+          {messages.map((message, at) => <li key={at}>{message}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * Import one manifest: pasted JSON or a chosen file, read with the daemon's own schema, and
  * reviewed in full before anything is saved. Saving stores it switched off, whatever its
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, saving, error, onClose, onSave }: {
+export function ShapingImportDialog({ config, busy, locked, saving, error, earlier, subject = null, fresh = false, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
+  /** Controls whose write still awaits its answer, a shaper's row among them. */
+  locked?: ReadonlySet<string>;
   /** Whether this dialog's own save is in flight. Only that holds the dialog open. */
   saving: boolean;
   /** The daemon's refusal of the last save, if any. */
   error: string | null;
+  /** Refusals of earlier saves that arrived after a newer one went out. */
+  earlier?: readonly string[];
+  /** The shaper the newest outcome's save was for. */
+  subject?: string | null;
+  /**
+   * Whether the outcome arrived after this dialog opened, as a save from a dialog closed
+   * meanwhile can: shown here although this dialog has saved nothing yet.
+   */
+  fresh?: boolean;
   onClose: () => void;
-  onSave: (shaper: Shaper) => Promise<void>;
+  /**
+   * Store the reviewed shaper. Resolves true when it was saved and this dialog is still the one
+   * that sent it, so it may close.
+   */
+  onSave: (shaper: Shaper) => Promise<boolean>;
 }): React.JSX.Element {
   const [text, setText] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
+  // The name of a chosen file still being read, or null. Nothing can be saved meanwhile.
+  const [readingFile, setReadingFile] = useState<string | null>(null);
   // The daemon's refusal is shown only for a save made in this dialog, never one left over from
   // an earlier import.
   const [saved, setSaved] = useState(false);
   // Bumped by every edit and every chosen file, so a file read that finishes late never replaces
   // what the operator typed or chose after it.
   const generation = useRef(0);
+  /** Numbers each Save in this dialog. */
+  const submissions = useRef(0);
+  /** The draft generation this dialog last saved, or null before its first save. */
+  const lastSaved = useRef<number | null>(null);
   const reading = text.trim() === "" ? null : readShaperManifest(text);
+  // A write on this shaper's row still awaits its answer: importing it now could land first and be
+  // undone by that write, or the other way round, so it waits.
+  const rowLocked = reading?.ok === true && (locked?.has(`row:${reading.shaper.id}`) ?? false);
+  const draftId = reading?.ok ? reading.shaper.id : null;
+  // The outcome shown is this draft's only while the draft is the one this dialog last saved,
+  // unchanged since: an edit that keeps the id, or a reopened dialog, shows another draft.
+  const outcomeIsDraft = saved && lastSaved.current === generation.current && subject === draftId;
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
   const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
   const edit = (value: string): void => {
     generation.current += 1;
+    setReadingFile(null);
     if (value.length > MANIFEST_INPUT_MAX_CHARS) {
+      // The reviewed manifest no longer stands for what the operator meant to import, so it goes:
+      // Save must never store what was on screen before an input the dialog refused.
+      setText("");
       setInputError(tooLarge);
       return;
     }
@@ -98,17 +150,24 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
   const choose = async (file: File | undefined): Promise<void> => {
     if (!file) return;
     const mine = ++generation.current;
+    // Choosing a file replaces whatever was reviewed: nothing can be saved until this file has
+    // been read and reviewed, and a file that fails to read leaves nothing to save.
+    setText("");
     setInputError(null);
     // Checked before reading, so a large file is never read into memory or parsed.
     if (file.size > MANIFEST_INPUT_MAX_CHARS) {
+      setReadingFile(null);
       setInputError(`${file.name} is ${file.size.toLocaleString()} bytes. ${tooLarge}`);
       return;
     }
+    setReadingFile(file.name);
     try {
       const content = await file.text();
       if (mine === generation.current) setText(content);
     } catch (cause) {
       if (mine === generation.current) setInputError(`Could not read ${file.name}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      if (mine === generation.current) setReadingFile(null);
     }
   };
   return (
@@ -131,15 +190,25 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
             onChange={(event) => { void choose(event.target.files?.[0]); event.target.value = ""; }} />
         </label>
         {inputError && <p role="alert" className="shaping-refusal">{inputError}</p>}
+        {readingFile && <p className="shaping-note" role="status">Reading {readingFile}…</p>}
         {reading && !reading.ok && <p role="alert" className="shaping-refusal">{reading.reason}</p>}
         {reading?.ok && (
           <>
             <ShaperReview shaper={reading.shaper} />
             {existing && (
               <p className="shaping-note">
-                {isUnsupportedShaper(existing)
-                  ? `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be removed.`
-                  : `This replaces the registered shaper "${existing.label}" and switches it off.`}
+                {!isUnsupportedShaper(existing) || existing.replaceable === true
+                  ? `This replaces the registered shaper "${existing.label}" and switches it off.`
+                  // A daemon older than this dashboard sends neither revisions nor `replaceable`:
+                  // the flag's absence says nothing there, so the copy does not predict its answer.
+                  : !shapingViewHasRevisions(config)
+                    ? `A shaper this build cannot run already has the id "${reading.shaper.id}". The daemon decides whether this import replaces it.`
+                    : `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be switched off or removed, so this import will be refused.`}
+              </p>
+            )}
+            {rowLocked && (
+              <p className="shaping-note" role="status">
+                A change to {reading.shaper.id} is still waiting for the daemon&apos;s answer. This can be saved once it arrives.
               </p>
             )}
             {reading.ignoredEnabled && (
@@ -147,15 +216,36 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
             )}
           </>
         )}
-        {saved && error && <p role="alert" className="shaping-refusal">{error}</p>}
+        {(saved || fresh) && error && subject !== null && !outcomeIsDraft && (
+          // Not this draft's outcome: the draft was changed, or the dialog reopened, after that save.
+          <p className="shaping-note">
+            The save of <code>{subject}</code> answered:
+          </p>
+        )}
+        {(saved || fresh) && error && <p role="alert" className="shaping-refusal">{error}</p>}
+        <EarlierOutcomes messages={saved || fresh ? earlier : undefined} />
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without saving anything">
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
         </Tooltip>
         <Tooltip label="Store this shaper switched off in every window">
-          <button type="button" className="btn" disabled={!reading?.ok || busy}
-            onClick={() => { if (reading?.ok) { setSaved(true); void onSave(reading.shaper); } }}>Save switched off</button>
+          <button type="button" className="btn" disabled={!reading?.ok || readingFile !== null || busy || rowLocked}
+            onClick={() => {
+              if (!reading?.ok) return;
+              setSaved(true);
+              // The stream can free this dialog before the answer lands, and the operator may
+              // paste another manifest or choose another file meanwhile: a late success closes the
+              // dialog only while it still shows what was saved.
+              // Each submission is numbered, so only the latest one's success may close it: the
+              // same manifest saved twice shares a draft generation.
+              const submitted = generation.current;
+              lastSaved.current = submitted;
+              const submission = ++submissions.current;
+              void onSave(reading.shaper).then((close) => {
+                if (close && generation.current === submitted && submissions.current === submission) onClose();
+              });
+            }}>Save switched off</button>
         </Tooltip>
       </footer>
     </Overlay>
@@ -170,13 +260,18 @@ const OUTCOME_LABEL: Record<string, string> = {
  * Dry-run one shaper against a repository Mission Control knows: whatever its stored choice,
  * nothing is saved, and closing the dialog stops the run.
  */
-export function ShapingTestDialog({ id, label, revision, current, repositories, onTest, onClose }: {
+export function ShapingTestDialog({ id, label, revision, current, waiting = false, repositories, onTest, onClose }: {
   id: string;
   label: string;
-  /** The revision of the definition the operator chose to dry-run. Sent with the run. */
-  revision: string;
+  /** The daemon's revision of the definition the operator chose to dry-run. Sent with the run. */
+  revision: string | null;
   /** The revision stored for this id now, or null once it is gone. */
   current: string | null;
+  /**
+   * A write to this shaper was accepted, but the revision it made has not reached the view: `current`
+   * is already behind the daemon's, so a run sent now would be refused. Run waits until it arrives.
+   */
+  waiting?: boolean;
   repositories: () => Promise<string[]>;
   onTest: ShapingTestRunner;
   onClose: () => void;
@@ -207,7 +302,7 @@ export function ShapingTestDialog({ id, label, revision, current, repositories, 
     setResult(null);
     // Bound to the definition this dialog was opened for: the daemon refuses the run if it has
     // been replaced since, so a replacement is never run under this name.
-    const answer = await onTest({ id, repository: repository.trim(), prompt, expect: revision }, abort.signal);
+    const answer = await onTest({ id, repository: repository.trim(), prompt, ...(revision ? { expect: revision } : {}) }, abort.signal);
     if (abort.signal.aborted) return;
     setRunning(false);
     if (answer.ok) setResult(answer.run);
@@ -244,6 +339,7 @@ export function ShapingTestDialog({ id, label, revision, current, repositories, 
         )}
         {error && <p role="alert" className="shaping-refusal">{error}</p>}
         {running && <p className="shaping-note" role="status">Running {label}…</p>}
+        {waiting && !replaced && <p className="shaping-note" role="status">Waiting for the update that carries {label}'s latest change.</p>}
         {result && (
           <section className="shaping-result" aria-label="Dry-run result">
             {summary ? (
@@ -277,7 +373,7 @@ export function ShapingTestDialog({ id, label, revision, current, repositories, 
           <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
         </Tooltip>
         <Tooltip label="Run this shaper once against the repository">
-          <button type="button" className="btn" disabled={running || replaced || repository.trim() === ""} onClick={() => void run()}>
+          <button type="button" className="btn" disabled={running || replaced || waiting || repository.trim() === ""} onClick={() => void run()}>
             {running ? "Running…" : "Run"}
           </button>
         </Tooltip>

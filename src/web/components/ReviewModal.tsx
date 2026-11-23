@@ -26,6 +26,8 @@ import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { CheckoutPathText } from "./CheckoutPathText.tsx";
+import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
+import { useNow } from "../useNow.ts";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -108,6 +110,7 @@ export function ReviewModal({
           <ReviewCard
             key={r.id}
             review={r}
+            session={session}
             note={session.note}
             onMovedToChat={onMovedToChat}
             checkoutPaths={checkoutPaths}
@@ -129,12 +132,19 @@ export function ReviewModal({
  */
 export function ReviewCard({
   review,
+  session = null,
   note: sessionNote,
   onMovedToChat,
   checkoutPaths = null,
   onOpenPath,
 }: {
   review: ReviewItem;
+  /**
+   * The session that asked, live. A message-mode question (`async-input`) reads it for its status
+   * line: whether the agent is still working past the question or has stopped on it. Every other
+   * review ignores it.
+   */
+  session?: Pick<Session, "id" | "state" | "stateConfirmed" | "task"> | null;
   note?: SessionNoteSummary | null;
   /** Paths in the session's checkout; a question naming one links it to Files. */
   checkoutPaths?: ReadonlySet<string> | null;
@@ -160,6 +170,10 @@ export function ReviewCard({
   // purpose: closing the modal mid-choice drops the half-made snooze, never the draft answer.
   const [snoozing, setSnoozing] = useState(false);
   const snoozable = canSnoozeReview(review);
+  // How the agent waits right now, so Remind me later says what is true of it (`QUESTION_ACTION_COPY`).
+  // The asking session, marked when it is a resident the operator paused (`questionAgentStatus`).
+  const agent = useQuestionAgent(session);
+  const wait = questionWait(review, agent);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -230,7 +244,7 @@ export function ReviewCard({
   }
 
   const laterButton = snoozable ? (
-    <RemindLaterButton disabled={busy} onClick={() => setSnoozing(true)} />
+    <RemindLaterButton disabled={busy} onClick={() => setSnoozing(true)} wait={wait} />
   ) : null;
 
   const dismissButton = (
@@ -277,6 +291,7 @@ export function ReviewCard({
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
+      <QuestionStatus review={review} session={agent} />
       <ReminderBanner review={review} />
 
       {showsBody(review) && (
@@ -302,7 +317,7 @@ export function ReviewCard({
         `input` with none is the open-ended ask, and still gets the textarea.
       */}
       {snoozing && snoozable ? (
-        <SnoozeSheet review={review} onBack={() => setSnoozing(false)} />
+        <SnoozeSheet review={review} wait={wait} onBack={() => setSnoozing(false)} />
       ) : decisions ? (
         <DecisionForm
           decisions={decisions}
@@ -415,5 +430,33 @@ export function ReviewCard({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * Under a message-mode question's title (`async-input`): whether its agent is still working past
+ * it, with the agent's own meanwhile line, or has stopped on it, and how long ago it was asked.
+ * Nothing for a question its agent waits on inside the call, which reads exactly as it always has.
+ */
+function QuestionStatus({
+  review,
+  session,
+}: {
+  review: ReviewItem;
+  session: QuestionAgent | null;
+}): React.JSX.Element | null {
+  const now = useNow(review.waitMode === "message", 10_000);
+  const line = questionStatusLine(review, session, now);
+  if (!line) return null;
+  return (
+    <p className={`review-wait review-wait-${line.status}`}>
+      <span className="review-wait-state">{line.label}</span>
+      {line.meanwhile && (
+        <span className="review-wait-meanwhile">
+          <span className="review-wait-tag">Meanwhile</span> {line.meanwhile}
+        </span>
+      )}
+      <span className="review-wait-asked">{line.asked}</span>
+    </p>
   );
 }

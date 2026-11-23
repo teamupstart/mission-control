@@ -29,7 +29,6 @@ import {
   shapedByDefault,
   shapingSlot,
   ShapingRequestSchema,
-  shapingConfigView,
   TaskShapingSchema,
   ShaperSchema,
   shaperSchemaForStages,
@@ -51,6 +50,7 @@ import {
   type ShapingIntent,
   type StoredShaper,
 } from "../src/shared/shaping.ts";
+import { daemonShapingView } from "../src/server/shaping/revisions.ts";
 
 const command = (id: string, stage: "gather" | "select" = "gather", extra: Record<string, unknown> = {}) => ShaperSchema.parse({
   id, label: id.toUpperCase(), stage, transport: { type: "command", command: "/usr/bin/true" }, ...extra,
@@ -575,13 +575,18 @@ test("the config view shows known shapers in full and an unsupported entry only 
     note: "sk-live-in-envelope", transport: { type: "grpc", endpoint: "grpc://sk-live-in-endpoint", custom: { token: "sk-live-nested" } } });
   const bad = StoredShaperSchema.parse({ id: "bad", label: "Bad", stage: "sk-live-as-stage", transport: { type: "command", command: "/bin/x" } });
   const stored = config({ shapers: [command("known"), future, bad], overrides: { known: true } });
-  const view = shapingConfigView(stored);
+  const view = daemonShapingView(stored);
   assert.deepEqual(view.shapers[0], ShaperSchema.parse(command("known")), "a known shaper in full");
   assert.deepEqual(view.shapers[1], { id: "skill-router", label: "Skill router", unsupported: "stage: This build does not support the stage this entry names." });
   assert.deepEqual(Object.keys(view.shapers[2]!).sort(), ["id", "label", "unsupported"]);
   const text = JSON.stringify(view);
   assert.equal(/sk-live/.test(text), false, "no stored value of an unsupported entry leaves, its stage included");
-  assert.deepEqual({ ...view, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
+  const { revisions, instance, commit, ...rest } = view;
+  assert.match(instance ?? "", /^[0-9a-f-]{36}$/, "the view names the daemon process that published it");
+  assert.ok(Number.isSafeInteger(commit) && commit! >= 0, "and the commit of that process it shows");
+  assert.deepEqual({ ...rest, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
+  assert.deepEqual(Object.keys(revisions).sort(), ["bad", "known", "skill-router"], "the daemon derives one revision per stored shaper");
+  assert.ok(Object.values(revisions).every((revision) => /^[0-9a-f]{16}$/.test(revision)));
 });
 
 test("a positional argument holding a well-known credential is refused, and stripped when stored", () => {
@@ -589,6 +594,7 @@ test("a positional argument holding a well-known credential is refused, and stri
     transport: { type: "command", command: "/usr/local/bin/shaper", args } });
   const tokens = [
     `ghp_${"a".repeat(36)}`, `github_pat_${"b".repeat(40)}`, `sk-${"c".repeat(48)}`, `sk-ant-api03-${"d".repeat(32)}`,
+    `sk-proj-${"p".repeat(20)}_${"q".repeat(20)}-${"r".repeat(8)}`, `sk-svcacct-${"s".repeat(40)}`,
     "AKIAIOSFODNN7EXAMPLE", `AIza${"e".repeat(35)}`, `xoxb-${"1".repeat(12)}-${"f".repeat(24)}`, `glpat-${"g".repeat(20)}`,
     `npm_${"h".repeat(36)}`, `eyJ${"i".repeat(12)}.eyJ${"j".repeat(12)}.${"k".repeat(16)}`, "-----BEGIN RSA PRIVATE KEY-----",
   ];
@@ -651,7 +657,7 @@ test("a registered shaper cannot name a ./ command; a manifest in the shapers fo
 
 test("an unsupported reason never names an unrecognised key, which a writer could have chosen", () => {
   const entry = StoredShaperSchema.parse({ ...command("extra"), "sk-live-key-as-name": true });
-  const view = shapingConfigView(config({ shapers: [entry] }));
+  const view = daemonShapingView(config({ shapers: [entry] }));
   const row = view.shapers[0] as { unsupported: string };
   assert.equal(row.unsupported, "This build does not recognise a field this entry names.");
   assert.equal(JSON.stringify(view).includes("sk-live-key-as-name"), false);

@@ -3,21 +3,16 @@ import { mkdtempSync, promises as fsp, realpathSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import {
-  MISSION_API_TOKEN_ENV,
-  MISSION_API_TOKEN_FILE_ENV,
-  SCOUT_SESSION_LOCATOR_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
-  readToken,
-} from "@shared/harness-runtime.mjs";
+import { readToken } from "@shared/harness-runtime.mjs";
 import { trimUrlText } from "@shared/shaping.ts";
-import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
-import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
 import { redactSpans } from "../redaction.ts";
-import { scrubResolved, type ResolvedValue } from "../references.ts";
+import {
+  holdsResolvedValue, JSON_ESCAPE_LEVELS, NEVER_PASSED_ENV_NAMES, resolvedMarker, scrubResolved, variantSpans, type ResolvedValue,
+} from "../references.ts";
+import { carriedEnvName, withCarriedEnv } from "./carriers.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
 /**
@@ -35,59 +30,51 @@ import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./ty
 export const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
 /** After the shaper exits, how long its pipes get to deliver the rest of its output. */
-const EXIT_DRAIN_MS = 500;
+export const EXIT_DRAIN_MS = 500;
 /** How far before the call's deadline a drain ends, so its reply still counts as on time. */
 const EXIT_DEADLINE_MARGIN_MS = 50;
 
-/** Variables a shaper can never receive, even by naming them. */
-const NEVER_PASSED = new Set<string>([
-  ...STATE_HOME_ENV_NAMES,
-  MISSION_API_TOKEN_ENV,
-  MISSION_API_TOKEN_FILE_ENV,
-  SCOUT_SESSION_LOCATOR_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
-]);
-
-/** `traceparent` and `tracestate` in any spelling: only the launch's own values are ever sent. */
-function traceContextName(name: string): boolean {
-  return /^trace(?:parent|state)$/i.test(name);
-}
+/** Variables a shaper can never receive, even by naming them. No reference resolves them either. */
+const NEVER_PASSED = NEVER_PASSED_ENV_NAMES;
+// `carriedEnvName`: `TRACEPARENT`, `TRACESTATE` and `WORK_UNIT_ID` in any spelling. Only the
+// launch's own values are ever sent, and none of them is ever redacted.
 
 /**
  * The child environment: the locator's child environment (its PATH snapshot), without what an
  * agent subprocess never inherits, without credential-shaped names and without any value that
  * carries the daemon's token - then exactly the variables the shaper named, from `base`.
  *
- * Then the launch's trace context, through the one carrier agents use: a `TRACEPARENT` or
- * `TRACESTATE` inherited from the daemon or named by the shaper, in any case, is removed first,
- * and the launch's own are set exactly when it has one.
+ * Then the launch's trace context, through the one carrier agents use, and the run's work unit
+ * id as `WORK_UNIT_ID`: a `TRACEPARENT`, `TRACESTATE` or `WORK_UNIT_ID` inherited from the daemon
+ * or named by the shaper, in any case, is removed first, and the launch's own are set exactly
+ * when it has them.
  */
 export function shaperCommandEnv(
   base: NodeJS.ProcessEnv,
   names: readonly string[],
   daemonToken: string,
   trace: ShapingTraceContext | null = null,
+  workUnitId: string | null = null,
 ): NodeJS.ProcessEnv {
   const token = daemonToken.trim();
   const carriesToken = (value: string) => token.length > 0 && value.includes(token);
-  const env: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(executableChildEnv(base))) {
-    if (value === undefined || NEVER_PASSED.has(name)) continue;
-    if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
-    if (credentialShapedName(name) || carriesToken(value) || traceContextName(name)) continue;
-    env[name] = value;
-  }
-  dropPaneIdentityEnv(env);
+  // Built from entries, never by assignment: a variable named `__proto__` is then an own
+  // property the child receives, not a write to the object's prototype.
+  const inherited: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(executableChildEnv(base)).filter(([name, value]) =>
+    value !== undefined && !NEVER_PASSED.has(name) && !(MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)
+    && !credentialShapedName(name) && !carriesToken(value) && !carriedEnvName(name)));
+  dropPaneIdentityEnv(inherited);
+  const env = new Map(Object.entries(inherited));
   for (const name of names) {
-    const value = base[name];
-    if (NEVER_PASSED.has(name) || traceContextName(name) || value === undefined || value === "" || carriesToken(value)) continue;
-    env[name] = value;
+    // The environment's own string only: `constructor` must not read an inherited property.
+    const value = Object.hasOwn(base, name) && typeof base[name] === "string" ? base[name] : undefined;
+    if (NEVER_PASSED.has(name) || carriedEnvName(name) || value === undefined || value === "" || carriesToken(value)) continue;
+    env.set(name, value);
   }
-  return withAgentTraceContext(env, trace);
+  return withCarriedEnv(Object.fromEntries(env), trace, workUnitId);
 }
 
-function killGroup(child: ChildProcess): void {
+export function killGroup(child: ChildProcess): void {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
     else child.kill("SIGKILL");
@@ -102,7 +89,7 @@ function killGroup(child: ChildProcess): void {
  * timeout would leave its pipes and their listeners open for as long as that helper lives.
  * Harmless after a normal close, when the streams are already ended.
  */
-function releaseStdio(child: ChildProcess | undefined): void {
+export function releaseStdio(child: ChildProcess | undefined): void {
   for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
     if (!stream) continue;
     stream.removeAllListeners("data");
@@ -131,7 +118,7 @@ function decoded(text: string): string {
 export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[] {
   const out: ResolvedValue[] = [];
   for (const [name, value] of Object.entries(env)) {
-    if (typeof value !== "string" || traceContextName(name)) continue;
+    if (typeof value !== "string" || carriedEnvName(name)) continue;
     const trimmed = trimUrlText(value);
     if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) continue;
     let url: URL;
@@ -166,11 +153,44 @@ export interface ReceivedValues {
 
 /** Every distinct, non-empty value in the environment the child was actually spawned with. */
 export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly string[] = []): ReceivedValues {
-  // The trace context is neither a credential nor a reference, so it is never redacted.
-  const values = Object.entries(env).filter(([name]) => !traceContextName(name)).map(([, value]) => value)
+  // The trace context and the work unit id are neither credentials nor references, so neither is ever redacted.
+  const values = Object.entries(env).filter(([name]) => !carriedEnvName(name)).map(([, value]) => value)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
-  const named = namedVariables.filter((name) => !traceContextName(name)).map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
+  const named = namedVariables.filter((name) => !carriedEnvName(name) && Object.hasOwn(env, name)).map((name) => env[name])
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
+}
+
+/**
+ * The most characters one character of a named value can take in a spelling the scrub decodes: a
+ * JSON `\u` escape is six, and each further level of nested JSON text it decodes can escape every
+ * character of the level beneath it again, so `JSON_ESCAPE_LEVELS` levels multiply it.
+ */
+const SPELLING_EXPANSION = 6 ** JSON_ESCAPE_LEVELS;
+
+/** The most of a child's stderr kept beyond the recorded tail, however long its values are. */
+const STDERR_MARGIN_CAP = 1 << 20;
+
+/** How much stderr is kept beyond the recorded tail, and whether that covers every spelling. */
+export interface StderrMargin {
+  chars: number;
+  /** False when the margin a spelling needs is over the cap: a cut stderr is then not quoted. */
+  covers: boolean;
+}
+
+/**
+ * How much of a child's stderr is kept beyond the tail a diagnostic records, and dropped from its
+ * front once it was cut. An inherited value is matched only as written, so its own length is
+ * enough; a named value is matched in every spelling the scrub decodes, the longest of which is
+ * `SPELLING_EXPANSION` characters for each of its own. A value cut at the front in any such
+ * spelling then falls wholly inside the dropped margin, and no fragment survives unrecognised.
+ * A margin that would pass `STDERR_MARGIN_CAP` is held at the cap and does not cover: a buffer
+ * cut with it is not quoted at all, rather than quoted with a fragment the margin missed.
+ */
+export function stderrMargin(received: ReceivedValues, named: readonly ResolvedValue[]): StderrMargin {
+  const longestNamed = named.reduce((longest, { value }) => Math.max(longest, value.length), 0);
+  const needed = Math.max(received.values[0]?.length ?? 0, longestNamed * SPELLING_EXPANSION);
+  return needed <= STDERR_MARGIN_CAP ? { chars: needed, covers: true } : { chars: STDERR_MARGIN_CAP, covers: false };
 }
 
 /**
@@ -187,9 +207,50 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
  * many matches it has: up to 256 KiB of shaper output never stalls the event loop.
  */
 export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
-  return redactSpans(text, received.values.map((value) => ({
+  return redactSpans(text, receivedTargets(received), () => "[redacted]", dropBefore);
+}
+
+/** Every value a child received as a redaction target, unlabelled: each is written `[redacted]`. */
+function receivedTargets(received: ReceivedValues) {
+  return received.values.map((value) => ({
     value, wholeToken: value.length < SHORT_VALUE_CHARS && !received.named.has(value), label: "",
-  })), () => "[redacted]", dropBefore);
+  }));
+}
+
+/**
+ * `text` with every value the child received, and each named value in any spelling (as written,
+ * JSON-escaped, or with its whitespace changed), removed in one pass. Every match of every kind is
+ * found on the original text and overlapping ones merge before anything is replaced: replacing an
+ * inherited value first could break up a spelling of a named one that runs across it, and leave
+ * the rest of that spelling to no later search. A span covering a received value is written
+ * `[redacted]`, as `redactReceived` writes it; one covering only a spelling of a named value
+ * names it, as `redactResolved` does.
+ *
+ * `dropBefore` is the margin of a buffer whose front was cut, dropped in the original text's
+ * positions: a spelling that runs across it is removed whole. That needs `stderrMargin`, wide
+ * enough to hold any spelling cut at the very front.
+ */
+export function redactChildText(text: string, received: ReceivedValues, named: readonly ResolvedValue[], dropBefore = 0): string {
+  const values = named.filter(({ value }) => value !== "");
+  if (values.length === 0) return redactReceived(text, received, dropBefore);
+  const marker = resolvedMarker(values);
+  return redactSpans(
+    text,
+    [...receivedTargets(received), ...values.map(({ name, value }) => ({ value, wholeToken: false, label: name }))],
+    (labels) => (labels.includes("") ? "[redacted]" : marker(labels)),
+    dropBefore,
+    Number.POSITIVE_INFINITY,
+    variantSpans(text, values),
+  );
+}
+
+/**
+ * A child's diagnostic output scrubbed for a record (`redactChildText`), then collapsed and
+ * scrubbed again, because collapsing whitespace can turn a spacing variant into the value itself.
+ */
+export function scrubChildOutput(text: string, received: ReceivedValues, named: readonly ResolvedValue[], dropBefore = 0): string {
+  const scrubbed = redactChildText(text, received, named, dropBefore);
+  return redactChildText(scrubbed.replace(/\s+/g, " "), received, named).trim();
 }
 
 /**
@@ -228,7 +289,7 @@ function isDirectory(path: string): boolean {
 }
 
 /** A `./` command, resolved against the shaper's own folder and kept inside it. */
-function folderCommand(command: string, root: string | null): { path: string } | { problem: string } {
+export function folderCommand(command: string, root: string | null): { path: string } | { problem: string } {
   if (!root) return { problem: `"${command}" is a ./ path, which only a shaper found in the shapers folder may use.` };
   try {
     const folder = realpathSync(root);
@@ -240,7 +301,7 @@ function folderCommand(command: string, root: string | null): { path: string } |
   }
 }
 
-async function withTimeout<T>(pending: Promise<T>, ms: number, signal: AbortSignal): Promise<T | "late"> {
+export async function withTimeout<T>(pending: Promise<T>, ms: number, signal: AbortSignal): Promise<T | "late"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   try {
@@ -263,7 +324,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // Monotonic, like the engine's budget: a wall-clock correction must not end a call early.
   const started = performance.now();
   const transport = shaper.transport;
-  const env = shaperCommandEnv(process.env, transport.env, readToken(), ctx.trace);
+  const env = shaperCommandEnv(process.env, transport.env, readToken(), ctx.trace, ctx.workUnitId);
 
   let cwd: string;
   let scratch: string | null = null;
@@ -315,11 +376,18 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // The named variables' values, each under its own name, for the reply's content.
   const namedValues: ResolvedValue[] = [
     ...transport.env
-      .filter((name) => !traceContextName(name))
-      .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; }),
+      .filter((name) => !carriedEnvName(name))
+      // The child environment's own string only: an unset `constructor` must not read the
+      // inherited function, which the reply's redactor would then treat as a string.
+      .flatMap((name) => {
+        const value = Object.hasOwn(executable.env, name) ? executable.env[name] : undefined;
+        return typeof value === "string" && value !== "" ? [{ name, value }] : [];
+      }),
     ...credentials,
   ];
-  const longestValue = received.values[0]?.length ?? 0;
+  // The margin kept beyond the recorded stderr tail, and dropped from its front once it is cut,
+  // wide enough for the longest spelling of any named value (`stderrMargin`).
+  const margin = stderrMargin(received, namedValues);
   // For identifiers: everything but the short inherited values only whole-token rules apply to.
   const identifierValues: ReceivedValues = {
     values: received.values.filter((value) => value.length >= SHORT_VALUE_CHARS || received.named.has(value)),
@@ -341,6 +409,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     const finish = (reply: TransportReply): void => {
       if (settled) return;
       settled = true;
+      // The outcome is known now, before any teardown: the engine judges the deadline by this moment.
+      ctx.settled?.();
       for (const timer of timers) clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
       releaseStdio(child as ChildProcess | undefined);
@@ -349,9 +419,15 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       cleanup((text) => redactReceived(text, received));
     };
     const stderrTail = (): string => {
-      // Once the front was cut, the first `longestValue` characters may hold the tail end of a
-      // value. They are dropped in the original text's positions, not after replacement.
-      return redactReceived(stderr, received, stderrDropped ? longestValue : 0).slice(-STDERR_TAIL_CHARS).trim();
+      // A named value with inner whitespace can be spelled with any amount of whitespace there,
+      // so once the front was cut no margin bounds a spelling cut there: nothing is quoted.
+      // So is one whose longest spelling needs more margin than is kept.
+      if (stderrDropped && (!margin.covers || namedValues.some(({ value }) => /\s/.test(value)))) {
+        return "its stderr is not quoted: it was too long to scrub safely";
+      }
+      // Once the front was cut, the first `margin.chars` characters may hold the tail end of a
+      // value, in any spelling: they are dropped in the original text's positions.
+      return scrubChildOutput(stderr, received, namedValues, stderrDropped ? margin.chars : 0).slice(-STDERR_TAIL_CHARS).trim();
     };
     const end = (why: "timed_out" | "overflow"): void => {
       if (ending || settled) return;
@@ -392,7 +468,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       // Decoded as a stream: a character split across two chunks is kept whole, so a non-ASCII
       // value the child received still matches exactly when it is redacted.
       const joined = stderr + stderrDecoder.write(chunk);
-      const keep = STDERR_TAIL_CHARS + longestValue;
+      const keep = STDERR_TAIL_CHARS + margin.chars;
       if (joined.length > keep) stderrDropped = true;
       stderr = joined.slice(-keep);
     });
@@ -434,15 +510,16 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           ...(scrubbed.redacted ? { redacted: true } : {}),
           ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
-          redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
-          holdsNamed: (text) => namedValues.some(({ value }) => text.includes(value)),
+          // A named value in any spelling, as its content was scrubbed, so the engine's reasons agree.
+          redact: (text, options) => redactChildText(text, options?.identifier ? identifierValues : received, namedValues),
+          holdsNamed: (text) => holdsResolvedValue(text, namedValues),
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.
       stderr += stderrDecoder.end();
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
-      const named = namedValues.some(({ value }) => stderr.includes(value));
+      const named = holdsResolvedValue(stderr, namedValues) || holdsResolvedValue(stderr.replace(/\s+/g, " "), namedValues);
       finish({
         kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}`,
         ...(named ? { redacted: true } : {}),

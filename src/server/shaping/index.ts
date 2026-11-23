@@ -10,6 +10,7 @@ import {
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
 import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
+import { advanceShapingGeneration, captureShapingView, noteShapingEntriesChanged, shapingReviser } from "./revisions.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -85,9 +86,18 @@ function store(): Store {
   return state;
 }
 
-function publish(state: Store, config: ShapingConfig): ShapingConfig {
-  const changed = !sameShapingConfig(state.config, config);
+/**
+ * Commit `config` and notify listeners when it changed, or when `revised`: an import or removal
+ * that stored the same config again still advanced its id's generation, so every view, and every
+ * open window, must receive the revision that now names it.
+ */
+function publish(state: Store, config: ShapingConfig, revised = false): ShapingConfig {
+  const changed = revised || !sameShapingConfig(state.config, config);
+  // Before any listener derives a view: every revision it carries is of the new generation.
+  noteShapingEntriesChanged(state.config, config);
   state.config = freeze(config);
+  // Its revisions, as they are at this commit: a listener's own write must not change them.
+  captureShapingView(state.config, changed);
   // Capture the committed value and the membership, and finish delivering one config to every
   // listener before the next, even when a listener writes again.
   if (changed) state.pending.push({ config: state.config, listeners: [...state.listeners] });
@@ -141,10 +151,14 @@ export function applyShapingIntent(intent: ShapingIntent, discovered: readonly D
       reason: "The stored task shaping config cannot be read by this build, so it is not overwritten.",
     };
   }
-  const result = applyIntent(state.config, intent, discovered);
+  const result = applyIntent(state.config, intent, discovered, { revise: shapingReviser });
   if (!result.ok) return result;
   // Enforce the stored bounds on the whole record, not only the intent.
   const config = ShapingConfigSchema.parse(result.config);
   setAppConfig(APP_CONFIG_ENTRIES.shaping, config);
-  return { ok: true, config: publish(state, config) };
+  // An import or removal starts a new generation of its id even when the stored content is the
+  // same as before, so a write held from before it can never pass afterwards.
+  if (intent.kind === "upsert") advanceShapingGeneration(intent.shaper.id);
+  if (intent.kind === "remove") advanceShapingGeneration(intent.id);
+  return { ok: true, config: publish(state, config, intent.kind === "upsert" || intent.kind === "remove") };
 }

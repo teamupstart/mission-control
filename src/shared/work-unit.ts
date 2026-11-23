@@ -67,6 +67,10 @@ export function encodeWorkUnitId(timeMs: number, random: Uint8Array): string {
   return `${WORK_UNIT_ID_PREFIX}${time}${entropy}`;
 }
 
+/** What `TaskManager.assign` says when `launchWorkUnitConflicts` refuses an agent. */
+export const WORK_UNIT_REUSE_REFUSAL =
+  "that agent was started for another work unit, so its MCP calls would be tagged with it - dispatch this task to a new agent instead";
+
 /**
  * Whether a session whose agent was started with `launched` would tag a task of `taskWorkUnit`
  * with the wrong work unit (decision D7). An agent's environment is fixed when it starts, so an
@@ -76,10 +80,6 @@ export function encodeWorkUnitId(timeMs: number, random: Uint8Array): string {
  *
  * Not gated by the preview: it protects against an environment that is already set.
  */
-/** What `TaskManager.assign` says when `launchWorkUnitConflicts` refuses an agent. */
-export const WORK_UNIT_REUSE_REFUSAL =
-  "that agent was started for another work unit, so its MCP calls would be tagged with it - dispatch this task to a new agent instead";
-
 export function launchWorkUnitConflicts(launched: string | null | undefined, taskWorkUnit: string | null): boolean {
   return Boolean(launched) && launched !== taskWorkUnit;
 }

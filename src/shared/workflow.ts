@@ -1895,6 +1895,8 @@ export type SessionActionContinuationExpectation =
       expectedHeadOid: string | null;
       /** Complete content tree accepted by the parent judged submission. */
       acceptedContentTreeOid?: string | null;
+      /** Historical merge satisfaction requires this tree at continuation capture too. */
+      mergedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
       observedAt: number;
     };
@@ -5132,6 +5134,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 

@@ -1,5 +1,14 @@
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
+import {
+  SHAPING_WRITE_ORDER_HEADER,
+  type ShapingConfigView,
+  type ShapingIntent,
+  type ShapingReply,
+  type ShapingRun,
+  type ShapingTestRequest,
+  type TaskShaping,
+} from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -257,6 +266,24 @@ export interface CompleteTaskResult extends ActionResult {
   sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
+}
+
+/**
+ * How a GET that may be retried came out: its value, or a failure that is `definite` when the
+ * server answered with a 4xx (asking again will not change it) and transient otherwise (a network
+ * error or a 5xx).
+ */
+export type JsonRead<T> = { ok: true; value: T } | { ok: false; definite: boolean };
+
+/** GET a JSON endpoint, saying whether a failure is worth retrying. */
+async function readJson<T>(path: string): Promise<JsonRead<T>> {
+  try {
+    const res = await actionFetch(path);
+    if (!res.ok) return { ok: false, definite: res.status >= 400 && res.status < 500 };
+    return { ok: true, value: (await res.json()) as T };
+  } catch {
+    return { ok: false, definite: false };
+  }
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -603,6 +630,17 @@ export const fetchResolvedStandingInstructions = (
   if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
+
+/** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
+export interface TaskShapingView {
+  summary: TaskShaping;
+  /** The section delivered in turn one, or null when nothing was kept. */
+  text: string | null;
+}
+
+/** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
+export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
 
 /** What THIS session was actually sent at launch. `null` covers the route's 404. */
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
@@ -1226,12 +1264,12 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
-      headers: body ? { "content-type": "application/json" } : {},
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: options.signal,
     });
@@ -1247,9 +1285,9 @@ async function request<T extends ActionResult = ActionResult>(
   }
 }
 
-const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("POST", path, body, options);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
@@ -2180,6 +2218,11 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
+  /** Validate a pinned revision change and return both task snapshots without saving. */
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange, signal?: AbortSignal) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }, { signal }),
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -2188,10 +2231,8 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  taskPlanDependencies: (id: string) =>
-    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+    post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
    * which is not writable through `updateTask` or any create body.
@@ -2370,8 +2411,11 @@ export const api = {
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
-  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal }) =>
-    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, options),
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
+      signal: options?.signal,
+      ...(options?.order ? { headers: { [SHAPING_WRITE_ORDER_HEADER]: options.order } } : {}),
+    }),
   /**
    * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
    * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.
@@ -2517,7 +2561,13 @@ export const api = {
    * top of these for immediacy (see `useTimelineReviews`).
    */
   resolvedReviews: (id: string) =>
-    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+  /**
+   * The same history for the sessions this conversation was runtime-transferred from. Read only
+   * to draw an answer delivered here whose question a predecessor asked.
+   */
+  lineageReviews: (id: string) =>
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews?lineage=1`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

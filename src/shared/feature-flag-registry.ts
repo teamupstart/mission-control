@@ -3,14 +3,22 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
+export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 /**
  * The one owner of the work unit preview's id. The server reads it in one place,
- * `launchWorkUnitId` in `src/server/work-unit.ts`, once per launch; the dashboard row reads it
- * through `useFeatureFlag`. See `docs/work-units.md`.
+ * `launchWorkUnitId` in `src/server/work-unit.ts`, once per launch. Nothing else reads it: the
+ * dashboard row shows the launch record. See `docs/work-units.md`.
  */
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const FEATURE_FLAGS = [
+  {
+    id: PINNED_PLAN_CHANGE_FLAG_ID,
+    label: "Change pinned plan revision",
+    description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
+    stage: "preview",
+    keywords: ["backlog", "plan", "revision", "dependency"],
+  },
   {
     id: "codex-resident-native-mcp",
     label: "Codex resident native MCP",
@@ -50,7 +58,7 @@ export const FEATURE_FLAGS = [
   {
     id: "task-shaping",
     label: "Task shaping",
-    description: "Register shapers in Settings > Task shaping and dry-run them to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",
+    description: "Call registered shapers at dispatch and add the context they return to a worker's first prompt. Register and dry-run them in Settings > Task shaping.",
     stage: "preview",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },

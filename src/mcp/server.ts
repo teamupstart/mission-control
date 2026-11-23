@@ -658,7 +658,8 @@ server.registerTool(
       "and it can attach additional local repositories to the same task. " +
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
       "labels, callSign, planStorage (plan tasks only), and dependencies as needed. callSign is a short spoken name " +
-      "the operator can say to address the task's session by voice; it is not the title and is set only when asked for. " +
+      "the task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available; " +
+      "it is not the title and is set only when asked for. " +
       "Omitted agent uses the kind default; omitted or null " +
       "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
       "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +

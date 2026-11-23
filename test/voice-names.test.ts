@@ -93,8 +93,19 @@ test("control-word: a name that is, or sounds like, a word voice listens for on 
   }
   assert.deepEqual(validateSpokenName("Noah")[0], { kind: "control-word", word: "no" }, "Noah can be heard as no");
   assert.deepEqual(validateSpokenName("Reply Bot")[0], { kind: "control-word", word: "reply" }, "a first word that is a command");
+  // Sounds like by the rule routing compares keys with (`keysSoundAlike`), not only the same key.
+  assert.deepEqual(validateSpokenName("Stopper")[0], { kind: "control-word", word: "stop" }, "STPR is stop's STP and one sound more");
+  assert.deepEqual(validateSpokenName("Summit")[0], { kind: "control-word", word: "submit" });
+  assert.deepEqual(validateSpokenName("Steve"), [], "Stop and Steve still differ: one swapped sound in three");
   assert.equal(spokenNameWarningLabel({ kind: "control-word", word: "stop" }), "Voice command");
   assert.match(spokenNameWarningText({ kind: "control-word", word: "stop" }, "Stop"), /“stop” is a word voice listens for/);
+});
+
+test("a name with no letters a to z is still warned when another agent answers to the same name", () => {
+  assert.deepEqual(validateSpokenName("サクラ", [{ name: "サクラ" }, { name: "Steve" }]), [{ kind: "sounds-like", names: ["サクラ"] }]);
+  assert.deepEqual(validateSpokenName(" サクラ ", [{ name: "サクラ" }]), [{ kind: "sounds-like", names: ["サクラ"] }], "compared trimmed");
+  assert.deepEqual(validateSpokenName("サクラ", [{ name: "ハナ" }]), [], "it has no key to sound like anything by");
+  assert.deepEqual(validateSpokenName("   ", [{ name: "サクラ" }]), [], "a blank name still draws nothing");
 });
 
 test("warnings come riskiest first, and the meter loses a step for each", () => {

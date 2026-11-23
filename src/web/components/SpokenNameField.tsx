@@ -80,8 +80,23 @@ export function SpokenNamePreview({
 }
 
 /**
+ * What a screen reader is told as a name's warnings change: the meter's verdict, every warning by
+ * its short label, or nothing while the field is blank. Only the verdict, so typing a letter that
+ * changes no warning announces nothing.
+ */
+export function spokenNameVerdict(name: string, roster: readonly Pick<SpokenName, "name">[]): string {
+  const said = name.trim().replace(/\s+/g, " ");
+  if (!said) return "";
+  const warnings = validateSpokenName(said, roster);
+  return warnings.length === 0 ? "Distinctive" : warnings.map(spokenNameWarningLabel).join(", ");
+}
+
+/**
  * A call sign or reference name: an optional text field with the heard-as preview under it.
  * The value is the raw text as typed; whoever saves it trims it, and blank means none.
+ *
+ * The verdict also sits in a polite status region that stays mounted, so a change of warnings is
+ * announced while the operator types, without moving focus.
  */
 export function SpokenNameField({
   label,
@@ -121,6 +136,7 @@ export function SpokenNameField({
         onChange={(event) => onChange(event.target.value)}
       />
       <SpokenNamePreview name={value} roster={roster} example={example} />
+      <span role="status" aria-live="polite" className="sr-only">{spokenNameVerdict(value, roster)}</span>
     </div>
   );
 }

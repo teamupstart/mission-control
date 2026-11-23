@@ -200,6 +200,8 @@ test("a warned call sign is dispatched as typed: the task keeps it and the roste
   await callSignOf(dialog).fill("Will");
   await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "2");
   await expect(dialog.locator(".voice-meter-bad")).toHaveText("Everyday word");
+  // The verdict is also in a polite status region, so a screen reader hears the warnings change.
+  await expect(dialog.locator(".spoken-name-field").getByRole("status")).toHaveText("Everyday word, Very short");
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   const posted = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/tasks");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
@@ -239,13 +241,43 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
   await daemon.shutdown();
   await daemon.restart();
+  // A reload, not a hash change, so the page reconnects to the restarted daemon on the Board layout.
   await page.reload();
+  await expect(page.locator("main.board")).toBeVisible();
+
+  // A task in the backlog is not an agent yet: with Marlowe still saved, the roster leaves it out.
+  // The built-in resident's row shows the roster has loaded, so the absence is not just early.
+  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
+  await expect(roster.getByRole("cell", { name: "Agent Shepherd", exact: true }).first()).toBeVisible();
+  await expect(roster.getByRole("cell", { name: "Marlowe", exact: true })).toHaveCount(0);
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(page.locator("main.board")).toBeVisible();
   await page.locator(".bl-card", { hasText: "Named backlog task" }).getByRole("button", { name: "Named backlog task", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "Edit a backlog task" });
   await expect(advancedOf(editor)).toContainText("Call sign: Marlowe");
   await advancedOf(editor).click();
   await expect(callSignOf(editor)).toHaveValue("Marlowe");
   await expect(meterOf(editor), "a task is never warned against its own name").toHaveAttribute("aria-valuenow", "4");
+
+  // An edit typed while voice is on is not saved once voice goes off: the field is gone, so its
+  // draft is not the operator's answer, and the stored call sign stays.
+  await callSignOf(editor).fill("Atlas");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
+  await expect(callSignOf(editor)).toHaveCount(0);
+  let sentUpdate = false;
+  page.on("request", (request) => { if (new URL(request.url()).pathname === `/api/tasks/${task.id}/update`) sentUpdate = true; });
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(editor).toBeHidden();
+  expect(sentUpdate, "nothing else changed, so nothing is sent").toBe(false);
+  expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.callSign).toBe("Marlowe");
+
+  await turnVoiceOn(daemon);
+  await page.locator(".bl-card", { hasText: "Named backlog task" }).getByRole("button", { name: "Named backlog task", exact: true }).click();
+  await expect(editor).toBeVisible();
+  if ((await advancedOf(editor).getAttribute("aria-expanded")) !== "true") await advancedOf(editor).click();
+  await expect(callSignOf(editor)).toHaveValue("Marlowe");
 
   // Cleared and saved: the update takes it off with null.
   await callSignOf(editor).fill("");
@@ -255,9 +287,4 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   expect(response.ok(), await response.text()).toBe(true);
   expect(JSON.parse(response.request().postData() ?? "{}")).toEqual({ callSign: null });
   expect(((await response.json()) as { task: Task }).task.callSign ?? null).toBeNull();
-
-  // A task in the backlog is not an agent yet: nothing to address.
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
-  await expect(page.getByRole("tabpanel", { name: "Voice" }).getByText("Who you can address")).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Marlowe", exact: true })).toHaveCount(0);
 });

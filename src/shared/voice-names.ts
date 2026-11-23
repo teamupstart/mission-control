@@ -292,30 +292,34 @@ export const SPOKEN_NAME_METER_STEPS = SPOKEN_NAME_WARNING_KINDS.length;
 /**
  * Why a name may be hard to address by voice, against the names already on the roster. Empty
  * when it is distinctive, and for a blank name. The caller leaves the agent's own entry out of
- * `roster`, so a name is never warned against itself.
+ * `roster`, so a name is never warned against itself. A name with no letters a to z has no
+ * phonetic key, so of these it can only be the same as a roster name, and that is still warned.
  *
- * - `control-word`: the name, or its first word, is or sounds like one of `VOICE_CONTROL_WORDS`;
+ * - `control-word`: the name's first word is, or sounds like (`keysSoundAlike`, as routing will
+ *   compare it), one of `VOICE_CONTROL_WORDS`;
  * - `sounds-like`: it sounds like another roster name (`namesSoundAlike`), naming each;
  * - `common-word`: a one-word name on the bundled list of everyday words;
  * - `short`: a one-word name of one syllable and four letters or fewer.
  */
 export function validateSpokenName(name: string, roster: readonly Pick<SpokenName, "name">[] = []): SpokenNameWarning[] {
+  const normalized = normalizeSpokenName(name);
+  if (!normalized) return [];
   const words = spokenWords(name);
   const first = words[0];
-  if (!first) return [];
   const warnings: SpokenNameWarning[] = [];
-  const firstKey = metaphone(first);
-  const control = VOICE_CONTROL_WORDS.find((word) => word === first || metaphone(word) === firstKey);
-  if (control) warnings.push({ kind: "control-word", word: control });
-  const normalized = normalizeSpokenName(name);
+  if (first) {
+    const firstKey = metaphone(first);
+    const control = VOICE_CONTROL_WORDS.find((word) => word === first || keysSoundAlike(metaphone(word), firstKey));
+    if (control) warnings.push({ kind: "control-word", word: control });
+  }
   const alike: string[] = [];
   for (const entry of roster) {
     if (normalizeSpokenName(entry.name) !== normalized && !namesSoundAlike(name, entry.name)) continue;
     if (!alike.some((seen) => normalizeSpokenName(seen) === normalizeSpokenName(entry.name))) alike.push(entry.name);
   }
   if (alike.length > 0) warnings.push({ kind: "sounds-like", names: alike });
-  if (words.length === 1 && VOICE_COMMON_WORDS.has(first)) warnings.push({ kind: "common-word" });
-  if (words.length === 1 && first.length <= 4 && syllables(first) === 1) warnings.push({ kind: "short" });
+  if (first && words.length === 1 && VOICE_COMMON_WORDS.has(first)) warnings.push({ kind: "common-word" });
+  if (first && words.length === 1 && first.length <= 4 && syllables(first) === 1) warnings.push({ kind: "short" });
   return warnings;
 }
 

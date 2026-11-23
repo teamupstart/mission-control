@@ -227,7 +227,7 @@ test("every field on the form reaches the patch", () => {
     const patch =
       field === "intent"
         ? taskUpdatePatch(t, draftFromTask(t), String(value))
-        : taskUpdatePatch(t, edited(t, { [field]: value }), t.intent);
+        : taskUpdatePatch(t, edited(t, { [field]: value }), t.intent, true);
     assert.ok(patch, `changing ${field} must produce a patch`);
     assert.equal(Object.keys(patch).length, 1, `changing ${field} must send ${field} alone`);
   }
@@ -237,10 +237,19 @@ test("a call sign reads back, is sent trimmed, is cleared with null, and a stray
   const t = mkTask({ callSign: "Alice" });
   assert.equal(draftFromTask(t).callSign, "Alice");
   assert.equal(draftFromTask(mkTask()).callSign, "", "no call sign is the empty field");
-  assert.equal(taskUpdatePatch(t, edited(t, { callSign: " Alice " }), t.intent), null, "the same name, padded, is not an edit");
-  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "  Atlas   Prime " }), t.intent), { callSign: "Atlas Prime" });
-  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "   " }), t.intent), { callSign: null });
-  assert.equal(taskUpdatePatch(mkTask(), edited(mkTask(), { callSign: "" }), t.intent), null);
+  assert.equal(taskUpdatePatch(t, edited(t, { callSign: " Alice " }), t.intent, true), null, "the same name, padded, is not an edit");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "  Atlas   Prime " }), t.intent, true), { callSign: "Atlas Prime" });
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "   " }), t.intent, true), { callSign: null });
+  assert.equal(taskUpdatePatch(mkTask(), edited(mkTask(), { callSign: "" }), t.intent, true), null);
+});
+
+test("with voice off a save keeps the stored call sign, even one edited before voice went off", () => {
+  const t = mkTask({ callSign: "Alice" });
+  assert.equal(taskUpdatePatch(t, edited(t, { callSign: "Atlas" }), t.intent), null, "off unless the caller says voice is on");
+  assert.equal(taskUpdatePatch(t, edited(t, { callSign: "Atlas" }), t.intent, false), null);
+  assert.equal(taskUpdatePatch(t, edited(t, { callSign: "" }), t.intent, false), null, "nor is it taken off");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "Atlas", title: "Renamed" }), t.intent, false), { title: "Renamed" },
+    "the rest of the edit is still saved");
 });
 
 test("a Persona reads back, is cleared with null, and follows every kind the form offers", () => {

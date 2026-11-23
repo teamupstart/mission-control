@@ -1943,7 +1943,7 @@ const UpdateTaskFieldsSchema = z
      * nothing the launch provisioned, so it may change while the agent runs.
      */
     callSign: SpokenNameSchema.nullable().optional().describe(
-      "Call sign: a short spoken name (1 to 40 characters) the operator can say to address this task's session by voice. Not the title. Null takes it off. A resident's task takes none",
+      "Call sign: a short spoken name (1 to 40 characters) this task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available. Not the title. Null takes it off. A resident's task takes none",
     ),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
@@ -2134,9 +2134,16 @@ export type BulkUpdateTasksInput = z.input<typeof BulkUpdateTasksSchema>;
 export const BulkDeleteTasksSchema = z.object({ taskIds: BulkTaskIdsSchema });
 export type BulkDeleteTasks = z.infer<typeof BulkDeleteTasksSchema>;
 
+/**
+ * A task's annotation: the fields that re-describe it and provision nothing, so an update may
+ * change them in any status. A writer that awaits between reading a task and writing it back
+ * carries these from the task as it reads then, or it undoes an edit that landed meanwhile.
+ */
+export const TASK_ANNOTATION_FIELDS = ["priority", "labels", "callSign"] as const satisfies readonly (keyof UpdateTask & keyof Task)[];
+
 /** True when this patch only re-describes a task, so no status guard applies. */
 export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
-  return Object.keys(patch).every((k) => k === "priority" || k === "labels" || k === "callSign");
+  return Object.keys(patch).every((k) => (TASK_ANNOTATION_FIELDS as readonly string[]).includes(k));
 }
 
 /**

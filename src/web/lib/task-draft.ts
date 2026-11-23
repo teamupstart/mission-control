@@ -269,8 +269,12 @@ function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[
  *
  * `intent` is passed in rather than read off the draft: what gets stored is the typed
  * text with any attachment paths appended, which only the modal can compose.
+ *
+ * `spokenNames` is the `voice` flag. The call sign is voice's field and is drawn only while voice
+ * is on, so with it off the draft's call sign is not the operator's answer: the stored one is
+ * kept, even when an edit was typed before voice was turned off. Off unless the caller says.
  */
-export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string): UpdateTask | null {
+export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string, spokenNames = false): UpdateTask | null {
   const patch: UpdateTask = {};
   const repoRoot = draft.repoRoot.trim();
   if (repoRoot !== task.repoRoot) patch.repoRoot = repoRoot;
@@ -316,7 +320,7 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (personaId !== task.personaId) patch.personaId = personaId;
   // Null takes a call sign off. Compared trimmed, so a stray space is not an edit.
   const callSign = draftCallSign(draft);
-  if (callSign !== (task.callSign ?? null)) patch.callSign = callSign;
+  if (spokenNames && callSign !== (task.callSign ?? null)) patch.callSign = callSign;
   const becomesPlan = draft.kind === "plan" && task.kind !== "plan";
   if (draft.workflowId !== undefined && (becomesPlan || draft.workflowId !== task.workflowId)) {
     patch.workflowId = draft.workflowId;

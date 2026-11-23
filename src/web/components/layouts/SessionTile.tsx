@@ -27,6 +27,7 @@ import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
+import { requestComposerFocus } from "../../lib/composer-focus.ts";
 import { StalledTileFacts } from "../StalledTileFacts.tsx";
 import { STUCK_RULE_LABELS } from "../../lib/stall-actions.ts";
 import type { Stall } from "@shared/stall.ts";
@@ -78,6 +79,7 @@ export function SessionTile({
   session,
   selected = false,
   onOpen,
+  onOpenQueue,
   onCursorTo,
   registerEl,
   draggingRepo,
@@ -107,6 +109,7 @@ export function SessionTile({
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
   selected?: boolean;
   onOpen: () => void;
+  onOpenQueue?: () => void;
   /** Make this tile the board's cursor without opening it. See `onSurfaceClick` below. */
   onCursorTo?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
@@ -179,6 +182,7 @@ export function SessionTile({
   onDismissStall?: () => void;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
+  const workspaceRepo = session.repoRoot ?? session.gitRoot;
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
@@ -337,7 +341,7 @@ export function SessionTile({
   const priority = isPrioritySession(fleetPause, session.id);
   const kindStyle = useDisplayChoice("taskKindCard");
   const taskKind = session.task?.kind ?? null;
-  const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  const kindMark = !stall && taskKind && kindStyle !== "off" ? kindStyle : null;
   // The board half of the background sub-agent treatment the operator chose. Nested sub-cards
   // hang beneath the tile (`SubagentTree`, drawn by the board beside this card), so only the
   // chip is this tile's to draw.
@@ -457,6 +461,7 @@ export function SessionTile({
             and cannot come to look like a different kind of thing. */}
         {pauseControls.has("corner") && <PauseCornerButtons session={session} />}
         {pauseControls.has("menu") && <PauseCardMenu session={session} />}
+        {stall && <span className="tile-stalled-age">{Math.floor(stall.forMs / 60_000)}m</span>}
         {jump && <Keycap chord={jump} />}
       </span>
 
@@ -471,7 +476,14 @@ export function SessionTile({
         </span>
       </span>}
 
-      {shown("goal") && session.goal?.text && (
+      {stall && (
+        <span className="tile-stalled-repo">
+          {taskHasRepository(session.task ?? {})
+            ? [workspaceRepo && repoLeaf(workspaceRepo), workspaceBranch].filter(Boolean).join(" · ") || "No repository reported"
+            : "No repository"}
+        </span>
+      )}
+      {!stall && shown("goal") && session.goal?.text && (
         <span className="tile-goal">{session.goal.text}</span>
       )}
 
@@ -516,6 +528,11 @@ export function SessionTile({
         <StalledTileFacts
           session={session}
           stall={stall}
+          onMessage={() => {
+            requestComposerFocus(session.id);
+            onOpen();
+          }}
+          onOpenQueue={onOpenQueue}
           onOpenRun={onOpenWorkflowRun}
           onDismiss={onDismissStall}
         />
@@ -604,13 +621,13 @@ export function SessionTile({
             pane-backed one, which is every session until an operator turns the runtime on.
             The DECISION and the tooltip are shared with the card chip and the rail glyph
             (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
-        <RuntimeTileFlag session={session} />
+        {!stall && <RuntimeTileFlag session={session} />}
         {blocker && (
           <Tooltip label={blockerFlagTitle(blocker)}>
             <span className="tile-flag tf-blocked">Blocked · {blockerAge(blocker.startedAt)}</span>
           </Tooltip>
         )}
-        {session.note && (
+        {session.note && (!stall || session.note.disposition === "escalated") && (
           <span className={`tile-flag tf-${session.note.disposition}`}>
             {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
           </span>
@@ -622,7 +639,7 @@ export function SessionTile({
         {openQuestionCount(session) > 0 && (
           <span className="tile-flag tf-question">{openQuestionsLabel(openQuestionCount(session))}</span>
         )}
-        {session.queue && session.queue.openCount > 0 && (
+        {!stall && session.queue && session.queue.openCount > 0 && (
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}
         {/* A PR the operator can reach in one click, from the board, without a detour
@@ -681,7 +698,7 @@ export function SessionTile({
           means "things that want your attention", and a routine estimate is not an
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
-      {runtimeLine && (
+      {!stall && runtimeLine && (
         <span className="tile-runtime-line">
           {/* Leads the row: the same kind of thing as the mode chip beside it - what this
               session may do right now, changeable from here. */}
@@ -704,7 +721,7 @@ export function SessionTile({
           the one place its card can say why. Draws nothing for every other session. */}
       <LaunchFailureNotice sessionId={session.id} />
 
-      {foot && (
+      {!stall && foot && (
         <span className="tile-foot">
           {/* The branch, with its fallback intact: a session with no branch prints where its
               NAME came from instead, so hiding "branch" hides the branch and does not empty

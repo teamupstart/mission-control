@@ -106,8 +106,8 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   // 1. A run waiting for a pushed head, with unpushed commits: Tell it to push. The fixed words
   //    reach the agent through the real outbox.
   served = [parked(id, { status: "waiting_for_new_head", unpushedCommits: 2 }, "parked-head")];
-  await expect(card()).toContainText("No-Mistakes Review round 2 waits for a pushed head", { timeout: 15_000 });
-  await expect(card()).toContainText("a pushed head. 2 commits on this branch have not been pushed.");
+  await expect(card()).toContainText("No-Mistakes Review round 2 needs a pushed head", { timeout: 15_000 });
+  await expect(card()).toContainText("2 commits not pushed");
   await expect(card().getByRole("button", { name: "Resubmit" })).toHaveCount(0);
   await capture(card(), "01-parked-push", page);
   await card().getByRole("button", { name: "Tell it to push", exact: true }).click();
@@ -190,6 +190,10 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   await expect(card).toContainText("Tidy the changelog", { timeout: 15_000 });
   expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
 
+  await card.getByRole("button", { name: "Message…" }).click();
+  await expect(page.getByRole("textbox", { name: /Reply to this session/ })).toBeFocused();
+  await page.getByRole("button", { name: "Back to the board" }).click();
+  await expect(card).toBeVisible({ timeout: 15_000 });
   await card.getByRole("button", { name: "Mark done", exact: true }).click();
   // The card asked to complete exactly its own task, and the daemon completed it.
   await expect.poll(() => completions).toEqual([expect.objectContaining({ outcome: "Marked done from the Stalled section" })]);
@@ -200,8 +204,8 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
 });
 
 test("in the Console layout the stalled rail row's detail carries the facts, the fixes and Dismiss", async ({ dashboard: page, daemon }) => {
-  // The fixture's layout is Console. There the rail row has room only for a `stalled` mark, and the
-  // stall is no longer an inbox row, so the session detail beside the rail is where it is acted on.
+  // Use the approved B viewport to compare the rail summary and the full selected-session sheet.
+  await page.setViewportSize({ width: 1500, height: 1000 });
   test.setTimeout(180_000);
   for (const id of ["inbox", "idle-stalled"]) {
     const flags = await api<{ config: { overrides: Record<string, boolean> } }>(
@@ -209,13 +213,18 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
     expect(flags.config.overrides[id]).toBe(true);
   }
   const task = await api<Task>(daemon, "/api/tasks", {
-    repoRoot: daemon.repo, title: "Fix the parser", intent: "fix the parser", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+    repoRoot: daemon.repo, title: "Fix login redirect loop", intent: "Fix login redirect loop", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
   });
   let session!: Session;
   await expect.poll(async () => {
     session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
     return session?.agentSessionId ? session.state : null;
   }, { timeout: 60_000 }).toBe("idle");
+  const name = "amber-lynx";
+  const brief = "Ended its turn asking in prose whether to update the auth snapshot.";
+  const sessionPath = `/api/sessions/${encodeURIComponent(session.id)}`;
+  await api(daemon, `${sessionPath}/rename`, { name });
+  await api(daemon, `${sessionPath}/note`, { brief, disposition: "skipped" }, "PUT");
   const facts: StallFacts = { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 0 };
   await page.route("**/api/away/stalls", (route) => route.fulfill({ json: [{
     sessionId: session.id, kind: "unfinished-work", forMs: 21 * 60_000, reason: "idle 21m with work unfinished",
@@ -224,27 +233,32 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(page.locator("main.board")).toHaveCount(0);
 
   // The rail draws the Stalled rule and the row's mark, and the inbox owes nothing.
-  const row = page.locator("button.rail-row", { hasText: session.name });
+  const row = page.getByRole("button", { name, exact: true }).and(page.locator(".rail-row"));
   await expect(row.locator(".rail-stalled")).toHaveText("stalled", { timeout: 15_000 });
   await expect(page.locator(".fleet-section-stalled")).toBeVisible();
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0);
 
   // Selecting it opens the detail with the Stalled band: the facts and the fixes.
+  await expect(row.locator(".rail-sub")).toHaveText(`Task: ${task.title}`);
+  await expect(row).not.toContainText(brief);
+  await capture(page.locator(".rail-group.tone-idle").locator(".."), "04-console-rail-fact", page);
   await row.click();
   const band = page.getByRole("region", { name: "Session stalled" });
   await expect(band).toContainText("Idle with work open");
-  await expect(band).toContainText("Fix the parser");
-  await expect(band.getByRole("button", { name: "Mark done", exact: true })).toBeVisible();
+  await expect(band.locator("dt")).toHaveText(["Task", "Last", "Foreman"]);
+  await expect(band.locator("dd").first()).toContainText(task.title);
+  await expect(band.locator("dd").last()).toHaveText(brief);
+  await expect(band.getByRole("button")).toHaveText(["Nudge", "Message…", "Mark done", "Dismiss"]);
   await capture(band, "03-console-stalled-band", page);
 
-  // Continue reaches the agent through the real outbox.
-  await band.getByRole("button", { name: "Continue", exact: true }).click();
-  await expect.poll(() => heard(daemon, session.id, INBOX_MESSAGES.continue), { timeout: 30_000 }).toBe(true);
+  // Nudge reaches the agent through the real outbox.
+  await band.getByRole("button", { name: "Nudge", exact: true }).click();
+  await expect.poll(() => heard(daemon, session.id, INBOX_MESSAGES.nudge), { timeout: 30_000 }).toBe(true);
   await expect.poll(() => sessionState(daemon, session.id), { timeout: 30_000 }).toBe("idle");
 
   // Dismiss returns the row to the rest of Idle: the mark and the band go, and nothing reaches the inbox.
   await page.getByRole("region", { name: "Session stalled" })
-    .getByRole("button", { name: `Dismiss ${session.name} from Stalled` }).click({ timeout: 15_000 });
+    .getByRole("button", { name: `Dismiss ${name} from Stalled` }).click({ timeout: 15_000 });
   await expect(page.getByRole("region", { name: "Session stalled" })).toHaveCount(0);
   await expect(row.locator(".rail-stalled")).toHaveCount(0);
   await expect(page.locator(".fleet-section-stalled")).toHaveCount(0);

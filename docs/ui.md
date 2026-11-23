@@ -1239,19 +1239,18 @@ available:
   wears a yellow spine and a **stalled** tag, and a short fact sheet: the open **Task** and any
   open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
   then the session's **Last** activity line and Foreman's note when it has one. Below it are the
-  fixes the inbox's Stuck row offered, with the same words and the same effect:
-  **Continue** and **Mark done** for open work; **Resubmit**, **Tell it to push** or
-  **Continue** for a parked run, plus **Open run**; and **Dismiss**, which returns the card to
-  free or held until the session stalls on something new. A dismissal here and on the inbox's
+  actions for the open work. **Nudge** asks the agent for a status update. **Message…** opens
+  the task session's composer, **Mark done** completes its task, and **Open queue** opens its work queue.
+  A parked run offers **Open run** and the available fix, such as **Resubmit**, **Tell it to push** or
+  **Continue**. Every card offers **Dismiss**, which returns it to free or held until its stall changes. A dismissal here and on the inbox's
   Stuck row is one dismissal. Stalled wins over held, as blocked does: a parked run's session is
   stalled because its run did not move it. It also wins over a resident's pin: a pinned resident
   with an idle stall leaves the top of the column for the Stalled section, and leaves the inbox.
   It wins over a declared wait the same way: a stalled session leaves the Awaiting section for
   Stalled, and its card still draws the wait's deadline track. A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
   row. The section is not framed by repository or by run. The Console
-  rail marks the row **stalled** and names the rule in its tooltip, and selecting it shows the
-  same fact sheet, fixes and **Dismiss** as a **Stalled** band in the session detail, as does
-  opening a stalled card from the Board. **Silent while working** and **Foreman escalation unanswered** stay inbox
+  rail marks the row **stalled** and shows the first fact beneath the session name. Selecting that row or
+  opening the Board card shows the full fact sheet and actions in the session detail. **Silent while working** and **Foreman escalation unanswered** stay inbox
   rows, because neither describes a quiet idle session. With the preview off, nothing changes.
 - **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
   has an outline and soft glow in its profile's color and a short label chip, and, when its

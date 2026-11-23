@@ -94,7 +94,9 @@ export interface SessionViewProps {
    */
   consoleZone: "rail" | "detail";
   onConsoleZoneChange: (zone: "rail" | "detail") => void;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, tab?: "queue") => void;
+  queueTabSession?: string | null;
+  onQueueTabOpened?: () => void;
   /**
    * Move the selection cursor to a session WITHOUT opening its detail.
    *

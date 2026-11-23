@@ -2,12 +2,23 @@ import { Fragment } from "react";
 import { canMessage } from "@shared/pane.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
+import { stalledFactRows } from "../lib/stalled.ts";
 import { api } from "../lib/api.ts";
 import { InboxActionButton } from "./AgentName.tsx";
-import { parkedMissingStep, parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
+import { parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 
 /** What a task completed from a Stalled card records as its outcome. */
 const MARK_DONE_OUTCOME = "Marked done from the Stalled section";
+
+type StalledFactsProps = {
+  session: Session;
+  stall: Stall;
+  onMessage?: () => void;
+  onOpenQueue?: () => void;
+  onOpenRun?: (runId: string) => void;
+  /** Hide this stall until its facts change; absent where nothing can record a dismissal. */
+  onDismiss?: () => void;
+};
 
 /**
  * A Stalled card's fact sheet and fixes (`idle-stalled`): what is open, what the session last did
@@ -26,41 +37,16 @@ export function StalledTileFacts({
   session,
   stall,
   onOpenRun,
+  onMessage,
+  onOpenQueue,
   onDismiss,
-}: {
-  session: Session;
-  stall: Stall;
-  onOpenRun?: (runId: string) => void;
-  /** Hide this stall until its facts change; absent where nothing can record a dismissal. */
-  onDismiss?: () => void;
-}): React.JSX.Element | null {
+}: StalledFactsProps): React.JSX.Element | null {
   const { busy, error, done, run, fixed } = useStallActions(session.id, stall);
   const facts = stall.facts ?? null;
   const name = session.name || "this session";
   const messageable = canMessage(session) && session.state !== "exited";
   const disabled = busy !== null;
-  const note = session.note?.brief || session.note?.lastAction || null;
-
-  const rows: { label: string; value: string; tone?: "muted" | "warn" }[] = [];
-  if (facts?.kind === "unfinished-work") {
-    if (facts.task) rows.push({ label: "Task", value: facts.task.title });
-    if (facts.queueOpen > 0) {
-      rows.push({ label: "Queue", value: facts.queueOpen === 1 ? "1 open item" : `${facts.queueOpen} open items` });
-    }
-  } else if (facts?.kind === "workflow-parked") {
-    rows.push({
-      label: "Waiting",
-      value: facts.status === "waiting_for_new_head"
-        ? `${facts.workflowName} round ${facts.round} waits for a pushed head`
-        : `${facts.workflowName} round ${facts.round} never reopened`,
-    });
-    rows.push({ label: "Missing", value: parkedMissingStep(facts), tone: "warn" });
-  } else {
-    // A stall from a daemon that predates facts: its sentence is all there is to say.
-    rows.push({ label: "Why", value: stall.reason });
-  }
-  rows.push({ label: "Last", value: session.activity ?? "No activity reported", tone: "muted" });
-  if (note) rows.push({ label: "Foreman", value: note });
+  const rows = stalledFactRows(session, stall);
 
   return (
     <div
@@ -73,20 +59,26 @@ export function StalledTileFacts({
         {rows.map((row) => (
           <Fragment key={row.label}>
             <dt>{row.label}</dt>
-            <dd className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</dd>
+            <dd className={row.tone ? `is-${row.tone}` : undefined}>{row.value}{row.detail && <span className="stalled-task-status"> · {row.detail}</span>}</dd>
           </Fragment>
         ))}
       </dl>
       <div className="stalled-actions">
         {facts?.kind === "unfinished-work" && messageable && (
           <InboxActionButton
-            action="continue"
+            action="nudge"
             name={name}
             className="btn btn-primary"
-            tooltip="Ask it to pick the open work up where it stopped"
+            tooltip="Ask what it is doing and whether anything is blocking it"
             disabled={disabled}
-            onClick={fixed("continue")}
+            onClick={fixed("nudge")}
           />
+        )}
+        {facts?.kind === "unfinished-work" && facts.task && messageable && onMessage && (
+          <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
+        )}
+        {facts?.kind === "unfinished-work" && facts.queueOpen > 0 && onOpenQueue && (
+          <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
         )}
         {facts?.kind === "unfinished-work" && facts.task && (
           <InboxActionButton
@@ -153,28 +145,18 @@ export function StalledTileFacts({
 
 /**
  * The same fact sheet and fixes as a band in the session detail, for the Console layout and the
- * Board's drill-in (`idle-stalled`). The rail row has room only for a mark, and an idle stall the
+ * Board's drill-in (`idle-stalled`). The rail row shows only the first fact, and an idle stall the
  * Stalled section draws is no longer an inbox row, so without this an operator who works in the
  * Console would see the mark with no way to act on it or dismiss it.
  */
-export function StalledBand({
-  session,
-  stall,
-  onOpenRun,
-  onDismiss,
-}: {
-  session: Session;
-  stall: Stall;
-  onOpenRun?: (runId: string) => void;
-  onDismiss?: () => void;
-}): React.JSX.Element {
+export function StalledBand(props: StalledFactsProps): React.JSX.Element {
   return (
     <section className="stalled-band" aria-label="Session stalled">
       <div className="stalled-band-top">
         <span className="stalled-band-flag">Stalled</span>
-        <span className="stalled-band-rule">{STUCK_RULE_LABELS[stall.kind]}</span>
+        <span className="stalled-band-rule">{STUCK_RULE_LABELS[props.stall.kind]}</span>
       </div>
-      <StalledTileFacts session={session} stall={stall} onOpenRun={onOpenRun} onDismiss={onDismiss} />
+      <StalledTileFacts {...props} />
     </section>
   );
 }

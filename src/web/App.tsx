@@ -683,6 +683,8 @@ export function App(): React.JSX.Element {
   // coming back to the board reopened the session you left while the tile cursor sat on a
   // different one - and it needed the arrow keys to remember to keep the two in step.
   // `boardOpenId` below derives the invariant instead of restating it.
+  const [queueTabSession, setQueueTabSession] = useState<string | null>(null);
+  const clearQueueTab = useCallback(() => setQueueTabSession(null), []);
   const [boardOpen, setBoardOpen] = useState(false);
   // What the dispatch form was last asked to be, or null for closed - ONE value, written
   // whole by whichever opener ran last. It used to be three (an open flag, a task being
@@ -2895,16 +2897,9 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
-  // Read here rather than beside the inbox fold below, because Idle's Stalled section reads the
-  // same dismissals: a stall dismissed from its card returns to free or held (`stalledSessions`).
-  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
-  // popping back up on the next frame, the next reload or in a second window. The fold applies
-  // them, so the figure and the list still cannot disagree.
-  //
-  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
-  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
-  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
-  // and control requests have no dismissal action, so they are still folded and counted (`foldWhileDismissalsUnknown`).
+  // The inbox and Idle share dismissals. Until the first read, the inbox holds back dismissible
+  // rows and their counts. Idle shows stalled cards so a delayed or failed read still leaves
+  // their fixes reachable. A previously dismissed card can appear briefly after a reload.
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   // Idle's Stalled section (`idle-stalled`): the idle stalls, by session, that the Board and the
   // Console rail draw under the Stalled rule and the inbox no longer folds. One map, handed to the
@@ -3812,9 +3807,12 @@ export function App(): React.JSX.Element {
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,
+    queueTabSession,
+    onQueueTabOpened: clearQueueTab,
     onSelect:
       layout === "board"
-        ? (id) => {
+        ? (id, tab) => {
+            setQueueTabSession(tab === "queue" ? id : null);
             setSelectedId(id);
             setBoardOpen(true);
           }

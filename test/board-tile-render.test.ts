@@ -473,9 +473,9 @@ test("an idle stall is drawn in Idle's Stalled section with what is open and the
   assert.match(html, /fleet-section-stalled/);
   assert.match(html, /class="tile [^"]*is-stalled/);
   assert.match(html, /<span class="tile-stalled"[^>]*>stalled<\/span>/);
-  assert.match(html, /<dt>Task<\/dt><dd>Fix login redirect loop<\/dd>/);
+  assert.match(html, /<dt>Task<\/dt><dd>Fix login redirect loop<span class="stalled-task-status"> · in progress<\/span><\/dd>/);
   assert.match(html, /<dt>Last<\/dt><dd class="is-muted">Ran npm test \(2 failing\)<\/dd>/);
-  assert.match(html, /data-inbox-action="continue"/);
+  assert.match(html, /data-inbox-action="nudge"/);
   assert.match(html, /data-inbox-action="mark-done"/);
   assert.match(html, /aria-label="Dismiss amber-lynx from Stalled"/);
   // Free comes first, then the Stalled rule, then the stalled card.

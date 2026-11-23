@@ -1191,7 +1191,7 @@ export function FleetSectionHead({
         // stalls (`idle-stalled`), so it says what the cards below it carry: the open work and
         // the step that moves it.
         <span className="fleet-section-why">
-          Went quiet with work still open. Each card says what is open and the step that moves it.
+          Went quiet with work still open. Each card says what is open and what would move it.
         </span>
       )}
       {kind === "held" && (

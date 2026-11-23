@@ -11,7 +11,7 @@ import type { ResidentProfile } from "../../src/shared/residents.ts";
 /**
  * What is at stake: with the `idle-stalled` preview on, a session the daemon's idle stall rules
  * flag leaves the inbox and sits under a Stalled rule in the Idle column, between free and held.
- * Its card says what is open and what it last did, and carries the fix: Continue sends the fixed
+ * Its card says what is open and what it last did, and carries the fix: Nudge sends the fixed
  * message through the real outbox, and Dismiss returns the card to free across a reload. With
  * the `inbox` preview on as well, the same stall is no Stuck row and no "to answer" figure, and
  * switching `idle-stalled` off with the page open puts it back in the inbox.
@@ -110,7 +110,7 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(factsA).toContainText("Task");
   await expect(factsA).toContainText("Fix the parser");
   await expect(factsA).toContainText("Last");
-  for (const name of ["Continue", "Mark done"]) {
+  for (const name of ["Nudge", "Message…", "Mark done"]) {
     await expect(factsA.getByRole("button", { name, exact: true })).toBeVisible();
   }
   await expect(factsA.getByRole("button", { name: `Dismiss ${a.session.name} from Stalled` })).toBeVisible();
@@ -119,13 +119,13 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(toAnswer(page)).toHaveCount(0);
   await capture(idle, "01-stalled-section", page);
 
-  // Continue puts the fixed text in the agent's conversation through the real outbox, and the
+  // Nudge puts the fixed text in the agent's conversation through the real outbox, and the
   // session moving takes its card out of the section.
-  await factsA.getByRole("button", { name: "Continue", exact: true }).click();
+  await factsA.getByRole("button", { name: "Nudge", exact: true }).click();
   await expect.poll(async () => {
     const served = await api<{ messages: Array<{ role: string; text: string }> }>(
       daemon, `/api/sessions/${encodeURIComponent(a.session.id)}/transcript`);
-    return served.messages.some((m) => m.role === "user" && m.text.includes(INBOX_MESSAGES.continue));
+    return served.messages.some((m) => m.role === "user" && m.text.includes(INBOX_MESSAGES.nudge));
   }, { timeout: 30_000 }).toBe(true);
   await expect(factsA).toHaveCount(0, { timeout: 30_000 });
 
@@ -138,7 +138,7 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(idleColumn(page).locator(".tile", { hasText: b.session.name })).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(6_000); // one stall poll, so a returning card would be drawn
   await expect(facts(page, b.session)).toHaveCount(0);
-  await capture(idleColumn(page), "02-after-continue-and-dismiss", page);
+  await capture(idleColumn(page), "02-after-nudge-and-dismiss", page);
 });
 
 test("with the inbox on, an idle stall is no Stuck row until the Stalled preview is switched off", async ({ dashboard: page, daemon }) => {
@@ -228,7 +228,7 @@ test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section
   await expect(residentFactsCard).toBeVisible();
   await expect(residentFactsCard).toContainText("Queue");
   await expect(residentFactsCard).toContainText("1 open item");
-  await expect(residentFactsCard.getByRole("button", { name: "Continue", exact: true })).toBeVisible();
+  await expect(residentFactsCard.getByRole("button", { name: "Nudge", exact: true })).toBeVisible();
   await expect(residentFactsCard.getByRole("button", { name: `Dismiss ${resident.name} from Stalled` })).toBeVisible();
   await expect(idleColumn(page).locator(".tile.is-stalled")).toHaveCount(2);
   await expect(idleColumn(page).locator(".fleet-section-stalled .fleet-section-n")).toHaveText("2");
@@ -237,4 +237,7 @@ test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section
   // And neither is an inbox row: nothing is owed in the inbox.
   await page.waitForTimeout(6_000); // one stall poll, so a row that was coming would be drawn
   await expect(toAnswer(page)).toHaveCount(0);
+
+  await residentFactsCard.getByRole("button", { name: "Open queue" }).click();
+  await expect(page.getByRole("tab", { name: /Work queue/ })).toHaveAttribute("aria-selected", "true");
 });

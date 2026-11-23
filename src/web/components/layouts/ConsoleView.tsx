@@ -240,7 +240,7 @@ export function ConsoleView(props: SessionViewProps & {
               </Tooltip>
             )}
             {head.stalled !== null && (
-              <Tooltip label="Went quiet with work still open - each card says what is open and the step that moves it">
+              <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
                 <span className="n-stalled">{head.stalled} stalled</span>
               </Tooltip>
             )}

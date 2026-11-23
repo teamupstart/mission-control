@@ -313,6 +313,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       session={s}
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
+      onOpenQueue={() => props.onSelect(s.id, "queue")}
       onCursorTo={() => props.onCursorTo(s.id)}
       registerEl={props.registerEl}
       registerWorkflowDisclosure={props.registerWorkflowDisclosure}
@@ -734,7 +735,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     )}
                     {/* Between free and held, in the order the column draws them. */}
                     {head!.stalled !== null && (
-                      <Tooltip label="Went quiet with work still open - each card says what is open and the step that moves it">
+                      <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
                         <span className="board-col-n n-stalled">{head!.stalled} stalled</span>
                       </Tooltip>
                     )}

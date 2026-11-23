@@ -483,6 +483,13 @@ export function ConsoleDetail({
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
+  useEffect(() => {
+    if (view.queueTabSession === session.id) {
+      setTab("queue");
+      view.onQueueTabOpened?.();
+    }
+  }, [view.queueTabSession, view.onQueueTabOpened, session.id]);
+
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
   // The shared reduction keeps the task title rule consistent across surfaces.
@@ -956,6 +963,8 @@ export function ConsoleDetail({
               <StalledBand
                 session={session}
                 stall={stall}
+                onMessage={focusReply}
+                onOpenQueue={() => setTab("queue")}
                 onOpenRun={view.onOpenWorkflowRun}
                 onDismiss={view.onDismissStall ? () => view.onDismissStall!(session.id, stall) : undefined}
               />

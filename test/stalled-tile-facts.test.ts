@@ -47,7 +47,7 @@ const parked = (over: Partial<Extract<StallFacts, { kind: "workflow-parked" }>>)
   resubmittable: false, externalSource: null, unpushedCommits: 0, ...over,
 });
 
-test("open work: the task, the queue, the last activity, Foreman's note, Continue, Mark done and Dismiss", () => {
+test("open work: the task, the queue, the last activity, Foreman's note, Nudge, Mark done and Dismiss", () => {
   const html = card({ kind: "unfinished-work", task: { id: "t1", title: "Fix login redirect loop" }, queueOpen: 3 }, { note: NOTE });
   assert.deepEqual(rows(html), [
     "Task: Fix login redirect loop",
@@ -55,14 +55,14 @@ test("open work: the task, the queue, the last activity, Foreman's note, Continu
     "Last: Ran npm test (2 failing)",
     `Foreman: ${NOTE.brief}`,
   ]);
-  assert.deepEqual(actions(html), ["continue", "mark-done", "dismiss"]);
+  assert.deepEqual(actions(html), ["nudge", "mark-done", "dismiss"]);
   assert.match(html, /aria-label="Why amber-lynx stalled"/);
 });
 
 test("a queue alone: no Mark done, because there is no task to complete", () => {
   const html = card({ kind: "unfinished-work", task: null, queueOpen: 1 }, { activity: null });
   assert.deepEqual(rows(html), ["Queue: 1 open item", "Last: No activity reported"]);
-  assert.deepEqual(actions(html), ["continue", "dismiss"]);
+  assert.deepEqual(actions(html), ["nudge", "dismiss"]);
 });
 
 test("a parked run: what it waits on, the missing step, and the one fix that moves it, plus Open run", () => {
@@ -76,8 +76,8 @@ test("a parked run: what it waits on, the missing step, and the one fix that mov
 
   const push = card(parked({ status: "waiting_for_new_head", unpushedCommits: 2 }));
   assert.deepEqual(rows(push).slice(0, 2), [
-    "Waiting: No-Mistakes round 2 waits for a pushed head",
-    "Missing: a pushed head. 2 commits on this branch have not been pushed.",
+    "Waiting: No-Mistakes round 2 needs a pushed head",
+    "Missing: 2 commits not pushed",
   ]);
   assert.deepEqual(actions(push), ["push", "open-run", "dismiss"]);
 

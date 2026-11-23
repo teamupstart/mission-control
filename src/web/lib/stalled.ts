@@ -1,3 +1,5 @@
+import type { Session } from "@shared/types.ts";
+import { parkedMissingStep } from "./stall-actions.ts";
 import { isIdleStall, type Stall } from "@shared/stall.ts";
 import { stallDismissalKey } from "./attention.ts";
 
@@ -64,4 +66,39 @@ export function inboxStalls(stalls: readonly Stall[], drawn: ReadonlySet<string>
 export function byStalledLongest(stalls: ReadonlyMap<string, Stall>) {
   return (a: { id: string }, b: { id: string }): number =>
     (stalls.get(b.id)?.forMs ?? 0) - (stalls.get(a.id)?.forMs ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** The board prints all the facts. The rail has room for the first. */
+export function stalledFactRows(session: Session, stall: Stall) {
+  const facts = stall.facts;
+  const note = session.note?.brief || session.note?.lastAction || null;
+
+  const rows: { label: string; value: string; detail?: string; tone?: "muted" | "warn" | "quote" }[] = [];
+  if (facts?.kind === "unfinished-work") {
+    if (facts.task) {
+      const status = session.task?.id === facts.task.id ? session.task.status : undefined;
+      rows.push({ label: "Task", value: facts.task.title, detail: status === "running" ? "in progress" : status });
+    }
+    if (facts.queueOpen > 0) {
+      rows.push({ label: "Queue", value: facts.queueOpen === 1 ? "1 open item" : `${facts.queueOpen} open items` });
+    }
+  } else if (facts?.kind === "workflow-parked") {
+    rows.push({
+      label: "Waiting",
+      value: facts.status === "waiting_for_new_head"
+        ? `${facts.workflowName} round ${facts.round} needs a pushed head`
+        : `${facts.workflowName} round ${facts.round} never reopened`,
+    });
+    const missing = facts.status === "waiting_for_new_head" && facts.unpushedCommits > 0
+      ? `${facts.unpushedCommits} ${facts.unpushedCommits === 1 ? "commit" : "commits"} not pushed`
+      : parkedMissingStep(facts);
+    rows.push({ label: "Missing", value: missing, tone: "warn" });
+  } else {
+    // A stall from a daemon that predates facts: its sentence is all there is to say.
+    rows.push({ label: "Why", value: stall.reason });
+  }
+  rows.push({ label: "Last", value: session.activity ?? "No activity reported", tone: "muted" });
+  if (note) rows.push({ label: "Foreman", value: note, tone: "quote" });
+
+  return rows;
 }

@@ -3,6 +3,7 @@ import type { Stall } from "@shared/stall.ts";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
+import { stalledFactRows } from "../../lib/stalled.ts";
 import { relativeTime, uptime } from "../../lib/format.ts";
 import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
@@ -95,8 +96,7 @@ export function RailRow({
   resident?: ResidentSessionMark | null;
   /**
    * The idle stall this row sits under the Stalled rule for (`idle-stalled`), or null. The rail
-   * marks it and names the rule in the tooltip; the fact sheet and its fixes are the Board
-   * card's, because a rail row's two-line budget has no room for them.
+   * shows the first fact below the name. The session detail carries the full sheet and fixes.
    */
   stall?: Stall | null;
 }): React.JSX.Element {
@@ -160,6 +160,7 @@ export function RailRow({
   const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }`;
+  const firstFact = stall && stalledFactRows(session, stall)[0];
   const descriptionId = useId();
   const actionWaitId = useId();
   const actionWaitRuns = (workflowRuns ?? (workflowRun ? [workflowRun] : []))
@@ -190,7 +191,7 @@ export function RailRow({
             {session.name || "(unnamed)"}
           </span>
         </Tooltip>
-        <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
+        <span className="rail-sub">{firstFact ? `${firstFact.label}: ${firstFact.value}` : session.goal?.text ?? session.activity ?? ""}</span>
         {/* Two lines, never four: the state, then everything else on one line. Given a
             line each, the marks and the PR chip made a row as tall as three, and a rail
             you can only fit six sessions in has stopped being a rail. */}

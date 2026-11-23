@@ -217,7 +217,8 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   const previews = setupRow(page, "dependency-voice-previews");
   await expectRowStatus(page, "dependency-voice-previews", "Needs setup");
   await previews.getByRole("button", { name: "Turn on all three" }).click();
-  await expect(previews.getByRole("status")).toContainText("inbox could not be turned on: save_failed");
+  // Named by its label, as Settings > Feature flags shows it, not by its id.
+  await expect(previews.getByRole("status")).toContainText("Reports and inbox upgrades could not be turned on: save_failed");
   await expect(previews.getByRole("status")).toContainText("Switch it in Settings > Feature flags, then press Re-check.");
   expect(written).toEqual(["async-input", "inbox"]);
   const flags = await storedFlags(daemon);

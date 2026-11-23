@@ -445,3 +445,24 @@ test("switching a ships-hidden item on survives the next cold paint", () => {
     "a seeded record was seeded again, re-hiding an item the operator switched on",
   );
 });
+
+test("a cached ui.voice this build cannot read falls back alone, keeping every other cached preference", () => {
+  const unreadable = [
+    // A newer build's longer list: over the 32-entry bound.
+    { confirmation: "toast", indicators: Array.from({ length: 40 }, (_, i) => `indicator-${i}`) },
+    // An id that is not a string, and one over 64 characters.
+    { confirmation: "toast", indicators: ["status-line", 7] },
+    { confirmation: "toast", indicators: ["x".repeat(65)] },
+  ];
+  for (const voice of unreadable) {
+    store.set("mission-control.ui", JSON.stringify({ layout: "console", richText: false, keybindings: { select: "shift+Tab" }, voice }));
+    const config = readCache();
+    assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] }, "only the voice field falls back");
+    assert.equal(config.layout, "console", "the rest of the cache is kept");
+    assert.equal(config.richText, false);
+    assert.deepEqual(config.keybindings, { select: "shift+Tab" });
+  }
+  // A readable value is kept, and an unknown placement alone reads as the pill.
+  store.set("mission-control.ui", JSON.stringify({ voice: { confirmation: "banner", indicators: ["edge"] } }));
+  assert.deepEqual(readCache().voice, { confirmation: "pill", indicators: ["edge"] });
+});

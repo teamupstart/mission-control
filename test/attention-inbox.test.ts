@@ -603,9 +603,13 @@ test("a dismissed Stuck row stays dismissed while minutes pass and returns when 
   const held = foldAttention({ sessions, reviews: [], ensembles: [], stalls: [later], dismissed });
   assert.deepEqual(held.items, []);
   assert.equal(held.total, 0);
-  // Dismissed, the session is still claimed: the backstop does not redraw it as Waiting on you.
+  // Dismissed while the session is not amber, nothing else draws it either.
+  // Dismissed and then amber (a permission prompt after a dismissed escalation, say): the stall
+  // no longer claims it, so the backstop draws it under Waiting on you and to answer counts it.
   const amber = [mkSession({ id: "s-1", state: "awaiting_input" })];
-  assert.deepEqual(foldAttention({ sessions: amber, reviews: [], ensembles: [], stalls: [later], dismissed }).items, []);
+  const amberFold = foldAttention({ sessions: amber, reviews: [], ensembles: [], stalls: [later], dismissed });
+  assert.deepEqual(amberFold.items.map((item) => item.id), ["blocked:s-1"]);
+  assert.equal(amberFold.total, 1);
   const changed = stall("s-1", { facts: { kind: "unfinished-work", task: { id: "t-2", title: "Other" }, queueOpen: 0 }, fingerprint: "other" });
   assert.deepEqual(
     foldAttention({ sessions, reviews: [], ensembles: [], stalls: [changed], dismissed }).items.map((item) => item.id),

@@ -608,14 +608,21 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   )) {
     const session = sessionById.get(stall.sessionId);
     if (!session || isSettling(session)) continue;
-    represented.add(session.id);
-    items.push({
+    const item: AttentionItem = {
       kind: "session_stuck",
       id: `stuck:${session.id}`,
       session,
       stall,
       context: contextFor(session),
-    });
+    };
+    // A dismissed Stuck row keeps claiming its session only while the session is not amber. The
+    // stall's fingerprint does not follow the session's state, so an escalation dismissed here and
+    // then a permission prompt on the same session would otherwise leave an amber session with
+    // no row at all: the backstop draws it under Waiting on you instead, as it would without
+    // the stall.
+    if (isDismissed(item, dismissed) && stateDisplay(session).tone === "attention") continue;
+    represented.add(session.id);
+    items.push(item);
   }
 
   // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See

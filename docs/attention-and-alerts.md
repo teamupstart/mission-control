@@ -175,7 +175,8 @@ including a retry of the same one, or until the row reports a different stall. A
 own when the daemon stops reporting the stall, which is when the session moves again. Stuck rows
 count in **to answer**, one each. A stuck session that the board also paints amber is listed under
 Stuck and not again under Waiting on you; a session with open questions keeps its question row as
-well.
+well. If you dismissed its Stuck row and the session then turns amber, it is listed under Waiting
+on you, so an amber session always has a row.
 
 ### Snoozed questions
 

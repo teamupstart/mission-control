@@ -170,6 +170,23 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await expect(after).not.toContainText(claude.workUnitId!);
   await expect(after).not.toContainText(/work unit/i);
   await shoot(after.locator("dl.detail-sub"), "07-preview-switched-off-still-hidden", page);
+
+  // The empty side of the band's content check. The id no longer keeps the band open, and this
+  // task has no install warnings, so with the path and branch cells hidden, the task chip silent
+  // (the session is named after its task) and no pull requests, there is no band at all - not an
+  // empty bar of chrome.
+  expect(running?.task?.claimWarnings ?? [], "no install warnings to keep the band open").toEqual([]);
+  expect(running?.task?.repoPrs ?? []).toEqual([]);
+  const hidden = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hiddenDisplayItems: ["detailPath", "detailBranch"] }),
+  });
+  expect(hidden.ok).toBe(true);
+  await page.reload();
+  const empty = await openSession(page, claude.title);
+  await expect(empty.locator("dl.detail-sub")).toHaveCount(0);
+  await expect(empty).not.toContainText(claude.workUnitId!);
 });
 
 test("with the preview off, a launch carries no variable and the detail shows no row", async ({ dashboard: page, daemon }) => {

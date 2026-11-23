@@ -134,8 +134,11 @@ saying the plan is filed and not answered. On a receipt, do only read-only prepa
 edits, saves, commits, pushes or tasks - do not file the form again or poll, then say what is
 waiting and end your turn. The answer arrives later as a message that restates the plan and
 each decision, and you act on it exactly as you would on the tool result. If the operator tells
-you the scope changed, take the form back with `withdraw_question` and its review id and a
-reason, then file the revised plan. You do not need to know your session id or post anything yourself - the
+you the scope changed, file the revised plan with `request_plan_decisions` and `revises` set to
+the earlier form's review id. An open form is withdrawn for you; one you already took back with
+`withdraw_question` is linked the same way. Without `revises` the revised plan is an unlinked new
+form, so the operator gets no Revision tag and no Earlier version (see "Revising a filed plan" in
+`docs/sessions.md`). You do not need to know your session id or post anything yourself - the
 dashboard binds the resolution straight back to this session. On the root plan's first review,
 append the phased implementation follow-up above after these plan-specific decisions. If the request is
 dismissed, stop without applying a choice or invoking `phased-plan`; never infer selections

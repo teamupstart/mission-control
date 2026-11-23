@@ -62,10 +62,12 @@ async function fixture(options: { messageable?: boolean } = {}) {
   const input: PlanIdentity = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: 1 };
   const service = workflows.localPlanPublication(tasks);
   const headers = { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() };
-  const post = async (decisions?: object[], extra: object = {}) => {
-    const res = await app.request("/mcp/v2/reviews", { method: "POST", headers, body: JSON.stringify({ env: {}, sessionId: id, cwd: repo,
+  const send = (decisions?: object[], extra: object = {}) =>
+    app.request("/mcp/v2/reviews", { method: "POST", headers, body: JSON.stringify({ env: {}, sessionId: id, cwd: repo,
       kind: "plan-decisions", title: "Approve bundle", body: "Inspect complete Markdown and HTML", decisions,
       managedPlan: { repoSlot: "repo-01", planId: input.planId, revision: input.revision }, ...extra }) });
+  const post = async (decisions?: object[], extra: object = {}) => {
+    const res = await send(decisions, extra);
     assert.equal(res.status, 200, await res.clone().text());
     return await res.json() as { id: string; sessionId: string; wait?: string; receipt?: string };
   };
@@ -73,7 +75,7 @@ async function fixture(options: { messageable?: boolean } = {}) {
   const resolve = (reviewId: string, body: object) => app.request(`/api/reviews/${reviewId}/resolve`, { method: "POST", headers, body: JSON.stringify(body) });
   const approve = { action: "answer", response: "Approved", selections: [{ decisionId: "approve-final-bundle", selected: ["approve"], other: null }] };
   const grants = () => openDb().prepare("SELECT task_id, review_id FROM managed_plan_standing_approvals WHERE task_id = ?").all(task.id).map((row) => ({ ...row }));
-  return { id, task, registry, reviews, service, authority, input, ask, post, resolve, approve, grants };
+  return { id, task, registry, reviews, service, authority, input, ask, send, post, resolve, approve, grants };
 }
 
 test("ticking approve all future bundles approves later final bundles without prompting and logs them", async () => {
@@ -343,4 +345,131 @@ test("with either flag off a managed final-bundle approval still blocks in the c
   assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
   const still = await f.post(undefined, { asyncCapable: true, title: "Approve bundle twice" });
   assert.equal(still.wait, "call", "filed-plan-decisions alone is off");
+});
+
+/** Save the fixture's plan again as revision 2, as a scope change would. */
+async function reviseBundle(f: Awaited<ReturnType<typeof fixture>>): Promise<PlanIdentity> {
+  const files = [{ name: "plan.md", content: "# Exact local plan, revised" }, { name: "plan.html", content: "<h1>Exact local plan, revised</h1>" }];
+  await savePlan(f.authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files });
+  return { ...f.input, revision: 2 };
+}
+
+test("a revised managed bundle form binds its own revision, approving it publishes that revision, and the withdrawn earlier form never approves", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const first = await f.post(undefined, { asyncCapable: true });
+  assert.equal(first.wait, "message");
+  const next = await reviseBundle(f);
+  const revised = await f.post(undefined, {
+    asyncCapable: true, title: "Approve bundle, revised", revises: first.id,
+    managedPlan: { repoSlot: "repo-01", planId: next.planId, revision: next.revision },
+  });
+  assert.equal(revised.wait, "message");
+  assert.deepEqual(f.registry.getReview(revised.id)?.revision, { number: 2, previousId: first.id });
+  assert.equal(f.registry.getReview(first.id)?.status, "withdrawn", "the open earlier form is withdrawn with the new one");
+  const bound = openDb().prepare("SELECT review_id, revision FROM managed_plan_reviews WHERE review_id IN (?, ?) ORDER BY revision")
+    .all(first.id, revised.id).map((row) => ({ ...row }));
+  assert.deepEqual(bound, [{ review_id: first.id, revision: 1 }, { review_id: revised.id, revision: 2 }],
+    "each form keeps its own binding; the earlier one stays as an unapproved record");
+  assert.notEqual(f.service.readiness(f.input).state, "approved");
+  assert.notEqual(f.service.readiness(next).state, "approved", "the link carries no approval forward");
+
+  assert.equal((await f.resolve(revised.id, f.approve)).status, 200);
+  assert.equal(f.service.readiness(next).state, "approved");
+  assert.notEqual(f.service.readiness(f.input).state, "approved", "the withdrawn earlier form never approves");
+  const receipt = await f.service.publish(f.authority, next);
+  assert.equal(receipt.reviewId, revised.id);
+  assert.equal(receipt.revision, 2);
+  // Revision 1 can never publish now: it is stale, and its only form was withdrawn unapproved.
+  await assert.rejects(f.service.publish(f.authority, f.input), /stale/);
+});
+
+test("a revised bundle a standing approval covers outright is recorded as the revision, and an invalid revises binds nothing", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const open = await f.post(undefined, { asyncCapable: true, title: "Approve bundle, still open" });
+  const granted = await f.post(undefined, { asyncCapable: true });
+  assert.equal((await f.resolve(granted.id, { ...f.approve, approveFutureBundles: true })).status, 200);
+  const next = await reviseBundle(f);
+  const managedPlan = { repoSlot: "repo-01", planId: next.planId, revision: next.revision };
+
+  // Refused before the approval is bound or recorded.
+  const bindings = () => (openDb().prepare("SELECT COUNT(*) AS n FROM managed_plan_reviews").get() as { n: number }).n;
+  const before = bindings();
+  const bad = await f.send(undefined, { asyncCapable: true, revises: granted.id, managedPlan });
+  assert.equal(bad.status, 409);
+  assert.match(((await bad.json()) as { error: string }).error, /was already answered/);
+  assert.equal(bindings(), before, "no approval was bound for a refused revision");
+
+  const approved = await f.post(undefined, { asyncCapable: true, revises: open.id, managedPlan });
+  assert.equal(approved.wait, "call", "born settled, as without revises");
+  const record = f.registry.getReview(approved.id)!;
+  assert.equal(record.resolvedBy, "standing-approval");
+  assert.deepEqual(record.revision, { number: 2, previousId: open.id });
+  assert.equal(f.registry.getReview(open.id)?.status, "withdrawn", "the open earlier form does not linger as a gate");
+  assert.equal(f.service.readiness(next).state, "approved");
+});
+
+
+test("a reused standing approval answers a revision request only when it is that same revision; otherwise revises is checked and applied", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const open = await f.post(undefined, { asyncCapable: true, title: "Approve bundle, still open" });
+  const granted = await f.post(undefined, { asyncCapable: true });
+  assert.equal((await f.resolve(granted.id, { ...f.approve, approveFutureBundles: true })).status, 200);
+  // An approval recorded for this bundle without revises: the one a later identical ask reuses.
+  const plain = await f.post(undefined, { asyncCapable: true });
+  assert.equal(f.registry.getReview(plain.id)?.resolvedBy, "standing-approval");
+  assert.equal(f.registry.getReview(plain.id)?.revision, undefined);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const reviewRows = () => (openDb().prepare("SELECT COUNT(*) AS n FROM reviews").get() as { n: number }).n;
+
+  // Invalid: the reusable approval is not handed back, and the refusal writes nothing.
+  const before = reviewRows();
+  const bad = await f.send(undefined, { asyncCapable: true, revises: "no-such-review" });
+  assert.equal(bad.status, 409);
+  assert.match(((await bad.json()) as { error: string }).error, /is not a review Mission Control knows/);
+  assert.equal(reviewRows(), before);
+
+  // Valid: a new approval carries the link, and the open earlier form is withdrawn with it.
+  await settle();
+  const revised = await f.post(undefined, { asyncCapable: true, revises: open.id });
+  assert.notEqual(revised.id, plain.id, "the unlinked approval is not reused for a revision");
+  assert.deepEqual(f.registry.getReview(revised.id)?.revision, { number: 2, previousId: open.id });
+  assert.equal(f.registry.getReview(revised.id)?.resolvedBy, "standing-approval");
+  assert.equal(f.registry.getReview(open.id)?.status, "withdrawn");
+
+  // A retry of that same revision request reuses the approval it already recorded.
+  await settle();
+  const rows = reviewRows();
+  const retried = await f.post(undefined, { asyncCapable: true, revises: open.id });
+  assert.equal(retried.id, revised.id);
+  assert.equal(reviewRows(), rows, "nothing new is recorded");
+});
+
+test("a standing approval whose record fails takes its plan binding back, so no binding names a missing review", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const granted = await f.post(undefined, { asyncCapable: true });
+  assert.equal((await f.resolve(granted.id, { ...f.approve, approveFutureBundles: true })).status, 200);
+  const bindings = () => (openDb().prepare("SELECT COUNT(*) AS n FROM managed_plan_reviews").get() as { n: number }).n;
+  const dangling = () => (openDb().prepare(
+    "SELECT COUNT(*) AS n FROM managed_plan_reviews m LEFT JOIN reviews r ON r.id = m.review_id WHERE r.id IS NULL").get() as { n: number }).n;
+  const before = bindings();
+  // The approval's binding is written, then recording the approval itself fails.
+  openDb().exec(`CREATE TRIGGER fail_standing_record BEFORE INSERT ON reviews WHEN NEW.status = 'answered'
+    BEGIN SELECT RAISE(ABORT, 'disk refused the approval'); END;`);
+  try {
+    const res = await f.send(undefined, { asyncCapable: true, title: "Approve bundle, record fails" });
+    assert.notEqual(res.status, 200);
+    assert.match(await res.text(), /disk refused the approval/);
+  } finally {
+    openDb().exec("DROP TRIGGER fail_standing_record");
+  }
+  assert.equal(bindings(), before, "the binding written for the failed record was taken back");
+  assert.equal(dangling(), 0, "no binding names a review that does not exist");
+  // And the next identical ask records its approval normally.
+  const approved = await f.post(undefined, { asyncCapable: true, title: "Approve bundle, record fails" });
+  assert.equal(f.registry.getReview(approved.id)?.resolvedBy, "standing-approval");
+  assert.equal(bindings(), before + 1);
 });

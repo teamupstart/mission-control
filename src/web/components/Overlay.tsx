@@ -99,6 +99,9 @@ export const OVERLAY_IDS = {
   // Settings > Task shaping's manifest import, and its dry run of one shaper.
   shapingImport: "shaping-import",
   shapingTest: "shaping-test",
+  // A revised plan form's earlier version, read-only. Opened from a review card inside the
+  // inbox or the review modal, so it is a layer of its own above them.
+  reviewEarlierVersion: "review-earlier-version",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

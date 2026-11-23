@@ -9,7 +9,7 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { ASYNC_INPUT_FLAG, asyncInputAnswer, filedPlanAnswer, isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
+import { ASYNC_INPUT_FLAG, asyncInputAnswer, filedPlanAnswer, isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion, withdrawnByItsAgent } from "@shared/async-input.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -21,6 +21,8 @@ import type { Registry } from "./registry.ts";
 import {
   inTransaction,
   insertReview,
+  loadReview,
+  reviewRevisedBy,
   transferPendingReviews,
   loadReviewContinuationCandidates,
   loadSnoozeInstructionCandidates,
@@ -69,6 +71,23 @@ type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewConti
 export class ReviewResolutionError extends Error {}
 export class OpenQuestionLimitError extends Error {}
 
+/**
+ * A `revises` that names no form this ask may revise. Nothing was filed, and the message says why
+ * in words the agent can act on.
+ */
+export class RevisionRefusal extends Error {}
+
+/**
+ * The review manager's agent withdrawal in two halves, like `mergeClosure`: `persist` writes the
+ * status `withdrawn` with the reason and cancels an unclaimed snooze instruction, and must run
+ * inside a transaction; `publish` broadcasts it, refreshes the pending turn and releases the
+ * waiters, and runs only after the commit.
+ */
+type AgentWithdrawal = { persist: () => void; publish: () => ReviewItem };
+
+/** What a valid `revises` resolves to: the link to store, and the open form to withdraw with it. */
+type Revision = { link: NonNullable<ReviewItem["revision"]>; withdrawal: AgentWithdrawal | null };
+
 /** A merge could not close a session's questions yet (a runtime transfer is moving them). */
 export class MergeClosureDeferred extends Error {}
 
@@ -105,6 +124,29 @@ function canonical(value: unknown): string {
     entries.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
     return Object.fromEntries(entries);
   });
+}
+
+/** Why a settled filed plan form that its agent did not withdraw cannot be revised. */
+function revisionRefusalFor(target: ReviewItem): string {
+  switch (target.status) {
+    case "answered":
+    case "approved":
+    case "rejected":
+      return "was already answered. File the new plan as a new form, without revises.";
+    case "dismissed":
+      return "the operator dismissed. File the new plan as a new form, without revises.";
+    case "orphaned":
+      return target.closedReason === "merged"
+        ? "was closed when the task's pull request merged. File the new plan as a new form, without revises."
+        : "was closed when its session went away. File the new plan as a new form, without revises.";
+    case "superseded":
+      return "was replaced by a reworded retry. File the new plan as a new form, without revises.";
+    case "withdrawn":
+      return "was not withdrawn by its own agent, so it cannot be revised. File the new plan as a new form, without revises.";
+    case "pending":
+    case "snoozed":
+      return "is not open for revision. File the new plan as a new form, without revises.";
+  }
 }
 
 export class ReviewManager {
@@ -315,6 +357,12 @@ export class ReviewManager {
        * build, which never says `asyncCapable` and cannot read a receipt.
        */
       callerPolls?: boolean;
+      /**
+       * The review id of the filed plan form this one revises (`request_plan_decisions`). Checked
+       * by `revisionFor`, which refuses with `RevisionRefusal` and writes nothing; an open target
+       * is withdrawn in the same transaction as this form is inserted.
+       */
+      revises?: string;
     } = {},
   ): ReviewItem {
     // An MCP process may still be running a previous build. Compare retries using the form
@@ -323,9 +371,13 @@ export class ReviewManager {
     // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
     // does anyway is handed the parked row back, whose wait returns at once with the same
     // "carry on" it already got, rather than putting a second card in front of the operator.
+    // With `revises`, only the revision this same request already filed is that ask: a retry of it
+    // is handed back, and any other identical open form is not, so a new revision is always
+    // validated, linked and numbered, and its open target withdrawn.
     const existing = this.registry
       .outstandingReviews(sessionId)
-      .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
+      .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions)
+        && (options.revises === undefined || r.revision?.previousId === options.revises));
     if (existing) {
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
@@ -333,6 +385,9 @@ export class ReviewManager {
       return existing.waitMode === "message" && options.callerPolls === true ? this.attachCall(existing) : existing;
     }
 
+    // Validated after the re-attach, so a retried revision is handed the revision it already filed
+    // rather than refused because its target is now revised.
+    const revision = options.revises === undefined ? null : this.revisionFor(sessionId, kind, options.revises);
     const review: ReviewItem = {
       id: randomUUID(),
       sessionId,
@@ -351,6 +406,7 @@ export class ReviewManager {
       // tell the operator the agent is carrying on.
       ...(options.meanwhile && options.waitMode === "message" && options.snoozable === true && kind === "input"
         ? { meanwhile: options.meanwhile } : {}),
+      ...(revision ? { revision: revision.link } : {}),
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
@@ -374,12 +430,69 @@ export class ReviewManager {
       }
       insertReview(review);
       for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
+      // An open form this one revises is withdrawn by the one agent-withdrawal writer, inside
+      // this transaction, so the operator never sees both cards and a failure leaves neither. It
+      // is never also in `replaced`: a revision is a plan form, and only a `request_input`
+      // question supersedes, and only a call-mode question.
+      revision?.withdrawal?.persist();
     });
+    // The replaced form's withdrawal is published before the revision, so no subscriber ever
+    // holds both open cards between the two events.
+    revision?.withdrawal?.publish();
     this.registry.upsertReview(review);
     for (const older of replaced) {
       this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
     }
     return review;
+  }
+
+  /**
+   * Refuse a `revises` before a caller writes anything of its own (`RevisionRefusal`), for a route
+   * that binds other state to a review id before the review itself is written.
+   */
+  assertRevisable(sessionId: string, kind: ReviewKind, revises: string): void {
+    this.revisionFor(sessionId, kind, revises);
+  }
+
+  /**
+   * Check a `revises` and say what it links to. The target must be a filed plan form of this
+   * session, by the wait mode stored on its row now, that is either still open or was withdrawn by
+   * its own agent (`withdrawnByItsAgent`), and that no form has revised yet. Anything else is a
+   * `RevisionRefusal` with the reason, before anything is written.
+   *
+   * The row is read from the database rather than the registry, because a withdrawn form leaves the
+   * registry at the next restart (`loadPendingReviews` restores only open rows).
+   */
+  private revisionFor(sessionId: string, kind: ReviewKind, revises: string): Revision {
+    const refuse = (why: string): never => {
+      throw new RevisionRefusal(`Not filed: revises names ${revises}, which ${why} Nothing was filed.`);
+    };
+    if (kind !== "plan-decisions") refuse("cannot be revised by this kind of ask; only request_plan_decisions revises a form.");
+    const target = loadReview(revises);
+    if (!target) return refuse("is not a review Mission Control knows.");
+    if (target.sessionId !== sessionId) refuse("belongs to another session. Revise only a plan form your own session filed.");
+    if (target.kind !== "plan-decisions") refuse("is not a plan form. Only a form filed with request_plan_decisions can be revised; file this plan without revises.");
+    if (!isFiledGate(target)) {
+      refuse("waits for its answer inside a tool call, so it cannot be revised. Its call returns the operator's answer; wait for that instead.");
+    }
+    const revisedBy = reviewRevisedBy(target.id);
+    if (revisedBy) refuse(`was already revised by ${revisedBy}. Revise the latest form instead: revises ${revisedBy}.`);
+    const number = (target.revision?.number ?? 1) + 1;
+    let withdrawal: AgentWithdrawal | null = null;
+    if (target.status === "pending") {
+      let admitted: ReviewItem;
+      try {
+        admitted = this.admitAgentWithdrawal(sessionId, target.id);
+      } catch (error) {
+        // Mid runtime transfer, for one: the open form cannot be withdrawn now, so nothing is filed.
+        if (error instanceof ReviewResolutionError) return refuse(`cannot be withdrawn right now (${error.message}) Try again shortly.`);
+        throw error;
+      }
+      withdrawal = this.agentWithdrawal(admitted, `Revised: replaced by revision ${number} of this plan.`);
+    } else if (!withdrawnByItsAgent(target)) {
+      refuse(revisionRefusalFor(target));
+    }
+    return { link: { number, previousId: target.id }, withdrawal };
   }
 
   /**
@@ -399,23 +512,54 @@ export class ReviewManager {
   }
 
   /**
-   * The one place that writes the status `withdrawn`: the asking agent taking back its own filed
-   * ask, a question or a plan form. It admits only the calling session's own ask and refuses a
-   * call-mode one, so a `withdrawn` review was always withdrawn by its own agent.
+   * `withdraw_question`: the asking agent taking back its own filed ask, a question or a plan form.
+   * One of the two entries to the agent withdrawal (`agentWithdrawal`), the one place that writes
+   * the status `withdrawn`. It admits only the calling session's own ask and refuses a call-mode
+   * one, so a `withdrawn` review was always withdrawn by its own agent.
    */
   withdrawQuestion(sessionId: string, id: string, reason: string): ReviewItem {
+    const withdrawal = this.agentWithdrawal(this.admitAgentWithdrawal(sessionId, id), reason);
+    inTransaction(withdrawal.persist);
+    return withdrawal.publish();
+  }
+
+  /**
+   * Who may enter the agent withdrawal, for both of its entries: the calling session's own open
+   * ask (`openAsks`), filed rather than waited on in a call, outside a runtime transfer.
+   */
+  private admitAgentWithdrawal(sessionId: string, id: string): ReviewItem {
     const review = this.openAsks(sessionId).find((r) => r.id === id);
     if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
     if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
     if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
-    // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
-    // may already have reached the agent, so keep their records for delivery reconciliation.
+    return review;
+  }
+
+  /**
+   * The one place that writes the status `withdrawn`, in two halves (`AgentWithdrawal`). Its two
+   * entries are `withdrawQuestion` and a `revises` that names an open form (`revisionFor`), each
+   * admitted by `admitAgentWithdrawal`, so the status is only ever the asking agent's own act and
+   * records no actor. `reason` is stored in `response`.
+   */
+  private agentWithdrawal(review: ReviewItem, reason: string): AgentWithdrawal {
     let noteKey: string | null = null;
-    const withdrawn = this.settle(review, "withdrawn", reason, null, null, () => {
-      noteKey = cancelUnclaimedSnoozeInstruction(review.id);
-    });
-    if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
-    return withdrawn;
+    let withdrawn: ReviewItem | null = null;
+    return {
+      persist: () => {
+        const resolvedAt = Date.now();
+        updateReviewStatus(review.id, "withdrawn", reason, resolvedAt, null, null);
+        // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
+        // may already have reached the agent, so keep their records for delivery reconciliation.
+        noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+        withdrawn = { ...review, status: "withdrawn", response: reason, resolvedAt, resolvedBy: null, selections: null };
+      },
+      publish: () => {
+        if (!withdrawn) throw new Error(`withdrawal of ${review.id} was published before it was persisted`);
+        const published = this.publishSettled(withdrawn);
+        if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
+        return published;
+      },
+    };
   }
 
   /**
@@ -654,6 +798,12 @@ export class ReviewManager {
      * decision below the reply it caused. The route takes the reading before it delivers.
      */
     at: number;
+    /**
+     * The filed plan form this record revises: a managed bundle revision that a standing approval
+     * approved outright, so no card is filed to carry the link. Checked and applied as `create`
+     * does, the open target withdrawn in this record's transaction.
+     */
+    revises?: string;
   }): ReviewItem {
     if (!this.registry.getSession(o.sessionId)) {
       throw new ReviewResolutionError(
@@ -661,6 +811,7 @@ export class ReviewManager {
       );
     }
     const now = o.at;
+    const revision = o.revises === undefined ? null : this.revisionFor(o.sessionId, o.kind, o.revises);
     const review: ReviewItem = {
       id: o.id ?? randomUUID(),
       sessionId: o.sessionId,
@@ -672,16 +823,20 @@ export class ReviewManager {
       decisions: o.decisions,
       selections: o.selections,
       resolvedBy: o.resolvedBy,
+      ...(revision ? { revision: revision.link } : {}),
       createdAt: now,
       resolvedAt: now,
     };
     inTransaction(() => {
       insertReview(review);
       updateReviewStatus(review.id, "answered", o.response, now, o.selections, o.resolvedBy);
+      revision?.withdrawal?.persist();
     });
     // Published only after the commit, so nothing can put a review on screen that a rollback
     // then took off disk. The throw from a failed transaction reaches the caller, which
-    // logs it and still reports the delivery that did happen.
+    // logs it and still reports the delivery that did happen. A replaced form's withdrawal goes
+    // first, as in `create`.
+    revision?.withdrawal?.publish();
     this.registry.upsertReview(review);
     this.markSteered(review);
     return review;

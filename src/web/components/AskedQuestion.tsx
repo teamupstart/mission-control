@@ -3,6 +3,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import { questionOutcome, questionStatusLine, useQuestionAgent } from "../lib/async-questions.ts";
 import { inputBody } from "../lib/reviews.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
+import { RevisionTag } from "./ReviewRevision.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -39,6 +40,7 @@ export function AskedQuestionCard({
       <div className="review-answer-head">
         <span className="review-answer-who review-asked-who">{who}</span>
         <span className="review-answer-title">{review.title}</span>
+        <RevisionTag review={review} />
         <ConversationTimestamp at={review.createdAt} className="turn-time" />
       </div>
       <QuestionText review={review} />

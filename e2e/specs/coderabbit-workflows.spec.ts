@@ -5,7 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
-import { WORKFLOW_EXECUTION_LIMITS, type WorkflowRunDetail } from "../../src/shared/workflow.ts";
+import { WORKFLOW_EXECUTION_LIMITS, type WorkflowCommandView, type WorkflowRunDetail } from "../../src/shared/workflow.ts";
 
 async function api<T>(d:DaemonHandle,path:string,body?:unknown,method?:string):Promise<T>{
  const r=await fetch(`${d.baseURL}${path}`,{method:method??(body===undefined?"GET":"POST"),headers:{"content-type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -58,25 +58,85 @@ const detail=(d:DaemonHandle,id:string)=>api<WorkflowRunDetail>(d,`/api/workflow
 async function shot(page:Page,name:string){if(!process.env.MC_E2E_EVIDENCE)return;const dir=artifactsDir("coderabbit-workflows");mkdirSync(dir,{recursive:true});await page.screenshot({path:`${dir}${name}.png`,fullPage:true,mask:[page.locator(".wf-run-worklist-row-line").filter({hasText:/^\/(?:Users|home|private|tmp)\//})]});}
 
 test("Library typed tuning saves, reloads and removes without changing YAML enablement; policies are derived",async({dashboard,daemon})=>{
+ yaml(daemon, "reviews: {}");
  await dashboard.goto(`${daemon.baseURL}/#/library/commands/coderabbit`);
  await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("10");
  await expect(dashboard.getByLabel("If the command is unavailable")).toBeDisabled();
  await expect(dashboard.getByLabel("When the run budget is exhausted")).toBeDisabled();
  await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("unless the YAML turns it off");
+ const defaultCommand = dashboard.getByLabel("Default CodeRabbit command");
+ await expect(defaultCommand).toHaveAttribute("placeholder", "coderabbit review --deep");
+ await defaultCommand.fill("coderabbit review --fresh");
  await expect(dashboard.getByRole("main")).toContainText("completed review. Granting");
  await dashboard.getByLabel("Repository root for CodeRabbit tuning").fill(daemon.repo);await dashboard.keyboard.press("Escape");
  await dashboard.getByRole("button",{name:"Add repository tuning"}).click();
  await dashboard.getByLabel(`Base ref for ${daemon.repo}`).fill("main");await dashboard.getByLabel(`Severity for ${daemon.repo}`).selectOption("minor");
+ const repoCommand = dashboard.getByLabel(`CodeRabbit command for ${daemon.repo}`);
+ await expect(repoCommand).toHaveAttribute("placeholder", "coderabbit review --fresh");
+ await repoCommand.fill("coderabbit review --use-credits");
+ await dashboard.getByRole("button",{name:"Save Command"}).click();
+ await expect(dashboard.getByRole("alert")).toContainText("Mission Control adds the workflow review flags");
+ await repoCommand.fill("coderabbit review");
  await dashboard.getByRole("button",{name:"Save Command"}).click();await expect(dashboard.getByRole("button",{name:"Save Command"})).toBeDisabled();await dashboard.reload();
  await expect(dashboard.getByLabel(`Base ref for ${daemon.repo}`)).toHaveValue("main");await expect(dashboard.getByLabel(`Severity for ${daemon.repo}`)).toHaveValue("minor");
+ await expect(defaultCommand).toHaveValue("coderabbit review --fresh");
+ await expect(repoCommand).toHaveValue("coderabbit review");
+ await expect(dashboard.locator(".wf-command-review-rule .wf-command-preview")).toContainText("coderabbit review --agent --gate minor --committed");
  await dashboard.getByLabel(`Base ref for ${daemon.repo}`).fill("temporary");
  await dashboard.getByLabel(`Base ref for ${daemon.repo}`).fill("main");
  await expect(dashboard.getByRole("button",{name:"Save Command"})).toBeDisabled();
  await dashboard.getByLabel(`Base ref for ${daemon.repo}`).scrollIntoViewIfNeeded();
  expect(await dashboard.locator(".wf-command-review-rule").evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
- await shot(dashboard,"library-tuning");
+ if (process.env.MC_E2E_EVIDENCE) {
+  const dir = artifactsDir("coderabbit-workflows");
+  mkdirSync(dir, { recursive: true });
+  await dashboard.getByRole("region", { name: "CodeRabbit tuning" }).screenshot({ path: `${dir}library-tuning.png` });
+ }
+ await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+ const run = await start(dashboard, daemon);
+ await expect.poll(async () => (await detail(daemon, run.id)).attempts.find(a => a.nodeId === "cr")?.output).toMatchObject({ status: "passed" });
+ const calls = readFileSync(join(daemon.recordDir, "coderabbit.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+ const review = calls.find(call => call.args[0] === "review");
+ expect(review.args).toEqual(["review", "--agent", "--gate", "minor", "--committed", "--base-commit", expect.stringMatching(/^[a-f0-9]{40}$/)]);
+ await dashboard.goto(`${daemon.baseURL}/#/library/commands/coderabbit`);
  await dashboard.getByRole("button",{name:"Remove tuning"}).click();await dashboard.getByRole("button",{name:"Save Command"}).click();
  await expect.poll(async()=>((await api<{overrides:unknown[]}>(daemon,"/api/workflow-commands/coderabbit")).overrides.length)).toBe(0);
+});
+
+test("clearing only the repository CodeRabbit command inherits the default after reload", async ({ dashboard, daemon }) => {
+ const endpoint = "/api/workflow-commands/coderabbit";
+ const command = await api<WorkflowCommandView>(daemon, endpoint);
+ await api(daemon, endpoint, {
+  ...command,
+  expectedRevision: command.revision,
+  defaultCommand: ["coderabbit", "review", "--fresh"],
+  overrides: [{
+   repoRoot: daemon.repo,
+   command: [],
+   review: { kind: "coderabbit", baseRef: "main", severity: "minor", command: ["coderabbit", "review", "--deep"] },
+  }],
+ }, "PUT");
+
+ await dashboard.goto(`${daemon.baseURL}/#/library/commands/coderabbit`);
+ const repositoryCommand = dashboard.getByLabel(`CodeRabbit command for ${daemon.repo}`);
+ const save = dashboard.getByRole("button", { name: "Save Command" });
+ await expect(repositoryCommand).toHaveValue("coderabbit review --deep");
+ await repositoryCommand.clear();
+ await save.click();
+ await expect(save).toBeDisabled();
+ await dashboard.reload();
+
+ await expect(repositoryCommand).toHaveValue("");
+ await expect(dashboard.getByLabel(`Base ref for ${daemon.repo}`)).toHaveValue("main");
+ await expect(dashboard.getByLabel(`Severity for ${daemon.repo}`)).toHaveValue("minor");
+ await expect(dashboard.locator(".wf-command-review-rule .wf-command-preview")).toContainText(
+  'coderabbit review --fresh --agent --gate minor --committed --base-commit "<merge-base of main>"',
+ );
+ if (process.env.MC_E2E_EVIDENCE) {
+  const dir = artifactsDir("coderabbit-workflows");
+  mkdirSync(dir, { recursive: true });
+  await dashboard.getByRole("region", { name: "CodeRabbit tuning" }).screenshot({ path: `${dir}library-inherited-command.png` });
+ }
 });
 
 for(const [name,source] of [["missing",null],["false","reviews: {auto_review: {enabled: false}}"],["invalid","reviews: ["]] as const) test(`${name} YAML warns and skips in an arbitrary custom workflow`,async({dashboard,daemon})=>{
@@ -94,7 +154,7 @@ test("YAML enabled without override executes, retains early/advisory findings be
  await dashboard.getByRole("button",{name:/Load findings/}).click();await expect(dashboard.locator(".wf-run-command-artifact pre")).toContainText("Advisory retained finding");await shot(dashboard,"retained-findings");
  const d=await detail(daemon,r.id);const a=d.attempts.find(a=>a.nodeId==="cr")!;expect(JSON.stringify(a.verdict)).toContain("read_workflow_command_output");expect(JSON.stringify(a.verdict)).toContain("Verify each claim");
  const calls=readFileSync(join(daemon.recordDir,"coderabbit.jsonl"),"utf8").trim().split("\n").map(s=>JSON.parse(s));
- const review=calls.find(c=>c.args[0]==="review");expect(review.autoUpdate).toBe("true");expect(review.home).toBe(daemon.home);expect(review.args).not.toContain("--use-credits");expect(review.args).not.toContain("--api-key");
+ const review=calls.find(c=>c.args[0]==="review");expect(review.autoUpdate).toBe("true");expect(review.home).toBe(daemon.home);expect(review.args).toContain("--deep");expect(review.args).not.toContain("--use-credits");expect(review.args).not.toContain("--api-key");
  // A repair submission refreshes YAML, while history retains the original enabled snapshot.
  writeFileSync(join(r.cwd,".coderabbit.yaml"),"reviews: {auto_review: {enabled: false}}\n");
  execFileSync("git",["-C",r.cwd,"add",".coderabbit.yaml"]);
@@ -228,6 +288,17 @@ test("the new No-Mistakes stage uses YAML defaults without tuning",async({dashbo
  await dashboard.getByRole("button",{name:"Continue to review"}).click();
  await expect.poll(async()=>{const d=await detail(daemon,r.id);return d.attempts.find(a=>a.nodeId==="nmr-check-coderabbit")?.output;},{timeout:60000}).toMatchObject({status:"skipped",warning:expect.any(String)});
  await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await dashboard.getByRole("tab",{name:/^Review worklist/}).click();await dashboard.getByRole("group",{name:"Worklist segment"}).getByRole("button",{name:/^Passed/}).click();await dashboard.getByRole("button",{name:/^Skipped Command · coderabbit/}).click();await expect(dashboard.getByRole("main")).toContainText("Neither root .coderabbit.yaml nor .coderabbit.config.ts exists");await dashboard.locator(".wf-run-summary").filter({hasText:"Neither root .coderabbit.yaml nor .coderabbit.config.ts exists"}).scrollIntoViewIfNeeded();await shot(dashboard,"no-mistakes-yaml-gate");
+});
+
+test("No-Mistakes runs its enabled CodeRabbit stage with --deep by default", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {}");
+ const run = await start(dashboard, daemon, { builtIn: true });
+ await expect.poll(async () => (await detail(daemon, run.id)).run.status).toBe("waiting_for_evidence_readiness");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+ await dashboard.getByRole("tab", { name: /^Evidence/ }).click();
+ await dashboard.getByRole("button", { name: "Continue to review" }).click();
+ await expect.poll(async () => (await detail(daemon, run.id)).attempts.find(a => a.nodeId === "nmr-check-coderabbit")?.output,
+  { timeout: 60_000 }).toMatchObject({ status: "passed", command: expect.arrayContaining(["--deep", "--agent", "--committed"]) });
 });
 
 test("an existing binding stays on No-Mistakes version 21 and never gains CodeRabbit implicitly",async({dashboard,daemon})=>{

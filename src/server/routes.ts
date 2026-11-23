@@ -9297,9 +9297,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
     async deliver(target, text, _utteranceId, command) {
       if (target.state !== "running" || !target.sessionId) return "not-running";
+      const session = registry.getSession(target.sessionId);
+      if (!session || session.state === "exited") return "not-running";
       if (command === "stop") {
-        const session = registry.getSession(target.sessionId);
-        if (!session) return { outcome: "failed", detail: "No such session." };
         const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
         if (unsupported) return { outcome: "failed", detail: unsupported };
         const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);

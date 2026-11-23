@@ -29,7 +29,8 @@ descriptive only. A two-word name can also match, and a phonetic match such as �
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
 a candidate when exactly one option across all open unsure cards matches. Multiple matches
-leave the cards open and record `ambiguous-pick` in Recently heard. A bare roster name with
+leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
+left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
 no matching option records `no-message`.
 Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
@@ -37,6 +38,8 @@ two-word match. No model is called.
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the running target receives the remaining text verbatim through the standard
 operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes.
+The pending card keeps the session ID selected when it opened. If that session ends or another
+session takes over its roster entry, the card and Recently heard show `not-running`.
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
 pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
 Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,

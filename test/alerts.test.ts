@@ -1038,6 +1038,25 @@ test("awaitsAwayState: only a report alert, with the flag on, waits while Away m
   for (const a of others) assert.equal(awaitsAwayState(a, ALL_ON, null), false, a.kind);
 });
 
+test("a session entering awaiting_review on a new blocking question: both of its alerts answer to the Blocking questions switch", () => {
+  const before = scope([mkSession({ id: "a", state: "working" })]);
+  const after = scope([mkSession({ id: "a", state: "awaiting_review", pendingReviews: 1 })]);
+  const alerts = detectAlerts(before, after);
+  assert.deepEqual(alerts.map((a) => [a.kind, a.notify]), [["needs-input", "blocking-question"], ["review", "blocking-question"]]);
+  const off: NotifySwitches = { blockingQuestions: false, filedQuestions: true, reports: true, stuck: true };
+  assert.deepEqual(alerts.filter((a) => shouldDeliver(a, off, false)), [], "the switch silences the question, not half of it");
+  // Flag off: both delivered exactly as before.
+  assert.equal(alerts.filter((a) => shouldDeliver(a, null, false)).length, 2);
+  // Becoming blocked any other way keeps no class: a permission prompt, or a review state without a new question.
+  const prompt = detectAlerts(before, scope([mkSession({ id: "a", state: "awaiting_input" })]));
+  assert.deepEqual(prompt.map((a) => [a.kind, a.notify]), [["needs-input", undefined]]);
+  const reviewState = detectAlerts(
+    scope([mkSession({ id: "a", state: "working", pendingReviews: 1 })]),
+    scope([mkSession({ id: "a", state: "awaiting_review", pendingReviews: 1 })]),
+  );
+  assert.deepEqual(reviewState.map((a) => [a.kind, a.notify]), [["needs-input", undefined]]);
+});
+
 function reportAlertFixture(): Alert {
   return detectAlerts(reportsScope([mkReport({ id: "r-1" })]), reportsScope([stamped("working")]))[0]!;
 }

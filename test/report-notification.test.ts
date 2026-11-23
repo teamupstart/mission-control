@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ReportItem } from "../src/shared/reports.ts";
 import type { AttentionFold } from "../src/web/lib/attention.ts";
-import { placeReport, reportToShow, resolvedReport } from "../src/web/lib/report-notification.ts";
+import { pinnedToShow, placeReport, reportToShow, resolvedReport } from "../src/web/lib/report-notification.ts";
 import { mkReport } from "./helpers/report-fixture.ts";
 
 // What a click on a report notification opens (`inbox` flag). A notification outlives the state it
@@ -96,4 +96,20 @@ test("a replacement that reaches the window while the lookup is in flight is the
   assert.deepEqual(placeReport(opened, foldListing(third)), { where: "row", report: third });
   // A replacement the window has not heard of yet cannot be followed; the last link held opens.
   assert.equal(resolvedReport({ report: first, latest: answeredLatest }, byId(heldSecond)), heldSecond);
+});
+
+test("the pinned band follows its report as the window moves on, and goes once a row lists it", () => {
+  const pinned = mkReport({ id: "r-1" });
+  // Unlisted and still held: the window's own, newer copy is drawn.
+  const held = mkReport({ id: "r-1", openedAt: 9 });
+  assert.equal(pinnedToShow(pinned, byId(held), EMPTY), held);
+  // Replaced while pinned: the replacement, the waiting report of the same chain, is drawn.
+  const successor = mkReport({ id: "r-2", rootId: "r-1", version: 2 });
+  assert.equal(pinnedToShow(pinned, byId(successor), EMPTY), successor);
+  // Read or followed up: no longer held, so the pinned copy is drawn as it is.
+  const read = mkReport({ id: "r-1", readAt: 5, readBy: "mark-read" });
+  assert.equal(pinnedToShow(read, byId(), EMPTY), read);
+  // Listed by a row now: the band goes, so the report is not drawn twice.
+  assert.equal(pinnedToShow(pinned, byId(held), foldListing(held)), null);
+  assert.equal(pinnedToShow(pinned, byId(successor), foldListing(successor)), null);
 });

@@ -63,6 +63,34 @@ export function placeReport(report: ReportItem, fold: AttentionFold): ReportPlac
 }
 
 /**
+ * What the "Opened from a notification" band draws for its pinned report, as the window's state
+ * moves on after the click. Null when the band should go: once a Reports row lists the report,
+ * that row shows it, and drawing it twice would put two open cards with one body on screen.
+ *
+ * The pinned copy is followed to the window's own copy when it holds one, and to the report that
+ * replaced it when it was replaced (the waiting report of the same chain), as a notification open
+ * would. A report read or followed up is no longer held; its pinned copy (refreshed by the caller
+ * after each action) is drawn as it is.
+ */
+export function pinnedToShow(
+  pinned: ReportItem,
+  reports: ReadonlyMap<string, ReportItem>,
+  fold: AttentionFold,
+): ReportItem | null {
+  let live = reports.get(pinned.id);
+  if (!live) {
+    for (const report of reports.values()) {
+      if (report.rootId === pinned.rootId && report.id !== pinned.id && report.supersededBy === null) {
+        live = report;
+        break;
+      }
+    }
+  }
+  const report = live ?? pinned;
+  return placeReport(report, fold).where === "row" ? null : report;
+}
+
+/**
  * The report a `GET /api/reports/:id` answer opens: the latest of its chain when it was
  * replaced, else the report itself. This window's own copy wins when it holds one, since it has
  * heard every change since the fetch was answered - including a replacement that arrived while

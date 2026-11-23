@@ -384,6 +384,35 @@ test("a failed write marking reports counted still closes the window, so the dig
   w.stop();
 });
 
+test("a report posted at the desk between two unclaimed away windows is not counted in their merged digest", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  // First window [1000, 2000], closed and never claimed.
+  setAwayConfig({ away: true }, 1000);
+  w.tick();
+  setAwayConfig({ away: false }, 2000);
+  clock = 2000;
+  w.flush();
+  // At the desk: a report is posted and stays unread.
+  reports.push(mkReport({ id: "r-desk", createdAt: 2500, author: { key: "session:d", name: "Desk", residentProfileId: null } }));
+  // Second window [3000, 4000], also with nothing posted during it.
+  clock = 3000;
+  setAwayConfig({ away: true }, 3000);
+  w.tick();
+  setAwayConfig({ away: false }, 4000);
+  clock = 4000;
+  w.flush();
+  const digest = w.takePending();
+  assert.ok(!digest || !digest.events.some((e) => e.key === "report:r-desk"), "a desk-time report is not away activity");
+  assert.deepEqual(counted, [], "and it is not marked counted");
+  w.stop();
+});
+
 test("workflow transitions use the same away window and coalesce stable ids", () => {
   const running = workflowRun();
   const completed = workflowRun({ status: "completed", phase: "complete", updatedAt: 2 });

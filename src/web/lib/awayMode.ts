@@ -156,7 +156,16 @@ export function useAwayMode(): {
       const res = await api.setAwayConfig(patch).finally(() => {
         if (leaving) setReturning(false);
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // The optimistic state above is now wrong: read the daemon's, so the notifier's Away gate
+        // matches the window the daemon still holds rather than waiting for the next poll.
+        const cfg = await fetchAwayConfig();
+        if (cfg) {
+          setAwayState(cfg);
+          wasAway.current = cfg.away;
+        }
+        return;
+      }
       const cfg = await fetchAwayConfig();
       if (!cfg) return;
       setAwayState(cfg);

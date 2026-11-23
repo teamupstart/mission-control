@@ -351,12 +351,17 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     const dialog = activePaneDialog(s);
     const beforeDialog = before ? activePaneDialog(before) : null;
     if (blocked(s.state) && !(before && blocked(before.state))) {
+      // A session entering awaiting_review because a question it waits on just arrived is the
+      // same blocking question the review alert below announces, so it answers to the same
+      // switch. Any other way of becoming blocked has no switch.
+      const forBlockingQuestion = s.state === "awaiting_review" && s.pendingReviews > (before?.pendingReviews ?? 0);
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
         title: `${label} needs you`,
         body: s.state === "awaiting_review" ? "needs review" : "needs input",
         sessionId: s.id,
+        ...(forBlockingQuestion ? { notify: "blocking-question" as const } : {}),
         severity: "attention",
       });
     } else if (dialog && (!beforeDialog || dialogIdentity(beforeDialog) !== dialogIdentity(dialog))) {

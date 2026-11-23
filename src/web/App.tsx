@@ -36,7 +36,7 @@ import {
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchReport, fetchRepos } from "./lib/api.ts";
-import { placeReport, reportToShow, resolvedReport, type ReportPlacement } from "./lib/report-notification.ts";
+import { pinnedToShow, placeReport, reportToShow, resolvedReport, type ReportPlacement } from "./lib/report-notification.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -544,7 +544,9 @@ export function App(): React.JSX.Element {
     void fetchReport(id).then((answer) => {
       if (!answer) return;
       setPinnedReport((current) =>
-        current?.status === "ready" && current.report.id === id ? { status: "ready", report: answer.report } : current);
+        current?.status === "ready" && current.report.id === id
+          ? { status: "ready", report: answer.latest ?? answer.report }
+          : current);
     });
   }, []);
   // The report whose attached document the reader is showing, if any.
@@ -3098,6 +3100,13 @@ export function App(): React.JSX.Element {
     ],
   );
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
+  // The band's report as the window's state moves on: followed to its replacement, and gone once
+  // a Reports row lists it (`pinnedToShow`).
+  const pinnedBand = useMemo<PinnedReport | null>(() => {
+    if (pinnedReport?.status !== "ready") return pinnedReport;
+    const report = pinnedToShow(pinnedReport.report, reportsById, attention);
+    return report ? { status: "ready", report } : null;
+  }, [pinnedReport, reportsById, attention]);
   // Read when a report notification is clicked, which may be long after it was raised: the flag,
   // the reports and the fold are taken as they are at the click.
   const notificationReads = useRef({ inboxOn: inboxNames, reportsById, attention });
@@ -5523,9 +5532,7 @@ export function App(): React.JSX.Element {
                   onReplyBox={noteInboxReplyBox}
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
-                  pinned={pinnedReport?.status === "ready"
-                    ? { status: "ready", report: reportsById.get(pinnedReport.report.id) ?? pinnedReport.report }
-                    : pinnedReport}
+                  pinned={pinnedBand}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from

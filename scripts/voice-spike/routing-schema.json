@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "choice": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "choice",
+    "confidence"
+  ],
+  "additionalProperties": false
+}

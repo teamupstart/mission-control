@@ -57,7 +57,10 @@ export function unreachableLine(outcome: Failed): string {
 }
 
 /** Shows a closing line to the person, as a notice and a toast (7.11). */
-function tell(host: FlowHost, line: string): void {
+function tell(host: FlowHost, session: FlowSession, line: string): void {
+  // The daemon's answer is the truth whether or not the session is still there (the result carries
+  // it), but its notice and toast would land in whichever session is current now.
+  if (gone(session)) return;
   host.notice(line);
   host.toast(line);
 }
@@ -263,14 +266,14 @@ async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchD
   if (result.ok) {
     const taskId = result.value.taskId ?? "the task";
     const line = result.value.started ? `Started ${taskId}: ${where}.` : `Saved ${taskId} to the backlog: ${where}.`;
-    tell(host, line);
+    tell(host, session, line);
     return { outcome: result.value.started ? "started" : "backlog", line, ...(result.value.taskId ? { taskId: result.value.taskId } : {}) };
   }
   // A start the daemon refused after filing the task: the task exists, shelved.
   const filed = result.kind === "refused" && typeof result.body.taskId === "string" ? result.body.taskId : null;
   if (filed && result.kind === "refused") {
     const line = `Saved ${filed} to the backlog; it did not start: ${result.error}`;
-    tell(host, line);
+    tell(host, session, line);
     return { outcome: "backlog", line, taskId: filed };
   }
   return fail(host, result);

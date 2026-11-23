@@ -890,7 +890,31 @@ test("a confirm the daemon answered is reported as it happened, even when the se
     assert.equal(result.outcome, choice === "Start now" ? "started" : "backlog", choice);
     assert.equal(result.taskId, "mc-new1", choice);
     assert.match(result.line, /mc-new1/, choice);
+    // The truth is in the result, but nothing is posted to whichever session is current now.
+    assert.ok(fake.notices.every((n) => !n.includes("mc-new1")), choice);
+    assert.deepEqual(fake.toasts, [], choice);
   }
+  // A start the daemon refused after filing the task is reported the same way: true result, no stale notice.
+  let endedRefused = false;
+  const refused = world();
+  refused.daemon.override("POST /dispatch/drafts/:id/confirm", () => ({ status: 409, body: { error: "launch is held", taskId: "mc-held", started: false } }));
+  const realRefused = refused.fake.host.fetch;
+  refused.fake.host.fetch = async (path, init) => {
+    const reply = await realRefused(path, init);
+    if (path.endsWith("/confirm")) endedRefused = true;
+    return reply;
+  };
+  const heldResult = await runDispatchCommand(refused.fake.host, { ...SESSION, live: () => !endedRefused }, "ship add retries");
+  assert.equal(heldResult.outcome, "backlog");
+  assert.equal(heldResult.taskId, "mc-held");
+  assert.match(heldResult.line, /did not start: launch is held/);
+  assert.ok(refused.fake.notices.every((n) => !n.includes("mc-held")));
+  assert.deepEqual(refused.fake.toasts, []);
+  // With the session still there, the same outcome is posted.
+  const present = world();
+  await runDispatchCommand(present.fake.host, { ...SESSION, live: () => true }, "ship add retries");
+  assert.ok(present.fake.notices.some((n) => n.startsWith("Started mc-new1")));
+  assert.equal(present.fake.toasts.length, 1);
   // The tool gives the model the real receipt, not "cancelled".
   let ended = false;
   const tool = world();

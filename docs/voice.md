@@ -4,16 +4,43 @@ Voice addressing is being built in phases behind the **Voice addressing** previe
 When it is finished, the operator will talk to an agent by name, with speech recognized on this
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
-Nothing is heard or routed yet: there is no routing, no cards and no audio. What exists today, and
-what this page describes, is the foundation: the flag, the voice settings, the voice state that the
-dashboard and later the desktop shell follow, the Voice settings category, the Voice family in
-Setup, whose row turns on the previews voice needs, and [spoken names](#spoken-names): the call
-signs and reference names an agent will be addressed by, and the roster of who can be addressed.
+The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
+holds a message for the configured cancel window and queues it to the addressed agent. Audio
+capture and the on-screen confirmation card belong to later phases.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
 snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
+
+## Routing a text utterance
+
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
+`x-harness-token`. Use a fresh id per capture and epoch milliseconds for `capturedAt`.
+Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
+The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+
+“Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
+first word after normalizing case and boundary punctuation. The exact first word takes priority
+over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
+descriptive only. A two-word name can also match, and a phonetic match such as “Steven” or
+“Steve’s” can address Steve. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
+A unique exact first word settles the address even when the message names another agent.
+Ambiguous matches open an unsure card, as does a later agent mention after a phonetic or
+two-word match. No model is called.
+
+During the cancel window, the message stays in memory. At the deadline, or immediately with
+the window off, the running target receives the remaining text verbatim through the standard
+operator queue. “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
+pending voice action. An unsure card has no deadline. Saying a candidate’s name selects it and
+opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+`/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
+
+`GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
+ignored speech, cancellations, the routing rule and any observed pause. Muted and unavailable
+captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
+card history exist only in memory and disappear on daemon restart or disabling voice. A message
+actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
 
 ## Turning voice on
 
@@ -116,7 +143,7 @@ other names on the roster, never against the agent's own entry:
 for initial vowels and B: Steve and Stevie are both `STF`, and Steven is `STFN`. Two keys sound
 alike when they are equal, or one edit apart and starting with the same sound: an added or dropped
 sound from three codes, a swapped one from four. Two names also sound alike when their first words
-do, because speech is routed by its first word. The later router compares the same keys with the
+do, because speech is routed by its first word. The router compares the same keys with the
 same `keysSoundAlike`, so validation and routing agree.
 
 ### Who can be addressed

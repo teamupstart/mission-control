@@ -1,3 +1,4 @@
+import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -5,14 +6,18 @@ import {
   VOICE_LISTENER_PROTOCOL_VERSION,
   type VoiceListenerHello,
 } from "../../src/shared/voice.ts";
-import type { DaemonHandle } from "./daemon.ts";
+
+interface VoiceDaemon {
+  home: string;
+  baseURL: string;
+}
 
 /**
  * Voice fixtures (contract B of the voice plan): a stand-in listener, so a spec reaches the mode
  * `listening` on any platform with no microphone, model or macOS.
  *
  * Specs speak to the daemon as a listener would, under the daemon's own token, and never start
- * a recognizer. Phase 3 adds `say` here.
+ * a recognizer.
  */
 
 /** How often the stand-in sends a hello: well inside the daemon's 30 second lapse. */
@@ -27,12 +32,12 @@ export const LISTENER_HELLO: VoiceListenerHello = {
   microphone: "granted",
 };
 
-export function voiceToken(daemon: DaemonHandle): string {
+export function voiceToken(daemon: VoiceDaemon): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();
 }
 
 /** Send one hello. Resolves to the daemon's HTTP status. */
-export async function sendHello(daemon: DaemonHandle, hello: Partial<VoiceListenerHello> = {}): Promise<number> {
+export async function sendHello(daemon: VoiceDaemon, hello: Partial<VoiceListenerHello> = {}): Promise<number> {
   const response = await fetch(`${daemon.baseURL}/voice/listener/hello`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
@@ -52,7 +57,7 @@ export interface Listener {
  * the `voice` flag is off (404) is not an error, so a spec may start this before it turns voice
  * on. Stop it in the test's teardown.
  */
-export async function beListener(daemon: DaemonHandle, hello: Partial<VoiceListenerHello> = {}): Promise<Listener> {
+export async function beListener(daemon: VoiceDaemon, hello: Partial<VoiceListenerHello> = {}): Promise<Listener> {
   let stopped = false;
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -67,4 +72,24 @@ export async function beListener(daemon: DaemonHandle, hello: Partial<VoiceListe
       clearInterval(timer);
     },
   };
+}
+
+/** Post a text capture with adjacent word boundaries by default. */
+export async function say(daemon: VoiceDaemon, text: string, options: Partial<Omit<VoiceUtterance, "text">> = {}): Promise<Response> {
+  const backend = options.backend ?? LISTENER_HELLO.backend;
+  const listener = await beListener(daemon, { backend });
+  try {
+    const utterance: VoiceUtterance = {
+      id: crypto.randomUUID(), text, capturedAt: Date.now(), backend,
+      words: text.trim().split(/\s+/).map((word, i) => ({ text: word, startMs: 100 * i, endMs: 100 * (i + 1) })),
+      ...options,
+    };
+    return await fetch(`${daemon.baseURL}/voice/utterances`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      body: JSON.stringify(utterance),
+    });
+  } finally {
+    listener.stop();
+  }
 }

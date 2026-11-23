@@ -1,0 +1,199 @@
+import assert from "node:assert/strict";
+import { after, afterEach, beforeEach, test } from "node:test";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
+import type { HeardEntry, VoiceCard } from "../src/shared/voice-routing.ts";
+import type { SpokenName } from "../src/shared/voice-names.ts";
+
+const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
+process.env.MISSION_HOME = home;
+const { buildApp } = await import("../src/server/routes.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
+const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
+const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
+const { VOICE_REQUIRED_FLAGS, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
+const { closeDb } = await import("../src/server/db.ts");
+const token = ensureToken();
+const registry = new Registry();
+const interrupts: string[] = [];
+const sdk = { interrupt: async (id: string) => { interrupts.push(id); return "idle"; } } as unknown as SdkSupervisor;
+const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000 });
+const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews: new ReviewManager(registry),
+  tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+const cards: VoiceCard[] = [];
+registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
+const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const post = (path: string, body: unknown = {}, auth?: string) => app.request(path, { method: "POST",
+  headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth } : {}) },
+  body: JSON.stringify(body) });
+const capture = (text: string, id = String(randomUUID())) => ({ id, text, backend: "fluidaudio", capturedAt: Date.now() });
+const say = (text: string, id?: string) => post("/voice/utterances", capture(text, id), token);
+const readHeard = async () => (await (await app.request("/api/voice/heard", { headers: { host: "localhost" } })).json() as { entries: HeardEntry[] }).entries;
+const act = (id: string, action: string, body?: unknown) => post(`/api/voice/cards/${id}/${action}`, body);
+const name = (name: string): SpokenName => ({ key: "task:" + name, name, kind: "session", taskId: name,
+  sessionId: "sdk:" + name, role: "", colorId: null, agent: "claude", state: "running" });
+const roster = ["Steve", "Will"].map(name);
+for (const target of roster) registry.registerSdkSession({ id: target.sessionId!, agent: "claude", name: target.name, cwd: home, agentSessionId: target.key });
+voiceStateStore.useRoster(() => roster);
+pending.start();
+const queued = (agent: string) => registry.getSession("sdk:" + agent)!.pendingTurns.map((row) => row.text);
+
+beforeEach(async () => {
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
+  const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true }, token);
+  assert.equal(hello.status, 200);
+  cards.length = 0;
+});
+afterEach(() => { registry.voiceRouter!.reset(); });
+after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
+
+test("token and schema gates, muted drop, and push-to-talk acceptance", async () => {
+  assert.equal((await post("/voice/utterances", capture("Steve hello"))).status, 401);
+  assert.equal((await post("/voice/utterances", { ...capture("Steve hello"), words: [{ text: "x", startMs: 3, endMs: 1 }] }, token)).status, 400);
+  await post("/api/voice/mute", { muted: true });
+  assert.deepEqual(await (await say("Steve muted words")).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  await post("/api/voice/mute", { muted: false });
+  await post("/voice/shell-report", { callActive: true, pushToTalk: true }, token);
+  assert.equal(voiceStateStore.state().mode, "push-to-talk");
+  assert.deepEqual(await (await say("Steve push to talk")).json(), { accepted: true });
+});
+
+test("turning voice off clears pending actions and gates every contract D route", async () => {
+  await say("Steve stale", "disabled");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 0);
+  for (const response of [await say("hello"), await act("disabled", "pick"), await act("disabled", "cancel"),
+    await act("disabled", "send-now"), ...await Promise.all(["GET", "DELETE"].map((method) =>
+      app.request("/api/voice/heard", { method, headers: { host: "localhost" } })))]) assert.equal(response.status, 404);
+});
+
+test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await say("Steve check the build", "older");
+  await say("Steve drop this one", "newer");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((c) => c.id), ["older", "newer"]);
+  const deadline = cards[0]!.deadline;
+  assert.equal(deadline, Date.now() + 1000);
+  await say("cancel");
+  t.mock.timers.tick(999);
+  assert.ok(!queued("Steve").includes("check the build"));
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
+  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "sent"]);
+  assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
+});
+
+test("successive cancels stop exactly one action across kinds; a duplicate capture does nothing", async () => {
+  await say("Will first", "a");
+  const actions = registry.voiceRouter!.pendingVoiceActions;
+  actions.push({ id: "answer", kind: "answer", openedAt: Date.now(), cancel: () => { actions.pop(); } });
+  await say("Will second", "b");
+  await say("cancel", "cancel-b");
+  await say("cancel", "cancel-b");
+  assert.deepEqual(actions.map((a) => a.id), ["a", "answer"]);
+  await say("cancel");
+  await say("cancel");
+  await say("cancel");
+  assert.deepEqual(cards.filter((c) => c.state === "cancelled").map((c) => c.id), ["b", "a"]);
+  assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+});
+
+test("Cancel targets its own card, Send now queues once, and clearing history leaves no entry", async () => {
+  await say("Steve cancel by id", "a");
+  await say("Will send now", "b");
+  assert.equal((await act("a", "cancel")).status, 200);
+  assert.equal((await act("b", "send-now")).status, 200);
+  assert.equal((await act("b", "send-now")).status, 409);
+  assert.deepEqual(queued("Will").filter((s) => s === "send now"), ["send now"]);
+  assert.ok(!queued("Steve").includes("cancel by id"));
+  assert.equal((await app.request("/api/voice/heard", { method: "DELETE", headers: { host: "localhost" } })).status, 204);
+  assert.deepEqual(await readHeard(), []);
+});
+
+test("window off queues immediately and an addressed stop interrupts the session", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  await say("Steve's, ship   it!");
+  assert.ok(queued("Steve").includes("ship   it!"));
+  await say("Steve, stop.");
+  assert.deepEqual(interrupts, ["sdk:Steve"]);
+  assert.deepEqual(cards.map((c) => c.state), ["sent", "sent"]);
+});
+
+test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
+  const body = "ask Steve about the build";
+  await say("Will, " + body, "mention");
+  assert.equal(cards[0]?.state, "pending");
+  assert.equal(cards[0]?.parts[0]?.target?.name, "Will");
+  assert.equal(cards[0]?.parts[0]?.text, body);
+  assert.deepEqual(cards[0]?.candidates, []);
+  assert.equal((await act("mention", "send-now")).status, 200);
+  assert.ok(queued("Will").includes(body));
+  assert.ok(!queued("Steve").includes(body));
+});
+
+test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
+  await say("Steven tell Will something", "ambiguous");
+  assert.equal(cards[0]?.state, "unsure");
+  assert.equal(cards[0]?.deadline, null);
+  assert.equal((await act("ambiguous", "send-now")).status, 409);
+  await say("cancel");
+  assert.equal(cards.at(-1)?.state, "cancelled");
+  assert.ok(!queued("Steve").includes("tell Will something"));
+  for (const method of ["spoken", "click"]) {
+    await say("Steven ask Will", method);
+    assert.equal((await act(method, "pick", { id: "unknown" })).status, 409);
+    if (method === "spoken") await say("Will");
+    else assert.equal((await act(method, "pick", { id: "task:Will" })).status, 200);
+    assert.equal(cards.at(-1)?.state, "pending");
+    assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+    assert.equal((await act(method, "cancel")).status, 200);
+  }
+});
+
+test("ignored, pending and cancelled captures leave no transcript in the daemon state directory", async () => {
+  const marker = randomUUID();
+  await say("Morning " + marker);
+  await say("Steve remember " + marker, "cancel-this");
+  await say("Will pending " + marker);
+  await act("cancel-this", "cancel");
+  const response = await app.request("/api/voice/heard", { headers: { host: "localhost" } });
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const { entries } = await response.json() as { entries: HeardEntry[] };
+  assert.deepEqual(entries.map((entry) => entry.outcome), ["pending", "cancelled", "ignored"]);
+  assert.ok(entries.every((entry) => entry.text.includes(marker)));
+  const files = readdirSync(home, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+  assert.ok(files.some((file) => file.name === "harness.db"));
+  for (const file of files) {
+    assert.equal(readFileSync(join(file.parentPath, file.name)).includes(marker), false, file.name);
+  }
+});
+
+
+test("the downstream say fixture establishes a listener and posts contiguous or supplied word timings", async (t) => {
+  const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");
+  voiceStateStore.reset();
+  t.mock.method(globalThis, "fetch", (url: string, init: RequestInit) => app.request(url, init));
+  const daemon = { home, baseURL: "http://localhost" };
+  assert.deepEqual(await (await sayFixture(daemon, "Will, grab the door")).json(), { accepted: true });
+  assert.equal((await readHeard())[0]?.pauseMs, 0);
+  assert.deepEqual(await (await sayFixture(daemon, "Will you grab the door", { words: [
+    { text: "Will", startMs: 0, endMs: 130 }, { text: "you", startMs: 100, endMs: 175 },
+  ] })).json(), { accepted: true });
+  const entries = await readHeard();
+  assert.equal(entries[0]?.pauseMs, -30);
+  assert.deepEqual(entries.map((entry) => [entry.matchedName, entry.rule]), [["Will", "exact"], ["Will", "exact"]]);
+});

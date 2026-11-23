@@ -5,6 +5,7 @@ import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
+import { isVoiceStop } from "@shared/voice-routing.ts";
 import { registerVoiceRoutes } from "./voice/routes.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
@@ -9293,7 +9294,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
-  registerVoiceRoutes(app);
+  registry.voiceRouter = registerVoiceRoutes(app, {
+    async deliver(target, text) {
+      if (target.state !== "running" || !target.sessionId) return "not-running";
+      if (isVoiceStop(text)) {
+        const session = registry.getSession(target.sessionId);
+        if (!session || interruptUnsupportedWhy(session.agent, session.runtime)) return "failed";
+        const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
+        return result.ok ? "sent" : "failed";
+      }
+      return pendingTurns?.submit(target.sessionId, text).ok ? "sent" : "failed";
+    },
+  }, (card) => registry.emitVoiceCard(card));
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

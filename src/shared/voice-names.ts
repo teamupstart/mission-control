@@ -212,7 +212,7 @@ export function phoneticKey(name: string): string {
 }
 
 /** The edit distance between two short strings. */
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const current = [i];

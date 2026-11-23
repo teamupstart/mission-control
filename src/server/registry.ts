@@ -1,6 +1,8 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import type { VoiceRouter } from "./voice/router.ts";
+import type { VoiceCard } from "@shared/voice-routing.ts";
 import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
@@ -1463,6 +1465,7 @@ export class Registry extends EventEmitter {
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
     voice?: VoiceState;
+    voiceCards?: VoiceCard[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1513,7 +1516,7 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
+      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [] } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1645,6 +1648,12 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "shaping_config", config });
   }
 
+  voiceRouter?: VoiceRouter;
+
+  emitVoiceCard(card: VoiceCard): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_card", card });
+  }
+
   /**
    * Publish the voice state, suppressing a frame that restates the last one. The store
    * recomputes on every flag change, config write, hello, report and lapse, so without this an
@@ -1652,6 +1661,7 @@ export class Registry extends EventEmitter {
    * `wireVoiceStateEvents` is the caller.
    */
   emitVoiceState(state: VoiceState): void {
+    if (state.mode === "off") this.voiceRouter?.reset();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;

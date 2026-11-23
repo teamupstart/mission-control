@@ -32,6 +32,10 @@ test("version 46 upgrade adds the revision columns and index, and every existing
   const columns = new Set((d.prepare("PRAGMA table_info(reviews)").all() as Array<{ name: string }>).map((c) => c.name));
   for (const column of COLUMNS) assert.ok(columns.has(column), column);
   assert.ok(d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_reviews_revises'").get(), "the one-revision index");
+  const fk = (d.prepare("PRAGMA foreign_key_list(reviews)").all() as Array<{ table: string; from: string; to: string; on_delete: string }>)
+    .find((key) => key.from === "revises_review_id");
+  assert.deepEqual(fk && { table: fk.table, to: fk.to, onDelete: fk.on_delete }, { table: "reviews", to: "id", onDelete: "SET NULL" },
+    "the link is an enforced self-reference");
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 47);
 

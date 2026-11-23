@@ -446,3 +446,30 @@ test("a reused standing approval answers a revision request only when it is that
   assert.equal(retried.id, revised.id);
   assert.equal(reviewRows(), rows, "nothing new is recorded");
 });
+
+test("a standing approval whose record fails takes its plan binding back, so no binding names a missing review", async () => {
+  fileForms(true);
+  const f = await fixture({ messageable: true });
+  const granted = await f.post(undefined, { asyncCapable: true });
+  assert.equal((await f.resolve(granted.id, { ...f.approve, approveFutureBundles: true })).status, 200);
+  const bindings = () => (openDb().prepare("SELECT COUNT(*) AS n FROM managed_plan_reviews").get() as { n: number }).n;
+  const dangling = () => (openDb().prepare(
+    "SELECT COUNT(*) AS n FROM managed_plan_reviews m LEFT JOIN reviews r ON r.id = m.review_id WHERE r.id IS NULL").get() as { n: number }).n;
+  const before = bindings();
+  // The approval's binding is written, then recording the approval itself fails.
+  openDb().exec(`CREATE TRIGGER fail_standing_record BEFORE INSERT ON reviews WHEN NEW.status = 'answered'
+    BEGIN SELECT RAISE(ABORT, 'disk refused the approval'); END;`);
+  try {
+    const res = await f.send(undefined, { asyncCapable: true, title: "Approve bundle, record fails" });
+    assert.notEqual(res.status, 200);
+    assert.match(await res.text(), /disk refused the approval/);
+  } finally {
+    openDb().exec("DROP TRIGGER fail_standing_record");
+  }
+  assert.equal(bindings(), before, "the binding written for the failed record was taken back");
+  assert.equal(dangling(), 0, "no binding names a review that does not exist");
+  // And the next identical ask records its approval normally.
+  const approved = await f.post(undefined, { asyncCapable: true, title: "Approve bundle, record fails" });
+  assert.equal(f.registry.getReview(approved.id)?.resolvedBy, "standing-approval");
+  assert.equal(bindings(), before + 1);
+});

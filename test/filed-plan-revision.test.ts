@@ -411,6 +411,20 @@ test("every target that is not this session's open or agent-withdrawn filed plan
   assert.match(await wrongKind.text(), /only kind 'plan-decisions' can revise an earlier form/);
 });
 
+test("the stored link is a foreign key: a revision naming no review is rejected by the database, and an unrevised form stays valid", () => {
+  const sessionId = mkDiscovered().syntheticId;
+  const before = reviewCount();
+  assert.throws(() => insertReview({
+    id: `dangling-${++seq}`, sessionId, kind: "plan-decisions", title: "Dangling", body: "# Dangling", status: "pending",
+    response: null, decisions: [], waitMode: "message", revision: { number: 2, previousId: "no-such-review" }, createdAt: Date.now(), resolvedAt: null,
+  }), /FOREIGN KEY constraint failed/);
+  assert.equal(reviewCount(), before, "nothing written");
+  // NULL stays valid: a form that revises nothing inserts as always.
+  const plain = seedFiled(sessionId, "pending");
+  assert.equal(loadReview(plain.id)?.revision, undefined);
+  assert.equal(reviewCount(), before + 1);
+});
+
 test("a blank or whitespace-only revises is refused by the wire schema and files nothing", async () => {
   flags(true);
   const { registry, app } = fleet();

@@ -4548,8 +4548,11 @@ function migrate(d: DatabaseSync): void {
   // form a revision replaced and `revision` is its place in the chain (2 for the first). Both
   // nullable with no default: an existing row is a form that revises nothing. The partial unique
   // index is the durable half of "a form is revised at most once"; the review manager refuses a
-  // second revision with a reason before the insert would trip it.
-  addColumn(d, "reviews", "revises_review_id", "TEXT");
+  // second revision with a reason before the insert would trip it. The self-reference is enforced
+  // (`PRAGMA foreign_keys = ON`), so a link always names a review that exists; SET NULL rather than
+  // RESTRICT, so a future pruning of old reviews is never blocked by a revision chain, and a row
+  // whose predecessor went away reads as revising nothing.
+  addColumn(d, "reviews", "revises_review_id", "TEXT REFERENCES reviews(id) ON DELETE SET NULL");
   addColumn(d, "reviews", "revision", "INTEGER");
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_revises ON reviews(revises_review_id) WHERE revises_review_id IS NOT NULL");
 

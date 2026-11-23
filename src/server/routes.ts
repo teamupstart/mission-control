@@ -58,6 +58,7 @@ import {
   recordStandingFollowUp,
   reusableStandingApproval,
   standingBundleAnswer,
+  unbindPlanReview,
   STANDING_FOLLOW_UP_NOTE,
   filedPlanIdentityNote,
 } from "./plans/publication.ts";
@@ -5281,11 +5282,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             if (revises !== undefined) reviews.assertRevisable(session.id, kind, revises);
             approvedId = randomUUID();
             bindPlanReview(authority, input, approvedId, manager);
-            reviews.record({
-              id: approvedId, sessionId: session.id, kind, title, body: fullBody,
-              ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
-              ...(revises !== undefined && remaining.length === 0 ? { revises } : {}),
-            });
+            // The binding and the record cannot share a transaction, so a failed record takes its
+            // binding back rather than leaving one that names no review.
+            try {
+              reviews.record({
+                id: approvedId, sessionId: session.id, kind, title, body: fullBody,
+                ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
+                ...(revises !== undefined && remaining.length === 0 ? { revises } : {}),
+              });
+            } catch (error) {
+              unbindPlanReview(approvedId);
+              throw error;
+            }
           }
           // Born settled: said as `call` even to a capable child, whose one poll returns the
           // recorded approval as the tool result. Nothing is filed, so nothing is waited on.

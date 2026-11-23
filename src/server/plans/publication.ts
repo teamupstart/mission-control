@@ -200,6 +200,15 @@ export function bindPlanReview(authority: PlanAuthority, input: PlanIdentity, re
       context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null);
 }
 
+/**
+ * Undo `bindPlanReview` for a review that was never written: the route binds the id before the
+ * review itself is recorded, and the two cannot share a transaction, so a failed record must not
+ * leave a binding that names no review.
+ */
+export function unbindPlanReview(reviewId: string): void {
+  openDb().prepare("DELETE FROM managed_plan_reviews WHERE review_id = ?").run(reviewId);
+}
+
 function approval(authority: PlanAuthority, input: PlanIdentity, context: ReturnType<typeof compatibleContext>): ApprovalRow {
   exactWriter(authority, input);
   const candidates = openDb().prepare(`SELECT * FROM managed_plan_reviews WHERE plan_id = ? AND revision = ?

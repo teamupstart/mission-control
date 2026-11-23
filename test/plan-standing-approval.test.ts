@@ -25,7 +25,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { closeDb, openDb, loadConversationResolvedReviews, loadPendingReviews } = await import("../src/server/db.ts");
 const { savePlan } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
-const { STANDING_FOLLOW_UP_NOTE } = await import("../src/server/plans/publication.ts");
+const { STANDING_FOLLOW_UP_NOTE, describeFiledPlanIdentity } = await import("../src/server/plans/publication.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { filedPlanReceipt } = await import("../src/shared/async-input.ts");
 
@@ -228,6 +228,25 @@ test("a grant that fails to persist leaves the review pending so the checked app
 });
 
 // ---- Filed plan decisions (`filed-plan-decisions`): managed approval on the filed path ----
+
+test("the filed answer's managed identity line is worded from the review and its binding alone, with no database", () => {
+  const plan = { planId: "p-1", revision: 3, slug: "linter-rollout" };
+  const approve = [{ decisionId: "approve-final-bundle", selected: ["approve"], other: null }];
+  assert.equal(describeFiledPlanIdentity({ status: "answered", resolvedBy: "human", selections: approve }, { own: plan }),
+    "Managed plan: linter-rollout (plan p-1, revision 3). This answer approved that exact final bundle.");
+  for (const review of [
+    { status: "answered" as const, resolvedBy: "human" as const, selections: [{ decisionId: "approve-final-bundle", selected: ["revise"], other: null }] },
+    { status: "dismissed" as const, resolvedBy: "human" as const, selections: null },
+    { status: "answered" as const, resolvedBy: "foreman" as const, selections: approve },
+  ]) {
+    assert.match(describeFiledPlanIdentity(review, { own: plan })!, /This answer did not approve that final bundle\.$/);
+  }
+  assert.equal(describeFiledPlanIdentity({ status: "answered", resolvedBy: "human", selections: null }, { own: { ...plan, slug: null } }),
+    "Managed plan: managed plan (plan p-1, revision 3). This answer did not approve that final bundle.");
+  assert.equal(describeFiledPlanIdentity({ status: "answered", resolvedBy: "human", selections: null }, { followUpOf: plan }),
+    "Managed plan: linter-rollout (plan p-1, revision 3). Its final bundle was already approved by standing approval; this answer covers only the remaining decisions.");
+  assert.equal(describeFiledPlanIdentity({ status: "answered", resolvedBy: "human", selections: null }, null), null);
+});
 
 test("a filed final-bundle approval is bound, approves, grants the standing approval, and its answer names the plan", async () => {
   fileForms(true);

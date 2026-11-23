@@ -892,4 +892,25 @@ test("an older child re-asking a filed plan form turns it into a call-mode form"
   assert.equal(again.wait, "call");
   assert.equal(registry.getReview(filed.id)?.waitMode, undefined);
   assert.equal(registry.completionHeldByQuestion(registry.getSession(d.syntheticId)!), false, "a call-mode form is not held");
+  // It is then exactly today's call-mode plan form, and still a gate: a pending review the session
+  // has stopped on, so it stays amber and every completion path that refuses needs-you refuses.
+  assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 });
+  assert.equal(reportBucket(registry.getSession(d.syntheticId)!), "needs-you");
+});
+
+test("a re-attached plan form whose call is abandoned is detached by a daemon restart and still answered as a message", () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, reviews } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const form = reviews.create(d.syntheticId, "plan-decisions", "Plan", "# Plan", decisions("Plan?"), { waitMode: "message" });
+  // An older child re-asks it word for word and attaches a call, then vanishes without a cancel.
+  reviews.create(d.syntheticId, "plan-decisions", "Plan", "# Plan", decisions("Plan?"), { callerPolls: true });
+  assert.equal(registry.getReview(form.id)?.waitMode, undefined);
+  assert.equal(loadReviewContinuationCandidates(form.id).length, 0);
+  // Startup recovery detaches every pending wait, so the answer is owed as a message, as for any
+  // call-mode review whose call is gone.
+  const delivered: string[] = [];
+  reviews.startContinuationRecovery((review) => { if (review.id === form.id) delivered.push(review.id); return true; });
+  reviews.resolve(form.id, "answer", "Plan?\n→ eslint", "human");
+  assert.deepEqual(delivered, [form.id]);
 });

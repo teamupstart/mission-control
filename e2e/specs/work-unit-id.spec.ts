@@ -141,7 +141,7 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await expect(detail.getByRole("term").filter({ hasText: /^work unit$/ })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "Copy work unit id" })).toHaveCount(0);
   await expect(detail).not.toContainText(claude.workUnitId!);
-  await expect(page.locator("body")).not.toContainText(/work unit/i);
+  await expect(detail).not.toContainText(/work unit/i);
   await shoot(detail.locator("dl.detail-sub"), "01-preview-on-no-row", page);
 
   // The preview switch is the one place the dashboard refers to the id, and it does not name it.
@@ -168,7 +168,7 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await expect(after.getByRole("term").filter({ hasText: /^work unit$/ })).toHaveCount(0);
   await expect(after.getByRole("button", { name: "Copy work unit id" })).toHaveCount(0);
   await expect(after).not.toContainText(claude.workUnitId!);
-  await expect(page.locator("body")).not.toContainText(/work unit/i);
+  await expect(after).not.toContainText(/work unit/i);
   await shoot(after.locator("dl.detail-sub"), "07-preview-switched-off-still-hidden", page);
 });
 

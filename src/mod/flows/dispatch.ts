@@ -106,7 +106,7 @@ export async function createDraftAsking(
 /** Fills the prompt box for the description, or asks for it in a dialog when it cannot be filled (S12). */
 async function requestDescription(host: FlowHost, session: FlowSession, summary: HomeDispatchDraftSummary): Promise<FlowResult> {
   // Never touch the prompt of a session other than the one that asked.
-  if (session.live && !session.live()) return stop(host);
+  if (session.live && !session.live()) return ended();
   let filled = true;
   try {
     filled = (await host.fillPrompt("/mission-dispatch ", session.live)) !== false;
@@ -115,7 +115,7 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
   }
   // The fill may have outlasted the session: an ended session must not leave its draft waiting in
   // state the next session reads. (The draft itself expires at the daemon.)
-  if (session.live && !session.live()) return stop(host);
+  if (session.live && !session.live()) return ended();
   if (filled) {
     await host.paneState.set("draftId", summary.draftId);
     host.notice(DESCRIBE_NOTICE);
@@ -135,6 +135,11 @@ async function cancel(host: FlowHost, session: FlowSession, draftId: string): Pr
 }
 
 /** A dismissed dialog counts as Cancel (7.11); before a draft exists there is nothing to cancel. */
+/** The session ended under the flow: there is no one left to tell, so it ends quietly (cf. fail() for `ended`). */
+function ended(): FlowResult {
+  return { outcome: "cancelled", line: CANCELLED_LINE };
+}
+
 function stop(host: FlowHost): FlowResult {
   host.notice(CANCELLED_NOTICE);
   return { outcome: "cancelled", line: CANCELLED_LINE };
@@ -289,7 +294,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
     const pick = await askPages(host, start);
     if (pick.kind !== "pick") return stop(host);
     if (pick.value === "check-in") {
-      if (session.live && !session.live()) return stop(host);
+      if (session.live && !session.live()) return ended();
       await host.paneOpen({ tab: "needs-you", focus: true, ...(session.live ? { guard: session.live } : {}) });
       return { outcome: "pane", line: "" };
     }

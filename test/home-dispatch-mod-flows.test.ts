@@ -797,3 +797,38 @@ test("reminders are kept per session, so a new session starts with none", async 
   assert.equal(second.reminded.size, 1);
   assert.ok(!fake.notices.includes("Dropped the draft that was waiting for its description."));
 });
+
+test("a session that ended under a description request or a check-in open ends quietly", async () => {
+  // The prompt fill outlasts the session.
+  let ended = false;
+  const filling = world();
+  filling.fake.host.fillPrompt = async () => { ended = true; };
+  await runDispatchCommand(filling.fake.host, { ...SESSION, live: () => !ended }, "");
+  assert.ok(filling.fake.notices.every((n) => n !== "Cancelled. Nothing was created."));
+
+  // The session has ended before the description request starts.
+  const before = world();
+  let endedBefore = false;
+  const realFetch = before.fake.host.fetch;
+  before.fake.host.fetch = async (path, init) => {
+    const reply = await realFetch(path, init);
+    if (path === "/dispatch/drafts") endedBefore = true;
+    return reply;
+  };
+  await runDispatchCommand(before.fake.host, { ...SESSION, live: () => !endedBefore }, "");
+  assert.ok(before.fake.notices.every((n) => n !== "Cancelled. Nothing was created."));
+
+  // The session ends while the Start dialog's Check in answer is on its way to the pane.
+  let endedCheckIn = false;
+  const checkIn = world({
+    host: { answers: (q) => { endedCheckIn = true; return { kind: "pick", label: q.options.find((o) => o.label === "Check in on my tasks")?.label ?? q.options[0]!.label }; } },
+  });
+  await runDispatchCommand(checkIn.fake.host, { ...SESSION, live: () => !endedCheckIn }, "");
+  assert.deepEqual(checkIn.fake.paneOpens, []);
+  assert.ok(checkIn.fake.notices.every((n) => n !== "Cancelled. Nothing was created."));
+
+  // A dismissed dialog, with the person still there, still says so.
+  const dismissed = world({ host: { answers: () => ({ kind: "dismissed" }) } });
+  await runDispatchCommand(dismissed.fake.host, SESSION, "");
+  assert.equal(dismissed.fake.notices.at(-1), "Cancelled. Nothing was created.");
+});

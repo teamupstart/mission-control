@@ -650,3 +650,28 @@ test("a pane open that finishes after the session ended gets no wider-window lin
   await runDispatchCommand(placed.fake.host, { ...SESSION, live: () => true }, "inbox");
   assert.deepEqual(placed.fake.notices, [PANE_WIDER_NOTICE]);
 });
+
+test("a description request whose fill outlasts the session leaves no waiting draft behind", async () => {
+  let ended = false;
+  const { fake } = world();
+  fake.host.fillPrompt = async () => { ended = true; };
+  const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "");
+  assert.equal(result.outcome, "cancelled");
+  assert.equal(await fake.host.paneState.get("draftId"), undefined);
+});
+
+test("a description update that outlasts the session does not clear a replacement's waiting draft", async () => {
+  let ended = false;
+  const { daemon, fake } = world();
+  await runDispatchCommand(fake.host, SESSION, "");
+  await fake.host.paneState.set("draftId", "draft-1");
+  const real = fake.host.fetch;
+  fake.host.fetch = async (path, init) => {
+    // The session ends while the update is in flight, and a replacement has its own draft waiting.
+    if (path.includes("/dispatch/drafts/")) { ended = true; await fake.host.paneState.set("draftId", "replacement-draft"); }
+    return real(path, init);
+  };
+  await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "describe the old one");
+  assert.equal(await fake.host.paneState.get("draftId"), "replacement-draft");
+  assert.ok(daemon.requests.length > 0);
+});

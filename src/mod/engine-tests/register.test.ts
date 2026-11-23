@@ -33,7 +33,7 @@ function world(on, { flag, minModApi = 1 }) {
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
   on('state.set', async (_, e) => { if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
-  on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold } if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
+  on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
@@ -373,26 +373,51 @@ test('a stale pane open does not close the pane a replacement session opened, an
   expect(seen.state.paneTab).toBe('needs-you')
 })
 
-test('a pane target write held across a session replacement leaves the replacement\'s target alone', async ($, on) => {
+test('a pane target write in flight across a session replacement does not change the replacement\'s tab', async ($, on) => {
   const seen = dispatchWorld(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
   let release
   seen.holdSet = new Promise((resolve) => { release = resolve })
   seen.holdSetKey = 'paneTab'
-  // The task-row shortcut writes paneTab first; that write is held.
+  // The task-row shortcut writes paneTab first; that write is held in flight.
   await $.command.run(COMMAND('mc-1'))
   await new Promise((resolve) => setTimeout(resolve, 100))
-  // The session is replaced while it is held, and the replacement opens on Needs you.
   seen.state.selectedTaskId = null
   seen.state.paneView = 'list'
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await settle(() => seen.opened.length >= 2)
+  // The session is replaced while it is held. Its writes queue behind the one in flight.
+  const replacing = $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 100))
   release()
+  await replacing
+  await settle(() => seen.opened.length >= 2)
   await new Promise((resolve) => setTimeout(resolve, 250))
-  // The old command's remaining writes never reach the replacement.
+  // The old write lands first and the replacement's Needs you lands after it; nothing else of the old command's does.
+  expect(seen.state.paneTab).toBe('needs-you')
   expect(seen.state.selectedTaskId).toBe(null)
   expect(seen.state.paneView).toBe('list')
+})
+
+test('a stale pane open that finishes first does not close a replacement open still pending', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let releaseStale
+  let releaseReplacement
+  seen.holdOpens = [new Promise((resolve) => { releaseStale = resolve }), new Promise((resolve) => { releaseReplacement = resolve })]
+  const openedBefore = seen.opened.length
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => seen.opened.length > openedBefore)
+  // The replacement starts and its own open is pending too.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.opened.length >= openedBefore + 2)
+  const closedBefore = seen.closed.length
+  releaseStale()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  releaseReplacement()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  // No close came after the stale open finished: the replacement's pane stays.
+  expect(seen.closed.length).toBe(closedBefore)
 })
 
 test('a second dispatch while one is open is refused, so only one draft is made', async ($, on) => {

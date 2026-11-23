@@ -37,7 +37,7 @@ export function register(on: EngineOn, _options: unknown): void {
   let generation = 0;
   // Which session's host holds the pane, so a stopped session's late cleanup cannot close the
   // pane its replacement opened (the pane has one id and a late `open` or `close` acts on it).
-  const pane: PaneHolder = { owner: null, closing: Promise.resolve() };
+  const pane: PaneHolder = { owner: null, closing: Promise.resolve(), writes: Promise.resolve() };
   on("session.start", async ($, e, next) => {
     generation += 1;
     core?.stop();
@@ -47,7 +47,7 @@ export function register(on: EngineOn, _options: unknown): void {
     wipeGlance($, view);
     // A draft left waiting for its description belongs to the session that made it: the next
     // session's text must start a new brief, not describe an orphaned draft.
-    await stateSet($, "draftId", null).catch(() => undefined);
+    await queuedStateSet($, pane, "draftId", null);
     const mine = generation;
     const host = await createHost($, view, { pane, mine, current: () => generation });
     const sessionId = await $.session.id();
@@ -81,7 +81,7 @@ export function register(on: EngineOn, _options: unknown): void {
     flowSession = null;
     flowHost = null;
     wipeGlance($, view);
-    await stateSet($, "draftId", null).catch(() => undefined);
+    await queuedStateSet($, pane, "draftId", null);
     return next(e);
   });
 
@@ -215,6 +215,16 @@ interface Engine {
   };
 }
 
+/** One shared pane-state write, in order after those before it; dropped if `guard` says its session is gone when its turn comes. */
+function queuedStateSet($: Engine, pane: PaneHolder, key: FlowStateKey, value: unknown, guard?: () => boolean): Promise<void> {
+  const run = pane.writes.then(async () => {
+    if (guard && !guard()) return;
+    await stateSet($, key, value).catch(() => undefined);
+  });
+  pane.writes = run.catch(() => undefined);
+  return run.catch(() => undefined);
+}
+
 /** The pane values the mod writes: the controller's three, and the draft waiting for its description. */
 type FlowStateKey = CoreStateKey | "draftId" | "selectedTaskId" | "paneView";
 
@@ -320,6 +330,13 @@ function wipeGlance($: Engine, view: GlanceView): void {
 /** Adapts the engine's `$` to the `ModHost` the controller, flows and pane views use. */
 interface PaneHolder {
   owner: number | null;
+  /**
+   * Settles when every shared state write queued so far has finished. The pane's state is shared by
+   * every session, so its writes run in order, each checking its own guard as it starts: a write an
+   * old session already has in flight finishes before the replacement's write begins, and the
+   * replacement's value is the one left behind.
+   */
+  writes: Promise<void>;
   /** Settles when every close issued so far has completed; an open waits for it. */
   closing: Promise<void>;
 }
@@ -335,6 +352,18 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
   const env = await readEnv($);
   const baseUrl = daemonBaseUrl(env);
   const redraw = (): void => $.ui.invalidate("ui.render");
+  /**
+   * The session ended while its pane open or target was pending. Take the pane back unless a
+   * replacement owns it (the pane has one id, so its close would take the replacement's too).
+   */
+  const takeBack = (): { isPlaced: boolean } => {
+    if (session.pane.owner === null || session.pane.owner === session.mine) {
+      session.pane.owner = null;
+      const done = $.ui.close({ id: PANE_REQUEST_ID }).catch(() => undefined);
+      session.pane.closing = Promise.all([session.pane.closing, done]).then(() => undefined);
+    }
+    return { isPlaced: false };
+  };
   return {
     notice: (text) => {
       // One quiet line only the person reads; `$.ui.log` never reaches the model.
@@ -383,34 +412,26 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       // A command that outlived its session neither retargets nor opens the pane.
       const stale = (): boolean => session.mine !== session.current() || (opts.guard !== undefined && !opts.guard());
       if (stale()) return { isPlaced: false };
+      // Claim the pane before anything pends, so an older session's late open sees this one owns it
+      // and does not close it.
+      session.pane.owner = session.mine;
       // The target the command asked for is stored before the pane opens, so the pane draws it
-      // (P12 reads these): a tab clears any selected task, a task id selects that task, and a
-      // bare open leaves the pane as it was.
-      // Each write is guarded on its own: the pane's state is shared, so once a replacement session
-      // starts, nothing this command has left to write may land in it. (A write already in flight
-      // when the session was replaced cannot be called back, so the ones after it are the ones kept.)
+      // (P12 reads these): a tab clears any selected task, a task id selects that task, and a bare
+      // open leaves the pane as it was. The writes are queued with the other sessions' and each
+      // checks this session again when its turn comes.
       const target: Array<[FlowStateKey, unknown]> = opts.taskId !== undefined
         ? [["paneTab", "tasks"], ["selectedTaskId", opts.taskId], ["paneView", "item"]]
         : opts.tab !== undefined
           ? [["paneTab", opts.tab], ["selectedTaskId", null], ["paneView", "list"]]
           : [];
       for (const [key, value] of target) {
-        if (stale()) return { isPlaced: false };
-        await stateSet($, key, value).catch(() => undefined);
+        if (stale()) break;
+        await queuedStateSet($, session.pane, key, value, () => !stale());
       }
-      if (stale()) return { isPlaced: false };
+      if (stale()) return takeBack();
       const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
-      if (!stale()) {
-        session.pane.owner = session.mine;
-        return { isPlaced: opened.isPlaced };
-      }
-      // The session ended while the open was pending. Take the pane back unless a replacement
-      // session owns it now (the pane has one id, and its close would take the replacement's).
-      if (session.pane.owner === null) {
-        const done = $.ui.close({ id: PANE_REQUEST_ID }).catch(() => undefined);
-        session.pane.closing = Promise.all([session.pane.closing, done]).then(() => undefined);
-      }
-      return { isPlaced: false };
+      if (!stale()) return { isPlaced: opened.isPlaced };
+      return takeBack();
     },
     paneClose: () => {
       // A replacement session owns the pane now: a stale close must not take it away.
@@ -423,14 +444,15 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     // layer, so it is dropped.
     paneState: {
       set: async <K extends keyof ModState>(key: K, value: ModState[K]) => {
-        if (isFlowStateKey(key)) await stateSet($, key, value).catch(() => undefined);
+        // Queued behind every other session's writes; a stale session's write is dropped.
+        if (isFlowStateKey(key)) await queuedStateSet($, session.pane, key, value, () => session.mine === session.current());
       },
       get: async <K extends keyof ModState>(key: K) =>
         (isFlowStateKey(key) ? await stateGet($, key).catch(() => undefined) : undefined) as ModState[K] | undefined,
       update: async <K extends keyof ModState>(key: K, fn: (value: ModState[K] | undefined) => ModState[K]) => {
         if (!isFlowStateKey(key)) return;
         const current = (await stateGet($, key).catch(() => undefined)) as ModState[K] | undefined;
-        await stateSet($, key, fn(current)).catch(() => undefined);
+        await queuedStateSet($, session.pane, key, fn(current), () => session.mine === session.current());
       },
     },
   };

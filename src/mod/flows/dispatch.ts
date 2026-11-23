@@ -109,6 +109,9 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
   } catch {
     filled = false;
   }
+  // The fill may have outlasted the session: an ended session must not leave its draft waiting in
+  // state the next session reads. (The draft itself expires at the daemon.)
+  if (session.live && !session.live()) return stop(host);
   if (filled) {
     await host.paneState.set("draftId", summary.draftId);
     host.notice(DESCRIBE_NOTICE);
@@ -139,7 +142,8 @@ function stop(host: FlowHost): FlowResult {
  */
 export async function describeDraft(host: FlowHost, session: FlowSession, draftId: string, words: string): Promise<FlowResult | null> {
   const updated = await updateDraft(host, session, draftId, { words });
-  await host.paneState.set("draftId", null);
+  // Only this session's own marker is cleared: a replacement session may have its own by now.
+  if (!session.live || session.live()) await host.paneState.set("draftId", null);
   if (updated.ok) return confirmLoop(host, session, updated.value, undefined);
   if (updated.kind === "refused" && updated.status === 404) return null;
   return fail(host, updated);

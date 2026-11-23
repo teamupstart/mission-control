@@ -105,6 +105,8 @@ export async function createDraftAsking(
 
 /** Fills the prompt box for the description, or asks for it in a dialog when it cannot be filled (S12). */
 async function requestDescription(host: FlowHost, session: FlowSession, summary: HomeDispatchDraftSummary): Promise<FlowResult> {
+  // Never touch the prompt of a session other than the one that asked.
+  if (session.live && !session.live()) return stop(host);
   let filled = true;
   try {
     filled = (await host.fillPrompt("/mission-dispatch ")) !== false;

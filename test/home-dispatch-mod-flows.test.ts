@@ -711,3 +711,34 @@ test("a second blank command drops the waiting draft at the daemon, says so, and
   // A new draft is waiting now, not the dropped one.
   assert.notEqual(await fake.host.paneState.get("draftId"), draftId);
 });
+
+test("a draft answer that arrives after the session ended fills no prompt and opens no dialog", async () => {
+  // The description path: no prompt fill, no waiting draft left behind.
+  let ended = false;
+  const describing = world();
+  const realDescribing = describing.fake.host.fetch;
+  describing.fake.host.fetch = async (path, init) => {
+    const reply = await realDescribing(path, init);
+    if (path === "/dispatch/drafts") ended = true;
+    return reply;
+  };
+  const first = await runDispatchCommand(describing.fake.host, { ...SESSION, live: () => !ended }, "");
+  assert.equal(first.outcome, "cancelled");
+  assert.deepEqual(describing.fake.prompts, []);
+  assert.equal(await describing.fake.host.paneState.get("draftId"), undefined);
+
+  // The confirm path: no summary shown, no Confirm dialog.
+  let ended2 = false;
+  const confirming = world();
+  const realConfirming = confirming.fake.host.fetch;
+  confirming.fake.host.fetch = async (path, init) => {
+    const reply = await realConfirming(path, init);
+    if (path === "/dispatch/drafts") ended2 = true;
+    return reply;
+  };
+  const second = await runDispatchCommand(confirming.fake.host, { ...SESSION, live: () => !ended2 }, "ship add retries");
+  assert.equal(second.outcome, "cancelled");
+  assert.equal(confirming.fake.dialogs.some((d) => d.header === "Confirm"), false);
+  assert.ok(confirming.fake.notices.every((n) => !n.startsWith("Repo:")));
+  assert.deepEqual(confirming.filed, []);
+});

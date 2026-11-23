@@ -53,6 +53,9 @@ async function send<T>(
     if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
     return { ok: false, kind: "down" };
   }
+  // The session may have ended while the daemon answered. Whatever the flow would do next (fill
+  // the prompt, show a summary, open a dialog) belongs to a session that is gone, so it stops here.
+  if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(reply.text);

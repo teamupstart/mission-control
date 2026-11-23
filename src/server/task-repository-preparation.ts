@@ -51,9 +51,10 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
     else if (resolved.unanswered) unanswered ??= resolved.error;
   }
   const canonical = [...candidates].sort();
+  // A match git did not answer for is neither missing nor ruled out, so it can make a sole
+  // candidate ambiguous; only two answered candidates prove ambiguity without it.
+  if (unanswered && canonical.length <= 1) return { ok: false, status: 409, error: unanswered };
   if (canonical.length === 0) {
-    // A checkout by that name exists; git just did not answer for it, so it is not "no such repository".
-    if (unanswered) return { ok: false, status: 409, error: unanswered };
     return {
       ok: false,
       status: 400,

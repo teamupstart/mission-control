@@ -108,3 +108,36 @@ test("a short name whose checkout git did not answer for is refused as unanswere
     else process.env.MISSION_GIT_BIN = previous;
   }
 });
+
+test("a sole answered checkout is not accepted while a same-named checkout went unanswered", async () => {
+  invalidateReposCache();
+  const answered = cloneInto("probe-split");
+  const silent = cloneInto(join("nested", "probe-split"));
+  const listed = await listRepos({ fresh: true });
+  assert.ok(listed.includes(answered) && listed.includes(silent));
+
+  const bin = join(home, "bin-dies-for-one", "git");
+  mkdirSync(join(home, "bin-dies-for-one"), { recursive: true });
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env node",
+      `if (process.argv.includes(${JSON.stringify(silent)})) process.kill(process.pid, "SIGKILL");`,
+      'const r = require("node:child_process").spawnSync("git", process.argv.slice(2), { stdio: "inherit" });',
+      "process.exit(r.status ?? 1);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(bin, 0o755);
+  const previous = process.env.MISSION_GIT_BIN;
+  process.env.MISSION_GIT_BIN = bin;
+  try {
+    const result = await resolveTaskRepositorySelector("probe-split");
+    assert.equal(result.ok, false, "accepted the answered checkout without ruling out the other");
+    assert.equal(result.ok ? 0 : result.status, 409);
+    assert.match(result.ok ? "" : result.error, /could not tell whether .*nested\/probe-split is a git repository/);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = previous;
+  }
+});

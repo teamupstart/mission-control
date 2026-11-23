@@ -553,6 +553,18 @@ test("a symlink put in place of the stored copy is never followed: reading and p
   assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
 });
 
+test("publishing while the archive manager is shutting down is refused with 503, and nothing is archived", async () => {
+  const { post, publish, bundles, reports, archives } = setup();
+  const report = await post("shutdown.html", STATIC_HTML, "During shutdown");
+  archives.stop();
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 503, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.problems, ["Mission Control is shutting down; try again after it restarts"]);
+  assert.deepEqual(bundles(), [], "no archive is written");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null, "the report stays unpublished");
+  assert.equal(reports.get(report.id)?.readAt, null);
+});
+
 test("a report with no document is not publishable", async () => {
   const { publish, reports, bundles } = setup();
   const report = await reports.post(mkSession({ id: "s-no-doc", cwd: home }), { title: "No document", body: "Body only." });

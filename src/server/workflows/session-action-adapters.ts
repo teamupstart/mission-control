@@ -397,7 +397,7 @@ function completePullRequest(
 
 /** A settled turn must not hold sibling feedback indefinitely on unverifiable no-change proof. */
 function unprovenPullRequest(context: SessionActionAdapterContext): SessionActionCompletionDecision {
-  const missingAcceptedTree = !context.acceptedContentTreeOid
+  const missingAcceptedTree = context.unchangedRepository && !context.acceptedContentTreeOid
     ? "The accepted content tree is missing from the reviewed submission." : null;
   const readProblem = context.unchangedRepositoryProblem
     ?? (!context.repository ? "The bound repository could not be read." : null)

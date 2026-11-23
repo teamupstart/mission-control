@@ -648,8 +648,7 @@ for (const patch of [
 
 test("a historical merge never accepts missing review proof", () => {
   const decision = decide([oldMerge()], { acceptedContentTreeOid: null, now: 60_003 });
-  assert.equal(decision.kind, "blocked");
-  if (decision.kind === "blocked") assert.match(decision.detail, /accepted content tree/);
+  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
 });
 
 for (const dirty of [false, true]) test(`historical publication rechecks continuation content, dirty=${dirty}`, () => {
@@ -731,7 +730,7 @@ test("an unrelated PR on another branch does not veto positive no-change proof",
 for (const branch of [null, BRANCH]) {
   for (const [label, patch, detail] of [
     ["base", { unchangedRepositoryProblem: "The default base could not be resolved." }, /default base/],
-    ["accepted tree", { acceptedContentTreeOid: null }, /accepted content tree/],
+    ["accepted tree", { acceptedContentTreeOid: null, unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" } }, /accepted content tree/],
   ] as const) test(`missing ${label} proof on branch ${branch} blocks with a recoverable explanation`, () => {
     const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 },
       settledAt: 3, now: 60_003, ...patch };
@@ -746,7 +745,7 @@ for (const branch of [null, BRANCH]) {
 }
 
 for (const [label, patch] of [
-  ["accepted tree", { acceptedContentTreeOid: null }],
+  ["accepted tree", { acceptedContentTreeOid: null, unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" } }],
   ["repository read", { repository: null }],
   ["HEAD read", { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }],
   ["Git timeout", { unchangedRepositoryProblem: "Git timed out while reading publication proof." }],
@@ -767,13 +766,13 @@ for (const [label, patch] of [
   });
 }
 
-test("missing accepted-tree proof retries then identifies the missing tree even with a Git error", () => {
+test("missing accepted-tree proof does not hide an unavailable Git read", () => {
   const context = { acceptedContentTreeOid: null, unchangedRepositoryProblem: "Git timed out" };
   assert.deepEqual(decide([], context), { kind: "waiting", reason: "awaiting_proof" });
   const decision = decide([], { ...context, now: 60_003 });
   assert.equal(decision.kind, "blocked");
   if (decision.kind !== "blocked") return;
-  assert.match(decision.detail, /accepted content tree/);
+  assert.match(decision.detail, /Git timed out/);
 });
 
 test("no-change capture reports an unreadable publication tree as capture failure", () => {
@@ -828,4 +827,14 @@ for (const mismatch of ["accepted tree", "captured HEAD"]) test(`clean checkout 
   if (expired.kind !== "blocked") return;
   assert.equal(expired.code, "expectation_unmet");
   assert.match(expired.detail, /does not match the accepted or captured content/);
+});
+
+
+for (const branch of [null, BRANCH]) test(`known changed work without accepted tree keeps awaiting adoption on ${branch}`, () => {
+  const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository: null, acceptedContentTreeOid: null, settledAt: 5_000 };
+  for (const now of [5_000, 65_000, 125_000]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
+  }
+  assert.equal(decide([pr()], { ...context, now: 125_000 }).kind, "complete");
 });

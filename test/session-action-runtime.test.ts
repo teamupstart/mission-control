@@ -2509,7 +2509,7 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
       if (proof === "missing-review") {
         await h.manager.sweepSessionActions(firstProofRead + 60_000);
-        assert.equal(h.store.getRun(runId)?.status, "blocked");
+        assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
       }
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(reads, proof === "missing-review" ? 0 : 1);
@@ -2719,8 +2719,8 @@ test("known changed detached work completes after adoption arrives on a later sw
 });
 
 
-test("missing accepted-tree proof allows adoption after the first settled sweep", async () => {
-  const h = await harness("missing-accepted-tree-adoption", { pullRequest: true, omitContentTree: true });
+for (const changed of [false, true]) test(`missing accepted-tree proof allows late adoption with known changed work=${changed}`, async () => {
+  const h = await harness(`missing-accepted-tree-adoption-${changed}`, { pullRequest: true, omitContentTree: true, unchangedRepository: !changed });
   try {
     h.repository.branch = null;
     h.head.sha = "detached-ahead";
@@ -2729,10 +2729,11 @@ test("missing accepted-tree proof allows adoption after the first settled sweep"
     h.runActionTurn();
     const now = SETTLED();
     await h.manager.sweepSessionActions(now);
-    await h.manager.sweepSessionActions(now + 59_999);
-    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+    const later = now + (changed ? 120_000 : 59_999);
+    await h.manager.sweepSessionActions(later);
+    assert.equal(h.store.runSummary(runId)?.actionWait, changed ? "awaiting_pull_request" : "awaiting_proof");
     h.adoptPr();
-    await h.manager.sweepSessionActions(now + 59_999);
+    await h.manager.sweepSessionActions(later);
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption with missing accepted tree did not complete");
     assert.equal(h.store.listSubmissions(runId).length, 2);
     assert.equal(h.injected.length, 1);

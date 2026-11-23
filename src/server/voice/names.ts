@@ -370,7 +370,10 @@ export function wireVoiceNameEvents(
   store: VoiceStateStore = voiceStateStore,
 ): () => void {
   store.useRoster(() => names.roster());
-  const stopEmit = names.onChange(emit);
+  const stopEmit = names.onChange((roster) => {
+    emit(roster);
+    store.publish();
+  });
   const stopNames = names.start();
   return () => {
     stopEmit();

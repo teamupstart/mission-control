@@ -1,6 +1,6 @@
 import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import type { VoiceConfig, VoiceState } from "@shared/voice.ts";
+import { voiceCaptures, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
 
@@ -56,7 +56,7 @@ export class VoiceRouter {
 
   async accept(utterance: VoiceUtterance): Promise<boolean> {
     const { mode, roster } = this.state();
-    if (mode !== "listening" && mode !== "push-to-talk") return false;
+    if (!voiceCaptures(mode)) return false;
     const { id } = utterance;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);

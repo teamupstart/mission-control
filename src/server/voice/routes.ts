@@ -5,6 +5,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
+  type VoiceListenerDirective,
   VoiceConfigPatchSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
@@ -30,7 +31,7 @@ const limitBody = bodyLimit({
 });
 
 /**
- * Voice's routes (contracts A, B and D), every one behind the `voice` flag: with it off each answers
+ * Voice's routes (contracts A, B, D and I), every one behind the `voice` flag: with it off each answers
  * 404 before its handler runs.
  *
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
@@ -47,6 +48,7 @@ const limitBody = bodyLimit({
  *
  * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
  * cooperating local process posts to them, and the token is what separates it from any other.
+ * - `GET /voice/listener/directive` returns capture settings and holds a matching revision up to 25 seconds.
  * - `POST /voice/listener/hello` takes a listener's hello. One naming a protocol major this
  *   daemon does not speak is refused with 409, and the state's `listener` capability says why.
  * - `POST /voice/shell-report` takes the shell's capabilities, microphone permission, call and
@@ -83,6 +85,28 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
+  app.get("/voice/listener/directive", gate, async (c) => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    c.header("Cache-Control", "no-store");
+    const current = store.directive();
+    if (c.req.query("revision") !== current.revision) return c.json(current);
+    const signal = c.req.raw.signal;
+    const next = await new Promise<VoiceListenerDirective>((resolve) => {
+      const finish = () => {
+        unsubscribe();
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", finish);
+        resolve(store.directive());
+      };
+      const unsubscribe = store.onChange((state) => {
+        if (store.directive(state).revision !== current.revision) finish();
+      });
+      const timeout = setTimeout(finish, 25_000);
+      signal.addEventListener("abort", finish, { once: true });
+      if (signal.aborted) finish();
+    });
+    return c.json(next);
+  });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });

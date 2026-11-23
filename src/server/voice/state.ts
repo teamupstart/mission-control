@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
 import {
@@ -10,6 +11,8 @@ import {
   VOICE_REQUIRED_FLAGS,
   VOICE_SHELL_REPORT_LAPSE_MS,
   voiceMode,
+  voiceCaptures,
+  type VoiceListenerDirective,
   voiceProtocolMajor,
   voiceStateOff,
   voiceUnavailableReasons,
@@ -62,11 +65,27 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
+  private lastDirective?: VoiceListenerDirective;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
 
   constructor(private readonly deps: VoiceStateDeps) {}
+
+  /** A fresh revision for each transition, even a mute/unmute between two GETs. */
+  directive(state = this.state()): VoiceListenerDirective {
+    const capture = voiceCaptures(state.mode);
+    const roster = state.roster.map((entry) => entry.name);
+    const inputDevice = this.deps.config().inputDevice;
+    const last = this.lastDirective;
+    if (!last || last.capture !== capture || last.inputDevice !== inputDevice ||
+      last.roster.length !== roster.length || roster.some((name, i) => name !== last.roster[i])) {
+      const next = { capture, inputDevice, roster, pauseMs: null, revision: randomUUID() };
+      this.lastDirective = next;
+      return next;
+    }
+    return last;
+  }
 
   /**
    * Read the roster from `source` (`wireVoiceNameEvents` passes the name registry), or from
@@ -175,6 +194,7 @@ export class VoiceStateStore {
   /** Recompute and tell every subscriber, then arm the timer for the next lapse. */
   publish(): VoiceState {
     const state = this.state();
+    if (this.lastDirective) this.directive(state);
     for (const listener of Array.from(this.listeners)) {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
@@ -190,6 +210,7 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.lastDirective = undefined;
     this.hello = null;
     this.refused = null;
     this.report = null;

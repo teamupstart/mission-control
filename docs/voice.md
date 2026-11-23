@@ -5,14 +5,60 @@ When it is finished, the operator will talk to an agent by name, with speech rec
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
-holds a message for the configured cancel window and queues it to the addressed agent. Audio
-capture and the on-screen confirmation card belong to later phases.
+holds a message for the configured cancel window and queues it to the addressed agent. On Apple silicon, the standalone listener captures and recognizes speech locally.
+The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
 snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
+
+## Running the listener on a development Mac
+
+Build with `npm run build:native`. Start the daemon, enable the four previews, download
+the model in Setup and unmute Voice. From a terminal with microphone access, run
+`npm run voice:listener`. Speak a running resident's reference name followed by “check the
+build”. After the cancel window, look for “check the build” in the resident's conversation
+and the routing outcome at `GET /api/voice/heard`. Muting stops the audio engine and
+releases its microphone. If this was the only capture, the macOS orange dot goes out.
+
+Any launcher can run `dist/native/voice-listener` directly with these three variables.
+
+| Variable | Value |
+| --- | --- |
+| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin |
+| `MISSION_VOICE_TOKEN_FILE` | Path to its token, sent as `x-harness-token` |
+| `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
+
+The development launcher fills missing values from the local daemon configuration and the
+FluidAudio model manifest. The helper reads microphone authorization without prompting.
+An explicit denial is sent in the hello and exits with status 2. An undetermined permission
+requires granting access from the launching app before capture can begin.
+
+On startup and every ten seconds, the helper posts protocol 1.0 to `/voice/listener/hello`.
+`modelLoaded` becomes true after local CoreML initialization. The hello names input devices
+by stable UID and reports built-in and Bluetooth transport. The built-in selection falls back
+to the system input when no built-in input exists. An unavailable explicit UID stops the
+listener. The optional `primingAvailable` boolean reports whether the local CTC model loaded.
+With only the TDT repository present, transcription continues with priming off.
+
+Fetch `GET /voice/listener/directive` with the token for an immediate
+`{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
+After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
+directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
+`pauseMs` is optional and unused. This daemon sends null.
+
+The default-input audio engine runs with voice processing off. It converts input to mono
+16 kHz samples and gates recognition on speech energy. Parakeet transcribes each segment.
+When CTC is available, the helper uses the directive's roster to rescore those same samples.
+Word timings come from the decoder. When a CTC correction changes the word count, the listener
+divides the measured span evenly among the corrected words. Interior boundaries are estimates.
+Only text, relative word timings and capture metadata reach the daemon. Samples and pending
+utterances stay in memory. A changed directive ends the current capture segment, discards
+buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
+A failed directive poll closes the microphone and exits. The helper writes no recordings or
+transcripts and logs no recognized words.
 
 ## Routing a text utterance
 

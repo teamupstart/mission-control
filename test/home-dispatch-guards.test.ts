@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 465 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 466 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -68,11 +68,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
   // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
   // `inbox` flag off. The six utterance, card action and Recently heard routes answer
-  // 404 with the voice preview off.
+  // 404 with the voice preview off, as does GET /voice/listener/directive.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 465);
+  assert.equal(others.length, 466);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "f13dd9e360316cd35506e6fdf311f239253d1fa1e2b0ad4917fd58429d6c47b0");
+    "affaaa2ed0f69549845acc1c2d82bfd513df0f1039f98fc83d08e028d76895d2");
 });
 
 function sourceFiles(dir: string): string[] {

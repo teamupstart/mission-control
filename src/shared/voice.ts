@@ -171,6 +171,18 @@ export const VoiceUiConfigPatchSchema = z.object({
 export const VOICE_MODES = ["off", "unavailable", "listening", "muted", "auto-muted", "push-to-talk"] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
 
+export function voiceCaptures(mode: VoiceMode): boolean {
+  return mode === "listening" || mode === "push-to-talk";
+}
+
+export interface VoiceListenerDirective {
+  capture: boolean;
+  roster: string[];
+  inputDevice: string;
+  pauseMs?: number | null;
+  revision: string;
+}
+
 /**
  * Why voice is unavailable, in the order they are reported.
  *
@@ -415,6 +427,7 @@ const VoiceInputDeviceSchema = z.object({
   id: z.string().min(1).max(VOICE_LIMITS.deviceIdChars),
   name: z.string().min(1).max(VOICE_LIMITS.deviceNameChars),
   builtIn: z.boolean().optional(),
+  bluetooth: z.boolean().optional(),
 });
 export type VoiceInputDevice = z.infer<typeof VoiceInputDeviceSchema>;
 
@@ -427,6 +440,7 @@ export const VoiceListenerHelloSchema = z.object({
   version: z.string().regex(/^\d+(\.\d+){0,2}$/).max(VOICE_LIMITS.versionChars),
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
+  primingAvailable: z.boolean().optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;

@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkSession } from "./helpers/session-fixture.ts";
@@ -88,6 +88,23 @@ test("a missing stored copy, a report with no document and an unknown report are
   assert.match(((await none.json()) as { error: string }).error, /no attached document/);
 
   assert.equal((await read("r-424242")).status, 404);
+});
+
+test("a stored copy that is there but cannot be opened is a 500 naming the error, never 'missing'", { skip: process.getuid?.() === 0 }, async () => {
+  writeFileSync(join(checkout, "locked.html"), "<p>locked</p>");
+  const report = await reports.post(session, { title: "Locked", body: "b", file: "locked.html" });
+  const stored = join(reportDocumentDir(report.id, home), "locked.html");
+  chmodSync(stored, 0o000);
+  try {
+    const res = await read(report.id);
+    assert.equal(res.status, 500);
+    const { error } = (await res.json()) as { error: string };
+    assert.equal(error, "Mission Control could not open the stored copy of locked.html (EACCES).");
+    assert.doesNotMatch(error, /missing/);
+  } finally {
+    chmodSync(stored, 0o600);
+  }
+  assert.equal((await read(report.id)).status, 200, "readable again once the permission is restored");
 });
 
 test("with the inbox flag off the document route refuses", async () => {

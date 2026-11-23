@@ -3505,8 +3505,9 @@ anything urgent or needing your decision is a `request_input` question.
   drawn in the dashboard's sandboxed preview frame, which runs none of its scripts and fetches
   nothing; a Markdown document is drawn by the dashboard's Markdown renderer. The route serves
   the stored copy as an attachment with `nosniff` and a `default-src 'none'; sandbox` policy, as
-  an archived page is served, and a stored copy that has gone missing is a 404 whose message the
-  reader shows. Opening the document records the first open, like opening the report, and does
+  an archived page is served. A stored copy that has gone missing is a 404 whose message the
+  reader shows; one that is there but cannot be opened (a permission or I/O error) is a 500
+  naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
   not mark it read.
 - **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
   document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived

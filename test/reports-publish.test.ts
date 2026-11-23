@@ -477,6 +477,22 @@ test("publishing a report whose stored copy has gone missing is refused, and not
   assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
 });
 
+test("publishing a stored copy that is there but cannot be opened answers 500 with its error code, and archives nothing", { skip: process.getuid?.() === 0 }, async () => {
+  const { post, publish, bundles, reports } = setup();
+  const report = await post("unopenable.html", STATIC_HTML, "Unopenable copy");
+  const stored = join(reportDocumentDir(report.id, home), "unopenable.html");
+  chmodSync(stored, 0o000);
+  try {
+    const refused = await publish(report.id);
+    assert.equal(refused.status, 500, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.problems, ["Mission Control could not open the stored copy of unopenable.html (EACCES)."]);
+    assert.deepEqual(bundles(), []);
+    assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+  } finally {
+    chmodSync(stored, 0o600);
+  }
+});
+
 test("a stored copy that is not UTF-8 text is refused with 422, for Markdown and for HTML, and nothing is archived", async () => {
   const { post, publish, bundles, reports } = setup();
   // 0xff and 0xfe never appear in UTF-8, so a fatal decoder rejects them rather than replacing.
@@ -543,6 +559,8 @@ test("a symlink put in place of the stored copy is never followed: reading and p
   const read = await app.request(`/api/reports/${report.id}/document`, { headers: LOOPBACK });
   assert.equal(read.status, 404);
   const text = await read.text();
+  assert.equal((JSON.parse(text) as { error: string }).error, "This report's stored document cannot be read.",
+    "a symlink is unreadable, not missing, and its message names nothing about the target");
   assert.doesNotMatch(text, /TOP-SECRET-TARGET/);
   assert.doesNotMatch(text, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the target's path is not disclosed");
 

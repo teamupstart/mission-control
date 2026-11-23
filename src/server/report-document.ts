@@ -56,10 +56,25 @@ export async function readStoredReportDocument(
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    // Only a file that is not there is "missing". A symlink put in its place (ELOOP under
+    // O_NOFOLLOW) or a path component that is not a directory is unreadable, never followed, and
+    // says nothing about what it points at. Anything else - permissions, descriptor exhaustion, an
+    // I/O error - is the daemon's own failure: a 500 that keeps the code, so it can be diagnosed
+    // rather than sending the operator to look for a file that is actually there.
+    if (code === "ENOENT") {
+      throw new ReportDocumentError(
+        `The stored copy of ${document.name} is missing from Mission Control's state folder.`,
+        404,
+      );
+    }
+    if (code === "ELOOP" || code === "ENOTDIR") {
+      throw new ReportDocumentError("This report's stored document cannot be read.", 404);
+    }
     throw new ReportDocumentError(
-      `The stored copy of ${document.name} is missing from Mission Control's state folder.`,
-      404,
+      `Mission Control could not open the stored copy of ${document.name} (${code ?? "unknown error"}).`,
+      500,
     );
   }
   try {

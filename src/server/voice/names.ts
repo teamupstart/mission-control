@@ -43,6 +43,12 @@ export interface VoiceNameDeps {
    * until its day is up; a deleted one leaves at once.
    */
   taskStored(id: string): boolean;
+  /**
+   * Finished tasks with a call sign that stopped at or after `since`, read from storage. Read once,
+   * at start, for the ones the Registry did not reload (it reloads the 50 most recent finished
+   * tasks), so a restart keeps each of their names for the rest of its day. None when omitted.
+   */
+  finishedNamedTasks?(since: number): readonly Task[];
   /** Schedules the recompute that drops an expired name. Unref'd, so it never holds the process. */
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
@@ -225,6 +231,12 @@ export class VoiceNameRegistry {
   /** Start following the Registry. Returns the stop the daemon calls at shutdown. */
   start(): () => void {
     for (const session of this.sources.liveSessions()) this.sessionTasks.set(session.id, session.task?.id ?? null);
+    // Kept as an evicted task is: listed until its day is up or another agent takes its name,
+    // and dropped by the first compute when either has already happened.
+    const loaded = new Set(this.sources.listTasks().map((task) => task.id));
+    for (const task of this.deps.finishedNamedTasks?.(this.deps.now() - VOICE_NAME_RETENTION_MS) ?? []) {
+      if (!loaded.has(task.id)) this.retained.set(task.id, task);
+    }
     this.unsubscribe ??= this.sources.subscribe((event) => this.observe(event));
     this.refresh();
     return () => this.stop();

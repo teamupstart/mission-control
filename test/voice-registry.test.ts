@@ -27,6 +27,7 @@ const { VoiceStateStore } = await import("../src/server/voice/state.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const { VOICE_CONFIG_DEFAULTS } = await import("../src/shared/voice.ts");
+const { loadFinishedTasksWithCallSign } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -84,15 +85,23 @@ class Sources {
   removeSession(id: string) { this.sessions.delete(id); this.emit({ type: "session_remove", id }); }
 }
 
-function harness(opts: { enabled?: boolean; stored?: (id: string) => boolean } = {}) {
+function harness(opts: {
+  enabled?: boolean;
+  stored?: (id: string) => boolean;
+  seed?: (sources: Sources) => void;
+  finished?: (since: number) => readonly Task[];
+  startAt?: number;
+} = {}) {
   const sources = new Sources();
-  const clock = { now: 1_000_000 };
+  opts.seed?.(sources);
+  const clock = { now: opts.startAt ?? 1_000_000 };
   const timers: { fn: () => void; ms: number }[] = [];
   const flag = { on: opts.enabled ?? true };
   const names = new VoiceNameRegistry(sources, {
     now: () => clock.now,
     enabled: () => flag.on,
     taskStored: opts.stored ?? (() => true),
+    ...(opts.finished ? { finishedNamedTasks: opts.finished } : {}),
     setTimer: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
     clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
   });
@@ -306,6 +315,26 @@ test("a task that stops while voice is off counts its 24 hours from when it stop
   assert.deepEqual(names.roster(), [], "it leaves 24 hours after it stopped");
 });
 
+test("a restart keeps a finished task's name the Registry did not reload, for the rest of its day", () => {
+  const now = 100 * HOUR;
+  const finished = (id: string, callSign: string, stoppedHoursAgo: number) => callSignTask(id, callSign, {
+    status: "done", sessionId: null, completedAt: now - stoppedHoursAgo * HOUR, updatedAt: now - stoppedHoursAgo * HOUR,
+  });
+  let asked: number | null = null;
+  const { names, timers } = harness({
+    startAt: now,
+    seed: (sources) => sources.tasks.set("t-loaded", finished("t-loaded", "Lee", 1)),
+    finished: (since) => {
+      asked = since;
+      return [finished("t-kept", "Kit", 2), finished("t-gone", "Gus", 25), finished("t-loaded", "Lee", 1)];
+    },
+  });
+  assert.equal(asked, now - VOICE_NAME_RETENTION_MS, "asked at start for one day back");
+  assert.deepEqual(brief(names.roster()), ["task:t-kept Kit not-running", "task:t-loaded Lee not-running"],
+    "not reloaded but inside its day: kept; past its day: not; reloaded: listed once");
+  assert.equal(timers.at(-1)!.ms, 22 * HOUR, "Kit's name expires 24 hours after its task stopped");
+});
+
 test("a listed task the Registry evicts while voice is off keeps its name for its day", () => {
   const { sources, names, clock, flag } = harness({ enabled: false, stored: () => true });
   sources.upsertTask(callSignTask("t-done", "Otto", { status: "done", completedAt: clock.now - HOUR, sessionId: null }));
@@ -348,6 +377,37 @@ test("residents come first, then sessions, each by name", () => {
 });
 
 // ---- against the real Registry ----
+
+test("a restarted daemon reads back a named finished task past the Registry's 50 most recent", () => {
+  const now = Date.now();
+  const before = new Registry();
+  before.upsertTask(mkTask({
+    id: "t-restart-quill", title: "Old named", callSign: "Quill", status: "done", sessionId: null,
+    dispatchedAt: now - 3 * HOUR, completedAt: now - 2 * HOUR, updatedAt: now - 2 * HOUR,
+  }));
+  before.upsertTask(mkTask({
+    id: "t-restart-old", title: "Named yesterday", callSign: "Opal", status: "done", sessionId: null,
+    dispatchedAt: now - 30 * HOUR, completedAt: now - 25 * HOUR, updatedAt: now - 25 * HOUR,
+  }));
+  for (let i = 0; i < 50; i++) {
+    before.upsertTask(mkTask({ id: `t-restart-newer-${i}`, status: "done", sessionId: null, completedAt: now - HOUR, updatedAt: now - HOUR + i }));
+  }
+
+  const restarted = new Registry();
+  assert.equal(restarted.getTask("t-restart-quill"), undefined, "a restart reloads only the 50 most recent finished tasks");
+  assert.deepEqual(loadFinishedTasksWithCallSign(now - VOICE_NAME_RETENTION_MS).map((task) => task.id), ["t-restart-quill"],
+    "the query reads named finished tasks inside the day, and only those");
+  const names = new VoiceNameRegistry(restarted, {
+    now: () => now, enabled: () => false, taskStored: () => true, finishedNamedTasks: loadFinishedTasksWithCallSign,
+    setTimer: () => null, clearTimer: () => {},
+  });
+  names.start();
+  try {
+    assert.deepEqual(brief(names.roster()).filter((entry) => entry.includes("t-restart-")), ["task:t-restart-quill Quill not-running"]);
+  } finally {
+    names.stop();
+  }
+});
 
 test("the Registry carries a call sign on the session's task and publishes the roster as voice_roster", () => {
   flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });

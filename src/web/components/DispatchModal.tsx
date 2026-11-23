@@ -2775,7 +2775,7 @@ function DispatchModal({
       return;
     }
     const { workflowId } = settled;
-    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
+    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent, voiceNames) : null;
     const patch = pinChange ? { ...draftPatch, planInputChange: pinChange } : draftPatch;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher

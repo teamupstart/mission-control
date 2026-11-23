@@ -9291,6 +9291,23 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 }
 
 /**
+ * Finished tasks with a call sign that stopped at or after `since`, from storage rather than the
+ * Registry's 50 most recent finished tasks: the voice roster keeps such a name for 24 hours from
+ * when its task stopped (`@server/voice/names.ts`), and a restart reloads only those 50, so it
+ * reads the rest of that day's named tasks here without widening the board's cache. Stopped is
+ * `completed_at`, or `updated_at` on a row with none, the time the roster counts from.
+ */
+export function loadFinishedTasksWithCallSign(since: number): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE call_sign IS NOT NULL AND status IN ('done','failed','cancelled')
+       AND COALESCE(completed_at, updated_at) >= ?`,
+    )
+    .all(since) as unknown as TaskRow[];
+  return rowsToTasks(rows);
+}
+
+/**
  * Terminal tasks that still hold resources (a task awaiting reclaim, or a
  * failed-but-alive dispatch). Loaded regardless of the recent cap so their live
  * resources are always reconciled on start rather than orphaned once newer terminal

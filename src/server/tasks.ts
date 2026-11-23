@@ -58,7 +58,7 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { isAnnotationOnlyUpdate, TASK_ANNOTATION_FIELDS } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
@@ -486,6 +486,22 @@ function newTaskEdgeRefusal(target: Task, activeSession: Session | undefined): s
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/**
+ * `stale` with the annotation `current` holds now (`TASK_ANNOTATION_FIELDS`), for a write built
+ * from a copy read before an await: a priority, label or call sign edit that landed meanwhile is
+ * kept rather than written back over. An annotation `current` lacks is absent from the result too,
+ * since absent and null both mean none.
+ */
+export function withCurrentAnnotation(stale: Task, current: Task | undefined): Task {
+  if (!current || current === stale) return stale;
+  const next: Record<string, unknown> = { ...stale };
+  for (const field of TASK_ANNOTATION_FIELDS) {
+    if (field in current) next[field] = current[field];
+    else delete next[field];
+  }
+  return next as unknown as Task;
+}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
@@ -7671,9 +7687,11 @@ export class TaskManager {
     // behavior it always had: stop the home, clear its identity, and settle. Retention is a
     // worktree policy, and holding a ledger row open for a shell would be inventing one.
     const archived = await this.settleArchivesBeforeTeardown(t.id);
+    // Each write below is built from `t`, read before these awaits, so each takes the annotation
+    // the task holds when it is written: an edit that landed meanwhile is not undone.
     if (!archived.ok) {
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
@@ -7689,7 +7707,7 @@ export class TaskManager {
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
@@ -7705,7 +7723,7 @@ export class TaskManager {
       return;
     }
     this.registry.upsertTask({
-      ...t,
+      ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
       ...interrupted,
       status: settledStatus,
       error: settledError,

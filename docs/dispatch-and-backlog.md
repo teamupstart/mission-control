@@ -220,7 +220,8 @@ for a while, marked not running, and leaves at once if another agent takes the n
 [who can be addressed](voice.md#who-can-be-addressed) has the rules, including its 24 hours and how
 a daemon restart changes them. A call sign already
 saved is kept, and read back by the editor, while the preview is off, but names nothing until it
-is on again; the field is drawn only while it is on.
+is on again; the field is drawn only while it is on, so a save while it is off leaves the saved one
+as it is, even one edited before the preview was turned off.
 
 MCP `create_task` and `update_task` accept `callSign` (null clears it on update), and `get_task`
 and `list_tasks` report it.

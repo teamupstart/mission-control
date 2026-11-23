@@ -128,7 +128,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   // on top of the chip being photographed.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/session-driven-by-engine/${name}.png`);
 }
 

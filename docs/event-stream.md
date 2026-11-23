@@ -172,7 +172,9 @@ folds them. See [Task shaping](task-shaping.md#settings).
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
 `mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
-or one of them lapsed, which a daemon timer publishes with no request. The reconnect snapshot's
+or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
+state moved. A model download publishes its progress at most every 250 ms, so a download is a
+few frames a second for as long as it runs. The reconnect snapshot's
 `voice` field is present only while the `voice` flag is on, computed at that moment. While the
 flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
 shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are

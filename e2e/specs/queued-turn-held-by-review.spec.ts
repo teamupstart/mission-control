@@ -55,7 +55,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   // held row's own jump button is one.
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/queued-turn-held-by-review/${name}.png`);
 }
 

@@ -86,7 +86,6 @@ async function capture(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: join(EVIDENCE, name), fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/pr-chip-provenance/${name}`);
 }
 

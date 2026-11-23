@@ -28,7 +28,6 @@ async function capture(target: Locator, name: string, page: Page): Promise<void>
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/request-input-reworded-retry/${name}.png`);
 }
 

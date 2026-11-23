@@ -581,6 +581,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("derived-status"),
   },
   {
+    id: "voice-input-device",
+    label: "Voice input device",
+    description: "Which microphone voice listens on: the built-in one, the system default, or another input.",
+    category: "voice",
+    anchor: "voice/input-device",
+    keywords: ["microphone", "input", "device", "mic", "bluetooth", "headset", "built-in"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-auto-mute",
     label: "Auto-mute during calls",
     description: "Stop listening while another app, such as a call, is using the microphone.",

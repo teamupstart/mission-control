@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 449 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 452 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -58,18 +58,20 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // then for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you"
   // switches in `alerts`, all on. The recurring-mission MCP routes add GET/POST /mcp/schedules
   // and POST /mcp/schedules/preview, all answering 401 without a daemon token. Voice addressing's
-  // five routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`,
-  // `POST /voice/listener/hello` and `POST /voice/shell-report`) answer 404 with the `voice` flag
-  // off, and `POST /api/setup/install`'s refusal names the new `voice-previews` id.
-  // `GET /api/setup/checks` is unchanged, and what voice adds to `GET /api/ui/config` is withheld
-  // with the flag off. Then report noise controls' seven flag-gated routes (`GET
-  // /mcp/reports/guidance`, `GET` and `PUT /api/reports/guidance`, `GET` and `POST
-  // /api/reports/mutes`, `DELETE /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`),
-  // which answer 404 with the `inbox` flag off.
+  // eight routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`,
+  // `POST /voice/listener/hello`, `POST /voice/shell-report`, the speech model's `POST` and
+  // `DELETE /api/voice/model/download` and the input devices' `GET /api/voice/devices`) answer 404
+  // with the `voice` flag off, and `POST /api/setup/install`'s refusal names the new
+  // `voice-previews`, `voice-model` and `voice-microphone` ids. `GET /api/setup/checks` is
+  // unchanged, and what voice adds to `GET /api/ui/config` is withheld with the flag off. Then
+  // report noise controls' seven flag-gated routes (`GET /mcp/reports/guidance`, `GET` and `PUT
+  // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
+  // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
+  // `inbox` flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 456);
+  assert.equal(others.length, 459);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "28734c8abf7cffef86d2cf1d9cb1af322686407a94dd4886bb743290ed4c9d9d");
+    "9f1131746b07d11232d5a235c786cd86915414eaaa58cc9435f8ce4f668b53c8");
 });
 
 function sourceFiles(dir: string): string[] {

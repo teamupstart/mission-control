@@ -148,7 +148,6 @@ async function capture(page: Page, name: string, target: Locator): Promise<void>
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, name) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/pr-checks-retried/${name}`);
 }
 
@@ -340,7 +339,6 @@ test("the CI warning is drawn as an icon the size of the PR flag beside it", asy
 /** The warning is no taller than the pill it sits beside, to within a rounding pixel. */
 async function expectSameHeight(warning: Locator, pill: Locator, surface: string): Promise<void> {
   const [w, p] = [(await warning.boundingBox())!, (await pill.boundingBox())!];
-  // eslint-disable-next-line no-console
   console.log(`${surface}: warning ${w.width}x${w.height}, pill height ${p.height}`);
   expect(Math.abs(w.height - p.height), `${surface}: warning ${w.height}px beside a ${p.height}px pill`)
     .toBeLessThanOrEqual(1);

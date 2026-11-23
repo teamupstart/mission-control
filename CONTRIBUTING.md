@@ -67,7 +67,7 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run dev:desktop` | Daemon, dashboard, and Electron shell. |
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
-| `npm run lint` | Oxlint over source, hooks, tests, scripts, and e2e. |
+| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations; React/hooks and accessibility warnings. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
@@ -75,6 +75,13 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run package` | Builds the macOS application package. |
 | `npm run demo` | Starts a token-free demo. Build first. |
 | `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |
+
+`npm run lint` exits non-zero on correctness errors, including `debugger`, and leaves
+React/hooks and JSX accessibility findings advisory until their follow-up tasks promote them.
+`.oxlintrc.json` documents the disabled `prefer-tag-over-role` rule and narrowly scoped
+exceptions for intentional control-character sanitization and its tests. Console output is
+allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so redundant
+`no-console` suppressions should not be added.
 
 `make build`, `make check`, `make test`, `make lint`, and `make smoke` install or
 refresh dependencies through the repository's stamp file. On macOS, `npm test`

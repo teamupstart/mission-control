@@ -23064,6 +23064,40 @@ button.wf-carried.is-link:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Setup > Voice > Voice speech model: the download's bar, its figures and Cancel. The bar is the
+   updater's own rail, at the row's width. */
+.voice-model-progress .app-banner-progress {
+  width: min(520px, 100%);
+}
+.voice-model-progress-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+.voice-model-figures {
+  flex: 1;
+  min-width: 0;
+  font: 11px var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.setup-run-controls .voice-model-figures {
+  flex: none;
+  align-self: center;
+}
+.voice-input-device-hint {
+  color: var(--dim);
+}
+/* A remedy's own guidance sentence, inside the remedy's indent rather than adding a second one. */
+.setup-remedy-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  max-width: 760px;
+}
 /* The capture target is a button that shows the current key, and swaps to a live
    "Press a key…" prompt while recording. Min-width keeps the row from jumping. */
 .kb-capture {
@@ -41014,10 +41048,13 @@ body.foreman-sidecar-open .modal-backdrop {
 /* The evidence and the consequence hang off the label, not the dot. */
 .setup-row-missing .setup-impact,
 .setup-row-needs-setup .setup-impact,
+.setup-row-unknown .setup-impact,
 .setup-row-missing .setup-why,
 .setup-row-missing .setup-evidence,
 .setup-row-needs-setup .setup-why,
 .setup-row-needs-setup .setup-evidence,
+.setup-row-unknown .setup-why,
+.setup-row-unknown .setup-evidence,
 .setup-row-satisfied .setup-evidence,
 .setup-row .setup-remedy-actions,
 .setup-row .setup-guide {

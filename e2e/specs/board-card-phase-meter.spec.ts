@@ -90,7 +90,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-card-phase-meter/${name}.png`);
 }
 

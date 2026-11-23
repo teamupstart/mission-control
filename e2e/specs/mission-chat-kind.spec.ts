@@ -26,7 +26,6 @@ async function shoot(page: Page, name: string, scrollTo?: Locator): Promise<void
   await page.mouse.move(0, 0);
   if (scrollTo) await scrollTo.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/mission-chat-kind/${name}.png`);
 }
 

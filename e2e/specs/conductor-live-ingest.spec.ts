@@ -67,7 +67,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   if (restore) await page.setViewportSize(restore);
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/conductor-live-ingest/${name}.png`);
 }
 

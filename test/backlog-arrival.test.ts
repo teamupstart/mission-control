@@ -165,7 +165,7 @@ test("a task re-entering the backlog with NO rank is appended rather than left u
 test("an unranked row already sitting there does not demote what is filed after it", () => {
   // The whole reason `create` repairs before it reads the maximum. Without that, the new
   // task gets a finite rank, finite sorts above unranked, and it lands SECOND to last.
-  const h = setup(["ranked"]);
+  setup(["ranked"]);
   openDb()
     .prepare(
       `INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at, enabled)

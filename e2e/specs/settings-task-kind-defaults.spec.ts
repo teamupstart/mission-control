@@ -45,7 +45,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   // at a readable scale.
   if (target) await target.scrollIntoViewIfNeeded();
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-task-kind-defaults/${name}.png`);
 }
 

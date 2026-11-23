@@ -94,7 +94,6 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     const evidence = artifactsDir("iterm-support");
     mkdirSync(evidence, { recursive: true });
     await page.screenshot({ path: `${evidence}/setup-row.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/iterm-support/setup-row.png");
   }
 
@@ -132,7 +131,6 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     const evidence = artifactsDir("guided-setup");
     mkdirSync(evidence, { recursive: true });
     await page.screenshot({ path: `${evidence}/setup-panel.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup/setup-panel.png");
   }
 });
@@ -183,7 +181,6 @@ test("Setup keeps a completed UpstartClaw configuration visible", async ({ page,
     const evidence = artifactsDir("upstartclaw-setup");
     mkdirSync(evidence, { recursive: true });
     await page.screenshot({ path: `${evidence}/ready.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/upstartclaw-setup/ready.png");
   }
 });
@@ -217,7 +214,6 @@ test("Setup keeps the UpstartClaw guide beside an incomplete setup remedy", asyn
     mkdirSync(evidence, { recursive: true });
     await guide.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${evidence}/needs-setup.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/upstartclaw-setup/needs-setup.png");
   }
 });
@@ -245,7 +241,6 @@ test.describe("login-shell binaries", () => {
       const evidence = artifactsDir("pi-login-shell-setup");
       mkdirSync(evidence, { recursive: true });
       await page.screenshot({ path: `${evidence}/pi-ready.png`, fullPage: true });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/pi-login-shell-setup/pi-ready.png");
     }
   });

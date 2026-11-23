@@ -131,7 +131,6 @@ test("a multiplexer carries its own terminal app, chosen on its Setup row and ke
     const evidence = artifactsDir("multiplexer-focus-terminal");
     mkdirSync(evidence, { recursive: true });
     await page.screenshot({ path: join(evidence, "tmux-chooser-open.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/multiplexer-focus-terminal/tmux-chooser-open.png");
   }
 
@@ -166,7 +165,6 @@ test("a multiplexer carries its own terminal app, chosen on its Setup row and ke
     mkdirSync(evidence, { recursive: true });
     await page.mouse.move(1, 1);
     await page.screenshot({ path: join(evidence, "terminals-family.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/multiplexer-focus-terminal/terminals-family.png");
   }
 });

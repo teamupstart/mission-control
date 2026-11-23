@@ -68,7 +68,6 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
       path: join(evidence, "setup-install-terminal.png"),
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-install-terminal.png");
   }
 });
@@ -95,7 +94,6 @@ test("Setup links a provider with no verified checkout to its settings instead o
     await page.screenshot({
       path: join(evidence, "setup-provider-no-candidate.png"),
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-provider-no-candidate.png");
   }
 });
@@ -160,7 +158,6 @@ test.describe("with iTerm2 installed", () => {
       const evidence = artifactsDir("iterm-support");
       mkdirSync(evidence, { recursive: true });
       await page.screenshot({ path: join(evidence, "launch-target.png"), fullPage: true });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/iterm-support/launch-target.png");
     }
   });
@@ -211,7 +208,6 @@ test.describe("with one verified local provider checkout", () => {
       await page.screenshot({
         path: join(evidence, "setup-provider-terminal.png"),
       });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-provider-terminal.png");
     }
   });

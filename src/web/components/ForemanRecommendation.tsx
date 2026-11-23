@@ -97,7 +97,7 @@ const openPanels = new Set<() => void>();
  * them side by side is not a thing a fixed right-hand rail can offer anyway.
  */
 export function claimSoleSidecar(close: () => void): () => void {
-  for (const other of [...openPanels]) {
+  for (const other of Array.from(openPanels)) {
     openPanels.delete(other);
     other();
   }

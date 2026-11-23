@@ -38,7 +38,6 @@ async function shoot(target: Locator, name: string): Promise<void> {
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await target.page().mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-card-workflow-details/${name}.png`);
 }
 

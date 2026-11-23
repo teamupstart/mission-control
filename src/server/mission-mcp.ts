@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
 import { taskGrillsFirst } from "@shared/task.ts";
 import {

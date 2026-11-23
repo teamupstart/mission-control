@@ -1603,6 +1603,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           ...(overlay ? { codexHome: overlay } : {}),
           ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
           traceContext: opts.traceContext ?? null,
+          workUnitId: opts.workUnitId ?? null,
         },
       );
       const config: LaunchConfig = {

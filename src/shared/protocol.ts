@@ -1,6 +1,7 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import type { TaskSkillPrompt } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -50,6 +51,7 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
+import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -102,6 +104,8 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_AWAITING_LIMITS,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
@@ -1166,6 +1170,33 @@ export const McpClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
 });
 
+// ---- agent reports (`inbox` flag) ----
+
+/**
+ * What an agent sends with `post_report`. The MCP tool validates the same fields first, so the
+ * agent reads a refusal rather than a transport error; this is the daemon's own check.
+ */
+export const PostReportBodySchema = z.object({
+  /** One line: whitespace and line breaks collapse to single spaces. */
+  title: z.string().max(REPORT_LIMITS.title * 4).transform(oneLine)
+    .pipe(z.string().min(1, "a report needs a title").max(REPORT_LIMITS.title)),
+  body: z.string().trim().min(1, "a report needs a body").max(REPORT_LIMITS.body),
+  /** A checkout-relative `.html` or `.md` document, copied when the report is posted. */
+  file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional(),
+  url: z.string().trim().max(REPORT_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" }).optional(),
+  /** The id of this agent's own earlier report that this one replaces. */
+  replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional(),
+});
+export type PostReportBody = z.infer<typeof PostReportBodySchema>;
+
+/** `POST /mcp/reports`: bound to the caller the way `/mcp/reviews` is. */
+export const McpPostReportSchema = PostReportBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
@@ -1173,6 +1204,50 @@ export const FlagBlockerReplySchema = z.object({
   blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
+
+/** What a session declares about itself through `report_awaiting`. */
+export const ReportAwaitingBodySchema = z.object({
+  what: blockerLine(SESSION_AWAITING_LIMITS.what),
+  wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES),
+  /**
+   * Required: when the process should be done, as an ISO 8601 date-time with a time zone. Read
+   * on the wire as text and handed on as epoch ms. Its bounds are relative to the moment the
+   * daemon receives it (after now, at most `SESSION_AWAITING_LIMITS.maxMinutes` later), so the
+   * registry checks them where the clock is read, not here.
+   */
+  expectedBy: z.string().trim().datetime({ offset: true }).transform((v) => Date.parse(v)),
+  referenceUrl: z.string().trim().max(SESSION_AWAITING_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+    .nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportAwaitingBody = z.infer<typeof ReportAwaitingBodySchema>;
+
+/** `POST /mcp/awaiting`: bound to the caller the way `/mcp/blocker` is. */
+export const McpReportAwaitingSchema = ReportAwaitingBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/** `POST /mcp/awaiting/clear`: the session clearing its own wait. */
+export const McpClearAwaitingSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+});
+
+/**
+ * `POST /api/sessions/:id/awaiting/clear`, and the session-control action that maps to it.
+ * `awaitingId` names the wait the caller was looking at, so a replacement is refused. Required:
+ * every view that offers Clear holds the id, and a Clear without one could end a wait the
+ * session declared after the caller looked.
+ */
+export const ClearAwaitingSchema = z.object({
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+  awaitingId: z.string().min(1).max(64),
+}).strict();
+export type ClearAwaiting = z.infer<typeof ClearAwaitingSchema>;
 
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
@@ -1839,7 +1914,12 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).strict();
 
 /** Durable task facts plus pull request references, without session-private state. */
-export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+export type McpTaskSnapshot = Task & {
+  prUrl: string | null;
+  repoPrs: TaskRepoPrSummary[];
+  /** The after-work prompt of the launch `shaping` describes, when one was written. */
+  shapingAfterWork?: TaskSkillPrompt;
+};
 
 /** Read-only task queries share validation between the MCP child and daemon. */
 export const McpListTasksSchema = z.object({
@@ -9528,6 +9608,8 @@ export const SessionControlReadSchema = z.object({
   transcript: z.boolean().optional().default(false),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
+  /** List form only: true lists only sessions that declared a wait on a background process. */
+  awaiting: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -9555,6 +9637,7 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
+  z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

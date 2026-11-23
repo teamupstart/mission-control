@@ -478,6 +478,9 @@ if (recordDir) {
         // The advisor's Off switch, so a spec can prove a pin reached the environment and an
         // Inherit launch left it alone.
         disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
+        // The work unit the launch carried, so a spec can prove it reached the agent - and
+        // that nothing reached it from the daemon or the pane when the launch carried none.
+        workUnitId: process.env.WORK_UNIT_ID ?? null,
       },
       null,
       2,

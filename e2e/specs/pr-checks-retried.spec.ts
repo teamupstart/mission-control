@@ -310,6 +310,45 @@ async function boardCheckWarning(page: Page, daemon: DaemonHandle): Promise<Loca
   return warning;
 }
 
+test("the CI warning is drawn as an icon the size of the PR flag beside it", async ({ dashboard, daemon }) => {
+  // The warning was once the `⚠` text character, whose height came from the platform's font
+  // fallback, so it stood visibly taller than every pill beside it. It must sit level with
+  // the PR pill on both surfaces that draw it.
+  const warning = await boardCheckWarning(dashboard, daemon);
+  const flag = dashboard.locator("main.board a.tile-flag-link", { hasText: `#${PR_NUMBER}` });
+  await expect(flag).toBeVisible();
+  // Geometry first: this is the reported defect, and the line the old glyph fails on.
+  await expectSameHeight(warning, flag, "board tile");
+  await expect(warning).not.toContainText("⚠");
+  await expect(warning.locator("svg")).toHaveCount(1);
+  await capture(dashboard, "board-warning-size.png", dashboard.locator("main.board .tile-marks").first());
+
+  const layout = await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "console" }) });
+  expect(layout.ok).toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const titleBar = dashboard.locator(".console-detail header.detail-head");
+  const chip = titleBar.locator(".pr-chip");
+  const alert = titleBar.getByRole("button", { name: /CI includes 1 cancelled check/ });
+  await expect(alert).toBeVisible();
+  await expectSameHeight(alert, chip, "session title bar");
+  await expect(alert).not.toContainText("⚠");
+  await capture(dashboard, "titlebar-warning-size.png", titleBar);
+});
+
+/** The warning is no taller than the pill it sits beside, to within a rounding pixel. */
+async function expectSameHeight(warning: Locator, pill: Locator, surface: string): Promise<void> {
+  const [w, p] = [(await warning.boundingBox())!, (await pill.boundingBox())!];
+  // eslint-disable-next-line no-console
+  console.log(`${surface}: warning ${w.width}x${w.height}, pill height ${p.height}`);
+  expect(Math.abs(w.height - p.height), `${surface}: warning ${w.height}px beside a ${p.height}px pill`)
+    .toBeLessThanOrEqual(1);
+  // Centred on the same line, not just the same size.
+  expect(Math.abs((w.y + w.height / 2) - (p.y + p.height / 2)), `${surface}: warning off the pill's centre line`)
+    .toBeLessThanOrEqual(1);
+}
+
 test("the check dialog backdrop dismisses without opening its board session", async ({ dashboard, daemon }) => {
   const warning = await boardCheckWarning(dashboard, daemon);
   await warning.click();

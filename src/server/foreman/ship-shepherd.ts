@@ -2,7 +2,7 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { isPaused } from "@shared/pause.ts";
 import { heldGapRecoveryApplies } from "@shared/plan-publication.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { hasBlocker, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
 import { workflowEvidenceRequirement } from "@shared/task-completion.ts";
 import type {
@@ -151,6 +151,7 @@ function decideShipRecovery(
     return skip("the session needs a human");
   }
   if (hasBlocker(s)) return skip("the session is blocked");
+  if (isAwaiting(s, now)) return skip("the session is awaiting a background process");
   if (isPaused(s)) return skip("the session is paused");
   if ((queue?.items.length ?? 0) > 0 || s.pendingTurns.length > 0) {
     return skip("a queue item or pending turn owns the session");

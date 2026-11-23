@@ -438,6 +438,8 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   }));
   assert.deepEqual(withoutDiscovery, [{
     sessionId: launchedSessionId,
+    // The launch's one work unit decision: none, with the work-unit-id preview off.
+    workUnitId: null,
     agent: "codex",
     name: "Build the SDK path",
     cwd: "/repo/sdk",

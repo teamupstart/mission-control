@@ -1,4 +1,5 @@
-import { withCurrentShaping, type TaskShaping } from "@shared/shaping.ts";
+import { currentShaping, withCurrentShaping, type TaskShaping, type TaskSkillPrompt } from "@shared/shaping.ts";
+import { getTaskSkillPrompt } from "../db.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 
 /**
@@ -51,6 +52,19 @@ export function taskShapingForReads<T extends {
   }
   const { shaping: _hidden, shapingContext: _running, ...rest } = task;
   return rest as T;
+}
+
+/**
+ * The after-work prompt of the launch a task's record describes, for a read that has already
+ * applied `taskShapingForReads`: null when the read shows no record, or the launch wrote no row.
+ */
+export function taskAfterWorkForReads(task: { id: string; shaping?: TaskShaping | null; sessionId: string | null }): TaskSkillPrompt | null {
+  const record = currentShaping(task);
+  if (!record?.sessionId) return null;
+  const row = getTaskSkillPrompt(task.id, record.sessionId);
+  if (!row) return null;
+  const { taskId: _task, turnId: _turn, ...prompt } = row;
+  return prompt;
 }
 
 /**

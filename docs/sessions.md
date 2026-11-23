@@ -2600,6 +2600,96 @@ kind, reason, time since the blocker started (`sinceMs`) and whether it followed
 (`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
 how long the blocker stood (`durationMs`) and any one-line `resolution`.
 
+### Sessions awaiting a background process (preview)
+
+A session that has handed work to a background process and will resume on its own when it
+reports back declares that with `report_awaiting`: CI checks on a pull request it pushed, a long
+build or test run started in the background, a monitor watching a deploy, or a scheduled wakeup
+it set for itself. The declaration carries `what` it waits for (one line), its `wakeSource`
+(`command`, `monitor`, `wakeup` or `other`), a required `expectedBy` (when the process should be
+done, as an ISO 8601 date-time with a time zone, which must be in the future and no more than 240
+minutes after the daemon receives it), an optional http(s) `referenceUrl` and optional Markdown
+`details`. It is not a blocker kind: nobody is asked to do
+anything. It ships behind the **Awaiting background work** preview (`session-awaiting`) in
+**Settings > Feature flags**; with the preview off the tool answers that it is turned off and
+records nothing.
+
+`report_awaiting` is refused while the session has a `request_input` question pending, while it
+stands on a blocker, and once its task has finished. A question for you never hides behind a
+wait: a `request_input` asked while a wait stands ends the wait, and so does a `report_blocker`,
+because a human answer outranks a process. A second `report_awaiting` before the session wakes
+moves the deadline and keeps the start time, under a new id, so a Clear sent from a view of the
+earlier declaration is refused rather than ending a deadline its sender never saw. Every Clear
+from the dashboard or a controlling session must name the wait it was sent from, so one that
+names none is refused as well.
+
+The wait is stored in SQLite under the note key, so it survives a daemon restart, and it moves
+with the note key whenever that rotates, as a blocker does. It ends on the
+session's own next turn: the turn that declared it is seen to end first, and a turn that starts
+after that is the wake, so the label drops with nobody clearing it. When Mission Control already
+read the session as idle at the moment it declared (a turn too short for a discovery sweep to
+catch, or hooks that arrived after the call), the declaring turn ends the first time its hooks
+or its transcript report it idle after the declaration, so the next turn is still the wake. A
+`report_status` made during that turn does not end it.
+Your own message to the session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
+past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
+that follows one of their deliveries leaves the wait standing until the next turn that nobody in
+Mission Control started. Each delivery is recorded on the stored wait as it is claimed, with a
+fingerprint of its text, and matched to the turn whose prompt it is: that turn is the nudge, and
+a turn with any other prompt, such as your message arriving first, is the wake. So two deliveries
+are two nudged turns, a delivery that never lands is not counted, and a daemon restart between a
+delivery and its turn changes nothing. A message you or a controlling session send through
+Mission Control in exactly the words of a delivery still pending contests that delivery: nothing
+says which of the two turns of those words is whose, so the first of them is read as the wake.
+A message of yours that provably never lands lifts that contest again, unless another send of the
+same words still stands; one whose outcome is unknown keeps it. A delivery claimed just before the session declares the
+wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
+arrives after it starts is decided when it arrives, even across a restart; a turn that never
+reports one is the session's own wake on a session whose hooks report prompts, and uses up the
+oldest delivery on one that never does (a harness without hooks, or an SDK launch with no prompt
+hook). A turn a session without hooks starts and finishes between two discovery sweeps is
+still judged, from the turn marker its transcript records, compared with the last turn already
+judged in the transcript's own time, so a sweep that reads a nudge's turn late does not hide a
+real wake that began before that sweep. Only confirmed readings of the
+session's state count:
+rediscovering a session after a restart is never itself read as a wake, and a turn already
+under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made
+during a turn that Mission Control could not yet attribute still lets that turn use up the
+delivery that started it, so the agent's next real wake is not mistaken for it. It also ends on `clear_awaiting`, when you or a
+controlling session clear it, when the task it was declared for reaches a terminal status
+(including a reset that cancels it), and when the session is removed after its process exits or
+has not been seen live for three minutes, because the wake source it declared was its own and is
+presumed gone with it. The exited card a missed discovery sweep draws is not that removal: a
+process the next sweep sees again keeps its wait. Switching the preview off ends
+every wait.
+
+While a wait stands and its deadline has not passed, the same idle-triggered automation a
+blocker holds leaves the session alone: prompted completion (without consuming the work-cycle
+generation), queue drain and the wrap-up ask, pre-PR ship recovery, review follow-through,
+backlog autopilot assignment, stack readiness for dependents, workflow resumption (the run page
+says the session is waiting on a background process it started) and the stuck-session idle
+rules. The deadline is the safety net: once it passes the hold lifts, the session reads as
+**Overdue**, and the normal handling, the stuck-session alerts included, applies again.
+
+On the Board a waiting card stays in Idle, under an **awaiting background work** rule at the top
+of the column, soonest due first, and the column head counts them (**1 awaiting**), a pinned
+resident that is waiting included, though its card keeps its pinned place. The card shows
+**Awaiting** and what it waits for, its due time, and a deadline track that fills from when the
+wait was declared to when it is due. Past the deadline the track turns amber with the overrun
+hatched after the due tick, the card reads **Overdue** and how late, and it leaves the Awaiting
+section for plain Idle. A wait never enters Needs you and never counts as work you owe. The
+console rail draws the same section and a short track beside the row's state. The Conversation
+tab opens with a grey band, where a blocker's red band would be: the wait, how it wakes, how long it
+has been waiting, the same track with declared, now and due marked, an **Open** link and **Clear**,
+which ends the hold without sending the session anything. See [Sessions awaiting a background process](residents.md#sessions-awaiting-a-background-process)
+for how residents read them.
+
+Every declaration, re-declaration and clear writes one `session_events` row:
+`session_awaiting_set` and `session_awaiting_updated` record what, the wake source and the
+deadline; `session_awaiting_cleared` records the actor (`session`, `operator`,
+`session:<controller-id>`, `wake`, `exit`, `task`, `input`, `blocker` or `flag`), how long the
+wait lasted (`durationMs`) and whether it was overdue.
+
 ### Review channel (MCP)
 
 ```sh
@@ -3228,10 +3318,18 @@ filing, exactly as a blocking one is, and the approval, **Approve all future bun
 covers the bundle with nothing else to ask still returns the approval as the tool result; with
 other decisions left, only those are filed, and the receipt says the bundle is already approved.
 
-Operator messages, typed or spoken, still reach an agent behind a filed form. The wait mode is
-fixed when the form is filed: switching either flag off sends new forms back to waiting inside the
-call, while a form already filed stays filed and keeps its hold. It can still be answered, and is
-listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+Operator messages, typed or spoken, still reach an agent behind a filed form. Switching a flag never
+changes a form that already exists: switching either flag off sends new forms back to waiting inside
+the call, while a form already filed stays filed and keeps its hold. It can still be answered, and
+is listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+
+One thing does turn a filed form into a blocking one. If an MCP child from an older build re-asks
+the same form word for word, it cannot read a receipt and waits in its call, so the form becomes a
+form that waits inside that call, like any call-mode plan form. Its session stays amber, it still
+blocks completion, and its answer becomes that call's result. It is no longer listed or
+withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
+being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
+as a message.
 
 ##### Revising a filed plan
 
@@ -3357,6 +3455,34 @@ that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same 
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.
 
+
+### Agent reports
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, an agent tells you it has
+finished something you need to read with the Mission Control MCP tool `post_report`. It takes a
+one-line `title`, a Markdown `body` (up to 4,000 characters), and optionally a checkout-relative
+`.html` or `.md` `file`, an http(s) `url`, and `replaces`, the id of one of its own earlier
+reports. The tool returns at once with a receipt naming the report's id (`r-42`) and telling the
+agent not to wait for a reply. Its description tells the agent when to report: when asked to, or
+when it has finished something you must read to act. Progress stays on `report_status`, and
+anything urgent or needing your decision is a `request_input` question.
+
+- **Stored apart from questions.** A report has its own table and never becomes a review: the
+  session does not turn amber, nothing counts toward **need you** or **to answer**, completion is
+  not held, and Foreman never sees it. It is read in the attention inbox's
+  [Reports](attention-and-alerts.md#agent-reports) section and counted in the top bar's **to read**.
+- **An attached document is copied.** The file must be inside the session's checkout (the same
+  containment rules as the Files viewer: no symlinks, nothing outside), an `.html` or `.md` file,
+  at most 2 MiB. It is copied to `<state home>/reports/<id>/` when the report is posted, so worktree
+  cleanup does not take it away.
+- **Replacing a report.** `replaces` must name one of the agent's own reports that is still
+  waiting to be read. Anything else is refused with the list of the agent's open reports and their
+  titles, so an agent that lost the id can retry. A resident is one author across its runs.
+- **A report outlives its session.** It keeps the author's name, task, repository and resident
+  profile from when it was posted. `GET /api/sessions/:id/reports` lists every report the session
+  posted, every version, read or not, after the session has gone.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on. A session on
+  an MCP bundle older than this build does not have the tool.
 
 ### Scout reports from a session
 

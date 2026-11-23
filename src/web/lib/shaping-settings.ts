@@ -19,6 +19,7 @@ import {
   shapingReferences,
   shapingViewHasRevisions,
   shapingViewRevision,
+  ShapingSkillSummarySchema,
   TaskShapingSchema,
   type DiscoveredShaper,
   type Shaper,
@@ -655,6 +656,8 @@ const ShapingRunReplySchema = z.object({
   summary: TaskShapingSchema.nullable(),
   section: z.string(),
   entries: z.array(ShapingInjectedEntryReplySchema),
+  // Optional: a daemon from before routing answers without it, and a run with no router has none.
+  skills: z.array(ShapingSkillSummarySchema).optional(),
 });
 
 /**

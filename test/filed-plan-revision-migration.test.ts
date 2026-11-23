@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 
-// A version-42 database, written before revised plan forms: the real schema, made in a child
-// process by this build, then wound back to what a version-42 daemon left on disk - the reviews
+// A version-46 database, written before revised plan forms: the real schema, made in a child
+// process by this build, then wound back to what a version-46 daemon left on disk - the reviews
 // table without `revises_review_id`, `revision` and their index, holding one open filed plan form
 // and one its agent withdrew.
 const home = mkdtempSync(join(tmpdir(), "mission-filed-plan-revision-migration-"));
@@ -22,18 +22,18 @@ old.exec(`DROP INDEX idx_reviews_revises;
   INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, created_at, resolved_at, wait_mode, mcp_wait_detached_at)
   VALUES ('open-plan', 'sdk:s', 'plan-decisions', 'Linter plan', '# Linter plan', 'pending', NULL, '[]', 100, NULL, 'message', 100),
          ('withdrawn-plan', 'sdk:s', 'plan-decisions', 'Old plan', '# Old plan', 'withdrawn', 'Scope changed', '[]', 50, 60, 'message', 50);
-  PRAGMA user_version = 42`);
+  PRAGMA user_version = 46`);
 old.close();
 const db = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
-test("version 42 upgrade adds the revision columns and index, and every existing form revises nothing", () => {
+test("version 46 upgrade adds the revision columns and index, and every existing form revises nothing", () => {
   const d = db.openDb();
   const columns = new Set((d.prepare("PRAGMA table_info(reviews)").all() as Array<{ name: string }>).map((c) => c.name));
   for (const column of COLUMNS) assert.ok(columns.has(column), column);
   assert.ok(d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_reviews_revises'").get(), "the one-revision index");
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 43);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 47);
 
   const open = db.loadPendingReviews().find((r) => r.id === "open-plan")!;
   assert.equal(open.status, "pending");

@@ -149,6 +149,9 @@ export async function resetSession(
         registry.moveStandingInstructionsKey(pendingTurnKey, currentPendingTurnKey);
         // A blocker belongs to the task, not the conversation: the reset does not answer it.
         registry.moveBlockerKey(pendingTurnKey, currentPendingTurnKey);
+        // A declared wait moves too, so nothing strands under the old key. The reset's own next
+        // turn is a wake like any other, and ends it there.
+        registry.moveAwaitingKey(pendingTurnKey, currentPendingTurnKey);
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

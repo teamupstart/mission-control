@@ -227,7 +227,8 @@ export function Tooltip({
   // Derived once, and named for the two jobs above rather than for their types.
   const rich = typeof label !== "string";
   const description = rich ? label.description : label;
-  const painted: ReactNode = rich ? label.content : label;
+  const bubbleContent = rich ? label.content : label;
+  const hasBubble = bubbleContent != null;
   const [tip, setTip] = useState<TipState | null>(null);
   const id = useId();
 
@@ -258,12 +259,14 @@ export function Tooltip({
     setTip(null);
   }, []);
   const showOnly = useCallback((el: HTMLElement) => {
+    // Description-only triggers (the expanding voice button) supply their own visual hint.
+    if (!hasBubble) return;
     if (beside) {
       if (shownOption !== hide) shownOption?.();
       shownOption = hide;
     }
     show(el);
-  }, [beside, show, hide]);
+  }, [beside, show, hide, hasBubble]);
   // A trigger unmounted with its bubble open must not stay the one `shownOption` names.
   useEffect(() => hide, [hide]);
 
@@ -372,7 +375,7 @@ export function Tooltip({
     <>
       {trigger}
       {typeof document === "undefined" ? describedBy : createPortal(describedBy, document.body)}
-      {tip && painted != null &&
+      {tip &&
         createPortal(
           <span
             ref={measure}
@@ -392,10 +395,10 @@ export function Tooltip({
               // Until measured, the bubble is positioned but not yet corrected. Painting
               // it in the wrong place for a frame is what the fade-in would otherwise be
               // covering up, and at a viewport edge that frame is a visible jump.
-              visibility: tip.shift === undefined ? "hidden" : undefined,
+              visibility: tip.shift === undefined || !hasBubble ? "hidden" : undefined,
             }}
           >
-            {painted}
+            {bubbleContent}
           </span>,
           document.body,
         )}

@@ -21,6 +21,27 @@ test("five selected indicators follow the daemon and advertise only a registered
   try {
     await page.goto(daemon.baseURL + "/#/settings/voice");
     await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await test.step("The status tooltip is visible and inside the viewport on hover and focus", async () => {
+      const bubble = page.locator(".tooltip").filter({ hasText: "Say a name, then your message." });
+      await page.mouse.move(1, 200);
+      await status.blur();
+      await expect(bubble).toHaveCount(0);
+      await status.hover();
+      await expect(bubble).toBeVisible();
+      await expect(bubble).toBeInViewport({ ratio: 1 });
+      await page.mouse.move(1, 200);
+      await expect(bubble).toHaveCount(0);
+      await status.focus();
+      await expect(bubble).toBeVisible();
+      await expect(bubble).toBeInViewport({ ratio: 1 });
+      if (capture) {
+        const size = page.viewportSize()!;
+        await page.screenshot({ path: join(capture, "status-tooltip.png"), clip: {
+          x: 0, y: size.height - 100, width: size.width, height: 100,
+        } });
+      }
+      await status.blur();
+    });
     const peer = await context.newPage();
     await peer.goto(daemon.baseURL);
     await status.click();
@@ -60,7 +81,8 @@ test("five selected indicators follow the daemon and advertise only a registered
     const session = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
     await expect(session).toHaveClass(/tone-idle/);
     await session.click();
-    await expect(page.getByPlaceholder('Message to send… or say "Will, …"')).toBeVisible();
+    const reply = page.getByRole("textbox", { name: /^Reply to this session.*Enter to send, Shift\+Enter for newline/ });
+    await expect(reply).toHaveAccessibleDescription('Message to send… or say "Will, …"');
     const peerStatus = peer.locator("button.vi-status-line");
     for (const style of ["status-line", "topbar", "floating", "edge", "composer"]) {
       await test.step(`Click ${style} in window A and observe Muted, then Listening, in window B`, async () => {
@@ -69,8 +91,15 @@ test("five selected indicators follow the daemon and advertise only a registered
         await control.click();
         await expect(peerStatus).toHaveAccessibleName("Voice: muted. Unmute");
         await expect(control).toHaveAccessibleName("Voice: muted. Unmute");
+        if (style === "composer") await test.step("The muted reply box keeps its typing instructions, describes the voice state and accepts a newline", async () => {
+          await expect(reply).toHaveAccessibleDescription("Voice is muted");
+          await expect(reply).toHaveAttribute("placeholder", "Voice is muted");
+          await reply.fill("Typed while muted");
+          await reply.press("Shift+Enter");
+          await expect(reply).toHaveValue("Typed while muted\n");
+          await reply.fill("");
+        });
         if (capture && style === "composer") {
-          await expect(page.getByPlaceholder("Voice is muted")).toBeVisible();
           await page.mouse.move(1, 200);
           await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
           await page.screenshot({ path: join(capture, "live-muted.png") });
@@ -79,6 +108,7 @@ test("five selected indicators follow the daemon and advertise only a registered
         await control.click();
         await expect(peerStatus).toHaveAccessibleName("Voice: listening. Mute");
         await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+        if (style === "composer") await expect(reply).toHaveAccessibleDescription('Message to send… or say "Will, …"');
       });
     }
     if (capture) {

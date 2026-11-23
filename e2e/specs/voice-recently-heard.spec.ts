@@ -1,8 +1,16 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
 import { enableVoice, say } from "../fixtures/voice.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 test("Recently heard explains routed, unaddressed and cancelled speech and clears the history", async ({ dashboard: page, daemon }) => {
+  let capture: string | undefined;
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    capture = mkdtempSync(join(root, "heard-"));
+  }
   await enableVoice(daemon);
   const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
     repoRoot: daemon.repo, intent: "Report the build state", title: "Voice fixture", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign: "Will",
@@ -34,10 +42,24 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
   await expect(row("Will, merge it")).toContainText("Cancelled");
   await expect(row("cancel")).toContainText("spoken cancel");
   await expect(table.getByRole("columnheader")).toHaveText(["Ago", "Heard", "Matched", "Decided by", "Outcome"]);
-  if (process.env.MC_E2E_EVIDENCE) await table.screenshot({ path: artifactsDir("voice-window") + "recently-heard.png" });
-  await table.getByRole("button", { name: "Clear" }).click();
+  if (capture) await table.screenshot({ path: join(capture, "recently-heard.png") });
+  const clear = table.getByRole("button", { name: "Clear" });
+  await test.step("A failed Clear stays visible after a successful poll updates the table", async () => {
+    await page.route("**/api/voice/heard", route => route.request().method() === "DELETE"
+      ? route.fulfill({ status: 503, json: { error: "History could not be cleared." } })
+      : route.continue());
+    await clear.click();
+    await say(daemon, "Another diagnostic");
+    await expect(row("Another diagnostic")).toBeVisible();
+    await expect(row("Please ask Will")).toBeVisible();
+    await expect(table.getByRole("alert")).toHaveText("History could not be cleared.");
+    if (capture) await table.screenshot({ path: join(capture, "clear-failure.png") });
+    await page.unroute("**/api/voice/heard");
+  });
+  await clear.click();
   await expect(table).toContainText("Nothing heard yet.");
+  await expect(table.getByRole("alert")).toHaveCount(0);
   await expect(table.getByRole("button", { name: "Clear" })).toBeDisabled();
   await expect(table).toContainText("Kept in memory, cleared when Mission Control quits. Audio is not stored.");
-  if (process.env.MC_E2E_EVIDENCE) await table.screenshot({ path: artifactsDir("voice-window") + "empty.png" });
+  if (capture) await table.screenshot({ path: join(capture, "empty.png") });
 });

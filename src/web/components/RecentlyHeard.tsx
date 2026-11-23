@@ -42,7 +42,8 @@ export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: re
 
 export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   const [entries, setEntries] = useState<HeardEntry[] | null>(null);
-  const [error, setError] = useState("");
+  const [readError, setReadError] = useState("");
+  const [clearError, setClearError] = useState("");
   const [clearing, setClearing] = useState(false);
   const generation = useRef(0);
   useEffect(() => {
@@ -54,7 +55,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
       const read = await fetchRecentlyHeard();
       if (!alive || current !== generation.current) return;
       if (read) setEntries(read.entries);
-      setError(read ? "" : "Could not read recent utterances.");
+      setReadError(read ? "" : "Could not read recent utterances.");
       timer = setTimeout(() => void poll(), 1500);
     }
     void poll();
@@ -64,8 +65,12 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     generation.current++;
     setClearing(true);
     const result = await api.clearRecentlyHeard();
-    if (result.ok) setEntries([]);
-    else setError(result.error ?? "Could not clear recent utterances.");
+    if (result.ok) {
+      setEntries([]);
+      setClearError("");
+    } else {
+      setClearError(result.error ?? "Could not clear recent utterances.");
+    }
     setClearing(false);
   }
   const now = Date.now();
@@ -73,7 +78,8 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && `${entries.length} recent`}</span>
       <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={!entries?.length || clearing} onClick={() => void clear()}>Clear</button></Tooltip>
     </header>
-    {error && <p role="alert" className="settings-error">{error}</p>}
+    {clearError && <p role="alert" className="settings-error">{clearError}</p>}
+    {readError && <p role="alert" className="settings-error">{readError}</p>}
     <div className="rh-scroll"><table className="rh-table" aria-label="Recently heard utterances">
       <thead><tr>{["Ago", "Heard", "Matched", "Decided by", "Outcome"].map(title => <th scope="col" key={title}>{title}</th>)}</tr></thead>
       <tbody>{entries?.length ? entries.map(entry => <HeardRow key={entry.id} entry={entry} now={now} roster={roster} />) :

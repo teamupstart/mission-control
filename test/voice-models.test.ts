@@ -95,6 +95,23 @@ test("a file pinned to a commit other than its source's, or kept anywhere but it
   assert.equal(VoiceModelManifestSchema.safeParse({ ...fluidaudio, revision: "../up" }).success, false);
 });
 
+test("one file may not sit inside another, and siblings stay valid", () => {
+  const source = { repository: "fixture/model", commit: "c".repeat(40), license: "CC-BY-4.0", basedOn: "fixture/upstream" };
+  const file = (name: string) => ({
+    path: `model/${name}`,
+    url: `https://huggingface.co/fixture/model/resolve/${"c".repeat(40)}/${name}`,
+    bytes: 1,
+    sha256: "a".repeat(64),
+  });
+  const shape = (...names: string[]) => ({ revision: "r1", label: "Fixture", sources: [source], files: names.map(file) });
+  assert.equal(VoiceModelManifestSchema.safeParse(shape("a", "b", "c/d", "c/e")).success, true, "siblings");
+  for (const names of [["a", "a/b"], ["a/b", "a"], ["c/d", "c/d/e/f"]]) {
+    const parsed = VoiceModelManifestSchema.safeParse(shape(...names));
+    assert.equal(parsed.success, false, names.join(" and "));
+    assert.match(parsed.error!.issues[0]!.message, /cannot both be files: one is inside the other/);
+  }
+});
+
 test("an override file names backends by id and is held to the same schema", () => {
   assert.deepEqual(VoiceModelManifestsSchema.parse({ fluidaudio }), { fluidaudio });
   assert.equal(VoiceModelManifestsSchema.safeParse({ whisper: fluidaudio }).success, false, "an unknown backend");
@@ -106,6 +123,8 @@ test("a base URL replaces the origin and keeps the pinned path", () => {
   const path = file.url.slice(VOICE_MODEL_ORIGIN.length);
   assert.equal(voiceModelFileUrl(file, "http://127.0.0.1:9000"), `http://127.0.0.1:9000${path}`);
   assert.equal(voiceModelFileUrl(file, "http://127.0.0.1:9000/mirror/"), `http://127.0.0.1:9000/mirror${path}`);
+  assert.equal(voiceModelFileUrl(file, "https://mirror.example/models?token=abc"), `https://mirror.example/models${path}?token=abc`,
+    "a mirror's query stays a query and the path goes on the pathname");
 });
 
 test("auto picks FluidAudio on Apple silicon and sherpa-onnx elsewhere; an explicit choice stands", () => {

@@ -81,6 +81,11 @@ export const VoiceModelManifestSchema = z.object({
   const paths = new Set<string>();
   for (const [index, file] of manifest.files.entries()) {
     if (paths.has(file.path)) ctx.addIssue({ code: "custom", path: ["files", index, "path"], message: `${file.path} is listed twice` });
+    // One path may not be a directory of another: the file written first would block the other.
+    const nested = [...paths].find((other) => file.path.startsWith(`${other}/`) || other.startsWith(`${file.path}/`));
+    if (nested) {
+      ctx.addIssue({ code: "custom", path: ["files", index, "path"], message: `${file.path} and ${nested} cannot both be files: one is inside the other` });
+    }
     paths.add(file.path);
     const pinned = parsePinnedModelUrl(file.url);
     if (!pinned) continue;
@@ -200,7 +205,10 @@ export function voiceModelBytes(manifest: Pick<VoiceModelManifest, "files">): nu
  */
 export function voiceModelFileUrl(file: Pick<VoiceModelFile, "url">, baseUrl: string | null): string {
   if (!baseUrl) return file.url;
-  return `${baseUrl.replace(/\/+$/, "")}${file.url.slice(VOICE_MODEL_ORIGIN.length)}`;
+  // Through the pathname, so a mirror URL's query (a token, say) and fragment stay where they are.
+  const url = new URL(baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}${file.url.slice(VOICE_MODEL_ORIGIN.length)}`;
+  return url.toString();
 }
 
 /**

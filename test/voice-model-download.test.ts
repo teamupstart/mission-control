@@ -145,7 +145,10 @@ interface Harness {
   active: { on: boolean };
 }
 
-function harness(options: { root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number } = {}): Harness {
+function harness(options: {
+  root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number;
+  removeDir?: (path: string) => Promise<void>;
+} = {}): Harness {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "mission-voice-models-"));
   let current: VoiceModelManifest | null = options.manifest === undefined ? manifest("r1") : options.manifest;
   const active = { on: true };
@@ -158,6 +161,7 @@ function harness(options: { root?: string; manifest?: VoiceModelManifest | null;
     baseUrl: () => server.origin,
     progressEveryMs: options.progressEveryMs ?? 0,
     stallMs: options.stallMs ?? 10_000,
+    ...(options.removeDir ? { removeDir: options.removeDir } : {}),
   });
   const published: VoiceModelState[] = [];
   manager.onChange((model) => published.push(model));
@@ -199,6 +203,23 @@ function placeFiles(dir: string, files: readonly Fixture[] = FILES): void {
 }
 
 const TOTAL = FILES.reduce((sum, file) => sum + file.body.length, 0);
+
+/** A directory removal that waits until the test releases it, then removes for real. */
+function heldRemoval(): { removeDir: (path: string) => Promise<void>; started: Promise<void>; release: () => void } {
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  return {
+    removeDir: async (path) => {
+      markStarted();
+      await gate;
+      rmSync(path, { recursive: true, force: true });
+    },
+    started,
+    release,
+  };
+}
 
 // ---- the tests ----
 
@@ -330,6 +351,84 @@ test("Cancel while voice is switched off removes the download and does not read 
   assert.deepEqual(h.manager.state(), VOICE_MODEL_STATE_NONE);
   assert.deepEqual(h.published.at(-1), VOICE_MODEL_STATE_NONE, "nothing was published after voice went off");
   assert.equal(existsSync(h.dir()), false, "the cancelled download is still removed");
+});
+
+test("a Download pressed while Cancel is still removing files is a real job that a second Cancel stops", async () => {
+  const removal = heldRemoval();
+  const h = harness({ removeDir: removal.removeDir });
+  h.manager.sync();
+  server.behavior.set("vocab.json", "hold");
+  h.manager.download();
+  await until(h.manager, (model) => model.doneBytes > FILES[0]!.body.length);
+  const first = h.manager.cancel();
+  await removal.started;
+  // Download again during the removal, then change your mind before it ends.
+  assert.equal(h.manager.download().ok, true);
+  assert.equal(h.manager.state().status, "downloading");
+  const second = h.manager.cancel();
+  const requested = server.requests.length;
+  removal.release();
+  await Promise.all([first, second]);
+  await h.manager.idle();
+  assert.equal(h.manager.state().status, "missing", "the second Cancel stopped the second download");
+  assert.equal(server.requests.length, requested, "nothing was fetched after it");
+  assert.equal(existsSync(h.dir()), false);
+});
+
+test("a removal still running when a new download starts never deletes that download's files", async () => {
+  const removal = heldRemoval();
+  const h = harness({ removeDir: removal.removeDir });
+  h.manager.sync();
+  server.behavior.set("vocab.json", "hold");
+  h.manager.download();
+  await until(h.manager, (model) => model.doneBytes > FILES[0]!.body.length);
+  const cancelling = h.manager.cancel();
+  await removal.started;
+  // Voice off and on again while the directory is being removed: the check reads missing rather
+  // than the half-removed files, and the new download waits for the removal before writing.
+  h.active.on = false;
+  h.manager.sync();
+  h.active.on = true;
+  h.manager.sync();
+  assert.equal(h.manager.state().status, "missing");
+  server.behavior.clear();
+  for (const release of server.holds.splice(0)) release();
+  h.manager.download();
+  removal.release();
+  await cancelling;
+  const ready = await until(h.manager, (model) => model.status === "ready");
+  assert.equal(ready.directory, h.dir());
+  for (const file of FILES) assert.deepEqual(readFileSync(join(h.dir(), file.path)), file.body, file.path);
+});
+
+test("a Cancel whose removal fails reads failed with the reason, and Retry downloads again", async () => {
+  const h = harness({ removeDir: async () => { throw new Error("EACCES: permission denied"); } });
+  h.manager.sync();
+  server.behavior.set("vocab.json", "hold");
+  h.manager.download();
+  await until(h.manager, (model) => model.doneBytes > FILES[0]!.body.length);
+  const after = await h.manager.cancel();
+  assert.equal(after.status, "failed", "not left downloading with no job behind it");
+  assert.equal(after.error, "The cancelled download could not be removed: EACCES: permission denied");
+  server.behavior.clear();
+  assert.equal(h.manager.download().ok, true);
+  assert.equal((await until(h.manager, (model) => model.status === "ready")).status, "ready");
+});
+
+test("a cached file that fails its checksum never moves the progress bar back", async () => {
+  const h = harness();
+  placeFiles(h.dir());
+  const target = join(h.dir(), FILES[0]!.path);
+  const tampered = readFileSync(target);
+  tampered[0] = tampered[0]! ^ 0x01;
+  writeFileSync(target, tampered);
+  h.manager.sync();
+  await until(h.manager, (model) => model.status === "failed");
+  h.published.length = 0;
+  h.manager.download();
+  await until(h.manager, (model) => model.status === "ready");
+  const done = h.published.filter((model) => model.status === "downloading").map((model) => model.doneBytes);
+  assert.deepEqual(done, [...done].sort((a, b) => a - b), `progress only moves forward: ${done.join(", ")}`);
 });
 
 test("Retry after a failure fetches only what is missing or wrong, and verifies", async () => {

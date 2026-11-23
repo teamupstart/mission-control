@@ -72,7 +72,9 @@ works only while the `voice` flag is on.
 - While it runs, the row shows a progress bar with the bytes done, the rate and the time left, and
   **Cancel**. Progress reaches every window through `voice_state` at most four times a second.
 - **Cancel** stops the download and removes the revision's directory, so nothing unverified is
-  left behind.
+  left behind. A Download pressed while that removal runs starts at once but writes nothing until
+  the removal has finished, and a second Cancel stops it. If the directory cannot be removed, the
+  row reads the reason with **Retry**.
 - **Retry** downloads again. A file already on disk at its pinned size is hashed and kept when it
   matches, so a retry fetches only what is missing or wrong.
 - A download that receives nothing for 60 seconds fails rather than hanging.
@@ -119,7 +121,8 @@ Mission Control uses the files unmodified. The same notice is in `NOTICE`.
 Two environment variables, read when the daemon starts:
 
 - `MISSION_VOICE_MODEL_BASE_URL` replaces `https://huggingface.co` in every file's URL and keeps the
-  pinned path, so a mirror or a test server can serve the files. It must be an `http` or `https`
+  pinned path, appended to the base URL's own path; a query string on the base URL (a mirror's
+  token, say) is kept as a query. A mirror or a test server can serve the files this way. It must be an `http` or `https`
   URL. The end-to-end suite points every daemon at a closed loopback port, so a Download pressed
   without a fixture fails instead of reaching Hugging Face.
 - `MISSION_VOICE_MODEL_MANIFEST` names a JSON file in the same shape as `VOICE_MODELS`, keyed by

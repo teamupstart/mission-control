@@ -53,6 +53,8 @@ export interface VoiceModelManagerDeps {
   now?(): number;
   progressEveryMs?: number;
   stallMs?: number;
+  /** Removes a cancelled download's directory. Defaults to a recursive, forced `rm`. */
+  removeDir?(path: string): Promise<void>;
 }
 
 export type VoiceModelDownloadResult =
@@ -103,6 +105,12 @@ export class VoiceModelManager {
   private job: Job | null = null;
   /** Jobs stopped but still unwinding: closing a write, removing a temporary file. */
   private readonly settling = new Set<Promise<void>>();
+  /**
+   * Revision directories a cancelled download is still removing, each with the cancelled job's
+   * `done`. A download into one waits for it, and a check reads it as `missing`, so a removal never
+   * deletes files a later download wrote.
+   */
+  private readonly removing = new Map<string, Promise<void>>();
   /** The backend and revision the model state describes, or null before the first check. */
   private target: { backend: VoiceBackend; revision: string | null } | null = null;
   private readonly listeners = new Set<(model: VoiceModelState) => void>();
@@ -155,11 +163,9 @@ export class VoiceModelManager {
       return { ok: false, reason: this.model.error ?? `No speech model for ${backend} is available in this build.`, model: this.state() };
     }
     const running = this.job;
-    if (running?.kind === "download") {
-      // A Cancel still removing its files: start again once it has, rather than racing it.
-      if (running.controller.signal.aborted) void running.done.then(() => { this.download(); });
-      return { ok: true, model: this.state() };
-    }
+    // A cancelled download still removing its files is replaced at once: the new job waits for
+    // the removal before it touches the directory, and a later Cancel stops the new job.
+    if (running?.kind === "download" && !running.controller.signal.aborted) return { ok: true, model: this.state() };
     if (this.model.status === "ready" && this.model.revision === manifest.revision) return { ok: true, model: this.state() };
     this.stopJob("superseded");
     this.startDownload(backend, manifest);
@@ -173,8 +179,19 @@ export class VoiceModelManager {
   async cancel(): Promise<VoiceModelState> {
     const job = this.job;
     if (job?.kind !== "download") return this.state();
+    if (job.controller.signal.aborted) {
+      // A second Cancel while the first is still removing the files.
+      await job.done;
+      return this.state();
+    }
     job.controller.abort(new StopSignal("cancel"));
-    await job.done;
+    // Registered now, before the job unwinds, so nothing started in the meantime can write into
+    // the directory this Cancel is about to remove.
+    const dir = this.revisionDir(job.backend, job.revision);
+    const settled = job.done;
+    this.removing.set(dir, settled);
+    void settled.finally(() => { if (this.removing.get(dir) === settled) this.removing.delete(dir); });
+    await settled;
     return this.state();
   }
 
@@ -228,6 +245,10 @@ export class VoiceModelManager {
     }
     const dir = this.revisionDir(backend, manifest.revision);
     const base = this.base(backend, manifest);
+    if (this.removing.has(dir)) {
+      this.set({ ...base, status: "missing" });
+      return;
+    }
     for (const file of manifest.files) {
       let size: number;
       try {
@@ -297,8 +318,8 @@ export class VoiceModelManager {
     const base = this.base(backend, manifest);
     const now = this.deps.now ?? Date.now;
     let done = 0;
-    // Bytes that came over the network, sampled for the rate. Hashing a file already on disk
-    // advances `done` but not this, so a resumed download does not report a burst of speed.
+    // Bytes that came over the network, sampled for the rate. A file already on disk advances
+    // `done` but not this, so a resumed download does not report a burst of speed.
     let fetched = 0;
     const samples: { at: number; bytes: number }[] = [];
     const rate = (): number | null => {
@@ -311,17 +332,20 @@ export class VoiceModelManager {
     };
     this.set({ ...base, status: "downloading" });
     this.run("download", backend, manifest.revision, async (signal) => {
+      await this.removing.get(dir);
+      signal.throwIfAborted();
       await mkdir(dir, { recursive: true });
       await this.removeLeftoverParts(dir);
       for (const file of manifest.files) {
         signal.throwIfAborted();
         const target = join(dir, file.path);
-        if (await this.alreadyVerified(target, file, signal, (bytes) => {
-          done += bytes;
+        // A file already on disk counts once its checksum matches, so one that fails the check
+        // never moves the bar forward and then back.
+        if (await this.alreadyVerified(target, file, signal)) {
+          done += file.bytes;
           if (!signal.aborted) this.progress({ ...base, status: "downloading", doneBytes: done, bytesPerSecond: rate() });
-        })) continue;
-        // Hashed and found wrong, or partly hashed before a read failed: count only what arrives.
-        done = manifest.files.slice(0, manifest.files.indexOf(file)).reduce((sum, earlier) => sum + earlier.bytes, 0);
+          continue;
+        }
         await this.fetchFile(file, target, signal, (bytes) => {
           done += bytes;
           fetched += bytes;
@@ -336,30 +360,31 @@ export class VoiceModelManager {
       // download stopped on purpose leaves nothing behind. Superseded work keeps the files it
       // completed, each already checked, so the next Download resumes rather than starts over.
       if (reason !== "cancel") return;
-      await rm(dir, { recursive: true, force: true });
-      // The files go either way, but the disk is read again only while this is still the
-      // manager's job and voice is on. A flag switched off or a backend changed during the
-      // removal has already set the state, and a re-read here would overwrite it (or restart the
-      // verification `sync` just began).
-      if (!current() || !this.deps.active()) return;
+      // The files go either way, but the state changes only while this is still the manager's
+      // job and voice is on. A flag switched off, a backend changed or a new Download during the
+      // removal has already set the state, and a re-read here would overwrite it.
+      const owns = () => current() && this.deps.active();
+      try {
+        await (this.deps.removeDir ?? ((path: string) => rm(path, { recursive: true, force: true })))(dir);
+      } catch (error) {
+        // Left as `downloading` with no job, the row would offer a Cancel that does nothing.
+        if (owns()) this.set({ ...base, status: "failed", error: `The cancelled download could not be removed: ${errorText(error)}` });
+        return;
+      }
+      if (!owns()) return;
       this.target = null;
       this.check();
     });
   }
 
-  private async alreadyVerified(
-    target: string,
-    file: VoiceModelFile,
-    signal: AbortSignal,
-    onBytes: (bytes: number) => void,
-  ): Promise<boolean> {
+  private async alreadyVerified(target: string, file: VoiceModelFile, signal: AbortSignal): Promise<boolean> {
     try {
       if (statSync(target).size !== file.bytes) return false;
     } catch {
       return false;
     }
     try {
-      return (await this.hashFile(target, signal, onBytes)) === file.sha256;
+      return (await this.hashFile(target, signal, () => undefined)) === file.sha256;
     } catch (error) {
       if (signal.aborted) throw error;
       return false;

@@ -79,6 +79,25 @@ test("turning voice off clears pending actions and gates every contract D route"
       app.request("/api/voice/heard", { method, headers: { host: "localhost" } })))]) assert.equal(response.status, 404);
 });
 
+test("a cancel retried after toggling voice cannot dismiss a new card", async () => {
+  await say("Steve old message", "old");
+  await say("Steve cancel this one", "cancelled");
+  const cancel = capture("cancel", "original-cancel");
+  await post("/voice/utterances", cancel, token);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["old"]);
+
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.deepEqual(await readHeard(), []);
+  await say("Will check the new build", "new");
+  assert.deepEqual(await (await post("/voice/utterances", cancel, token)).json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["new", "pending"]]);
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["new"]);
+  await say("cancel", "fresh-cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");
@@ -92,7 +111,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(1);
   await Promise.resolve();
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
-  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
@@ -130,7 +149,7 @@ test("window off queues immediately and an addressed stop interrupts the session
   assert.ok(queued("Steve").includes("ship   it!"));
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
-  assert.deepEqual(cards.map((c) => c.state), ["sent", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
@@ -187,6 +206,74 @@ test("a quote immediately after the address comma survives the preview and queue
   assert.equal(queued("Will").at(-1), '"ship it"');
 });
 
+test("punctuation-only messages reach the named agent and leave an unsure card open", async () => {
+  await say("Steven ask Will about the build", "unsure");
+  for (const [id, text, body] of [
+    ["spaced", "Will, ???", "???"],
+    ["adjacent", "Will,!!!", "!!!"],
+    ["plain", "Will ...", "..."],
+    ["commas", "Will, ,,,", ",,,"],
+  ] as const) {
+    await say(text, id);
+    const card = cards.at(-1);
+    assert.deepEqual([card?.id, card?.state, card?.parts[0]?.text], [id, "pending", body]);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(queued("Will").at(-1), body);
+  }
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["unsure", "unsure"]]);
+});
+
+test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const will = name("Will");
+  voiceStateStore.useRoster(() => [will, name("Steve")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will, stop", "stop-original");
+  await say("Steven ask Will about the deployment", "picked-message");
+  await say("Will.");
+  const replacementQueue = queued("Bill");
+  const beforeInterrupts = [...interrupts];
+  will.sessionId = "sdk:Bill";
+
+  assert.equal((await act("stop-original", "send-now")).status, 200);
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.deepEqual(queued("Bill"), replacementQueue);
+  assert.deepEqual(interrupts, beforeInterrupts);
+  assert.deepEqual(cards.slice(-2).map((c) => [c.id, c.state, c.parts[0]?.target?.sessionId]), [
+    ["stop-original", "not-running", "sdk:Will"], ["picked-message", "not-running", "sdk:Will"],
+  ]);
+  const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");
+  assert.equal(deliveries.length, 2);
+  for (const entry of deliveries) {
+    assert.equal(entry.outcome, "not-running");
+    assert.equal(entry.detail, "The selected session is unavailable.");
+  }
+});
+
+test("a selected session missing from the registry is reported as unavailable", async (t) => {
+  const will = { ...name("Will"), sessionId: "sdk:gone" };
+  voiceStateStore.useRoster(() => [will]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will finish the report", "gone");
+  assert.equal((await act("gone", "send-now")).status, 200);
+  assert.equal(cards.at(-1)?.state, "not-running");
+  assert.equal((await readHeard())[0]?.outcome, "not-running");
+});
+
+test("a spoken pick for a departed candidate records why the unsure card stays open", async (t) => {
+  await say("Steven ask Will about the release", "choose");
+  voiceStateStore.useRoster(() => roster.filter((target) => target.name !== "Will"));
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will", "departed");
+  const [pick, original] = await readHeard();
+  assert.deepEqual([pick?.id, pick?.outcome, pick?.rule], ["departed", "ignored", "candidate-unavailable"]);
+  assert.equal(original?.outcome, "unsure");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["choose", "unsure"]]);
+  await say("Steve");
+  assert.deepEqual([cards.at(-1)?.state, cards.at(-1)?.parts[0]?.target?.name], ["pending", "Steve"]);
+});
+
 test("ignored, pending and cancelled captures leave no transcript in the daemon state directory", async () => {
   const marker = randomUUID();
   await say("Morning " + marker);
@@ -202,6 +289,24 @@ test("ignored, pending and cancelled captures leave no transcript in the daemon 
   assert.ok(files.some((file) => file.name === "harness.db"));
   for (const file of files) {
     assert.equal(readFileSync(join(file.parentPath, file.name)).includes(marker), false, file.name);
+  }
+});
+
+test("Recently heard measures the pause between aligned words and leaves unclear timings empty", async (t) => {
+  voiceStateStore.useRoster(() => [name("Release"), name("Build Captain")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  for (const [text, labels, pause] of [
+    ["Release , run tests", ["Release", ",", "run", "tests"], 150],
+    ["Build Captain , run tests", ["Build", "Captain,", "run", "tests"], 50],
+    ["Release, run tests", ["Other", "run"], null],
+    ["Release, run tests", ["Release", ",", "tests"], null],
+    ["Build Captain, run tests", ["Other", "Captain", "run"], null],
+    ["Release, ???", ["Release", "???"], null],
+  ] as const) {
+    const words = labels.map((label, i) => ({ text: label, startMs: 100 * i, endMs: 100 * i + 50 }));
+    assert.equal((await post("/voice/utterances", { ...capture(text), words }, token)).status, 200);
+    const [entry] = await readHeard();
+    assert.deepEqual([entry?.outcome, entry?.pauseMs], ["pending", pause], text);
   }
 });
 
@@ -254,4 +359,15 @@ test("Recently heard keeps the refusal reasons from the queue and interrupt adap
   assert.deepEqual((await readHeard()).map(({ outcome, detail }) => [outcome, detail]), [
     ["failed", "this session has no live embedded driver"], ["failed", "Queue full."],
   ]);
+});
+
+test("a busy session's accepted turn stays queued on its card and in Recently heard", async () => {
+  registry.applyDriverEvent("sdk:Bill", { kind: "state", state: "working", activity: "Running tests" });
+  await say("Bill, review the logs", "busy");
+  assert.equal((await act("busy", "send-now")).status, 200);
+  const session = registry.getSession("sdk:Bill")!;
+  assert.equal(session.state, "working");
+  assert.ok(session.pendingTurns.some((turn) => turn.text === "review the logs" && turn.claimedAt === null));
+  assert.deepEqual(cards.map((card) => card.state), ["pending", "queued"]);
+  assert.equal((await readHeard())[0]?.outcome, "queued");
 });

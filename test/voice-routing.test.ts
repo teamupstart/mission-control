@@ -13,8 +13,8 @@ const route = (text: string, names = ["Will", "Steve"], words: VoiceUtterance["w
 
 test("the exact first word addresses Will with absent, adjacent, paused or overlapping timings", () => {
   for (const gap of [null, 0, 250, -80]) {
-    const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: "you", startMs: 100 + gap, endMs: 400 }];
-    for (const [text, body] of [["Will you grab the door", "you grab the door"], ["“wILL,”  Grab   the door!", "Grab   the door!"]] as const) {
+    for (const [text, body, nextWord] of [["Will you grab the door", "you grab the door", "you"], ["“wILL,”  Grab   the door!", "Grab   the door!", "Grab"]] as const) {
+      const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: nextWord, startMs: 100 + gap, endMs: 400 }];
       assert.deepEqual(route(text, undefined, words), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: gap });
     }
   }
@@ -53,6 +53,44 @@ test("two-word call signs and a subsequent agent name", () => {
   }
 });
 
+test("a two-word call sign ends at the address comma for exact and phonetic matching", () => {
+  for (const text of ["Release, Captain needs help", "Release,Captain needs help", "Release , Captain needs help"]) {
+    assert.equal(route(text, ["Release Captain"]).kind, "ignored");
+    assert.deepEqual(route(text, ["Release Captain", "Release"]), {
+      kind: "addressed", target: agent("Release"), match: "exact", text: "Captain needs help", pauseMs: null,
+    });
+  }
+  assert.equal(route("Steven, Captain needs help", ["Steve Captain"]).kind, "ignored");
+  assert.equal(route("Steven Captain, run tests", ["Steve Captain"]).kind, "addressed");
+});
+
+test("later two-word roster mentions must be on the same side of a comma", () => {
+  const roster = ["Steve", "Release Captain"];
+  for (const body of ["ship the release, captain.", "ship the release,captain.", "ship the release , captain."]) {
+    assert.deepEqual(route("Steven, " + body, roster), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  const decision = route("Steven, ask Release Captain.", roster);
+  assert.equal(decision.kind, "needs-model");
+  if (decision.kind === "needs-model") assert.deepEqual(decision.candidates.map(({ name }) => name), roster);
+});
+
+test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
+  const names = ["Steve", "Steve Captain"];
+  for (const roster of [names, names.toReversed()]) {
+    assert.deepEqual(route("Steven Captain, run tests", roster), {
+      kind: "addressed", target: agent("Steve Captain"), match: "phonetic", text: "run tests", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven, Captain needs help", roster), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: "Captain needs help", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven Captain, run tests", [...roster, "Steven"]), {
+      kind: "addressed", target: agent("Steven"), match: "exact", text: "Captain, run tests", pauseMs: null,
+    });
+  }
+});
+
 test("weak spelling matches are ignored even when two names are equally close", () => {
   assert.deepEqual(route("Pat go", ["Cat"]), { kind: "ignored", reason: "near-miss", closest: "Cat" });
   for (const text of ["fill in the form", "till tomorrow"]) {
@@ -78,6 +116,7 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will"!,"ship it"', '"ship it"'],
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ["“Will,”, ???", "???"],
     ['「“Will,”」"ship it"', '"ship it"'],
   ] as const) {
     assert.deepEqual(route(text), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: null });

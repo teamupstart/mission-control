@@ -2153,12 +2153,6 @@ export const api = {
   openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
   /** Mark an agent report read. Idempotent; the first time and way are kept. */
   markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
-  /**
-   * `selections` rides along only when a decision form was filled in. It is what the
-   * conversation replays afterwards - `response` is the flattened string the agent reads,
-   * which cannot say which options went untaken. The route attributes this to the human;
-   * only the Foreman worker declares otherwise.
-   */
   /** Reply to an agent report: delivered as the operator's message, and marks it read. */
   replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
   /**
@@ -2170,6 +2164,12 @@ export const api = {
   /** Every report a session posted, every version, read or not, for its conversation. */
   sessionReports: (id: string) =>
     readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),
+  /**
+   * `selections` rides along only when a decision form was filled in. It is what the
+   * conversation replays afterwards - `response` is the flattened string the agent reads,
+   * which cannot say which options went untaken. The route attributes this to the human;
+   * only the Foreman worker declares otherwise.
+   */
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",

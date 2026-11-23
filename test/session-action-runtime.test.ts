@@ -2504,8 +2504,13 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
       h.runActionTurn();
-      await h.manager.sweepSessionActions(SETTLED());
-      assert.equal(h.store.getRun(runId)?.status, proof === "missing-review" ? "blocked" : "waiting_for_action");
+      const firstProofRead = SETTLED();
+      await h.manager.sweepSessionActions(firstProofRead);
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      if (proof === "missing-review") {
+        await h.manager.sweepSessionActions(firstProofRead + 60_000);
+        assert.equal(h.store.getRun(runId)?.status, "blocked");
+      }
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(reads, proof === "missing-review" ? 0 : 1);
       const failures = warnings.filter(line => line.includes("event=session_action_publication_tree_unavailable"));
@@ -2638,7 +2643,7 @@ for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(
     h.runActionTurn();
     const firstProofRead = SETTLED();
     await h.manager.sweepSessionActions(firstProofRead);
-    if (proof === "missing-base") {
+    if (proof !== "verified") {
       assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
       await h.manager.sweepSessionActions(firstProofRead + 15_000);
       await h.manager.stop();
@@ -2708,6 +2713,27 @@ test("known changed detached work completes after adoption arrives on a later sw
     h.adoptPr();
     await h.manager.sweepSessionActions(now + 120_001);
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "late detached adoption did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+
+test("missing accepted-tree proof allows adoption after the first settled sweep", async () => {
+  const h = await harness("missing-accepted-tree-adoption", { pullRequest: true, omitContentTree: true });
+  try {
+    h.repository.branch = null;
+    h.head.sha = "detached-ahead";
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    await h.manager.sweepSessionActions(now + 59_999);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(now + 59_999);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption with missing accepted tree did not complete");
     assert.equal(h.store.listSubmissions(runId).length, 2);
     assert.equal(h.injected.length, 1);
   } finally { await h.stop(); }

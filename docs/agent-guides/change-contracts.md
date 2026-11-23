@@ -884,14 +884,14 @@ A SessionAction is a durable side effect, not an evaluator:
   continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
   This completion releases the existing conversation hold without creating a PR, including for
   actions already waiting when the daemon restarts.
-  Missing accepted-tree proof after a settled turn with no adopted PR is an immediate recoverable
-  `expectation_unmet` block. Unavailable local reads (including timeouts, moving HEAD, and an
-  unresolved base) instead retry for one minute before blocking with a precise diagnostic.
+  Missing accepted-tree proof and unavailable local reads (including timeouts, moving HEAD,
+  and an unresolved base) retry for one minute after a settled turn with no adopted PR before
+  a recoverable `expectation_unmet` block with a precise diagnostic.
   The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
   sweeps and restart; a recovered read or a new active turn resets it. Adoption can still
   complete the action during that window. Both completion and blocking re-offer
   queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
-  A missing continuation publication tree is `capture_failed`, not evidence of changed content.
+  A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
   Known changed work, including commits on a detached HEAD, waits for PR adoption. No timeout or agent assertion
   is treated as proof of publication.
 - New publication requires a durable adoption in Mission Control's ledger. Repository,

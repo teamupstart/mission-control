@@ -402,9 +402,9 @@ function unprovenPullRequest(context: SessionActionAdapterContext): SessionActio
   const readProblem = context.unchangedRepositoryProblem
     ?? (!context.repository ? "The bound repository could not be read." : null)
     ?? (!context.repository?.headOid ? "The checkout HEAD could not be verified." : null);
-  // Unavailable local facts can recover on the next sweep, including an adoption arriving
-  // after the agent settles. The manager preserves the first failed read across sweeps/restart.
-  if (!missingAcceptedTree && readProblem && context.now - context.settledAt < 60_000) {
+  // Missing review proof also gets time for adoption to arrive after the agent settles.
+  // The manager preserves the first unavailable-proof sweep across sweeps/restart.
+  if ((missingAcceptedTree || readProblem) && context.now - context.settledAt < 60_000) {
     return { kind: "waiting", reason: "awaiting_proof" };
   }
   const problem = missingAcceptedTree ?? readProblem
@@ -618,6 +618,10 @@ const pullRequest: SessionActionAdapter = {
       if (!capturedTree) {
         return { kind: "blocked", code: "capture_failed",
           detail: "The continuation's publication tree could not be read to verify the unchanged repository. Capture fresh evidence and resubmit the workflow." };
+      }
+      if (!capture.capturedHeadOid) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: "The continuation's HEAD could not be read to verify the unchanged repository. Capture fresh evidence and resubmit the workflow." };
       }
       if (capture.capturedHeadOid !== expectation.headOid
         || capturedTree !== expectation.treeOid

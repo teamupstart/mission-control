@@ -647,7 +647,7 @@ for (const patch of [
 });
 
 test("a historical merge never accepts missing review proof", () => {
-  const decision = decide([oldMerge()], { acceptedContentTreeOid: null });
+  const decision = decide([oldMerge()], { acceptedContentTreeOid: null, now: 60_003 });
   assert.equal(decision.kind, "blocked");
   if (decision.kind === "blocked") assert.match(decision.detail, /accepted content tree/);
 });
@@ -746,6 +746,7 @@ for (const branch of [null, BRANCH]) {
 }
 
 for (const [label, patch] of [
+  ["accepted tree", { acceptedContentTreeOid: null }],
   ["repository read", { repository: null }],
   ["HEAD read", { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }],
   ["Git timeout", { unchangedRepositoryProblem: "Git timed out while reading publication proof." }],
@@ -766,8 +767,10 @@ for (const [label, patch] of [
   });
 }
 
-test("known missing accepted-tree proof blocks without being masked by a transient Git error", () => {
-  const decision = decide([], { acceptedContentTreeOid: null, unchangedRepositoryProblem: "Git timed out" });
+test("missing accepted-tree proof retries then identifies the missing tree even with a Git error", () => {
+  const context = { acceptedContentTreeOid: null, unchangedRepositoryProblem: "Git timed out" };
+  assert.deepEqual(decide([], context), { kind: "waiting", reason: "awaiting_proof" });
+  const decision = decide([], { ...context, now: 60_003 });
   assert.equal(decision.kind, "blocked");
   if (decision.kind !== "blocked") return;
   assert.match(decision.detail, /accepted content tree/);
@@ -793,4 +796,18 @@ test("known changed work on detached HEAD waits for a late adoption, beyond the 
     assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
   }
   assert.equal(decide([pr()], context).kind, "complete", "a detached publication is adopted after the turn settles");
+});
+
+
+test("no-change capture reports an unreadable HEAD as capture failure", () => {
+  const result = ADAPTER.validateCapture({ kind: "no_change", headOid: HEAD, treeOid: TREE,
+    baseOid: HEAD, baseRef: "origin/main" }, {
+    capturedHeadOid: null,
+    context: { evidence: { contentTreeOid: TREE, workingTreeDirty: false } } as WorkflowContextSnapshot,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /HEAD could not be read/);
+  assert.doesNotMatch(result.detail, /repository changed/);
 });

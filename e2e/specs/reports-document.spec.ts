@@ -21,6 +21,12 @@ import type { Session, Task } from "../../src/shared/types.ts";
  * spent.
  */
 
+// A bundle removed from disk reaches its report only when a reconciliation pass prunes it. A
+// recursive filesystem watcher reports that removal at once on macOS but not on Linux, where the
+// pass falls to the recurring cadence (60 seconds by default). Keep that cadence quick, as the
+// scout archive spec does, so the step does not depend on the platform's watcher.
+test.use({ daemonEnv: { MISSION_SCOUT_RECONCILE_MS: "200" } });
+
 const EVIDENCE = artifactsDir("reports-document");
 
 async function capture(target: Locator | Page, name: string, page: Page): Promise<void> {

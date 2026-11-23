@@ -184,6 +184,12 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   const [producerId, archiveId] = stored.publishedArchiveKey!.split("~");
   const bundle = join(daemon.home, "archives", producerId!, archiveId!);
   expect(existsSync(bundle), `the republished bundle is at ${bundle}`).toBe(true);
+  // A publish answers once the bundle is renamed into place, and the pass that indexes it runs
+  // after. Only an indexed archive can be pruned, so the bundle is removed once the library lists
+  // it: removed before that pass, it is never indexed, nothing is pruned, and only a restart
+  // would clear the key.
+  await expect.poll(async () => (await fetch(`${daemon.baseURL}/api/archives/${stored.publishedArchiveKey!}`)).status, { timeout: 30_000 })
+    .toBe(200);
   rmSync(bundle, { recursive: true, force: true });
   await expect(card.getByRole("button", { name: "Publish as scout" })).toBeVisible({ timeout: 60_000 });
   await expect(card.getByRole("button", { name: "Open archive" })).toHaveCount(0);

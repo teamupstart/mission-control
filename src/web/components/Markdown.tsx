@@ -1,9 +1,9 @@
 import { createElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { PluggableList } from "unified";
-import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
+import { MARKDOWN_REMARK_PLUGINS } from "@shared/markdown-config.ts";
 import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
 import { rehypeWorkspacePaths, WORKSPACE_PATH_CLASS } from "../lib/rehypeWorkspacePaths.ts";
 import { blockRangeFromNode, type MarkdownBlockRange } from "../lib/markdownBlocks.ts";
@@ -33,6 +33,9 @@ export type { MarkdownBlockRange } from "../lib/markdownBlocks.ts";
 export type { MarkdownFindHit } from "../lib/rehypeFindMarks.ts";
 
 const HIGHLIGHT_OPTIONS = { detect: false, ignoreMissing: true };
+
+/** The shared dialect, with chat's single-newline breaks added. */
+const CHAT_REMARK_PLUGINS: PluggableList = [...MARKDOWN_REMARK_PLUGINS, remarkBreaks];
 
 /** A checkout listing the caller has, or nothing yet - see `rehypeWorkspacePaths`. */
 export type WorkspacePaths = ReadonlySet<string> | null;
@@ -418,7 +421,7 @@ function MarkdownBody({
   });
   return (
     <ReactMarkdown
-      remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
+      remarkPlugins={breaks ? CHAT_REMARK_PLUGINS : MARKDOWN_REMARK_PLUGINS}
       rehypePlugins={rehypePlugins}
       urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
       components={components}

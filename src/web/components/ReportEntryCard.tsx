@@ -13,7 +13,9 @@ import { Tooltip } from "./Tooltip.tsx";
  * It says it is a report, gives the title (the `toggle` action, which discloses the body), the
  * version when it replaced an earlier one, and how the report stands: waiting to be read, replaced,
  * or how it was cleared (read, replied to, or followed up). While it is waiting to be read it
- * offers `mark-read`. Both controls are drawn through `InboxActionButton`, and
+ * offers `mark-read`. A report with an attached document offers `open-report`, which reads the
+ * copy stored when it was posted and never marks it read. Every control is drawn through
+ * `InboxActionButton`, and
  * `test/inbox-actions.test.ts` scans this file for a control drawn any other way. The body is
  * open while this report is the one open on screen (App's `openReportId`), the same one the inbox
  * reads, so opening it here opens it there too.
@@ -23,12 +25,15 @@ export function ReportEntryCard({
   open,
   onToggle,
   onMarkRead,
+  onOpenDocument,
 }: {
   report: ReportItem;
   open: boolean;
   onToggle: () => void;
   /** Mark it read. Resolves to why the daemon refused, or null. */
   onMarkRead: () => Promise<string | null>;
+  /** Open the attached document's stored copy in the reader. */
+  onOpenDocument: () => void;
 }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const name = report.author.name;
@@ -66,7 +71,20 @@ export function ReportEntryCard({
               </Tooltip>
             </p>
           )}
-          {report.document && <p className="inbox-line">Attached: {report.document.name}</p>}
+          {report.document && (
+            <div className="agent-report-document">
+              <p className="inbox-line">Attached: {report.document.name}</p>
+              <div className="agent-report-actions">
+                <InboxActionButton
+                  action="open-report"
+                  name={name}
+                  className="btn"
+                  tooltip="Read the attached document from the copy stored when this report was posted. It does not mark the report read"
+                  onClick={onOpenDocument}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
       <div className="review-asked-foot">

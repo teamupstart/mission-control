@@ -2180,6 +2180,14 @@ export const api = {
    */
   followUpReport: (id: string, text: string) =>
     post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
+  /**
+   * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
+   * A page the archive's checker refused answers with every problem in `problems`.
+   */
+  publishReport: (id: string) =>
+    post<ActionResult & { archiveKey?: string; problems?: string[] }>(`/api/reports/${encodeURIComponent(id)}/publish`),
+  /** The stored copy of a report's attached document, as text. */
+  reportDocumentUrl: (id: string) => `/api/reports/${encodeURIComponent(id)}/document`,
   /** Every report a session posted, every version, read or not, for its conversation. */
   sessionReports: (id: string) =>
     readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),

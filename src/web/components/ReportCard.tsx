@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
+import type { ReportPublishState } from "../lib/sessionReports.ts";
 import { relativeTime } from "../lib/format.ts";
 import { InboxActionButton } from "./AgentName.tsx";
 import { useReportDraft } from "../lib/reportDrafts.ts";
@@ -15,8 +16,11 @@ import { Tooltip } from "./Tooltip.tsx";
  * `InboxActionButton`: the title is the `toggle` action, which only discloses the body and is
  * never spoken; Mark read is `mark-read`; the reply box sends with `reply`; and a report whose
  * agent is gone offers `follow-up`, drawn as Start a follow-up task, or as Retry once a follow-up
- * task was created and its dispatch failed. `test/inbox-actions.test.ts` scans this file for a
- * control drawn any other way.
+ * task was created and its dispatch failed. A report with an attached document offers
+ * `open-report`, which reads the copy stored when it was posted, and `publish-scout`, which saves
+ * that document to the scout archive on this press and never otherwise; once published the card
+ * says so and offers `open-archive`. `test/inbox-actions.test.ts` scans this file for a control
+ * drawn any other way.
  *
  * What the card offers follows `target` (`replyTarget`): a reply box while the agent can take a
  * message; a line saying a resident is not running, with where to launch it, as text; a line
@@ -27,7 +31,11 @@ import { Tooltip } from "./Tooltip.tsx";
  * Which report is open is the dashboard's (`openReportId` in App), never this card's: a voice
  * command binds to the report that is open on screen, so there is one answer to "which one".
  * Opening a report does NOT mark it read; Mark read, a reply, or a dispatched follow-up does.
+ * Neither Open report nor Publish as scout marks it read either.
  */
+/** No request in flight and no refusal: what a card shows before its first press. */
+const IDLE_PUBLISH: ReportPublishState = { busy: false, refusal: null };
+
 export function ReportCard({
   report,
   open,
@@ -36,6 +44,10 @@ export function ReportCard({
   onMarkRead,
   onReply,
   onFollowUp,
+  onOpenDocument,
+  onPublish,
+  publishState = IDLE_PUBLISH,
+  onOpenArchive,
   error = null,
   now,
 }: {
@@ -49,6 +61,17 @@ export function ReportCard({
   onReply: (text: string) => Promise<string | null>;
   /** Start, or retry, the follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (text: string) => Promise<string | null>;
+  /** Open the attached document's stored copy in the reader. */
+  onOpenDocument: () => void;
+  /** Publish the attached document as a scout archive. Its outcome comes back in `publishState`. */
+  onPublish: () => void;
+  /**
+   * Publish as scout's state for this report, kept by the dashboard so a refusal or an in-flight
+   * request survives the card being collapsed or the inbox being closed.
+   */
+  publishState?: ReportPublishState;
+  /** Go to the published archive on the Scouts page. */
+  onOpenArchive: () => void;
   /** Why the last Mark read was refused, drawn beneath the card until it is tried again. */
   error?: string | null;
   /** Injectable so a render test can own the clock. */
@@ -87,7 +110,13 @@ export function ReportCard({
             </p>
           )}
           {report.document && (
-            <p className="inbox-line">Attached: {report.document.name}</p>
+            <ReportDocumentControls
+              report={report}
+              onOpenDocument={onOpenDocument}
+              onPublish={onPublish}
+              publishState={publishState}
+              onOpenArchive={onOpenArchive}
+            />
           )}
           <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} />
           <div className="agent-report-actions">
@@ -241,4 +270,80 @@ function ReportAnswer({
       );
     }
   }
+}
+
+/**
+ * A report's attached document: Open report, then Publish as scout, which becomes "Published"
+ * and Open archive once the archive holds it. A page the archive's checker refused lists every
+ * problem it named, and nothing was published.
+ */
+function ReportDocumentControls({
+  report,
+  onOpenDocument,
+  onPublish,
+  publishState,
+  onOpenArchive,
+}: {
+  report: ReportItem;
+  onOpenDocument: () => void;
+  onPublish: () => void;
+  publishState: ReportPublishState;
+  onOpenArchive: () => void;
+}): React.JSX.Element {
+  const name = report.author.name;
+  const { busy, refusal } = publishState;
+  const published = report.publishedArchiveKey !== null;
+  return (
+    <div className="agent-report-document">
+      <p className="inbox-line">Attached: {report.document!.name}</p>
+      <div className="agent-report-actions">
+        <InboxActionButton
+          action="open-report"
+          name={name}
+          className="btn"
+          tooltip="Read the attached document from the copy stored when this report was posted. It does not mark the report read"
+          cardOpen
+          onClick={onOpenDocument}
+        />
+        {published ? (
+          <>
+            <span className="agent-report-published" role="status">Published</span>
+            <InboxActionButton
+              action="open-archive"
+              name={name}
+              className="btn btn-ghost"
+              tooltip="Open this report's archive on the Scouts page"
+              onClick={onOpenArchive}
+            />
+          </>
+        ) : (
+          <InboxActionButton
+            action="publish-scout"
+            name={name}
+            className="btn btn-ghost"
+            tooltip="Save the attached document to the scout archive. Nothing is archived until you press this, and it does not mark the report read"
+            disabled={busy}
+            cardOpen
+            onClick={onPublish}
+          />
+        )}
+      </div>
+      {refusal && !published && (
+        <div className="inbox-line inbox-error" role="alert">
+          <p>{refusal.failed
+            // Mission Control's own failure, whose cause only the server knows: a write, a read of
+            // the stored copy or the library, or a restart. Its own words lead, never a guess.
+            ? refusal.problems.length > 1
+              ? "Not published, and nothing is wrong with the document:"
+              : `Not published, and nothing is wrong with the document: ${refusal.error}`
+            : refusal.problems.length > 1 ? "Not published. The archive refused this document:" : `Not published. ${refusal.error}`}</p>
+          {refusal.problems.length > 1 && (
+            <ul>
+              {refusal.problems.map((problem) => <li key={problem}>{problem}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

@@ -1227,6 +1227,13 @@ export const ReportFollowUpSchema = z.object({
     .optional().default(""),
 });
 
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
@@ -9696,6 +9703,18 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
   z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
+  /**
+   * The dashboard's Complete dialog, delegated: record the target's task as done with the
+   * outcome the controller supplies, then close the session when completion did not already
+   * request it. The two confirmations mean exactly what the dialog's do (see
+   * `CompleteTaskSchema`): neither is ever implied, and an incomplete scout is refused first.
+   */
+  z.object({
+    action: z.literal("complete"),
+    outcome: z.string().trim().max(CONVERSATION_TEXT_MAX_LENGTH).optional(),
+    satisfyDependents: z.boolean().optional(),
+    confirmIncompleteScout: z.boolean().optional(),
+  }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

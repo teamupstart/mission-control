@@ -28,3 +28,16 @@ export function writeSourceState(namespace: string, id: string, state: unknown, 
   );
   noteBytesAdded(added);
 }
+
+/**
+ * Remove one checkpoint. A delete needs no budget, so it is how a source withdraws a value it
+ * may no longer stand behind - including when writing its replacement was refused.
+ */
+export function deleteSourceState(namespace: string, id: string): void {
+  const d = openDb();
+  const prior = d.prepare("SELECT bytes FROM telemetry_source_state WHERE namespace = ? AND id = ?")
+    .get(namespace, id) as { bytes: number } | undefined;
+  if (!prior) return;
+  d.prepare("DELETE FROM telemetry_source_state WHERE namespace = ? AND id = ?").run(namespace, id);
+  noteBytesAdded(-prior.bytes);
+}

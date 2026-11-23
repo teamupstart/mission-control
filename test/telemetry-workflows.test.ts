@@ -245,6 +245,38 @@ test("author context freezes at submission and does not adopt later pending effo
   } finally { detach(); resetSessionTelemetryForTesting(); }
 });
 
+test("a workflow span exports the author session's work unit raw in both lanes, and none without a launch record", async () => {
+  const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
+  resetSessionTelemetryForTesting();
+  let publish: (event: { type: string } & Record<string, unknown>) => void = () => {};
+  const detach = attachSessionTelemetry({ subscribe(listener) { publish = listener; return () => {}; }, getTask: () => undefined });
+  const WU = "wu_01JD00000000000000000000WF";
+  try {
+    // Two authors: one whose agent was started with a work unit, one started with none.
+    for (const [id, launchWorkUnitId] of [["wu-author", WU], ["no-record", null]] as const) {
+      publish({ type: "session_upsert", session: { id: "session-" + id, agent: "claude", runtime: "sdk", state: "idle",
+        terminals: [], agentSessionId: "conversation-" + id, pendingEffort: null, launchWorkUnitId,
+        meta: { modelId: "claude-opus-5", thinkingLevel: "medium", nativeEffort: null, source: "driver" } } });
+      seedTelemetryWorkflow(id);
+    }
+    runProjectionPass();
+    assert.deepEqual(events("workflow.submission").map((e) => [e.refs.session_id, e.refs.work_unit_id ?? null]), [
+      ["session-wu-author", WU],
+      ["session-no-record", null],
+    ]);
+    for (const profile of ["user", "product"] as const) {
+      const spans = (openDb().prepare("SELECT payload_json FROM telemetry_batches WHERE profile = ? AND signal = 'traces'")
+        .all(profile) as Array<{ payload_json: string }>)
+        .flatMap((row) => (JSON.parse(row.payload_json) as { spans: Array<{ name: string; attributes: Record<string, unknown> }> }).spans)
+        .filter((span) => span.name === "mission.workflow.submission");
+      assert.equal(spans.length, 2, profile + ": both submissions exported");
+      assert.deepEqual(spans.map((span) => span.attributes.work_unit_id ?? null).sort(), [WU, null].sort(),
+        profile + ": the raw id on the attributed author's span only");
+      for (const span of spans) assert.equal("mission.ref.work_unit_id" in span.attributes, false, profile + ": never hashed");
+    }
+  } finally { detach(); resetSessionTelemetryForTesting(); }
+});
+
 for (const profile of ["user", "product"] as const) {
   test(`${profile} consent windows isolate author context without resetting other audiences`, async () => {
     const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");

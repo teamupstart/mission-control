@@ -2511,7 +2511,8 @@ The session uses two Mission Control tools:
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
   model, effort and permission-mode changes, and the two blocker actions
-  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)), and
+  `complete` (see below). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2544,8 +2545,20 @@ arrived keeps both labels. Review answers retain
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.
 
-These tools cannot change the controller grant, global settings, delete sessions, or reset
-worktrees. The target's normal runtime and resource guards continue to apply. See
+`complete` is the **Complete** button, delegated. It records the target's current task as done
+with the controller's `outcome` (`completed` when omitted) and then closes the target session,
+in that order, through the same routes the dialog calls, so a stop that fails never leaves the
+outcome unwritten. Its two confirmations mean what the dialog's do and are never implied:
+`satisfyDependents: true` releases tasks declared to wait on this one without a merge, and a
+scout whose report is not archived is refused with the exact problems until a repeat carries
+`confirmIncompleteScout: true`. A target with no task refuses, as the dialog does.
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"complete","outcome":"Fix merged in #42"}}
+```
+
+These tools cannot change the controller grant or global settings, delete sessions, or reset
+worktrees. A session closes only through `complete`, with its task recorded first. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
 
 ### Blocked sessions
@@ -3498,8 +3511,29 @@ anything urgent or needing your decision is a `request_input` question.
   restated, then your words (see the format in
   [Answering a report](attention-and-alerts.md#answering-a-report)).
   Messages you type in the composer are unchanged: nothing is added to them.
-- **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply
-  and follow-up routes refuse, and no conversation entry is drawn. A session on an MCP bundle
+- **Open report.** A report with an attached document offers **Open report** on its inbox card
+  and its conversation entry. It reads the copy stored under `<state home>/reports/<id>/`
+  through `GET /api/reports/:id/document`, never the checkout, so it opens after the worktree is
+  gone and shows what was posted even if the checkout file changed since. An HTML document is
+  drawn in the dashboard's sandboxed preview frame, which runs none of its scripts and fetches
+  nothing; a Markdown document is drawn by the dashboard's Markdown renderer. The route serves
+  the stored copy as an attachment with `nosniff` and a `default-src 'none'; sandbox` policy, as
+  an archived page is served. A stored copy that has gone missing is a 404 whose message the
+  reader shows; one that is there but cannot be opened (a permission or I/O error) is a 500
+  naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
+  not mark it read.
+- **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
+  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
+  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
+  on the card and publishes nothing. Pressing it again returns the same archive. If that archive
+  is deleted or leaves the library, the card offers **Publish as scout** again; see
+  [How a report produces one](archives.md#how-a-report-produces-one). It does not mark the
+  report read. `POST /api/reports/:id/publish` is the operator's alone and takes nothing but
+  the report id: a request that carries a page or a path is refused. A report with no document
+  cannot be published.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply,
+  follow-up, document and publish routes refuse, and no conversation entry is drawn. A session on an MCP bundle
   older than this build does not have the tool.
 
 ### Scout reports from a session

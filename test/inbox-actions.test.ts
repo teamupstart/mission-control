@@ -315,6 +315,7 @@ test("a conversation entry draws its toggle and Mark read as declared actions, a
       open,
       onToggle: () => undefined,
       onMarkRead: async () => null,
+      onOpenDocument: () => undefined,
     })));
   const waiting = draw({}, true);
   assert.match(waiting, /aria-label="Report: Build failure diagnosed"/);
@@ -334,6 +335,82 @@ test("a conversation entry draws its toggle and Mark read as declared actions, a
   assert.match(replaced, /Replaced by a later version/);
   assert.doesNotMatch(replaced, /data-inbox-action="mark-read"/);
   assert.match(draw({ version: 2, rootId: "r-1" }), /Version 2, replacing an earlier report/);
+});
+
+// ---- a report's attached document: Open report and Publish as scout (Phase 4) ----
+
+test("open-report and publish-scout are declared with their spoken forms; open-archive is click-only navigation", () => {
+  assert.deepEqual(inboxAction("open-report").spoken, { named: "{name}, open report", whileOpen: null });
+  assert.equal(inboxAction("open-report").label, "Open report");
+  assert.equal(inboxAction("open-report").clickOnly, null);
+  assert.deepEqual(inboxAction("publish-scout").spoken, { named: "{name}, publish as scout", whileOpen: null });
+  assert.equal(inboxAction("publish-scout").label, "Publish as scout");
+  assert.equal(inboxAction("publish-scout").clickOnly, null);
+  assert.equal(inboxAction("open-archive").spoken, null);
+  assert.equal(inboxAction("open-archive").clickOnly, "navigation");
+  assert.equal(spokenHintText(inboxAction("open-archive"), "Steve"), null);
+});
+
+test("a report card offers Open report and Publish as scout only for a report with a document, then Published and Open archive", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const author = { key: "resident:steve", name: "Steve", residentProfileId: "steve" };
+  const draw = (over: Partial<import("../src/shared/reports.ts").ReportItem>) =>
+    renderToStaticMarkup(voice(true, createElement(ReportCard, {
+      report: mkReport({ id: "r-7", author, ...over }), open: true, ...reportCardProps(), now: 1,
+    })));
+  const bare = draw({});
+  assert.doesNotMatch(bare, /data-inbox-action="open-report"/);
+  assert.doesNotMatch(bare, /data-inbox-action="publish-scout"/);
+
+  const unpublished = draw({ document: { name: "findings.html", kind: "html" } });
+  assert.match(unpublished, /Attached: findings\.html/);
+  assert.match(unpublished, /data-inbox-action="open-report"[^>]*>Open report<\/button>/);
+  assert.match(unpublished, /data-inbox-action="publish-scout"[^>]*>Publish as scout<\/button>/);
+  assert.match(unpublished, /data-spoken-action="open-report">&quot;Steve, open report&quot;</);
+  assert.match(unpublished, /data-spoken-action="publish-scout">&quot;Steve, publish as scout&quot;</);
+  assert.doesNotMatch(unpublished, /data-inbox-action="open-archive"/);
+
+  const published = draw({ document: { name: "findings.html", kind: "html" }, publishedArchiveKey: "a~b" });
+  assert.match(published, />Published<\/span>/);
+  assert.match(published, /data-inbox-action="open-archive"[^>]*>Open archive<\/button>/);
+  assert.doesNotMatch(published, /data-inbox-action="publish-scout"/);
+  assert.doesNotMatch(published, /data-spoken-action="open-archive"/, "navigation is never spoken");
+});
+
+test("a conversation entry offers Open report for a report with a document, and never Publish as scout", async () => {
+  const { ReportEntryCard } = await import("../src/web/components/ReportEntryCard.tsx");
+  const { mkReport } = await import("./helpers/report-fixture.ts");
+  const draw = (over: Partial<import("../src/shared/reports.ts").ReportItem>) =>
+    renderToStaticMarkup(createElement(ReportEntryCard, {
+      report: mkReport({ id: "r-8", ...over }),
+      open: true,
+      onToggle: () => undefined,
+      onMarkRead: async () => null,
+      onOpenDocument: () => undefined,
+    }));
+  assert.doesNotMatch(draw({}), /data-inbox-action="open-report"/);
+  const withDocument = draw({ document: { name: "notes.md", kind: "markdown" } });
+  assert.match(withDocument, /data-inbox-action="open-report"[^>]*>Open report<\/button>/);
+  assert.doesNotMatch(withDocument, /data-inbox-action="publish-scout"/);
+});
+
+test("a report card draws Publish as scout's state from the dashboard, so a refusal or a request in flight survives a remount", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-9", document: { name: "live.html", kind: "html" } });
+  const draw = (publishState: import("../src/web/lib/sessionReports.ts").ReportPublishState) =>
+    renderToStaticMarkup(createElement(ReportCard, { report, open: true, ...reportCardProps(), publishState, now: 1 }));
+
+  // A fresh mount handed a stored refusal shows it: nothing about it lived in the card.
+  const refused = draw({ busy: false, refusal: { error: "a", problems: ["<script> is not allowed in an archived report", "the https: scheme is not allowed in an archived report"], failed: false } });
+  assert.match(refused, /Not published\. The archive refused this document:/);
+  assert.match(refused, /<li>&lt;script&gt; is not allowed in an archived report<\/li>/);
+  assert.match(refused, /<li>the https: scheme is not allowed in an archived report<\/li>/);
+
+  // A request still in flight keeps the button disabled on a fresh mount, so it cannot be sent twice.
+  assert.match(draw({ busy: true, refusal: null }), /<button[^>]*disabled=""[^>]*data-inbox-action="publish-scout"/);
+  assert.doesNotMatch(draw({ busy: false, refusal: null }), /role="alert"/);
 });
 
 test("the Stuck card's ten actions are declared with the spoken forms or reasons the plan gives", () => {

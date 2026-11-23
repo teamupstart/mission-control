@@ -109,8 +109,13 @@ nothing waits on it.
   body, the link and **Mark read**, and clicking it again closes it.
 - The top bar shows a separate, neutral **to read** figure, which opens the inbox. It never counts
   toward **need you** or **to answer**, and a report never turns a session amber.
+- A report with an attached document offers **Open report**, which shows the copy stored when it
+  was posted, and **Publish as scout**, which saves that document to the scout archive only when
+  you press it and then reads **Published** with **Open archive**. See
+  [Agent reports](sessions.md#agent-reports).
 - A report stays in **to read** until you press **Mark read**, reply to it, or start a follow-up
-  task from it that is dispatched. Opening it, or opening the inbox, does not clear it; Mission
+  task from it that is dispatched. Opening it, opening its document, publishing it, or opening
+  the inbox does not clear it; Mission
   Control records only when you first opened it, with no visible count. A report row has no
   **Dismiss**: one of those is how it leaves.
 - An agent that posts again with `replaces` set to its earlier report's id replaces it: the inbox
@@ -165,8 +170,9 @@ runs:
 - **A report that recorded no repository.** A line saying a follow-up task cannot be started from
   here.
 
-**Send reply**, **Start a follow-up task** and **Retry** are declared inbox actions; **Retry** is
-the follow-up action under another label. A report's entry in its session's conversation says
+**Send reply**, **Start a follow-up task**, **Retry**, **Open report**, **Publish as scout** and
+**Open archive** are declared inbox actions; **Retry** is the follow-up action under another
+label, and **Open archive** is click-only navigation. A report's entry in its session's conversation says
 whether it was read, replied to or followed up (see
 [Agent reports](sessions.md#agent-reports)).
 

@@ -137,3 +137,57 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(settings.getByRole("checkbox", { checked: true })).toHaveCount(0);
   } finally { listener.stop(); }
 });
+
+test("a failed mute shows the reason and keeps the indicator listening until a retry succeeds", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  try {
+    const mute = page.getByRole("button", { name: "Voice: listening. Mute", exact: true });
+    await page.route("**/api/voice/mute", route => {
+      expect(route.request().method()).toBe("POST");
+      expect(route.request().postDataJSON()).toEqual({ muted: true });
+      return route.fulfill({ status: 503, json: { error: "Listener could not mute." } });
+    }, { times: 1 });
+
+    await mute.click();
+    const error = page.getByRole("alert").filter({ hasText: "Listener could not mute." });
+    await expect(error).toBeVisible();
+    await expect(mute).toHaveText(/Listening/);
+    await mute.click();
+    await expect(page.getByRole("button", { name: "Voice: muted. Unmute", exact: true })).toBeVisible();
+    await expect(error).toHaveCount(0);
+  } finally {
+    listener.stop();
+  }
+});
+
+test("a failed indicator save shows an alert and restores the previous selection and top bar", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const settings = page.getByRole("group", { name: "In the window" });
+  const statusLine = settings.getByRole("checkbox", { name: "Status line" });
+  const topbar = settings.getByRole("checkbox", { name: "Top-bar segment" });
+  const segment = page.locator("header.topbar").getByRole("button", { name: /^Voice:/ });
+  await expect(statusLine).toBeChecked();
+  await expect(topbar).not.toBeChecked();
+
+  await page.route("**/api/ui/config", route => {
+    const request = route.request();
+    if (request.method() === "PUT" && request.postDataJSON().voice?.indicators?.includes("topbar")) {
+      return route.fulfill({ status: 503, json: { error: "Settings could not be saved." } });
+    }
+    return route.continue();
+  });
+  await topbar.click();
+  const error = settings.getByRole("alert");
+  await expect(error).toHaveText("Could not save the indicator selection.");
+  await expect(error).toBeVisible();
+  await expect(topbar).not.toBeChecked();
+  await expect(statusLine).toBeChecked();
+  await expect(segment).toHaveCount(0);
+
+  await page.unroute("**/api/ui/config");
+  await topbar.check();
+  await expect(error).toHaveCount(0);
+  await expect(segment).toBeVisible();
+});

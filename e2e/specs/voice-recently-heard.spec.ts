@@ -64,3 +64,26 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
   await expect(table).toContainText("Kept in memory, cleared when Mission Control quits. Audio is not stored.");
   if (capture) await table.screenshot({ path: join(capture, "empty.png") });
 });
+
+test("a failed history read shows an alert and retains entries until a successful poll refreshes them", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  expect((await say(daemon, "Before the read failure")).ok).toBe(true);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const original = history.getByRole("cell", { name: "Before the read failure", exact: true });
+  await expect(original).toBeVisible();
+
+  await page.route("**/api/voice/heard", route => route.request().method() === "GET"
+    ? route.fulfill({ status: 503, json: { error: "History unavailable." } })
+    : route.continue());
+  const error = history.getByRole("alert");
+  await expect(error).toHaveText("Could not read recent utterances.");
+  await expect(error).toBeVisible();
+  await expect(original).toBeVisible();
+
+  expect((await say(daemon, "During the read failure")).ok).toBe(true);
+  await page.unroute("**/api/voice/heard");
+  await expect(history.getByRole("cell", { name: "During the read failure", exact: true })).toBeVisible();
+  await expect(original).toBeVisible();
+  await expect(error).toHaveCount(0);
+});

@@ -2052,7 +2052,7 @@ function skillsClause(summary: TaskShaping): string {
 }
 
 /**
- * One line for a task read, such as `degraded: acme-guidance timed out; 0 entries`. A launch
+ * One line for a task read, such as `degraded: guidance-service timed out; 0 entries`. A launch
  * that announced routed skills names them, as in `ok: 3 entries from 2 shapers, 2 skills (ship,
  * retro)`; one that announced none reads exactly as it did before routing existed.
  */

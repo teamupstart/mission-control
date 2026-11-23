@@ -105,7 +105,7 @@ async function publishedWorkflow(daemon: DaemonHandle): Promise<string> {
 
 test("a routed skill reaches turn one, the after-work skill is prompted once the work is submitted, and the viewer shows both", async ({ dashboard, daemon }) => {
   await registerShapers(daemon, [
-    { id: "acme-guidance", label: "Acme guidance", stage: "select", args: ["ok"] },
+    { id: "guidance-service", label: "Guidance service", stage: "select", args: ["ok"] },
     { id: "skill-router", label: "Skill router", stage: "route", args: ["route", "lint-fix:during,wrap-notes:after-work"] },
   ]);
   await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");

@@ -532,7 +532,7 @@ session, so a redispatch never shows the previous launch's context or `degraded`
 | --- | --- |
 | `GET /api/tasks` | Each task's `shaping` summary, when it describes the current session |
 | `GET /api/tasks/:id/shaping` | `{ summary, text, afterWork }` for the current session, `text` null when nothing was kept and `afterWork` null until an after-work prompt was written; 404 otherwise. Behind the flag. |
-| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary, skills?, afterWork? }`, such as `degraded: acme-guidance timed out; 0 entries` or `ok: 2 entries from 2 shapers, 2 skills (lint-fix, wrap-notes)` |
+| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary, skills?, afterWork? }`, such as `degraded: guidance-service timed out; 0 entries` or `ok: 2 entries from 2 shapers, 2 skills (lint-fix, wrap-notes)` |
 
 ## Settings
 

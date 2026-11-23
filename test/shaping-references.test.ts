@@ -324,6 +324,8 @@ test("a reply with no value comes back unchanged and unmarked", () => {
 });
 
 test("a routed skill whose name or reason id holds a value is dropped with a note, and the rest are kept", () => {
+  // Its own placeholder credential, so the routed-skill case names no company.
+  const routerValues = [{ name: "ROUTER_TOKEN", value: "tok-9f8e7d" }];
   const scrubbed = scrubResolved({
     skills: [
       { name: "lint-tok-9f8e7d", lifecycle_point: "during", reason_id: "r/1" },
@@ -331,17 +333,17 @@ test("a routed skill whose name or reason id holds a value is dropped with a not
       { name: "ship", lifecycle_point: "task-start", reason_id: "r/2" },
     ],
     notes: ["routed for tok-9f8e7d"],
-  }, values);
+  }, routerValues);
   assert.equal(scrubbed.redacted, true);
   assert.deepEqual(scrubbed.data, {
     skills: [{ name: "ship", lifecycle_point: "task-start", reason_id: "r/2" }],
-    notes: ["routed for [ACME_TOKEN redacted]"],
+    notes: ["routed for [ROUTER_TOKEN redacted]"],
   });
   assert.deepEqual(scrubbed.notes, [
-    "A skill was dropped because its name or reason id contained the value of ACME_TOKEN.",
-    "A skill was dropped because its name or reason id contained the value of ACME_TOKEN.",
+    "A skill was dropped because its name or reason id contained the value of ROUTER_TOKEN.",
+    "A skill was dropped because its name or reason id contained the value of ROUTER_TOKEN.",
   ]);
   // An invalid route reply is left exactly as sent, for the engine to refuse.
   const invalid = { skills: [{ name: "Not Valid tok-9f8e7d", lifecycle_point: "during", reason_id: "r" }] };
-  assert.deepEqual(scrubResolved(structuredClone(invalid), values), { data: invalid, redacted: false, notes: [] });
+  assert.deepEqual(scrubResolved(structuredClone(invalid), routerValues), { data: invalid, redacted: false, notes: [] });
 });

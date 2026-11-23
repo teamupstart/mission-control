@@ -1482,14 +1482,14 @@ test("an echoed credential is absent from the engine's section and summary, and 
 // The route stage over MCP (Phase 7)
 
 /** A route request: the select request plus the selected guidance ids (D13). */
-function routeRequest(local = false, guidance = [{ shaper: "acme-guidance", id: "payments/idempotency" }, { shaper: "acme-guidance", id: "retry (budget)" }]): ShapingRequest {
+function routeRequest(local = false, guidance = [{ shaper: "guidance-service", id: "payments/idempotency" }, { shaper: "guidance-service", id: "retry (budget)" }]): ShapingRequest {
   const base = request(local);
   return { ...base, stage: "route", context: { ...base.context, guidance } };
 }
 
 test("a route request's folded block gains one line, Selected guidance, and no other request has it", () => {
   const block = foldedContextBlock(routeRequest().context);
-  assert.equal(block, `${foldedContextBlock(context(false))}\n- Selected guidance: acme-guidance payments/idempotency, acme-guidance "retry (budget)"`);
+  assert.equal(block, `${foldedContextBlock(context(false))}\n- Selected guidance: guidance-service payments/idempotency, guidance-service "retry (budget)"`);
   assert.equal(foldedContextBlock(routeRequest(false, []).context).split("\n").at(-1), "- Selected guidance: none");
   assert.equal(foldedContextBlock(context(false)).includes("Selected guidance"), false);
 });
@@ -1504,7 +1504,7 @@ test("route_skills keeps its three arguments in folded mode, and argument mode c
   await eachServer("echo", [], async (server, label) => {
     const folded = echoed(await callMcp(routeRequest(server.type === "stdio"), router(server, "folded"), ctx()));
     assert.deepEqual(Object.keys(folded.arguments).sort(), ["repo", "task", "version"], label);
-    assert.match(String(folded.arguments.task), /- Selected guidance: acme-guidance payments\/idempotency/);
+    assert.match(String(folded.arguments.task), /- Selected guidance: guidance-service payments\/idempotency/);
     const argument = echoed(await callMcp(routeRequest(server.type === "stdio"), router(server, "argument"), ctx()));
     assert.deepEqual(Object.keys(argument.arguments).sort(), ["context", "repo", "task", "version"], label);
     assert.deepEqual((argument.arguments.context as ShapingContext).guidance, routeRequest().context.guidance);

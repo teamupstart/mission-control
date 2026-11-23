@@ -14,7 +14,7 @@ import {
   settleTaskSkillPrompt,
   taskSkillPromptForTurn,
 } from "../db.ts";
-import { featureEnabled } from "../feature-flags/index.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import type { PendingTurnSubmitResult } from "../pending-turns.ts";
 import type { TurnDelivered } from "../registry.ts";
 import { requiredSkillCommand, type RequiredSkillCommand } from "../skills/invoke.ts";
@@ -57,6 +57,8 @@ export interface AfterWorkSkillsDeps {
   /** The catalog skill ids the session's armed workflow runs itself, as session-action stages. */
   workflowSkills: (sessionId: string) => ReadonlySet<string>;
   enabled?: () => boolean;
+  /** Told when the feature flags change, so prompts owed while task shaping was off are recovered when it is on again. */
+  onFlagsChanged?: (listener: () => void) => () => void;
   now?: () => number;
   /** A catalog skill's checked invocation for a live session. */
   catalogCommand?: (session: Session, id: string) => RequiredSkillCommand;
@@ -151,6 +153,7 @@ export class AfterWorkSkills {
   constructor(deps: AfterWorkSkillsDeps) {
     this.deps = {
       enabled: () => featureEnabled("task-shaping"),
+      onFlagsChanged: (listener) => onFeatureFlagsChanged(() => listener()),
       now: Date.now,
       ...deps,
     };
@@ -170,10 +173,19 @@ export class AfterWorkSkills {
           if (this.waiting.has(event.session.id)) this.retry(event.session.id);
         }
       }),
+      // Prompts owed while task shaping was off - answered held ones, waiting ones - are
+      // recovered when it is turned on again, without waiting for a restart.
+      this.deps.onFlagsChanged(() => { if (this.deps.enabled()) this.recover(); }),
     ];
-    // A wrap-up answered just before the daemon stopped released nothing: the listener that
-    // would have was gone. The answer marked its held prompts in its own transaction, so they
-    // are released now, whatever the answer said.
+    this.recover();
+  }
+
+  /**
+   * Find and send what is owed: held prompts whose wrap-up was answered (the answer marked them
+   * in its own transaction, so a daemon that stopped, or a flag that was off, before the release
+   * still releases them, whatever the answer said), and prompts waiting on the outbox.
+   */
+  private recover(): void {
     try {
       for (const sessionId of listAnsweredHeldTaskSkillPromptSessions()) this.heldCheck.add(sessionId);
     } catch (error) {
@@ -228,12 +240,15 @@ export class AfterWorkSkills {
   }
 
   /**
-   * At startup: release a session's held prompts that an answer marked, once the session is
-   * registered. One whose session is still being restored is released when it arrives. Never throws.
+   * Release a session's held prompts that an answer marked, once the session is registered and
+   * task shaping is on. One whose session is still being restored is released when it arrives,
+   * and one found while the flag is off when the flag is on again. Never throws.
    */
   private checkHeld(sessionId: string): void {
     try {
-      if (!this.deps.registry.getSession(sessionId)) return;
+      // Kept for later, never dropped: a session not registered yet is checked when it is, and
+      // with task shaping off nothing is released until it is on again.
+      if (!this.deps.registry.getSession(sessionId) || !this.deps.enabled()) return;
       this.heldCheck.delete(sessionId);
       this.release(sessionId);
     } catch (error) {

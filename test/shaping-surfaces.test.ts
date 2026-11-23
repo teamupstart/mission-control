@@ -116,7 +116,7 @@ test("the viewer tells an unavailable delivery apart from a launch that added no
 });
 
 function skill(name: string, state: ShapingSkillSummary["state"], lifecyclePoint = "during", extra: Partial<ShapingSkillSummary> = {}): ShapingSkillSummary {
-  return { name, lifecyclePoint, reasonId: `route/${name}`, shaper: "acme", repositories: [], state, verified: false, reason: null, ...extra };
+  return { name, lifecyclePoint, reasonId: `route/${name}`, shaper: "router", repositories: [], state, verified: false, reason: null, ...extra };
 }
 
 test("the chip counts announced skills beside entries, or reads Skills: N when only skills were added", () => {
@@ -139,15 +139,16 @@ test("the viewer lists each skill with when, its reason id, its router, whether 
       skill("retro", "unavailable", "after-work", { reason: "Enable Skills and the retro skill before sending this instruction." }),
       skill("odd", "unsupported", "before-merge", { reason: 'This build does not know the lifecycle point "before-merge".' }),
     ],
-    shapers: record("s1", "ok").shapers,
+    // A router of its own, named for what it does.
+    shapers: [{ ...record("s1", "ok").shapers[0]!, id: "router", label: "Skill router", stage: "route" }],
     afterWork: null,
   }));
   assert.match(html, /aria-label="Skills for this task"/);
   assert.match(html, /aria-label="ship: Announced"/);
-  assert.match(html, /at the start · routed by Acme guidance · verified in the skill catalog · billing-api/);
+  assert.match(html, /at the start · routed by Skill router · verified in the skill catalog · billing-api/);
   assert.match(html, /<code>route\/ship<\/code>/);
   assert.match(html, /aria-label="retro: Unavailable"[\s\S]*Enable Skills and the retro skill/);
-  assert.match(html, /aria-label="odd: Unsupported"[\s\S]*before-merge · routed by Acme guidance · not verified/);
+  assert.match(html, /aria-label="odd: Unsupported"[\s\S]*before-merge · routed by Skill router · not verified/);
   assert.equal(html.includes("Not prompted yet"), false, "an after-work skill that was not announced has no prompt line");
 });
 

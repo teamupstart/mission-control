@@ -69,6 +69,8 @@ function setup(options: {
   refused?: Record<string, string>;
   /** The outbox refuses while this returns a refusal, as a starting outbox or a busy pane does. */
   outboxRefusal?: () => { error: string; retryable: boolean } | null;
+  /** A task-shaping flag the test turns on and off, and tells the prompter about, as the flag store does. */
+  flag?: { on: boolean; listeners: Set<() => void> };
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -85,7 +87,10 @@ function setup(options: {
       },
     },
     workflowSkills: () => options.staged ?? new Set(),
-    enabled: () => options.enabled ?? true,
+    enabled: () => (options.flag ? options.flag.on : options.enabled ?? true),
+    ...(options.flag
+      ? { onFlagsChanged: (listener: () => void) => { options.flag!.listeners.add(listener); return () => { options.flag!.listeners.delete(listener); }; } }
+      : {}),
     now: () => ++now,
     catalogId: (name) => options.catalog?.[name] ?? null,
     catalogCommand: (_session, id) => options.refused?.[id]
@@ -639,5 +644,45 @@ test("a held prompt is released after a restart when Foreman's wrap-up is answer
   assert.equal(after.queued.length, 1, "the held prompt is released at start");
   assert.equal(after.queued[0]!.turn.text.split("\n")[0], "/retro");
   assert.equal(db.getTaskSkillPrompt(taskId, "s-repeat")?.state, "queued");
+  after.prompts.stop();
+});
+
+test("an answered held prompt found while task shaping is off is released when the flag is turned on again", () => {
+  const flag = { on: true, listeners: new Set<() => void>() };
+  const toggle = (on: boolean) => { flag.on = on; for (const listener of [...flag.listeners]) listener(); };
+  const before = setup({ flag });
+  const taskId = nextTask();
+  before.registry.launch(taskId, "s-flag");
+  assert.deepEqual(before.prompts.prompt("s-flag", { hold: true }), { kind: "held" });
+  // Foreman's answer is recorded, and the daemon stops before the release.
+  before.prompts.recordAnswered("s-flag");
+  before.prompts.stop();
+
+  // The daemon starts again with task shaping off: nothing is released, and nothing is given up.
+  flag.on = false;
+  const after = setup({ flag });
+  after.prompts.stop();
+  after.registry.tasks = before.registry.tasks;
+  after.registry.sessions = before.registry.sessions;
+  after.prompts.start();
+  after.registry.emit("event", { type: "session_upsert", session: after.registry.getSession("s-flag") });
+  assert.equal(after.queued.length, 0, "nothing is sent while the flag is off");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-flag")?.state, "held");
+
+  // Turned on again in the same daemon: the answered prompt is released, with no restart.
+  toggle(true);
+  assert.equal(after.queued.length, 1, "released once the flag is on");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-flag")?.state, "queued");
+
+  // A wrap-up answered live while the flag is off is released the same way when it is on again.
+  const live = nextTask();
+  after.registry.launch(live, "s-live");
+  assert.deepEqual(after.prompts.prompt("s-live", { hold: true }), { kind: "held" });
+  toggle(false);
+  after.prompts.recordAnswered("s-live");
+  after.prompts.release("s-live");
+  assert.equal(db.getTaskSkillPrompt(live, "s-live")?.state, "held");
+  toggle(true);
+  assert.equal(db.getTaskSkillPrompt(live, "s-live")?.state, "queued");
   after.prompts.stop();
 });

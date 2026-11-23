@@ -148,7 +148,7 @@ function ReportAnswer({
             name={name}
             label="Retry"
             className="btn btn-primary"
-            tooltip="Dispatch the follow-up task this report already started. No second task is created"
+            tooltip="Dispatch the follow-up task this report already started. It is never filed twice; if that task was deleted, you are asked for instructions for a new one"
             disabled={busy}
             cardOpen
             onClick={() => run(onFollowUp, "")}

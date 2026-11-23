@@ -124,7 +124,19 @@ export function registerReportRoutes(
     if (!reports || !answers.followUpTasks) return unavailable(c);
     const parsed = await parseBody(c, ReportFollowUpSchema);
     if (!parsed.ok) return bodyRefusal(c, parsed.error);
-    const outcome = await reports.followUp(c.req.param("id"), parsed.data.text, answers.followUpTasks);
+    const id = c.req.param("id");
+    let outcome: Awaited<ReturnType<ReportManager["followUp"]>>;
+    try {
+      outcome = await reports.followUp(id, parsed.data.text, answers.followUpTasks);
+    } catch (error) {
+      // An unexpected failure while creating or dispatching. The task and its stamp on the report
+      // may already be committed, so answer with the report as it stands: the card then reads
+      // "created but not started" and offers Retry at once, rather than a bare 500.
+      if (error instanceof ReportRefusal) return refused(c, error);
+      const report = reports.get(id);
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ error: `The follow-up task could not be started: ${message}`, report, taskId: report?.followUpTaskId ?? null }, 500);
+    }
     if (outcome.ok) return c.json({ report: outcome.report, taskId: outcome.taskId });
     return c.json({ error: outcome.error, report: outcome.report, taskId: outcome.taskId }, outcome.status);
   });

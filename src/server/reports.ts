@@ -476,12 +476,18 @@ export class ReportManager {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
     // A task that was deleted since it was recorded cannot be dispatched, and it is no longer a
-    // follow-up either: forget it, so this call files the one follow-up the report then has.
+    // follow-up either: forget it. Retry carries no words (it only ever relaunched the recorded
+    // task), so a new task is not filed from it, which would drop the instructions the operator
+    // typed: the report goes back to the instructions box instead. A call that brings words
+    // files the one new follow-up the report then has.
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
       openDb().prepare("UPDATE reports SET follow_up_task_id = NULL WHERE id = ? AND follow_up_task_id = ?")
         .run(id, report.followUpTaskId);
       report = getRow(id)!;
       this.registry.upsertReport(report);
+      if (!words.trim()) {
+        return refuse(409, "The follow-up task was deleted. Write what the follow-up should do and start a new one.", report);
+      }
     }
     let taskId = report.followUpTaskId;
     if (taskId === null) {

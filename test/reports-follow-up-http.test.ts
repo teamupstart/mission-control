@@ -372,20 +372,56 @@ test("only the operator starts a follow-up", async () => {
   assert.equal(f.followUpTasks().length, 0);
 });
 
-test("a follow-up task deleted since it was recorded is replaced by one new task", async () => {
+test("Retry after the recorded task was deleted asks for instructions again, and never files a task without them", async () => {
   const f = setup();
   const repo = f.inRepo(mkRepo());
   const report = await postFromGoneSession(f, { repoRoot: repo });
   f.failDispatches("not now");
-  const failed = await f.followUp(report.id, "Look");
+  const failed = await f.followUp(report.id, "Split the shards across runners");
   const first = String(failed.body.taskId);
   f.failDispatches(null);
   f.registry.removeTask(first);
+
+  // Retry carries no words: nothing is filed, the stale id is forgotten, and the card goes back
+  // to the instructions box (no followUpTaskId), with the report still waiting.
+  const retried = await f.followUp(report.id);
+  assert.equal(retried.status, 409);
+  assert.match(String(retried.body.error), /was deleted\. Write what the follow-up should do/);
+  assert.equal(retried.body.taskId, null);
+  assert.equal(f.followUpTasks().length, 0, "no task was filed without the operator's words");
+  const waiting = f.reports.get(report.id)!;
+  assert.equal(waiting.followUpTaskId, null);
+  assert.equal(waiting.readAt, null);
+
+  // Started again with words, it files exactly one new task, carrying them.
+  const restarted = await f.followUp(report.id, "Split the shards across runners");
+  assert.equal(restarted.status, 200, JSON.stringify(restarted.body));
+  assert.notEqual(restarted.body.taskId, first);
+  assert.equal(f.followUpTasks().length, 1);
+  assert.ok(f.registry.getTask(String(restarted.body.taskId))!.intent.startsWith("Split the shards across runners"));
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, restarted.body.taskId);
+});
+
+test("an unexpected failure while dispatching answers JSON with the task it created, so the card can offer Retry", async () => {
+  const f = setup();
+  const repo = f.inRepo(mkRepo());
+  const report = await postFromGoneSession(f, { repoRoot: repo });
+  const dispatching = f.tasks.dispatch.bind(f.tasks);
+  f.tasks.dispatch = (async () => { throw new Error("the dispatcher fell over"); }) as typeof f.tasks.dispatch;
+  const broken = await f.followUp(report.id, "Fix it");
+  assert.equal(broken.status, 500);
+  assert.match(String(broken.body.error), /could not be started: the dispatcher fell over/);
+  const taskId = String(broken.body.taskId);
+  assert.ok(f.registry.getTask(taskId), "the task was created before the throw");
+  assert.equal((broken.body.report as ReportItem).followUpTaskId, taskId, "the report as it stands, naming its task");
+  assert.equal(f.reports.get(report.id)!.readAt, null);
+
+  // Retry relaunches that task once dispatch works again.
+  f.tasks.dispatch = dispatching;
   const retried = await f.followUp(report.id);
   assert.equal(retried.status, 200, JSON.stringify(retried.body));
-  assert.notEqual(retried.body.taskId, first);
+  assert.equal(retried.body.taskId, taskId);
   assert.equal(f.followUpTasks().length, 1);
-  assert.equal(f.reports.get(report.id)!.followUpTaskId, retried.body.taskId);
 });
 
 test("a follow-up takes the operator's Workflow default for its kind, as a dispatched task does", async () => {

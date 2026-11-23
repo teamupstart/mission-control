@@ -50,6 +50,9 @@ export function StalledTileFacts({
   const runId = stall.kind === "workflow-parked"
     ? (facts?.kind === "workflow-parked" ? facts.runId : stall.workflowRunId)
     : undefined;
+  const showMessage = !facts
+    || (facts.kind === "unfinished-work" && facts.task)
+    || (facts.kind === "workflow-parked" && parkedStep(facts) === "new-head");
   const rows = stalledFactRows(session, stall);
 
   return (
@@ -78,7 +81,7 @@ export function StalledTileFacts({
             onClick={fixed("nudge")}
           />
         )}
-        {(!facts || (facts.kind === "unfinished-work" && facts.task)) && messageable && onMessage && (
+        {showMessage && messageable && onMessage && (
           <Tooltip label="Open the session and focus its message box">
             <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
           </Tooltip>

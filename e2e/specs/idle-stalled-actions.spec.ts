@@ -126,6 +126,10 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect(card().getByRole("button", { name: "Tell it to push" })).toHaveCount(0);
   await expect(card().getByRole("button", { name: "Open run" })).toBeEnabled();
 
+  await card().getByRole("button", { name: "Message…" }).click();
+  await expect(page.getByRole("textbox", { name: /Reply to this session/ })).toBeFocused();
+  await page.getByRole("button", { name: "Back to the board" }).click();
+
   // 1. A run waiting for a pushed head, with unpushed commits: Tell it to push. The fixed words
   //    reach the agent through the real outbox.
   served = [parked(id, { status: "waiting_for_new_head", unpushedCommits: 2 }, "parked-head")];

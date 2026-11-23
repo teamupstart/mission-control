@@ -1243,7 +1243,8 @@ available:
   the task session's composer, **Mark done** completes its task, and **Open queue** opens its work queue.
   A parked run offers **Open run** and the available fix, such as **Resubmit**, **Tell it to push** or
   **Continue**. When the run needs a new pushed head and no unpushed commit is reported,
-  **Open run** shows the review waiting for that head. Older daemons that supply only a reason
+  **Open run** shows the waiting review, and **Message…** opens the reachable session’s composer
+  so you can ask the agent to prepare a commit. Older daemons that supply only a reason
   still offer **Message…** for reachable sessions and **Open run** when they identify a parked run.
   Every card offers **Dismiss**, which returns it to free or held until its stall changes. A dismissal here and on the inbox's
   Stuck row is one dismissal. Stalled wins over held, as blocked does: a parked run's session is

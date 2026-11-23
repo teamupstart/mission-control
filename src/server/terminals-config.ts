@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import {
   TerminalsConfigSchema,
   type TerminalsConfig,
@@ -9,6 +10,9 @@ import {
   type MultiplexerId,
 } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { macosTerminalEmulator } from "./terminal/macos-terminal.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./terminal/registry.ts";
 import {
   defaultTerminalTargetDeps,
@@ -99,10 +103,14 @@ export function focusEmulatorFor(id: MultiplexerId): EmulatorId | null {
  */
 export const configuredTerminalDeps: TerminalDeps = {
   ...defaultTerminalDeps,
+  emulators: {
+    ...defaultTerminalDeps.emulators,
+    [MACOS_TERMINAL_ID]: macosTerminalEmulator(undefined, () => featureEnabled(MACOS_TERMINAL_FLAG_ID)),
+  },
   focusEmulator: focusEmulatorFor,
 };
 
 export const configuredTerminalTargetDeps: TerminalTargetDeps = {
   ...defaultTerminalTargetDeps,
-  focusEmulator: focusEmulatorFor,
+  ...configuredTerminalDeps,
 };

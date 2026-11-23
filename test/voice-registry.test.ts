@@ -27,7 +27,7 @@ const { VoiceStateStore } = await import("../src/server/voice/state.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const { VOICE_CONFIG_DEFAULTS } = await import("../src/shared/voice.ts");
-const { loadFinishedTasksWithCallSign } = await import("../src/server/db.ts");
+const { loadFinishedTasksWithCallSign, getTask: getStoredTask } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -398,12 +398,23 @@ test("a restarted daemon reads back a named finished task past the Registry's 50
   assert.deepEqual(loadFinishedTasksWithCallSign(now - VOICE_NAME_RETENTION_MS).map((task) => task.id), ["t-restart-quill"],
     "the query reads named finished tasks inside the day, and only those");
   const names = new VoiceNameRegistry(restarted, {
-    now: () => now, enabled: () => false, taskStored: () => true, finishedNamedTasks: loadFinishedTasksWithCallSign,
+    // Wired as the daemon wires it (src/server/index.ts).
+    now: () => now, enabled: () => false, taskStored: (id) => getStoredTask(id) !== undefined,
+    finishedNamedTasks: loadFinishedTasksWithCallSign,
     setTimer: () => null, clearTimer: () => {},
   });
   names.start();
   try {
     assert.deepEqual(brief(names.roster()).filter((entry) => entry.includes("t-restart-")), ["task:t-restart-quill Quill not-running"]);
+
+    // Deleted while out of the Registry's memory: its removal is still published, so it leaves at once.
+    const removed: string[] = [];
+    restarted.subscribe((event) => { if (event.type === "task_remove") removed.push(event.id); });
+    restarted.removeTask("t-restart-quill");
+    assert.deepEqual(removed, ["t-restart-quill"]);
+    assert.deepEqual(brief(names.roster()).filter((entry) => entry.includes("t-restart-")), []);
+    restarted.removeTask("t-never-stored");
+    assert.deepEqual(removed, ["t-restart-quill"], "an id that was never stored publishes nothing");
   } finally {
     names.stop();
   }

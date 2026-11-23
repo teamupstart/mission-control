@@ -1,3 +1,4 @@
+export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
 // The shipped registry also exports these ids; the private builds that substitute it keep the export.

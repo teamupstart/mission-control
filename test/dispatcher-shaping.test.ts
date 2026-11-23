@@ -1,9 +1,10 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -1451,6 +1452,106 @@ test("turn one runs kind contract, task context, skills for this task, and a rep
   assert.deepEqual(record.skills?.filter((skill) => skill.name !== "ship").map((skill) => [skill.name, skill.state]),
     [["lint-fix", "announced"], ["wrap-notes", "announced"]]);
   assert.equal(record.bytes, Buffer.byteLength(getTaskShapingText("route-order")!.text));
+});
+
+test("a skill appearing after the original lookup does not suppress routing for that worktree", async (t) => {
+  const primary = seedRepo("route-race-primary");
+  const secondary = seedRepo("route-race-secondary");
+  const skillPath = ".claude/skills/ship/SKILL.md";
+  mkdirSync(dirname(join(primary, skillPath)), { recursive: true });
+  writeFileSync(join(primary, skillPath), OWN_TASK_SKILL);
+  execFileSync("git", ["-C", primary, "add", "-A"]);
+  execFileSync("git", ["-C", primary, "commit", "-qm", "own task skill"]);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "route-race", repoRoot: primary, agent: "claude", kind: "ship",
+    extraRepos: [{
+      repoRoot: secondary, worktreePath: null, branch: null, provider: null,
+      worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+    }],
+  }));
+  registerCommandShaper("router", "route", ["route", "ship:task-start"]);
+
+  // Let the real filesystem lookup report the secondary skill missing, then create it
+  // before returning that result. The first resolution skips it; a second read would see
+  // it and incorrectly suppress routing although turn one has no block from this tree.
+  const originalRealpath = fs.realpathSync;
+  let lateFile: string | null = null;
+  const lookup = t.mock.method(fs, "realpathSync", (...args: Parameters<typeof originalRealpath>) => {
+    try {
+      return originalRealpath(...args);
+    } catch (error) {
+      const path = args[0];
+      if (!lateFile && typeof path === "string" && path.endsWith(skillPath)
+        && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, "LATE-SHIP-SKILL-BODY");
+        lateFile = path;
+      }
+      throw error;
+    }
+  });
+  syncBuiltinESMExports();
+  t.after(() => { lookup.mock.restore(); syncBuiltinESMExports(); });
+
+  const run = await terminalDispatch({
+    agent: "claude", repo: primary, taskId: "route-race", intent: "work",
+    registry, headlessMode: true,
+  });
+  assertRunning(run.task);
+  assert.equal(lateFile, join(run.task.extraRepos![0]!.worktreePath!, skillPath));
+  assert.equal(readFileSync(lateFile!, "utf8"), "LATE-SHIP-SKILL-BODY");
+  assert.ok(run.prompt.includes(OWN_TASK_SKILL), "the original contributor's block is delivered");
+  assert.equal(run.prompt.includes("LATE-SHIP-SKILL-BODY"), false, "the late block was not captured");
+  assert.ok(run.prompt.includes("- `/ship` -"), "the late skill must not suppress the routed skill");
+  const routed = currentShaping(run.task)!.skills!.find((skill) => skill.name === "ship")!;
+  assert.equal(routed.state, "announced");
+  assert.deepEqual(routed.repositories, ["route-race-secondary"], "only the original contributor is excluded");
+});
+
+test("a skill disappearing after its body is read still suppresses routing for that worktree", async (t) => {
+  const repo = seedRepo("route-disappearing");
+  const skillPath = ".claude/skills/ship/SKILL.md";
+  mkdirSync(dirname(join(repo, skillPath)), { recursive: true });
+  writeFileSync(join(repo, skillPath), OWN_TASK_SKILL);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "own task skill"]);
+  registerCommandShaper("router", "route", ["route", "ship:task-start"]);
+
+  // Delete the file as readCapped closes it, after the body has been read but before the
+  // resolver returns. Even intersecting captured contributors with a later filesystem
+  // lookup would lose this worktree, although its block is still delivered in turn one.
+  const originalOpen = fs.openSync;
+  const originalClose = fs.closeSync;
+  let skillFile: { fd: number; path: string } | null = null;
+  let removedFile: string | null = null;
+  const open = t.mock.method(fs, "openSync", (...args: Parameters<typeof originalOpen>) => {
+    const fd = originalOpen(...args);
+    if (typeof args[0] === "string" && args[0].endsWith(skillPath)) skillFile = { fd, path: args[0] };
+    return fd;
+  });
+  const close = t.mock.method(fs, "closeSync", (fd: number) => {
+    originalClose(fd);
+    if (skillFile?.fd === fd) {
+      rmSync(skillFile.path);
+      removedFile = skillFile.path;
+      skillFile = null;
+    }
+  });
+  syncBuiltinESMExports();
+  t.after(() => { open.mock.restore(); close.mock.restore(); syncBuiltinESMExports(); });
+
+  const run = await terminalDispatch({
+    agent: "claude", repo, taskId: "route-disappearing", intent: "work", headlessMode: true,
+  });
+  assertRunning(run.task);
+  assert.equal(removedFile, join(run.task.worktreePath!, skillPath));
+  assert.equal(existsSync(removedFile!), false, "the contributor's file has disappeared");
+  assert.ok(run.prompt.includes(OWN_TASK_SKILL), "the captured contributor's body is still delivered");
+  assert.equal(run.prompt.includes("- `/ship` -"), false, "the original contributor still suppresses routing");
+  const routed = currentShaping(run.task)!.skills!.find((skill) => skill.name === "ship")!;
+  assert.equal(routed.state, "superseded");
+  assert.deepEqual(routed.repositories, [], "the original contributor stays excluded despite deletion");
 });
 
 test("a launch no router applies to is byte-identical to one from before routing, and records no skills", async () => {

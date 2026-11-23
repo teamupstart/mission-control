@@ -40,6 +40,8 @@ export interface ResolvedRepoTaskSkills {
   /** True when more than one repository is attached, which changes the heading. */
   multiRepo: boolean;
   blocks: RepoTaskSkillBlock[];
+  /** Worktree paths that contributed these blocks, in manifest order, captured by this read. */
+  contributingWorktreePaths: string[];
   record: RepoTaskSkillRecord;
 }
 
@@ -101,6 +103,7 @@ export function resolveRepoTaskSkills(
   const path = repoTaskSkillPath(kind);
   const names = repoNames(repos);
   const blocks: RepoTaskSkillBlock[] = [];
+  const contributingWorktreePaths: string[] = [];
   const record: RepoTaskSkillRecord = { included: [], skipped: [] };
 
   repos.forEach((repo, index) => {
@@ -137,6 +140,7 @@ export function resolveRepoTaskSkills(
     if (body === "") return skip("empty");
     const capped = capBody(body, path);
     blocks.push({ repo: name, body: capped.text });
+    contributingWorktreePaths.push(repo.worktreePath);
     record.included.push({
       repo: name,
       kind,
@@ -146,7 +150,7 @@ export function resolveRepoTaskSkills(
     });
   });
 
-  return { kind, multiRepo: repos.length > 1, blocks, record };
+  return { kind, multiRepo: repos.length > 1, blocks, contributingWorktreePaths, record };
 }
 
 /**

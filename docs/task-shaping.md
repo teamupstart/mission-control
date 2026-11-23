@@ -765,6 +765,8 @@ skills, not context:
   announced for an attached worktree whose own task skill for that kind is in turn one, and with
   no worktree left it is `superseded`. It goes by worktree, not by name, so of two attached
   worktrees of one repository only the one carrying the skill gives the routed one up.
+  Contributing paths are captured alongside the turn-one blocks in the original skill
+  resolution. A skill file appearing or disappearing afterward does not change this decision.
 - **Budget.** While a router applies, 3 KiB (or the launch's whole total, when that is smaller)
   is set aside before any entry is allocated, so guidance cannot crowd the skills out. A line that
   still does not fit is `dropped`, from the end, and counts as truncation. With no router nothing

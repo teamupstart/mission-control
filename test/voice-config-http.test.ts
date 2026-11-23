@@ -1,0 +1,191 @@
+// Voice's routes over HTTP (contracts A and B): the config's defaults and patches, mute, the
+// listener's hello and the shell report under the token, the snapshot field and `voice_state`
+// frames, and every route answering 404 with the flag off.
+import assert from "node:assert/strict";
+import { after, beforeEach, test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
+process.env.MISSION_HOME = home;
+const { closeDb, getAppConfig, deleteAppConfig } = await import("../src/server/db.ts");
+const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+const { buildApp } = await import("../src/server/routes.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
+const flags = await import("../src/server/feature-flags/index.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
+const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
+const { reloadVoiceConfig } = await import("../src/server/voice/config.ts");
+const { VOICE_CONFIG_DEFAULTS, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
+type VoiceState = import("../src/shared/voice.ts").VoiceState;
+type ServerEvent = import("../src/shared/types.ts").ServerEvent;
+
+const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
+const token = ensureToken();
+const registry = new Registry();
+const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+const frames: VoiceState[] = [];
+registry.on("event", (event: ServerEvent) => { if (event.type === "voice_state") frames.push(event.state); });
+const stopVoice = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+after(() => { stopVoice(); closeDb(); rmSync(home, { recursive: true, force: true }); });
+
+const json = (path: string, method = "GET", body?: unknown, extra: Record<string, string> = {}) =>
+  app.request(path, { method, headers: { ...headers, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+const hello = (body: Record<string, unknown> = {}, auth: string | null = token) => json("/voice/listener/hello", "POST", {
+  backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted", ...body,
+}, auth === null ? {} : { "x-harness-token": auth });
+const report = (body: Record<string, unknown>, auth: string | null = token) =>
+  json("/voice/shell-report", "POST", body, auth === null ? {} : { "x-harness-token": auth });
+const setFlag = (id: "voice" | "async-input" | "inbox" | "filed-plan-decisions", enabled: boolean) =>
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id, enabled }).ok, true);
+
+beforeEach(() => {
+  deleteAppConfig(APP_CONFIG_ENTRIES.voice);
+  reloadVoiceConfig();
+  voiceStateStore.reset();
+  for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"] as const) setFlag(id, true);
+  frames.length = 0;
+});
+
+test("with the flag off every route answers 404, writes nothing, and the snapshot has no voice", async () => {
+  setFlag("voice", false);
+  const disabled = { error: "This feature is disabled.", feature: "voice" };
+  for (const response of [
+    await json("/api/voice/config"),
+    await json("/api/voice/config", "PUT", { muted: true }),
+    await json("/api/voice/mute", "POST", { muted: true }),
+    await hello(),
+    await report({}),
+  ]) {
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), disabled);
+  }
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.voice), undefined);
+  assert.equal("voice" in registry.snapshot(), false);
+});
+
+test("GET returns every contract A field with its default", async () => {
+  const response = await json("/api/voice/config");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {
+  let response = await json("/api/voice/config", "PUT", { cancelWindow: { seconds: 8 }, whenUnsure: "ask", planFormsByVoice: false });
+  assert.equal(response.status, 200);
+  let { config } = await response.json() as { config: typeof VOICE_CONFIG_DEFAULTS };
+  assert.deepEqual(config.cancelWindow, { enabled: true, seconds: 8 });
+  assert.equal(config.whenUnsure, "ask");
+  assert.equal(config.planFormsByVoice, false);
+
+  response = await json("/api/voice/config", "PUT", { cancelWindow: { enabled: false }, hotkey: null, decisionProvider: "off", backend: "sherpa-onnx" });
+  ({ config } = await response.json() as { config: typeof VOICE_CONFIG_DEFAULTS });
+  assert.deepEqual(config.cancelWindow, { enabled: false, seconds: 8 }, "the length another write set survives");
+  assert.equal(config.hotkey, null);
+  assert.equal(config.decisionProvider, "off");
+  assert.equal(config.backend, "sherpa-onnx");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.voice), config);
+  assert.deepEqual((await (await json("/api/voice/config")).json() as { config: unknown }).config, config);
+});
+
+test("PUT accepts the cancel window's limits, 1 and 30 seconds, and persists each", async () => {
+  for (const seconds of [1, 30]) {
+    const response = await json("/api/voice/config", "PUT", { cancelWindow: { seconds } });
+    assert.equal(response.status, 200, `${seconds} seconds`);
+    const { config } = await response.json() as { config: typeof VOICE_CONFIG_DEFAULTS };
+    assert.deepEqual(config.cancelWindow, { enabled: true, seconds });
+    assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.voice) as typeof VOICE_CONFIG_DEFAULTS).cancelWindow, { enabled: true, seconds });
+    assert.deepEqual((await (await json("/api/voice/config")).json() as { config: typeof VOICE_CONFIG_DEFAULTS }).config.cancelWindow, { enabled: true, seconds });
+  }
+});
+
+test("PUT refuses an empty patch, an unknown field and an out-of-range value, writing nothing", async () => {
+  for (const body of [{}, { loudness: 11 }, { cancelWindow: { seconds: 0 } }, { cancelWindow: { seconds: 31 } }, { whenUnsure: "guess" }, { decisionProvider: "acme" }]) {
+    const response = await json("/api/voice/config", "PUT", body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
+  const garbled = await app.request("/api/voice/config", { method: "PUT", headers, body: "{not json" });
+  assert.equal(garbled.status, 400);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.voice), undefined);
+});
+
+test("the token routes refuse a request without the token", async () => {
+  assert.equal((await hello({}, null)).status, 401);
+  assert.equal((await hello({}, "0".repeat(token.length))).status, 401);
+  assert.equal((await report({}, null)).status, 401);
+  assert.equal(voiceStateStore.state().reasons.includes("listener"), true, "nothing was heard");
+});
+
+test("a hello makes voice listen, mute mutes it, and every change reaches the event stream", async () => {
+  assert.deepEqual(registry.snapshot().voice?.reasons, ["listener"]);
+  const response = await hello();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { accepted: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION });
+  assert.equal(registry.snapshot().voice?.mode, "listening");
+  assert.equal(frames.at(-1)?.mode, "listening");
+
+  const framesBefore = frames.length;
+  await hello();
+  assert.equal(frames.length, framesBefore, "a steady hello restates the state and sends no frame");
+
+  const muted = await json("/api/voice/mute", "POST", { muted: true });
+  assert.equal(muted.status, 200);
+  assert.equal((await muted.json() as { state: VoiceState }).state.mode, "muted");
+  assert.equal(frames.at(-1)?.mode, "muted");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.voice) as { muted: boolean }).muted, true);
+  await json("/api/voice/mute", "POST", { muted: false });
+  assert.equal(frames.at(-1)?.mode, "listening");
+  assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
+});
+
+test("a hello with an unknown major version is refused with 409 and the state says why", async () => {
+  await hello();
+  const response = await hello({ version: "2.0" });
+  assert.equal(response.status, 409);
+  const body = await response.json() as { error: string; reason: string; protocol: string };
+  assert.equal(body.error, "unsupported_protocol");
+  assert.equal(body.protocol, VOICE_LISTENER_PROTOCOL_VERSION);
+  const state = registry.snapshot().voice!;
+  assert.equal(state.mode, "unavailable");
+  assert.equal(state.capabilities.listener?.available, false);
+  assert.equal(state.capabilities.listener?.reason, body.reason);
+  assert.equal((await hello({ version: "two" })).status, 400, "a version that is not one is a 400");
+});
+
+test("a shell report's capabilities, call and hotkey error reach the state", async () => {
+  await hello();
+  const response = await report({
+    capabilities: { tray: { available: true }, hotkey: { available: false, reason: "No desktop shell." } },
+    callActive: true,
+    hotkeyError: { reason: "Another app owns the chord.", chordInForce: "ctrl+alt+m" },
+  });
+  assert.equal(response.status, 200);
+  const { state } = await response.json() as { state: VoiceState };
+  assert.equal(state.mode, "auto-muted");
+  assert.deepEqual(state.capabilities.tray, { available: true, reason: null });
+  assert.deepEqual(state.capabilities.hotkey, { available: false, reason: "No desktop shell." });
+  assert.deepEqual(state.hotkeyError, { reason: "Another app owns the chord.", chordInForce: "ctrl+alt+m" });
+  assert.equal(frames.at(-1)?.mode, "auto-muted");
+
+  // Turning auto-mute off through the config changes the mode at once.
+  await json("/api/voice/config", "PUT", { autoMuteDuringCalls: false });
+  assert.equal(frames.at(-1)?.mode, "listening");
+});
+
+test("a required flag switched off reads as the flags reason; voice off sends one off frame", async () => {
+  await hello();
+  setFlag("filed-plan-decisions", false);
+  assert.equal(frames.at(-1)?.mode, "unavailable");
+  assert.deepEqual(frames.at(-1)?.reasons, ["flags"]);
+
+  setFlag("voice", false);
+  assert.equal(frames.at(-1)?.mode, "off", "the frame that tells the shell voice is off");
+  const count = frames.length;
+  setFlag("inbox", false);
+  assert.equal(frames.length, count, "while voice is off another flag sends nothing");
+  assert.equal("voice" in registry.snapshot(), false);
+});

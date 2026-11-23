@@ -5,6 +5,7 @@ import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
+import { registerVoiceRoutes } from "./voice/routes.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -9221,6 +9222,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Task shaping, behind its preview flag. See docs/task-shaping.md.
   registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
+
+  // Voice addressing, behind its preview flag. See docs/voice.md.
+  registerVoiceRoutes(app);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

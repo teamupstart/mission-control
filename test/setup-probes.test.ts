@@ -16,7 +16,7 @@ import {
   SETUP_FAMILY_IDS,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
-import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
+import { SETUP_PROBES, setupChecksView, setupProbeResult, voicePreviewsStatus } from "../src/server/setup/index.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -69,6 +69,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     // Every probe is under test here, ai-conductor's included, though the shipped build hides
     // it. `conductor-integration-switch.test.ts` pins the hidden reading.
     conductorIntegration: () => true,
+    // And every flag-gated family (Voice), with every flag on.
+    flagEnabled: () => true,
     ...overrides,
   };
 }
@@ -698,4 +700,40 @@ test("several other configured sites are all named, with the first one's switch 
     "acli is signed in to example.atlassian.net, but Jira sources read first.atlassian.net, second.atlassian.net. Run `acli jira auth switch --site first.atlassian.net`, or sign in to that site.",
   );
   assert.equal("evidence" in status ? status.evidence : null, "Signed in to example.atlassian.net");
+});
+
+test("voice-previews names which flags are on and off, and its Fix turns on exactly the ones that are off", () => {
+  const only = (...on: string[]) => (id: string) => on.includes(id);
+  assert.deepEqual(voicePreviewsStatus(only("async-input", "inbox", "filed-plan-decisions")), {
+    status: { state: "satisfied", evidence: "Ask without stopping, Reports and inbox upgrades and File plan decisions are on" },
+  });
+  const two = voicePreviewsStatus(only("async-input"));
+  assert.deepEqual(two.status, {
+    state: "needs-setup",
+    why: "Ask without stopping is on. Reports and inbox upgrades and File plan decisions are off.",
+    evidence: null,
+  });
+  assert.equal(two.remedy?.kind, "feature-flags");
+  if (two.remedy?.kind === "feature-flags") {
+    assert.deepEqual(two.remedy.flags, ["inbox", "filed-plan-decisions"]);
+    assert.equal(two.remedy.label, "Turn on the two that are off");
+  }
+  const none = voicePreviewsStatus(only());
+  assert.equal(none.status.state === "needs-setup" ? none.status.why : "", "Ask without stopping, Reports and inbox upgrades and File plan decisions are off.");
+  assert.equal(none.remedy?.kind === "feature-flags" ? none.remedy.label : "", "Turn on all three");
+  const one = voicePreviewsStatus(only("async-input", "filed-plan-decisions"));
+  assert.equal(one.remedy?.kind === "feature-flags" ? one.remedy.label : "", "Turn on Reports and inbox upgrades");
+  assert.deepEqual(one.remedy?.kind === "feature-flags" ? one.remedy.flags : null, ["inbox"]);
+});
+
+test("the Voice family is probed and listed only while the voice flag is on", async () => {
+  const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" }));
+  assert.equal(off.rows.some((row) => row.family === "voice"), false);
+  const on = await setupChecksView(deps({ flagEnabled: (id) => id === "voice" }));
+  const row = on.rows.find((candidate) => candidate.family === "voice");
+  assert.deepEqual(row?.rowId, { source: "dependency", id: "voice-previews" });
+  assert.equal(row?.requirement, "optional", "an optional row never raises the Setup banner");
+  assert.equal(row?.label, "Voice previews");
+  assert.equal(row?.status.state, "needs-setup");
+  assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id === "voice-previews"), false);
 });

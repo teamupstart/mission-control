@@ -11,6 +11,7 @@ import {
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
 import { isSkinId, type SkinId } from "@shared/skins.ts";
+import { VoiceUiConfigSchema } from "@shared/voice.ts";
 import type {
   ConversationView,
   LayoutMode,
@@ -249,6 +250,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     pauseConsoleControls: Array.isArray(raw?.pauseConsoleControls)
       ? raw.pauseConsoleControls.filter((id): id is string => typeof id === "string")
       : [...UI_CONFIG_DEFAULTS.pauseConsoleControls],
+    // Read through the daemon's own schema, so an unknown placement is the pill and a miss is
+    // the shipped status line, exactly as `UiConfigSchema` reads them.
+    voice: VoiceUiConfigSchema.parse(raw?.voice ?? {}),
   };
 }
 

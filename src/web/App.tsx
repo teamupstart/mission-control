@@ -74,7 +74,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
 import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
-import { setupRowAnchor } from "@shared/setup-catalog.ts";
+import { SETUP_FLAG_INPUTS, setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
@@ -383,6 +383,7 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    voice,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -446,7 +447,12 @@ export function App(): React.JSX.Element {
   const llm = useLlm();
   // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
-  const setup = useSetupChecks(true);
+  // Re-read when a flag Setup depends on is switched in any window (the Voice family).
+  const setupFlagsKey = useMemo(
+    () => (hasSnapshot ? SETUP_FLAG_INPUTS.map((id) => (resolveFeatureFlag(id, featureFlags) ? "1" : "0")).join("") : null),
+    [hasSnapshot, featureFlags],
+  );
+  const setup = useSetupChecks(true, setupFlagsKey);
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
@@ -4962,6 +4968,7 @@ export function App(): React.JSX.Element {
             <SettingsPage
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              voice={voice}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:

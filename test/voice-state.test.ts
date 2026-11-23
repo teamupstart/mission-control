@@ -1,0 +1,251 @@
+// Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
+// clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  canonicalVoiceState,
+  VOICE_CONFIG_DEFAULTS,
+  VOICE_HELLO_LAPSE_MS,
+  VOICE_SHELL_REPORT_LAPSE_MS,
+  VoiceConfigSchema,
+  voiceCapable,
+  voiceMode,
+  voiceStateOff,
+  voiceUnavailableReasons,
+  type VoiceConfig,
+  type VoiceListenerHello,
+  type VoiceModeInputs,
+  type VoiceShellReport,
+  type VoiceState,
+} from "../src/shared/voice.ts";
+import { VoiceStateStore } from "../src/server/voice/state.ts";
+
+const base: VoiceModeInputs = {
+  enabled: true, reasons: [], muted: false, callActive: false, autoMuteDuringCalls: true, pushToTalk: false,
+};
+
+test("voiceMode decides each mode in its order", () => {
+  assert.equal(voiceMode({ ...base, enabled: false, reasons: ["flags"], muted: true }), "off", "off outranks everything");
+  assert.equal(voiceMode({ ...base, reasons: ["listener"], muted: true }), "unavailable", "a reason outranks mute");
+  assert.equal(voiceMode({ ...base, muted: true, callActive: true, pushToTalk: true }), "muted", "mute outranks a call");
+  assert.equal(voiceMode({ ...base, callActive: true }), "auto-muted");
+  assert.equal(voiceMode({ ...base, callActive: true, pushToTalk: true }), "push-to-talk");
+  assert.equal(voiceMode({ ...base, callActive: true, autoMuteDuringCalls: false }), "listening", "auto-mute off ignores a call");
+  assert.equal(voiceMode({ ...base, pushToTalk: true }), "listening", "push-to-talk means something only during auto-mute");
+  assert.equal(voiceMode(base), "listening");
+});
+
+test("voiceUnavailableReasons names every reason that holds, in order", () => {
+  const loaded = { modelLoaded: true, microphone: "granted" as const };
+  assert.deepEqual(voiceUnavailableReasons({ requiredFlagsOn: true, hello: loaded, shellMicrophone: null }), []);
+  assert.deepEqual(voiceUnavailableReasons({ requiredFlagsOn: false, hello: loaded, shellMicrophone: null }), ["flags"]);
+  assert.deepEqual(voiceUnavailableReasons({ requiredFlagsOn: true, hello: null, shellMicrophone: null }), ["listener"]);
+  assert.deepEqual(
+    voiceUnavailableReasons({ requiredFlagsOn: true, hello: { modelLoaded: false, microphone: "granted" }, shellMicrophone: null }),
+    ["model"],
+  );
+  assert.deepEqual(
+    voiceUnavailableReasons({ requiredFlagsOn: true, hello: { modelLoaded: true, microphone: "denied" }, shellMicrophone: null }),
+    ["microphone"],
+    "a hello can say access is denied",
+  );
+  assert.deepEqual(
+    voiceUnavailableReasons({ requiredFlagsOn: false, hello: null, shellMicrophone: "denied" }),
+    ["flags", "listener", "microphone"],
+    "a shell report can say so with no listener at all",
+  );
+  // Without a hello nothing says whether a model is loaded, so only `listener` holds.
+  assert.ok(!voiceUnavailableReasons({ requiredFlagsOn: true, hello: null, shellMicrophone: null }).includes("model"));
+});
+
+test("the config schema holds every contract A field with its default", () => {
+  assert.deepEqual(VoiceConfigSchema.parse({}), {
+    muted: false,
+    hotkey: "ctrl+alt+m",
+    autoMuteDuringCalls: true,
+    cancelWindow: { enabled: true, seconds: 4 },
+    whenUnsure: "show",
+    planFormsByVoice: true,
+    inputDevice: "built-in",
+    decisionProvider: null,
+    backend: "auto",
+  });
+  // A stored row from before a field existed gains it with its default.
+  assert.equal(VoiceConfigSchema.parse({ muted: true }).cancelWindow.seconds, 4);
+  assert.equal(VoiceConfigSchema.parse({ hotkey: null }).hotkey, null, "no hotkey is a real answer");
+});
+
+// ---- the store ----
+
+const ALL_FLAGS = new Set(["voice", "async-input", "inbox", "filed-plan-decisions"]);
+const HELLO: VoiceListenerHello = {
+  backend: "sherpa-onnx", version: "1.0", devices: [], modelLoaded: true, microphone: "granted",
+};
+const REPORT: VoiceShellReport = {
+  capabilities: {}, microphone: null, callActive: false, pushToTalk: false, hotkeyError: null,
+};
+
+function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> } = {}) {
+  let now = 1_000_000;
+  const flags = options.flags ?? new Set(ALL_FLAGS);
+  let config: VoiceConfig = { ...VOICE_CONFIG_DEFAULTS, ...options.config };
+  const timers: Array<{ fn: () => void; at: number }> = [];
+  const store = new VoiceStateStore({
+    now: () => now,
+    enabled: (id) => flags.has(id),
+    config: () => config,
+    setTimer: (fn, ms) => {
+      const timer = { fn, at: now + ms };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (handle) => {
+      const at = timers.indexOf(handle as (typeof timers)[number]);
+      if (at >= 0) timers.splice(at, 1);
+    },
+  });
+  const published: VoiceState[] = [];
+  store.onChange((state) => published.push(state));
+  return {
+    store,
+    flags,
+    published,
+    setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
+    /** Move the clock and fire every timer that came due, as the real ones would. */
+    advance(ms: number): void {
+      now += ms;
+      for (let due = timers.find((t) => t.at <= now); due; due = timers.find((t) => t.at <= now)) {
+        timers.splice(timers.indexOf(due), 1);
+        due.fn();
+      }
+    },
+    timers,
+  };
+}
+
+test("with the flag off the state is off, whatever was heard", () => {
+  const h = harness({ flags: new Set(["async-input", "inbox", "filed-plan-decisions"]) });
+  h.store.acceptHello(HELLO);
+  assert.deepEqual(h.store.state(), voiceStateOff());
+  assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
+});
+
+test("unavailable until a listener says hello; then listening; then unavailable once it lapses", () => {
+  const h = harness();
+  assert.deepEqual(h.store.state().reasons, ["listener"]);
+  assert.equal(h.store.state().mode, "unavailable");
+
+  h.store.acceptHello(HELLO);
+  assert.equal(h.store.state().mode, "listening");
+  assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
+  assert.equal(h.published.at(-1)?.mode, "listening", "a hello publishes at once");
+
+  h.advance(VOICE_HELLO_LAPSE_MS - 1);
+  assert.equal(h.store.state().mode, "listening", "still inside the lapse");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "unavailable", "the lapse is published by its timer, with no request");
+  assert.deepEqual(h.published.at(-1)?.reasons, ["listener"]);
+  assert.equal(h.store.state().capabilities.listener, undefined, "no reading, so the capability is absent");
+});
+
+test("a hello saying no model is loaded, or the microphone denied, gives that reason", () => {
+  const h = harness();
+  h.store.acceptHello({ ...HELLO, modelLoaded: false });
+  assert.deepEqual(h.store.state().reasons, ["model"]);
+  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  assert.deepEqual(h.store.state().reasons, ["microphone"]);
+});
+
+test("a required flag off reads as the flags reason", () => {
+  const h = harness();
+  h.flags.delete("inbox");
+  h.store.acceptHello(HELLO);
+  assert.equal(h.store.state().mode, "unavailable");
+  assert.deepEqual(h.store.state().reasons, ["flags"]);
+});
+
+test("a hello with an unknown major version is refused, and the state says why", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  const refused = h.store.acceptHello({ ...HELLO, version: "2.0" });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.match(refused.reason, /protocol 2\.0.*1\.0/);
+  const state = h.store.state();
+  assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
+  assert.deepEqual(state.reasons, ["listener"]);
+  assert.equal(state.capabilities.listener?.available, false);
+  assert.match(state.capabilities.listener?.reason ?? "", /protocol 2\.0/);
+  // A minor version is not compared.
+  assert.equal(h.store.acceptHello({ ...HELLO, version: "1.7.2" }).ok, true);
+  assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
+  // And the refusal lapses like a hello.
+  h.store.acceptHello({ ...HELLO, version: "3" });
+  h.advance(VOICE_HELLO_LAPSE_MS);
+  assert.equal(h.store.state().capabilities.listener, undefined);
+});
+
+test("mute, a call with auto-mute, and push-to-talk come from the config and the shell report", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  h.setConfig({ muted: true });
+  assert.equal(h.store.state().mode, "muted");
+  h.setConfig({ muted: false });
+  h.store.acceptShellReport({ ...REPORT, callActive: true });
+  assert.equal(h.store.state().mode, "auto-muted");
+  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true });
+  assert.equal(h.store.state().mode, "push-to-talk");
+  h.setConfig({ autoMuteDuringCalls: false });
+  assert.equal(h.store.state().mode, "listening");
+});
+
+test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null } });
+  assert.equal(h.store.state().hotkeyError, null);
+  h.store.acceptShellReport({
+    ...REPORT,
+    capabilities: {
+      hotkey: { available: true, reason: null },
+      "call-detection": { available: false, reason: "Needs macOS 14.2 or later." },
+      // A capability this build does not know is dropped, not refused.
+      "teleport": { available: true, reason: null },
+    },
+    hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" },
+  });
+  const state = h.store.state();
+  assert.ok(voiceCapable(state, "hotkey"));
+  assert.ok(!voiceCapable(state, "call-detection"));
+  assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
+  assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);
+  assert.deepEqual(state.hotkeyError, { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" });
+
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
+  assert.equal(h.published.at(-1)?.capabilities.hotkey, undefined, "the lapse is published");
+  assert.equal(h.store.state().hotkeyError, null);
+  assert.equal(h.store.state().mode, "listening", "the hello has not lapsed yet");
+});
+
+test("a shell report saying the microphone is denied makes voice unavailable", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  h.store.acceptShellReport({ ...REPORT, microphone: "denied" });
+  assert.deepEqual(h.store.state().reasons, ["microphone"]);
+});
+
+test("the model is missing and the roster empty until later phases drive them", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  assert.deepEqual(h.store.state().model, { status: "missing" });
+  assert.deepEqual(h.store.state().roster, []);
+});
+
+test("canonicalVoiceState ignores key order and nothing else", () => {
+  const a: VoiceState = {
+    ...voiceStateOff(), mode: "listening",
+    capabilities: { tray: { available: true, reason: null }, hotkey: { available: false, reason: "x" } },
+  };
+  const b: VoiceState = { ...a, capabilities: { hotkey: { available: false, reason: "x" }, tray: { available: true, reason: null } } };
+  assert.equal(canonicalVoiceState(a), canonicalVoiceState(b));
+  assert.notEqual(canonicalVoiceState(a), canonicalVoiceState({ ...a, mode: "muted" }));
+});

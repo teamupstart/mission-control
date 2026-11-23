@@ -706,6 +706,12 @@ test("Pi's launch argument: the budget counts the WORK_UNIT_ID the launch export
   registerLargeShaper();
   const repo = seedRepo("pi-argmax-work-unit");
   const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // The comparison below needs the work unit to come from the launch alone. A runner that is
+  // itself an agent Mission Control started carries WORK_UNIT_ID in its own environment, which
+  // every launch inherits, so both launches would hold the variable and differ by nothing.
+  const inherited = process.env[WORK_UNIT_ENV_VAR];
+  delete process.env[WORK_UNIT_ENV_VAR];
+  t.after(() => { if (inherited !== undefined) process.env[WORK_UNIT_ENV_VAR] = inherited; });
   // Fill the environment to leave the terminal reserve plus about 24 KiB, as above, measured from
   // a launch that carries the work unit, so a 64 KiB section has to be cut.
   setFlag(false);

@@ -109,6 +109,12 @@ The row links to [Running Mission Control at Upstart](upstart.md), which include
 plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
 without the plugin remain free of Upstart-specific setup chrome.
 
+The **Voice** family appears only while the **Voice addressing** preview is on. Its **Voice
+previews** row checks the three previews voice needs - Ask without stopping, Reports and inbox
+upgrades and File plan decisions - names which are on and which are off, and offers a button that
+turns on exactly the ones that are off. The row is optional, so it never raises the Setup banner,
+and the panel re-reads the machine when any of those flags changes. See [Voice addressing](voice.md).
+
 The **Runtime** family identifies the process serving this dashboard: the app's bundled
 Electron runtime, development Electron, or standalone Node. Connecting an Electron window to
 an existing source daemon does not change that daemon's runtime. Older daemons without this

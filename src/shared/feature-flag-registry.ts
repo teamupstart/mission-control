@@ -1,5 +1,6 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 import { INBOX_FLAG } from "./inbox.ts";
+import { VOICE_FLAG } from "./voice.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
@@ -129,6 +130,16 @@ export const FEATURE_FLAGS = [
       "its resident name in its board colour, else its task title, else its session name.",
     stage: "preview",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall"],
+  },
+  {
+    id: VOICE_FLAG,
+    label: "Voice addressing",
+    description:
+      "Talk to agents by name, with speech recognized on this machine. Needs Ask without stopping, " +
+      "Reports and inbox upgrades and File plan decisions: the Voice family in Settings > Setup turns " +
+      "them on. Settings > Voice shows whether voice is listening and why not.",
+    stage: "preview",
+    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

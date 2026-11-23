@@ -88,6 +88,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // The shipped topbar: every item drawn, every control expanded.
   assert.deepEqual(config.hiddenTopbarItems, []);
   assert.deepEqual(config.compactTopbarItems, []);
+  // Voice's half: the floating pill, and the status line as the one indicator.
+  assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] });
 });
 
 test("a written cache round-trips", () => {
@@ -144,6 +146,8 @@ test("a written cache round-trips", () => {
     // Off their defaults: one is emptied, the other picks a set the build does not ship.
     pauseCardControls: [],
     pauseConsoleControls: ["composer", "badge"],
+    // Off both defaults, so only a copied field round-trips it.
+    voice: { confirmation: "toast", indicators: ["topbar", "edge"] },
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -173,6 +177,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
   assert.equal(config.sessionRailFolded, true);
+  assert.deepEqual(config.voice, { confirmation: "toast", indicators: ["topbar", "edge"] });
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
   // An emptied list is the operator's answer, never the default coming back.

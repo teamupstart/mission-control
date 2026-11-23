@@ -9,6 +9,7 @@ import {
   type FeatureFlagDefinition, type FeatureFlagId, type FeatureFlagIntent, type FeatureFlagsConfig,
 } from "../src/shared/feature-flags.ts";
 import { INBOX_FLAG } from "../src/shared/inbox.ts";
+import { VOICE_FLAG, VOICE_REQUIRED_FLAGS } from "../src/shared/voice.ts";
 
 const definitions = [
   { id: "preview-one", label: "Preview", description: "Try the preview.", stage: "preview", keywords: [] },
@@ -104,6 +105,13 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   assert.equal(inbox?.stage, "preview", "reports and inbox upgrades ships as a preview");
   assert.equal(inbox?.label, "Reports and inbox upgrades");
   assert.equal(resolveFeatureFlag(INBOX_FLAG as FeatureFlagId, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
+  // Voice addressing ships as a preview, off until the operator opts in, and the flags it needs
+  // are real flags of this registry (a flag cannot require another; Setup offers them instead).
+  const voice = flags.find((flag) => flag.id === VOICE_FLAG);
+  assert.equal(voice?.stage, "preview", "voice addressing ships as a preview");
+  assert.equal(voice?.label, "Voice addressing");
+  assert.equal(resolveFeatureFlag(VOICE_FLAG, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
+  for (const required of VOICE_REQUIRED_FLAGS) assert.ok(ids.includes(required), required);
   assert.equal(new Set(ids).size, ids.length);
   for (const flag of flags) {
     assert.match(flag.id, /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);

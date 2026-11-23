@@ -4031,6 +4031,12 @@ export type ServerEvent =
        */
       shaping?: ShapingConfigView;
       /**
+       * The voice state at connect time (contract B of the voice plan). Present only while the
+       * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
+       * seven entries, and a roster that is empty until the names phase fills it.
+       */
+      voice?: import("./voice.ts").VoiceState;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -4199,6 +4205,14 @@ export type ServerEvent =
    * second fetch.
    */
   | { type: "shaping_config"; config: ShapingConfigView | null }
+  /**
+   * The voice state moved: a flag or the voice config changed, a listener's hello arrived or
+   * lapsed, or a shell report arrived or lapsed. Carries the whole state, so every follower - each
+   * dashboard and the desktop shell - converges without a fetch. Sent only while the `voice` flag
+   * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
+   * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
+   */
+  | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

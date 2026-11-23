@@ -30,8 +30,15 @@ export async function readSetupChecks(
   }
 }
 
-/** Mount-time and operator-requested reads only. Machine setup has no polling side effects. */
-export function useSetupChecks(enabled: boolean): SetupChecksState {
+/**
+ * Mount-time and operator-requested reads only. Machine setup has no polling side effects.
+ *
+ * `flagsKey` names the resolved state of the preview flags Setup reads (`SETUP_FLAG_INPUTS`),
+ * or null before the first snapshot. A change after that first answer re-reads the machine, so
+ * a family that follows a flag appears with its rows, and a row about flags reads the switch
+ * just made. Null-to-first-answer is not a change: the mount-time read already saw those flags.
+ */
+export function useSetupChecks(enabled: boolean, flagsKey: string | null = null): SetupChecksState {
   const [view, setView] = useState<SetupChecksSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,5 +74,12 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     return null;
   }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
+  const seenFlags = useRef<string | null>(null);
+  useEffect(() => {
+    if (flagsKey === null) return;
+    const before = seenFlags.current;
+    seenFlags.current = flagsKey;
+    if (before !== null && before !== flagsKey && enabled) void refresh();
+  }, [flagsKey, enabled, refresh]);
   return { view, loading, error, refresh, dismissBanner };
 }

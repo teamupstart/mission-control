@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { WORKFLOW_COMMAND_UNKNOWN } from "../../src/shared/workflow.ts";
 
 const EVIDENCE = artifactsDir("document-kind");
 
@@ -89,6 +90,10 @@ test("documentation command configuration survives reload and reaches the catalo
   await dashboard.keyboard.press("Escape");
   await dashboard.goto(`${daemon.baseURL}/#/library/commands/documentation`);
   await expect(dashboard.getByRole("heading", { name: "documentation", exact: true })).toBeVisible();
+  // The editor opens before the dashboard's first snapshot has landed, and it says so. Typing
+  // then makes the slot's stored revision arrive as a conflict with the draft, which holds
+  // Save until the operator picks a side, so type only once the stored slot is on screen.
+  await expect(dashboard.locator(".wf-command-revision")).not.toHaveText(WORKFLOW_COMMAND_UNKNOWN);
   const field = dashboard.getByLabel("Default command");
   await field.fill("npm run docs:check");
   await dashboard.getByRole("button", { name: "Save Command" }).click();

@@ -127,7 +127,12 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  // The launch turn moves this row from the Working group to the Idle one, which remounts it.
+  // A click that lands during that move reaches neither copy and selects nothing, so select it
+  // only once it has regrouped.
+  const row = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click();
   const card = page.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card.locator(".badge-idle")).toBeVisible({ timeout: 15_000 });
@@ -138,7 +143,8 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await composer.press("Enter");
   await expect(card.getByRole("button", { name: "to review" })).toBeVisible({ timeout: 15_000 });
 
-  // `live · 1 session · 1 need you · 1 to answer` - four segments. A session parked on an
+  // `live · 1 session · 1 need you · 1 to answer` - four segments (the fifth, `to read`, is the
+  // `inbox` flag's, and the last test below adds it). A session parked on an
   // open question raises both amber figures since the attention pills were reconciled: `need
   // you` counts the session, `to answer` counts the question the inbox can drain. That is
   // wider still than the three-segment readout this spec was first measured against, and
@@ -417,4 +423,63 @@ test("the bar never stacks until it has nothing left to shed, at any width", asy
     `the wide bar still holds the narrow bar's rungs ("${back.rung}" after "${narrow.rung}")`,
   ).toBeLessThan(narrow.rung.split(" ").filter(Boolean).length);
   await expectDrawn(pulseWords, true, "the pulse's words never came back when the room did");
+});
+
+/**
+ * The fifth segment: an agent report waiting to be read (`inbox` flag) adds a neutral `to read`
+ * figure to the busy readout - `live · 1 session · 1 need you · 1 to answer · 1 to read`. It is
+ * one more segment of the same shape, so the ladder has to absorb it the way it absorbs the
+ * others: the bar never stacks while it still has rungs in hand, at any width.
+ */
+test("a fifth pulse segment, to read, still never stacks the bar while rungs remain", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedCost(daemon);
+  const extra = await busyFleet(dashboard, daemon);
+  const flag = await fetch(`${daemon.baseURL}/api/feature-flags`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "inbox", enabled: true }),
+  });
+  expect(flag.ok, `/api/feature-flags answered ${flag.status}`).toBe(true);
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Array<{ cwd: string | null }>;
+  const cwd = sessions[0]?.cwd;
+  expect(cwd, "the busy fleet's session has a checkout").toBeTruthy();
+  // Posted on the exact channel the MCP `post_report` tool uses.
+  const posted = await fetch(`${daemon.baseURL}/mcp/reports`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
+    body: JSON.stringify({ env: {}, cwd, title: "Linter options compared", body: "eslint or biome, side by side." }),
+  });
+  expect(posted.status, await posted.clone().text()).toBe(200);
+  await expect(dashboard.locator(".pulse .pulse-seg")).toHaveCount(5);
+  await expect(dashboard.locator("button.pulse-seg", { hasText: "to read" }).locator(".pulse-n")).toHaveText("1");
+  const readWidth = await dashboard.evaluate(() => {
+    const seg = [...document.querySelectorAll(".pulse .pulse-seg")].find((el) =>
+      (el.textContent ?? "").includes("to read"),
+    ) as HTMLElement | undefined;
+    return seg ? Math.ceil(seg.offsetWidth) + 1 : 0;
+  });
+
+  await dashboard.setViewportSize({ width: 1360 + extra + readWidth, height: 900 });
+  const wide = await readBar(dashboard);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await dashboard.locator("header.topbar").screenshot({ path: `${EVIDENCE}topbar-five-segments.png` });
+    console.log(`CAPTURED ${EVIDENCE}topbar-five-segments.png (${wide.rows} row(s), ${wide.height}px)`);
+  }
+  expect(wide.rows, `the five-segment bar wrapped to ${wide.rows} rows`).toBe(1);
+  expect(wide.topbarH).toBe(`${wide.height}px`);
+
+  const stacked: string[] = [];
+  for (let width = 1900; width >= 760; width -= 40) {
+    await dashboard.setViewportSize({ width, height: 900 });
+    const bar = await readBar(dashboard);
+    if (bar.rows === 1) continue;
+    if (bar.rung === "1 2 3 4 5") continue;
+    stacked.push(`${width}px (rungs applied: "${bar.rung}")`);
+  }
+  expect(stacked, "the five-segment bar stacked while it still had rungs in hand").toEqual([]);
 });

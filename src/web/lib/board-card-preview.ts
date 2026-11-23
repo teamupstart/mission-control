@@ -137,6 +137,8 @@ export function previewSession(now: number): Session {
       checkedAt: null,
       reply: { flaggedAt: now - 600_000, flaggedBy: "operator", note: null, referenceUrl: null },
     },
+    // A session stands on a blocker OR a declared wait, never both, so the preview shows none.
+    awaiting: null,
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,

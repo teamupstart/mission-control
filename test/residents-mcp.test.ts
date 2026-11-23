@@ -1534,3 +1534,84 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
     daemon.close();
   }
 });
+
+// ---- the work unit reference (docs/work-units.md, docs/residents.md) ----
+
+const CLAUDE_REFERENCE = "${WORK_UNIT_ID:-}";
+
+test("Claude Code: the work unit reference is dropped before expansion, set or unset, and a headerless server keeps its login", () => {
+  for (const env of [{}, { WORK_UNIT_ID: "wu_01JD0000000000000000000000" }]) {
+    for (const value of [CLAUDE_REFERENCE, "${WORK_UNIT_ID}", "${WORK_UNIT_ID:-none}"]) {
+      const only = catalog.parseClaudeServer("only-ref", { type: "http", url: "https://mcp.example.com", headers: { "X-Work-Unit-Id": value } }, env);
+      assert.equal(only.summary.unavailable, null, `${value} with ${JSON.stringify(env)}`);
+      assert.equal(only.harnessLogin, true, "headerless again, so the harness is handed the entry it had before");
+      assert.deepEqual(only.transport, { type: "http", url: "https://mcp.example.com", headers: {}, secretHeaders: [], secretQuery: [] });
+      assert.equal(only.secrets.size, 0, "not stored and not a secret");
+    }
+  }
+  const mixed = catalog.parseClaudeServer("mixed", {
+    type: "http", url: "https://mcp.example.com/mcp",
+    headers: { "x-work-unit-id": CLAUDE_REFERENCE, Authorization: `Bearer ${SECRET}` },
+  }, {});
+  assert.equal(mixed.harnessLogin, false, "another header keeps the server on the launcher");
+  assert.ok(mixed.transport?.type === "http");
+  assert.deepEqual(mixed.transport.secretHeaders, ["Authorization"]);
+  // A literal an operator wrote is not the reference: kept and sent like any header.
+  const literal = catalog.parseClaudeServer("literal", { type: "http", url: "https://mcp.example.com/mcp", headers: { "x-work-unit-id": "fixed-value" } }, {});
+  assert.ok(literal.transport?.type === "http");
+  assert.deepEqual(literal.transport.secretHeaders, ["x-work-unit-id"]);
+  assert.equal(literal.secrets.get(sharedMcp.residentMcpSecretField("header", "x-work-unit-id")), "fixed-value");
+  assert.equal(literal.harnessLogin, false);
+});
+
+test("Codex: env_http_headers holding only the reference is accepted and dropped; any other entry keeps today's refusal", async () => {
+  const reference = { url: "https://mcp.example.com/mcp", env_http_headers: { "x-work-unit-id": "WORK_UNIT_ID" } };
+  const only = catalog.parseCodexServer("only-ref", reference, "unsupported", {});
+  assert.equal(only.summary.unavailable, null);
+  assert.deepEqual(only.transport, { type: "http", url: "https://mcp.example.com/mcp", headers: {}, secretHeaders: [], secretQuery: [] });
+  for (const env_http_headers of [{ "x-work-unit-id": "WORK_UNIT_ID", "x-other": "OTHER" }, { "x-other": "OTHER" }, { "x-work-unit-id": "OTHER" }]) {
+    const refused = catalog.parseCodexServer("other", { url: "https://mcp.example.com/mcp", env_http_headers }, "unsupported", {});
+    assert.match(refused.summary.unavailable!, /it uses env_http_headers, which residents cannot carry/);
+  }
+  const literal = catalog.parseCodexServer("literal", { url: "https://mcp.example.com/mcp", http_headers: { "x-work-unit-id": "fixed-value" } }, "unsupported", {});
+  assert.ok(literal.transport?.type === "http");
+  assert.deepEqual(literal.transport.secretHeaders, ["x-work-unit-id"], "a literal is kept, as today");
+
+  // A pinned Codex profile inheriting the server is no longer refused for the reference.
+  const accepted = await resolve(profile({ agent: "codex" }), globalsOf("codex", { remote: reference }));
+  assert.ok(accepted.ok && accepted.servers?.map((server) => server.name).includes("remote"));
+  const refusedSet = await resolve(profile({ agent: "codex" }), globalsOf("codex", {
+    remote: { url: "https://mcp.example.com/mcp", env_http_headers: { "x-other": "OTHER" } },
+  }));
+  assert.ok(!refusedSet.ok, "any other env_http_headers still refuses the launch");
+});
+
+test("a run launched before the reference was understood stops sending its empty x-work-unit-id, and its copy is unchanged", () => {
+  // The shape a launch before this change stored: the reference expanded to an empty secret
+  // header beside a real one.
+  const header = (name: string) => sharedMcp.residentMcpSecretField("header", name);
+  const server: Resolved = {
+    source: "global", name: "remote",
+    transport: { type: "http", url: "https://mcp.example.com/mcp", headers: {}, secretHeaders: ["x-work-unit-id", "Authorization"], secretQuery: [] },
+    launcher: true, options: {}, secrets: new Map([[header("x-work-unit-id"), ""], [header("Authorization"), `Bearer ${SECRET}`]]),
+  };
+  const kept: Resolved = {
+    source: "global", name: "kept",
+    transport: { type: "http", url: "https://mcp.example.com/kept", headers: {}, secretHeaders: ["X-Work-Unit-Id"], secretQuery: [] },
+    launcher: true, options: {}, secrets: new Map([[header("X-Work-Unit-Id"), "operator-literal"]]),
+  };
+  const runId = crypto.randomUUID();
+  seedRun(runId, [server, kept]);
+  const before = mcpStore.runMcpSecretValues(runId, "global", "remote");
+  const redeem = (name: string) => {
+    const entry = launch.residentMcpLaunchForRun(runId)!.forStart().find((candidate) => candidate.name === name)!;
+    if (entry.shape !== "launcher") throw new Error("expected scoped launcher");
+    const { ticket } = JSON.parse(readFileSync(entry.args.at(-1)!, "utf8"));
+    const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: name });
+    assert.ok(redeemed.ok && redeemed.definition.transport === "http");
+    return redeemed.definition.headers;
+  };
+  assert.deepEqual(redeem("remote"), { Authorization: `Bearer ${SECRET}` }, "the empty header is left out at its next start");
+  assert.deepEqual(redeem("kept"), { "X-Work-Unit-Id": "operator-literal" }, "a non-empty stored value is sent as stored");
+  assert.deepEqual(mcpStore.runMcpSecretValues(runId, "global", "remote"), before, "the stored copy is not rewritten");
+});

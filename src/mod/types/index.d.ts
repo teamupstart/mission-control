@@ -54,7 +54,21 @@ declare module "claude-code" {
     chatSince: number;
   }
 
+  /**
+   * The engine's validator reads each key off this declaration's source, so they are spelled out
+   * here and typed from `MissionControlModState`, which stays the one shape the mod's code uses.
+   */
   interface PluginState {
-    "mission-control": MissionControlModState;
+    "mission-control": {
+      registration: MissionControlModState["registration"];
+      draftId: MissionControlModState["draftId"];
+      inbox: MissionControlModState["inbox"];
+      residents: MissionControlModState["residents"];
+      paneTab: MissionControlModState["paneTab"];
+      paneView: MissionControlModState["paneView"];
+      selectedTaskId: MissionControlModState["selectedTaskId"];
+      armedApproval: MissionControlModState["armedApproval"];
+      chatSince: MissionControlModState["chatSince"];
+    };
   }
 }

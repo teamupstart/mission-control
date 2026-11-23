@@ -101,6 +101,7 @@ function moduleUrl(fromFile: string, specifier: string): string {
 const ROUTE_FILES = [
   "src/server/routes.ts",
   "src/server/session-control.ts",
+  "src/server/report-routes.ts",
   "src/server/residents/routes.ts",
   "src/server/shaping/routes.ts",
   "src/server/workflows/mcp.ts",

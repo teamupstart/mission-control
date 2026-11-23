@@ -12,7 +12,7 @@ const REVISIONS = fileURLToPath(new URL("../src/server/shaping/revisions.ts", im
 
 // An entry this build cannot run, with a value in a field the view never shows.
 const hidden = (secret: string) => StoredShaperSchema.parse({
-  id: "future", label: "Future", stage: "route", transport: { type: "grpc", endpoint: "dns:///future" }, note: secret,
+  id: "future", label: "Future", stage: "audit", transport: { type: "grpc", endpoint: "dns:///future" }, note: secret,
 });
 
 test("a revision is 16 hex digits, stable within the daemon, and changes with a field the view hides", () => {

@@ -6,8 +6,9 @@ import * as registry from "../src/shared/feature-flag-registry.ts";
 import {
   applyFeatureFlagIntent, explicitlyDisabledFeatureFlags, FEATURE_FLAGS_DEFAULTS,
   FeatureFlagIntentSchema, FeatureFlagsConfigSchema, resolveFeatureFlag, resolveFeatureFlags,
-  type FeatureFlagDefinition, type FeatureFlagIntent, type FeatureFlagsConfig,
+  type FeatureFlagDefinition, type FeatureFlagId, type FeatureFlagIntent, type FeatureFlagsConfig,
 } from "../src/shared/feature-flags.ts";
+import { INBOX_FLAG } from "../src/shared/inbox.ts";
 
 const definitions = [
   { id: "preview-one", label: "Preview", description: "Try the preview.", stage: "preview", keywords: [] },
@@ -68,7 +69,17 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
-  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.deepEqual(Object.keys(registry).sort(), [
+    "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "WORK_UNIT_ID_FLAG_ID",
+  ]);
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
+    "recurring missions through MCP ships as a preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.WORK_UNIT_ID_FLAG_ID)?.stage, "preview",
+    "the work unit id ships as a preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_AWAITING_FLAG_ID)?.stage, "preview",
+    "awaiting background work ships as a preview");
+
   assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
     "resident active hours ships as a preview");
@@ -89,6 +100,13 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
   assert.equal(flags.find((flag) => flag.id === "async-input")?.stage, "preview", "ask without stopping ships as a preview");
+  assert.equal(flags.find((flag) => flag.id === "filed-plan-decisions")?.stage, "preview", "filed plan decisions ships as a preview");
+  assert.ok(ids.indexOf("filed-plan-decisions") === ids.indexOf("async-input") + 1, "filed plan decisions sits beside the flag it needs");
+  // Reports and inbox upgrades ships as a preview, off until the operator opts in.
+  const inbox = flags.find((flag) => flag.id === INBOX_FLAG);
+  assert.equal(inbox?.stage, "preview", "reports and inbox upgrades ships as a preview");
+  assert.equal(inbox?.label, "Reports and inbox upgrades");
+  assert.equal(resolveFeatureFlag(INBOX_FLAG as FeatureFlagId, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
   assert.equal(new Set(ids).size, ids.length);
   for (const flag of flags) {
     assert.match(flag.id, /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
@@ -102,6 +120,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   // Off by default: the suite's default is every preview off.
   assert.equal(resolveFeatureFlag("task-shaping", FEATURE_FLAGS_DEFAULTS), false);
   assert.equal(resolveFeatureFlag("async-input", FEATURE_FLAGS_DEFAULTS), false);
+  assert.equal(resolveFeatureFlag("filed-plan-decisions", FEATURE_FLAGS_DEFAULTS), false);
   const files = ["src/shared/feature-flags.ts", "src/shared/feature-flag-registry.ts",
     ...readdirSync("src/server/feature-flags").map((name) => `src/server/feature-flags/${name}`)];
   for (const file of files) {

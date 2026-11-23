@@ -241,8 +241,13 @@ test("with a work unit id every call carries x-work-unit-id, and with none it se
   const configured = { "X-WORK-UNIT-ID": "wu-configured" };
   await callHttp(request(), shaper("/ok", configured), ctx({ workUnitId: "wu_01JD5Z" }));
   assert.equal(last().headers["x-work-unit-id"], "wu_01JD5Z");
+  const carried = last().body;
   await callHttp(request(), shaper("/ok", configured), ctx());
   assert.equal(last().headers["x-work-unit-id"], undefined, "the configured one is removed even with none to send");
+  // The header is the only carrier: an `http` shaper has no `tools/call` envelope, and the
+  // request body is the protocol's own, byte for byte the same with or without a work unit.
+  assert.equal(carried.includes("wu_01JD5Z"), false, "no work unit anywhere in the request body");
+  assert.equal(carried, last().body, "the body is unchanged by the work unit");
 });
 
 test("a reply that echoes the trace context or the work unit id keeps it, unredacted and unmarked", async () => {

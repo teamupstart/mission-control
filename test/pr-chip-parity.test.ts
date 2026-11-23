@@ -101,7 +101,7 @@ test("failing checks are surfaced on all three, each in its own vocabulary", () 
   // the flag itself. Different renderings, one decision - what must not happen is a surface
   // silently dropping the signal.
   assert.ok(render(PrChip, over).includes("pr-checks-alert"));
-  assert.ok(render(PrTileFlag, over).includes("⚠"));
+  assert.ok(render(PrTileFlag, over).includes("pr-checks-alert"));
   assert.ok(render(PrRailMark, over).includes("⚠"));
 });
 

@@ -50,8 +50,12 @@ test("only successful CodeRabbit comparisons freeze, including recovery of previ
   // Previously published builds persisted errors. They must not prevent Retry from recovering.
   database.prepare("UPDATE workflow_submissions SET coderabbit_json = ?").run(JSON.stringify(failed));
   assert.equal(s.getCodeRabbitComparison("submission"), null);
+  database.prepare("UPDATE workflow_submissions SET coderabbit_json = ?").run(JSON.stringify(resolved));
+  assert.deepEqual(s.getCodeRabbitComparison("submission"), resolved, "legacy comparison remains readable");
+  database.prepare("UPDATE workflow_submissions SET coderabbit_json = NULL").run();
+  resolved.command = ["coderabbit", "review", "--deep"];
   assert.deepEqual(s.freezeCodeRabbitComparison("submission", resolved), resolved);
-  const moved = { ...resolved, baseTip: "c".repeat(40), mergeBase: "c".repeat(40), maxRuns: 1 };
+  const moved = { ...resolved, baseTip: "c".repeat(40), mergeBase: "c".repeat(40), maxRuns: 1, command: ["coderabbit", "review"] };
   assert.deepEqual(s.freezeCodeRabbitComparison("submission", moved), resolved, "first successful identity and policy stay pinned");
   assert.deepEqual(s.freezeCodeRabbitComparison("submission", failed), resolved);
   assert.deepEqual(new WorkflowStore(database).getCodeRabbitComparison("submission"), resolved, "successful pin survives reload");

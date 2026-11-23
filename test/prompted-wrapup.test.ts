@@ -65,6 +65,7 @@ const CFG: PromptedConfig = {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -946,4 +947,11 @@ test("a blocked session is skipped, and the same session is a candidate once the
   assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
   // A skip consumes nothing, so clearing it leaves the generation to complete normally.
   assert.equal(decide({ session: mkSession({ blocker: null }) }).kind, "check");
+});
+
+test("a session awaiting its own background process is skipped until its deadline, then is a candidate", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(decide({ session: mkSession({ awaiting }) }), { kind: "skip", why: "the session is awaiting a background process" });
+  // A skip consumes nothing: once the deadline passes the same generation is judged as usual.
+  assert.equal(decide({ session: mkSession({ awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }) }).kind, "check");
 });

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import {
   DEFAULT_REVIEW_SNOOZE_DELAY,
@@ -19,7 +20,10 @@ import { useNow } from "../useNow.ts";
 import { QUESTION_ACTION_COPY, type QuestionWait } from "../lib/async-questions.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
+import { ReviewDeliveryNote, type ReviewCardDelivery } from "./ReviewAnswer.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { useAgentName } from "../lib/agent-names.ts";
+import { AgentName } from "./AgentName.tsx";
 
 /** An alarm clock: the mark every "Remind me later" surface wears. */
 export function ClockGlyph(): React.JSX.Element {
@@ -78,7 +82,7 @@ function meanwhileFromChoice(choice: MeanwhileChoice): ReviewSnoozeMeanwhile {
  */
 export function SnoozeSheet({
   review,
-  wait = review.waitMode === "message" ? "working" : "call",
+  wait = agentKeepsWorking(review) ? "working" : "call",
   onBack,
 }: {
   review: ReviewItem;
@@ -283,11 +287,12 @@ function AnswerNowButton({ busy, onClick }: { busy: boolean; onClick: () => void
 /** One snoozed question in the attention inbox's Snoozed section. */
 export function SnoozedInboxRow({ review, session }: { review: ReviewItem; session: Session }): React.JSX.Element {
   const { busy, err, wake } = useWake(review.id);
+  const name = useAgentName(session, session.name || "(unnamed)");
   return (
     <section className="inbox-item inbox-snoozed" aria-label={`Snoozed: ${review.title}`}>
       <div className="inbox-head">
         <AgentDot agent={session.agent} />
-        <strong>{session.name || "(unnamed)"}</strong>
+        <AgentName view={name} />
         <span className="inbox-spacer" />
         {review.snooze && <SnoozeWhen until={review.snooze.until} />}
         <AnswerNowButton busy={busy} onClick={wake} />
@@ -305,11 +310,28 @@ export function SnoozedInboxRow({ review, session }: { review: ReviewItem; sessi
  * A snoozed question in the session's conversation, where its answer will later appear: what
  * was asked, when it comes back, and Answer now.
  */
-export function SnoozedReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
+export function SnoozedReviewCard({
+  review,
+  delivery,
+}: {
+  review: ReviewItem;
+  /**
+   * The "Remind me later" instruction's delivery turn (`async-input`), when the line is drawn
+   * there rather than as the raw instruction text. The question may have been answered since:
+   * then the line records the snooze and offers nothing to act on.
+   */
+  delivery?: ReviewCardDelivery;
+}): React.JSX.Element {
   const { busy, err, wake } = useWake(review.id);
   const snooze = review.snooze;
+  const parked = review.status === "snoozed";
   return (
-    <div className="review-snoozed" role="note" aria-label={`Snoozed: ${review.title}`}>
+    <div
+      className="review-snoozed"
+      role="note"
+      aria-label={`Snoozed: ${review.title}`}
+      data-turn-id={delivery?.state === "delivered" ? delivery.turnId : undefined}
+    >
       <div className="review-answer-head">
         <span className="review-answer-who review-snoozed-who">Snoozed</span>
         <span className="review-answer-title">{review.title}</span>
@@ -318,12 +340,13 @@ export function SnoozedReviewCard({ review }: { review: ReviewItem }): React.JSX
       <div className="review-snoozed-foot">
         <ClockGlyph />
         <span>
-          {snooze ? <SnoozeWhen until={snooze.until} /> : "Snoozed"}
+          {snooze && parked ? <SnoozeWhen until={snooze.until} /> : "Snoozed"}
           {snooze && <> · meanwhile: {lowerFirst(snoozeMeanwhileLabel(review, snooze))}</>}
         </span>
         <span className="inbox-spacer" />
-        <AnswerNowButton busy={busy} onClick={wake} />
+        {parked && <AnswerNowButton busy={busy} onClick={wake} />}
       </div>
+      {delivery && <ReviewDeliveryNote delivery={delivery} />}
       {err && <p className="review-err">{err}</p>}
     </div>
   );

@@ -19,6 +19,7 @@ export async function buildFeatureFlagsDashboard(outDir: string): Promise<void> 
       enforce: "pre",
       transform(source, id) {
         if (id === join(root, "src/shared/feature-flag-registry.ts")) {
+          // Every export, as in `feature-flags-build.ts`: a dashboard gate may import a `<FLAG>_ID`.
           return `export * from ${JSON.stringify(join(root, "test/fixtures/feature-flag-registry.ts"))};`;
         }
         if (id === join(root, "src/web/App.tsx")) {

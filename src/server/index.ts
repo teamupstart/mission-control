@@ -4,7 +4,9 @@
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
+import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -28,7 +30,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery, onPersonDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
@@ -59,6 +61,7 @@ import {
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -117,6 +120,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { ReportManager } from "./reports.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
@@ -140,7 +144,7 @@ import {
   observeSessionOperation,
   recheckOrganization,
   registerBuiltinTelemetry,
-  retainPrObservation,
+  attachPrObservationTelemetry,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
@@ -226,8 +230,24 @@ try {
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
 const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// A declared wait holds idle automation, so it must not outlive the preview that draws it on the
+// card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
+const endAwaitingsWhenOff = (): void => {
+  if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) registry.clearAllAwaitings("flag");
+};
+endAwaitingsWhenOff();
+const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
+// Mission Control's own deliveries, stored on a waiting session's wait as they are claimed, so
+// the turn one starts is never taken for the session's wake, even across a restart.
+const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
+  registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+// And a person's own words, so an automated delivery of the same words cannot pass off the
+// person's turn as Mission Control's nudge.
+const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// The shapers folder is read at start, and again at every shaping run: never watched.
+if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
@@ -291,8 +311,12 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The watcher is a latency hint; the recurring scan is the authority. Both live inside the
 // manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
 // per batch, no history in the snapshot, no browser polling.
+// Bound once the report manager exists below: a pass that prunes vanished bundles hands their
+// keys over, so only reports published under exactly those archives are re-checked.
+let onArchivesPruned: (keys: readonly string[]) => void = () => undefined;
 const archives = new ArchiveManager({
   onChanged: () => registry.emitArchiveChanged(),
+  onPruned: (keys) => onArchivesPruned(keys),
   watch: true,
   tasks: new RegistryArchiveTaskGateway(registry),
 });
@@ -324,6 +348,18 @@ tasks.useMergeQuestions({
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
 const queues = new QueueManager(registry);
+// Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
+// or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
+// which is what releases a prompt held behind it. Delivered through the one outbox.
+const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
+  registry,
+  outbox: pendingTurns,
+  // `workflows` is constructed below; this is read only when a prompt is written, long after.
+  workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+  // Read at start and when task shaping is turned on again, after `workflows` exists.
+  owedSessions: () => workflows.afterWorkOwedSessions(),
+});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
@@ -425,6 +461,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  afterWorkSkills,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -463,6 +500,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+tasks.registerWorkflowNames((workflowId) => workflows.workflowName(workflowId));
 // A task's dispatch Persona: creation, editing and launch all read the Library through this.
 tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through
@@ -732,22 +770,7 @@ registry.onTurnDelivered((e) => {
 // is what makes this a VERIFIED association rather than an agent's claim - and it is the last
 // moment at which the task's repository and kind can still be read, because
 // `invalidateTaskOwnershipInTransaction` may delete the binding at any point after it.
-registry.onTaskPrLinked((e) => {
-  const task = registry.getTask(e.taskId);
-  if (!task) return;
-  retainPrObservation({
-    taskId: e.taskId,
-    taskKind: task.kind,
-    repoRoot: e.repoRoot,
-    primaryRepoRoot: task.repoRoot,
-    prUrl: e.prUrl,
-    sessionId: task.sessionId,
-    // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
-    // carries no task. Here the honest claim is the weaker one.
-    creationVerified: false,
-    now: e.observedAt,
-  });
-});
+attachPrObservationTelemetry(registry);
 tasks.registerWritebackEnqueuer(writebackEnqueuer);
 const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has
@@ -811,6 +834,15 @@ fileComments.start();
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
+// Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
+// read to the registry now, so the first snapshot after a restart carries them. It subscribes to
+// no session event: a report outlives the session that posted it.
+const reports = new ReportManager(registry);
+onArchivesPruned = (keys) => {
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key), keys).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile reports for pruned archives:", error);
+  });
+};
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -846,6 +878,7 @@ const app = buildApp({
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  reports,
   settingsBackups,
   databaseBackups,
   storageHealth,
@@ -899,6 +932,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // After the outbox: a delivery it confirms settles the prompt row it was queued as.
+  afterWorkSkills.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
   // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
   // temporary files can be removed safely.
@@ -945,6 +980,12 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
+  // Every published report's archive, checked once at startup: a report whose bundle is gone (a
+  // delete interrupted between removing the bundle and clearing the key) goes back to
+  // unpublished. Later removals reach a report only through `onArchivesPruned`, above.
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key)).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile published reports:", error);
+  });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
@@ -1059,6 +1100,9 @@ async function shutdown(): Promise<void> {
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
   stopFeatureFlags();
+  stopAwaitingFlag();
+  stopAutomatedDeliveries();
+  stopPersonDeliveries();
   stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
@@ -1098,8 +1142,10 @@ async function shutdown(): Promise<void> {
   // between a harness closing its session file cleanly and it being killed mid-turn.
   const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
+  afterWorkSkills.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  reports.stop();
   // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
   // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
   await pauses.stop();

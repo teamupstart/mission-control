@@ -76,6 +76,8 @@ export interface ModHost {
   status: (text: string | undefined) => void;
   /** `undefined` draws no band. */
   band: (band: ModBand | undefined) => void;
+  /** The start-up banner lines above the prompt (7.21); `undefined` removes them. */
+  banner: (lines: readonly string[] | undefined) => void;
   /** Puts text in the prompt box without sending it (`$.prompt.fill`, spike S12). */
   fillPrompt: (text: string) => void;
   fetch: (path: string, init?: ModFetchInit) => Promise<ModFetchResult>;
@@ -90,3 +92,21 @@ export interface ModHost {
   /** Opens a URL for the person (`d Open in the dashboard`). */
   link: (url: string) => void;
 }
+
+/** The pane values the controller writes. Later phases widen this where they need more. */
+export type CoreStateKey = "registration" | "inbox" | "paneTab";
+
+export interface CorePaneState {
+  set: <K extends CoreStateKey>(key: K, value: ModState[K]) => Promise<void>;
+}
+
+/**
+ * What the session controller (`core.ts`) needs, and all the engine adapter implements in P8.
+ * The flow capabilities (`ask`, `fillPrompt`, `modelWrite`, `env`, `link`) and the wider pane
+ * state are not here: P11 and P12 add the members they use to the adapter in `register.ts`, next
+ * to their one registration line, so nothing in P8 pretends to implement them.
+ */
+export type CoreHost = Pick<
+  ModHost,
+  "notice" | "toast" | "status" | "band" | "banner" | "fetch" | "clockEvery" | "paneOpen" | "paneClose"
+> & { paneState: CorePaneState };

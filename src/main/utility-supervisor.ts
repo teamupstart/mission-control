@@ -4,7 +4,8 @@ import type { UtilityProcess } from "electron";
 import {
   attachUtilityProcessOutput,
   endUtilityProcessLog,
-  openPrivateUtilityLog,
+  openUtilityLog,
+  type UtilityLog,
   utilityProcessStdio,
 } from "./utility-log.ts";
 import {
@@ -52,9 +53,9 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
     restartTimer = null;
     if (stopped) return;
 
-    let log: ReturnType<typeof openPrivateUtilityLog>;
+    let log: UtilityLog;
     try {
-      log = openPrivateUtilityLog(opts.logPath);
+      log = openUtilityLog(opts.logPath, opts.captureChildOutput);
     } catch {
       scheduleRestart();
       return;

@@ -3045,10 +3045,17 @@ error. Mission Control does not fetch inherited settings. Only a run whose pinne
 CodeRabbit check captures this snapshot. Submission capture freezes the decision; retries reuse it
 and new submissions refresh it.
 
-Optional repository-root tuning selects a base ref and severity
-(default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
-the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
-these defaults. The command previews its owned argv, never an editable shell recipe.
+The CodeRabbit Command starts with `coderabbit review --deep` by default. In **Library > Commands >
+CodeRabbit**, edit the machine-wide command or set a command for an individual repository under
+repository tuning. Use `coderabbit review` for a standard review. The editor also accepts `--fresh`
+and optional focus text after `--deep` on accounts where CodeRabbit supports it. Clear the field
+to inherit the machine-wide command for a repository or restore the built-in command globally.
+Mission Control adds the structured output, severity gate, and committed comparison flags shown
+in the preview. It freezes the effective command with the comparison for retries.
+
+Repository tuning also selects a base ref and severity (default `major`, including critical).
+The locally observed `origin/HEAD` supplies the default base. If it is unavailable, set an
+explicit base in Library.
 
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;

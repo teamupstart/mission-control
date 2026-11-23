@@ -29,23 +29,38 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 426 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
-  // /api/shaping routes of task shaping (refreshed when one last changed) and the three
-  // flag-gated session control request routes (`POST /mcp/session-control/requests`, its
-  // `GET .../:requestId/wait`, and the dashboard's `POST .../requests/:requestId/decline`),
-  // plus the async-input lifecycle routes `POST /mcp/questions/list` and
-  // `POST /mcp/questions/:id/withdraw`,
-  // hashed key-sorted. Any added, removed
+  // The 443 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
+  // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
+  // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
+  // `POST .../requests/:requestId/decline`), the async-input lifecycle routes
+  // `POST /mcp/questions/list` and `POST /mcp/questions/:id/withdraw`, the three routes of
+  // a session awaiting a background process (the flag-gated `POST /mcp/awaiting`, and
+  // `POST /mcp/awaiting/clear` and the dashboard's `POST /api/sessions/:id/awaiting/clear`,
+  // which stay open so a wait can always end), the four flag-gated agent report routes
+  // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
+  // `GET /api/sessions/:id/reports`), the two flag-gated report answer routes
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), the two flag-gated
+  // report document routes (`GET /api/reports/:id/document` and `POST /api/reports/:id/publish`),
+  // and the Stuck row's flag-gated `POST /api/sessions/:id/inbox-message`, hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
-  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default. The macOS Terminal backend extends
-  // enum validation for Pipeline console, Pipeline install, and Setup install.
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
+  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
+  // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
+  // reply and follow-up routes, which answer 404 with it off too, then for
+  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
+  // then for the report document and Publish as scout routes, which answer 404 with it off.
+  // The recurring-mission MCP routes add GET/POST /mcp/schedules and
+  // POST /mcp/schedules/preview, all answering 401 without a daemon token.
+  // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 426);
+  assert.equal(others.length, 443);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "7dea0dd065d7169555efe22707a07abd8a5b050d470e19245714290b85b5c3c0");
+    "ab52ee31f2bb74306b591543edd242d0a17354c3bda94440624da03abd8e9ddb");
 });
 
 function sourceFiles(dir: string): string[] {

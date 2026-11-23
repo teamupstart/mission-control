@@ -60,6 +60,9 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  * reads the server's own `registerTool` calls and fails if the two drift.
  */
 export const MISSION_MCP_TOOLS = [
+  "create_schedule",
+  "preview_schedule",
+  "list_schedules",
   "list_workflow_runs",
   "get_workflow_run",
   "read_workflow_command_output",
@@ -86,10 +89,13 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "list_open_questions",
   "withdraw_question",
+  "post_report",
   "report_product_issue",
   "report_status",
   "report_blocker",
   "clear_blocker",
+  "report_awaiting",
+  "clear_awaiting",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
   // scrapes `registerTool("...")` out of the server and compares the two lists by value, and
   // `scripts/smoke-bundles.mjs` resolves any CONSTANT here through a hand-written name-to-module

@@ -453,7 +453,8 @@ test("a message-mode judgment snooze sends nothing, and the resolved answer arri
 
   f.reviews.resolve(review.id, "answer", "Use eslint", "human");
   assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:answer:${review.id}`]);
-  assert.match(f.turns()[0]!.text, /^Mission Control answer to question/);
+  // The marker line, then exactly the answer text the agent always received.
+  assert.match(f.turns()[0]!.text, new RegExp(`^\\[mission-control:answer review=${review.id}\\]\n\nMission Control answer to question`));
   assert.match(f.turns()[0]!.text, /Use eslint/);
   assert.deepEqual(f.registry.outstandingReviews(f.id), []);
 });
@@ -469,6 +470,7 @@ for (const mode of ["option", "hold"] as const) {
     assert.deepEqual(f.registry.outstandingReviews(f.id).map((r) => r.id), [review.id]);
     assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:snooze:${review.id}`]);
     const instruction = f.turns()[0]!.text;
+    assert.match(instruction, new RegExp(`^\\[mission-control:remind-later review=${review.id}\\]\n\n`));
     assert.match(instruction, /Not answered yet/);
     assert.doesNotMatch(instruction, /Mission Control answer to question/);
     assert.match(instruction, mode === "hold" ? /Do not do any work that depends on this answer/
@@ -483,7 +485,7 @@ for (const mode of ["option", "hold"] as const) {
       `review-continuation:answer:${review.id}`,
     ]);
     assert.equal(f.turns()[0]!.text, instruction, "answering does not rewrite or combine with the instruction");
-    assert.match(f.turns()[1]!.text, /^Mission Control answer to question/);
+    assert.match(f.turns()[1]!.text, new RegExp(`^\\[mission-control:answer review=${review.id}\\]\n\nMission Control answer to question`));
     assert.match(f.turns()[1]!.text, /Use eslint/);
     assert.match(f.turns()[1]!.text, /Prepare tests without applying the configuration/);
     assert.deepEqual(f.registry.outstandingReviews(f.id), []);

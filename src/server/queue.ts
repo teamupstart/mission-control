@@ -412,7 +412,31 @@ export class QueueManager {
   }
 
   setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {
-    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now);
+    // Every writer of an answer comes through here: Foreman's automatic wrap-up once its
+    // instruction landed, the Ship it? card, and a skipped wrap-up's marker. What an answer
+    // durably owes commits with it, so a daemon that stops right after cannot lose it.
+    const recorders = answer !== null ? [...this.wrapupRecorders] : [];
+    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now,
+      recorders.length > 0 ? () => { for (const record of recorders) record(key); } : undefined);
+    if (answer !== null) for (const listener of this.wrapupListeners) listener(key);
+  }
+
+  private readonly wrapupListeners = new Set<(key: string) => void>();
+  private readonly wrapupRecorders = new Set<(key: string) => void>();
+
+  /**
+   * A database write to make in the same transaction as each recorded wrap-up answer. It must not
+   * publish or start a transaction of its own; it may throw, which rolls the answer back with it.
+   */
+  onWrapupAnswerRecorded(recorder: (key: string) => void): () => void {
+    this.wrapupRecorders.add(recorder);
+    return () => this.wrapupRecorders.delete(recorder);
+  }
+
+  /** Told each time a wrap-up answer is recorded for a conversation key. A listener must not throw. */
+  onWrapupAnswered(listener: (key: string) => void): () => void {
+    this.wrapupListeners.add(listener);
+    return () => this.wrapupListeners.delete(listener);
   }
 
   /**

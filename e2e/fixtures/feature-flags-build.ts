@@ -30,6 +30,8 @@ export async function buildFeatureFlags() {
       build: { outDir: webDir, emptyOutDir: true },
       plugins: [{ name: "feature-flag-registry", enforce: "pre", transform(source, id) {
         if (id === join(root, "src/shared/feature-flag-registry.ts")) {
+          // Every export, not a named list: the substitute keeps the shipped registry's `<FLAG>_ID`
+          // constants (docs/feature-flags.md), and a dashboard gate that imports one must still build.
           return `export * from ${JSON.stringify(fixture)};`;
         }
       } }],

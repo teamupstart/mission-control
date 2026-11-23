@@ -45,7 +45,7 @@ import {
 } from "@shared/workflow.ts";
 import { envVar } from "../config.ts";
 import { llmRunner } from "../llm/index.ts";
-import { runStructured } from "../llm/structured.ts";
+import { ModelReplyMiss, replyMissClause, runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
@@ -53,7 +53,7 @@ import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution, resolveWorkflowNodeExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
-import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
+import { normalizePersonaVerdict, parsePersonaVerdictReply, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
@@ -159,6 +159,12 @@ export interface WorkflowEngineOptions {
    * the manager owns. The engine's whole job is to make the wait durable and say so.
    */
   onSessionActionWaiting?: (attemptId: string) => void;
+  /**
+   * Called each time a submission is activated, once its run is durably running: the start of
+   * the after-work step. Fires again for a repair round, a resubmit and a continuation; a
+   * subscriber that acts once per launch keeps its own guard. Must not throw.
+   */
+  onSubmissionActivated?: (submissionId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -450,6 +456,8 @@ export class WorkflowEngine {
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
   private readonly onSessionActionWaiting:
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
+  private readonly onSubmissionActivated:
+    NonNullable<WorkflowEngineOptions["onSubmissionActivated"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
@@ -484,6 +492,7 @@ export class WorkflowEngine {
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
     this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
+    this.onSubmissionActivated = options.onSubmissionActivated ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
@@ -550,6 +559,11 @@ export class WorkflowEngine {
     }
     this.store.setSubmissionState(submission.id, "running", this.now());
     this.store.setRunState(run.id, "running", "persona_review", null, this.now());
+    try {
+      this.onSubmissionActivated(submission.id);
+    } catch (error) {
+      console.warn(`[workflow] a submission-activated subscriber failed for ${submission.id}:`, error);
+    }
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
     this.wake();
@@ -1214,6 +1228,9 @@ export class WorkflowEngine {
     const priorRejection = claimed.reviewInput
       ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
     let violation = priorRejection === "parse" ? null : priorRejection;
+    // What was wrong with the previous execution's reply, when it was a parse miss this
+    // process observed. A restart only knows the persisted basis, so it keeps the generic text.
+    let replyMiss: ModelReplyMiss | null = null;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
       const providerState = claimed.reviewInput
         ? this.store.personaProviderRetryState(claimed.reviewInput.operationId) : null;
@@ -1223,6 +1240,8 @@ export class WorkflowEngine {
         this.blockProviderRetryExhausted(claimed, run.id, failure);
         return;
       }
+      const correction = violation
+        ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
         (request) => runner.run(request, {
           model: execution.model.id,
@@ -1230,9 +1249,11 @@ export class WorkflowEngine {
           timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
           images,
         }),
-        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
+        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
-          const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          replyMiss = reply instanceof ModelReplyMiss ? reply : null;
+          const parsed = replyMiss ? null : reply as PersonaVerdict;
           violation = parsed && claimed.reviewInput ? personaContractViolation(parsed) : null;
           if (violation) {
             this.store.appendEvent(run.id, "persona_contract_violation", {
@@ -1243,7 +1264,7 @@ export class WorkflowEngine {
             return null;
           }
           if (!parsed && claimed.reviewInput) this.store.retainRejectedPersonaVerdict(claimed.id, index + 1, "parse", raw);
-          return parsed;
+          return parsed ?? replyMiss;
         },
         `${node.persona.name} Persona`,
         { start: (_attempt, request) => observer.start(index + 1, request), finish: (_attempt, result) => observer.finish(index + 1, result) },

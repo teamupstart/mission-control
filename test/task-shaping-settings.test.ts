@@ -52,7 +52,7 @@ const remote = {
   id: "acme-guidance", label: "Acme guidance", stage: "select",
   transport: { type: "http", url: "https://context.acme.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}", "x-user": "{caller.user}" } },
 };
-const unsupported = { id: "future", label: "Future shaper", stage: "route", transport: { type: "grpc" } };
+const unsupported = { id: "future", label: "Future shaper", stage: "audit", transport: { type: "grpc" } };
 
 function view(input: Record<string, unknown>): ShapingConfigView {
   return daemonShapingView(ShapingConfigSchema.parse(input));
@@ -143,8 +143,10 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups.map((group) => group.stage), [...SHAPING_STAGES, null]);
   assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a"]);
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
-  assert.deepEqual(groups[2]!.rows, [{
-    id: "future", label: "Future shaper", shaper: null, on: false,
+  assert.deepEqual(groups[2]!.rows, [], "no router is registered");
+  assert.deepEqual(groups.at(-1)!.rows, [{
+    id: "future", label: "Future shaper", origin: "registered", path: null, folderState: null, manifest: null, startsOff: false,
+    shaper: null, on: false,
     problem: "stage: This build does not support the stage this entry names.", revision: shapingReviser([unsupported as never]),
     duplicate: false, repeats: 0,
   }]);
@@ -582,7 +584,7 @@ test("a view from a daemon that sends no revisions draws its rows with every rev
 
 test("only the owning entry may say an import replaces it, never a repeat behind it", () => {
   // An unsupported owner, then a repeat under its id whose literal credential the store emptied.
-  const owner = { id: "twin", label: "Owner", stage: "route", transport: { type: "grpc" } };
+  const owner = { id: "twin", label: "Owner", stage: "audit", transport: { type: "grpc" } };
   const repeat = gatherer("twin", { label: "Repeat", transport: { type: "command", command: "/usr/local/bin/notes", args: ["ghp_" + "a".repeat(36)] } });
   const stored = ShapingConfigSchema.parse({ shapers: [owner, repeat] });
   const shown = daemonShapingView(stored).shapers as Array<{ label: string; replaceable?: true }>;
@@ -757,4 +759,114 @@ test("a frame counts as an identical reimport's receipt only once its revision h
   const fresh = shapingReceiptBaseline(view({}), request);
   assert.equal(fresh.shown, false);
   assert.equal(shapingFrameIsReceipt(fresh, withRevision(undefined), "same"), true);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Found on disk: the shapers folder's rows, in each state the scan reports
+
+const folderShaper = (id: string, state: "ok" | "invalid" | "refused" | "shadowed", extra: Record<string, unknown> = {}) => ({
+  id, path: `/state/shapers/${id}`, state,
+  problem: state === "ok" ? null : `The ${state} reason for ${id}.`,
+  sha256: "a".repeat(64),
+  shaper: state === "invalid" ? null : ShaperSchema.parse({ ...gatherer(id), label: `Folder ${id}` }),
+  ...extra,
+});
+
+function renderFolder(config: ShapingConfigView, discovered: unknown[], folder = { path: "/state/shapers", ignored: 0 }): string {
+  return renderToStaticMarkup(createElement(TaskShapingView, {
+    config, references: {}, onSet: async () => "saved" as const,
+    onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
+    repositories: async () => [], discovered: discovered as never, folder,
+  }));
+}
+
+/** The markup of one row, by its accessible name. */
+function rowMarkup(html: string, label: string): string {
+  const start = html.indexOf(`role="group" aria-label="${label}"`);
+  assert.notEqual(start, -1, `no row named ${label}`);
+  const next = html.indexOf('class="shaping-row"', start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+test("an ok folder shaper is listed in its stage as Found on disk, with its path and a pill that is on", () => {
+  const html = renderFolder(view({}), [folderShaper("folder-notes", "ok")]);
+  const row = rowMarkup(html, "Folder folder-notes");
+  assert.match(row, /<span class="shaping-chip">Found on disk<\/span>/);
+  assert.match(row, /Path: <code>\/state\/shapers\/folder-notes<\/code>/);
+  assert.match(row, /aria-label="Folder folder-notes: on" aria-pressed="true"/);
+  // The folder is the source: no remove, no dry run, no move.
+  assert.doesNotMatch(row, /Remove|Dry-run|Move /);
+  assert.match(html, /<span class="settings-pane-count">1<\/span>/);
+  // In the Gather stage, not a group of its own.
+  assert.ok(html.indexOf('aria-label="Gather"') < html.indexOf('aria-label="Folder folder-notes"'));
+  assert.ok(html.indexOf('aria-label="Folder folder-notes"') < html.indexOf('aria-label="Select"'));
+});
+
+test("a folder shaper whose manifest asks to start off says so, and a stored choice wins over it", () => {
+  const quiet = folderShaper("quiet-notes", "ok", { shaper: { ...ShaperSchema.parse({ ...gatherer("quiet-notes"), label: "Quiet notes" }), enabled: false } });
+  const off = rowMarkup(renderFolder(view({}), [quiet]), "Quiet notes");
+  assert.match(off, /aria-label="Quiet notes: off"/);
+  assert.match(off, /Its manifest asks to start switched off/);
+  const on = rowMarkup(renderFolder(view({ overrides: { "quiet-notes": true } }), [quiet]), "Quiet notes");
+  assert.match(on, /aria-label="Quiet notes: on"/);
+  assert.doesNotMatch(on, /asks to start switched off/);
+  const stored = rowMarkup(renderFolder(view({ overrides: { "folder-notes": false } }), [folderShaper("folder-notes", "ok")]), "Folder folder-notes");
+  assert.match(stored, /aria-label="Folder folder-notes: off"/);
+});
+
+test("invalid, refused and shadowed folder shapers are listed apart with their reasons and cannot be switched on", () => {
+  const html = renderFolder(view({ shapers: [gatherer("taken")] }), [
+    folderShaper("broken", "invalid"),
+    folderShaper("loose", "refused"),
+    folderShaper("taken", "shadowed"),
+  ]);
+  const group = html.slice(html.indexOf('aria-label="Found on disk, not run"'));
+  assert.ok(group.length < html.length, "the folder's blocked shapers have their own group");
+  const broken = rowMarkup(group, "broken");
+  assert.match(broken, /<span class="shaping-chip is-invalid">Invalid<\/span>/);
+  assert.match(broken, /The invalid reason for broken\./);
+  assert.match(broken, /disabled="" aria-label="broken: off"/);
+  const loose = rowMarkup(group, "Folder loose");
+  assert.match(loose, /<span class="shaping-chip is-refused">Refused<\/span>/);
+  assert.match(loose, /The refused reason for loose\./);
+  assert.match(loose, /disabled="" aria-label="Folder loose: off"/);
+  const taken = rowMarkup(group, "Folder taken");
+  assert.match(taken, /<span class="shaping-chip is-shadowed">Shadowed<\/span>/);
+  // Its id's stored choice belongs to the registered shaper: there is no pill to press.
+  assert.doesNotMatch(taken, /aria-pressed/);
+});
+
+test("the folder note names where to drop a shaper, and says when entries past the bound were not read", () => {
+  const html = renderFolder(view({}), [], { path: "/state/shapers", ignored: 3 });
+  assert.match(html, /put a folder holding its <code>shaper\.json<\/code> in <code>\/state\/shapers<\/code>/);
+  assert.match(html, /3 more entries were not read: at most 32 are\./);
+});
+
+test("a folder shaper stored on that can no longer run can still be switched off, with no manifest hash", () => {
+  // Refused before its manifest was read, so the scan reports no hash and no shaper.
+  const refused = folderShaper("loose", "refused", { sha256: null, shaper: null });
+  const unreadable = folderShaper("broken", "invalid", { sha256: null });
+  const html = renderFolder(view({ overrides: { loose: true, broken: true } }), [refused, unreadable]);
+  for (const label of ["loose", "broken"]) {
+    const row = rowMarkup(html, label);
+    assert.match(row, new RegExp(`aria-label="${label}: on" aria-pressed="true"`));
+    assert.doesNotMatch(row, new RegExp(`disabled="" aria-label="${label}: on"`));
+    assert.match(row, /Stored on, but it cannot run as it is on disk\. Switch it off\./);
+  }
+  // Off, the same rows still cannot be switched on.
+  const off = renderFolder(view({}), [refused]);
+  assert.match(rowMarkup(off, "loose"), /disabled="" aria-label="loose: off"/);
+});
+
+test("a move never places a registered shaper relative to a folder shaper", () => {
+  const config = view({ shapers: [gatherer("a"), gatherer("b")], order: ["a", "folder-notes", "b"] });
+  const groups = shapingList(config, [folderShaper("folder-notes", "ok")] as never);
+  assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a", "folder-notes", "b"]);
+  assert.deepEqual(moveIntent(config, "b", -1), { kind: "place", id: "b", after: null, expect: shapingViewRevision(config, "b") });
+  assert.equal(moveIntent(config, "folder-notes", -1), null);
+});
+
+test("an enable intent may carry the manifest hash it was shown", () => {
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "enable", id: "folder-notes", enabled: true, manifest: "a".repeat(64) }).success, true);
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "enable", id: "folder-notes", enabled: true, manifest: "short" }).success, false);
 });

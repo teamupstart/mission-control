@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
+import { shellCommand, shellWords, wrapperAgentCommand } from "../../src/server/terminal/shell.ts";
 
 /**
  * The agent command a terminal backend was really given, read back through the launch wrapper.
@@ -33,5 +33,6 @@ export function launchedCommand(command: string): string {
     const launch = JSON.parse(readFileSync(join(dirname(wrapper), "launch.json"), "utf8")) as { argv: string[] };
     return shellCommand(launch.argv);
   }
-  return script.trimEnd().split("\n").at(-1) ?? "";
+  // Read by statement, not by line: a launch prompt spans lines inside its quotes.
+  return wrapperAgentCommand(script);
 }

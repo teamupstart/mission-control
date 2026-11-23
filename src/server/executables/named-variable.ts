@@ -1,5 +1,11 @@
 import type { WorktreeClaimVariableSource } from "@shared/worktrees.ts";
 
+/** The selected values and missing names for a single agent launch. */
+export interface NamedAgentEnvironment {
+  extraEnv: Record<string, string>;
+  missing: string[];
+}
+
 /** Where a named variable's value may come from, in the order they are consulted. */
 export interface NamedVariableSources {
   daemonEnv: NodeJS.ProcessEnv;

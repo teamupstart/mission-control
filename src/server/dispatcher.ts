@@ -17,7 +17,8 @@ import {
   type TaskLaunchFailure,
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
-import { launchAgentEnvironment, type NamedAgentEnvironment } from "./agent-environment.ts";
+import type { NamedAgentEnvironment } from "./executables/named-variable.ts";
+import { launchAgentEnvironment } from "./agent-environment.ts";
 import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";

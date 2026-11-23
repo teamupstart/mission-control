@@ -1,4 +1,5 @@
-import { launchAgentEnvironment, type NamedAgentEnvironment } from "../agent-environment.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
+import { launchAgentEnvironment } from "../agent-environment.ts";
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
 import { launchWorkUnitId } from "../work-unit.ts";
 import type { PauseRelease } from "../pause/release.ts";

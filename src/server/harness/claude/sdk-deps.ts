@@ -1,3 +1,4 @@
+import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
 import { spawn } from "node:child_process";
 import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
@@ -50,7 +51,7 @@ export function sdkSubprocessEnv(
   base: NodeJS.ProcessEnv = process.env,
   cwd?: string,
   stateHome?: string,
-  namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment,
+  namedEnvironment?: NamedAgentEnvironment,
 ): Record<string, string | undefined> {
   const inherited = { ...base };
   for (const name of namedEnvironment?.missing ?? []) delete inherited[name];

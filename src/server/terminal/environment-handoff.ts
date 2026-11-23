@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../agent-subprocess-env.ts";
-import type { NamedAgentEnvironment } from "../agent-environment.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { resolveOwnedRuntime } from "../../shared/owned-runtime.mjs";
 import { resumeGuardPath } from "../resume-guard-path.ts";
 

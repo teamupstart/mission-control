@@ -6,12 +6,7 @@ import { readToken } from "../shared/harness-runtime.mjs";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { probeLoginShellPath } from "./executables/locator.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { resolveNamedVariable } from "./executables/named-variable.ts";
-
-export interface NamedAgentEnvironment {
-  extraEnv: Record<string, string>;
-  missing: string[];
-}
+import { resolveNamedVariable, type NamedAgentEnvironment } from "./executables/named-variable.ts";
 
 export function saveAgentEnvironment(names: string[]): void {
   setAppConfig(APP_CONFIG_ENTRIES.agentEnvironment, AgentEnvironmentConfigSchema.parse({ names }));

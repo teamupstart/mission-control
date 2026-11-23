@@ -1,3 +1,4 @@
+import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
@@ -144,7 +145,7 @@ export interface CodexSdkDeps {
     options?: {
       residentStateDir?: string;
       codexHome?: string;
-      namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment;
+      namedEnvironment?: NamedAgentEnvironment;
       traceContext?: AgentTraceContext | null;
       /** This session's work unit, or null. One server per session, so it is session-scoped. */
       workUnitId?: string | null;
@@ -164,7 +165,7 @@ export function codexAppServerEnv(
   stateHome?: string,
   traceContext?: AgentTraceContext | null,
   workUnitId?: string | null,
-  namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment,
+  namedEnvironment?: NamedAgentEnvironment,
 ): Record<string, string | undefined> {
   return withWorkUnit(withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome, namedEnvironment), traceContext), workUnitId);
 }

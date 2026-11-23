@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 452 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -67,11 +67,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // report noise controls' seven flag-gated routes (`GET /mcp/reports/guidance`, `GET` and `PUT
   // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
   // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
-  // `inbox` flag off.
+  // `inbox` flag off. GET and PUT /api/agent-environment both answer 404 with the preview off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 459);
+  assert.equal(others.length, 461);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "9f1131746b07d11232d5a235c786cd86915414eaaa58cc9435f8ce4f668b53c8");
+    "027f65cb5ec5d74d14c4d67918d8a7e12e61324c6fc2cb9b2d8b6a0fbb07c828");
 });
 
 function sourceFiles(dir: string): string[] {

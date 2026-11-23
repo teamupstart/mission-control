@@ -189,7 +189,7 @@ export function homeBackends(
   for (const id of EMULATOR_IDS) {
     const backend = deps.emulators[id];
     const spawn = backend.spawn;
-    if (!spawn || binUnavailableReason(backend.bin, backend.label, deps)) continue;
+    if (!spawn || backend.dispatchUnavailable || binUnavailableReason(backend.bin, backend.label, deps)) continue;
     const list = backend.list;
     emu.push({
       id,
@@ -303,15 +303,17 @@ export async function launchHome(
   }
   const backends = homeBackends(deps, preferredBackend);
   if (!backends.length) {
+    const emulator = EMULATOR_IDS.find((id) => id === preferredBackend);
+    const dispatchUnavailable = emulator ? deps.emulators[emulator].dispatchUnavailable : null;
     return {
       ok: false,
       // Names what would fix it. A dispatch that fails here fails on every task until
       // something is installed, so "no terminal backend" alone would send the operator
       // looking at their agent binary.
-      error: preferredBackend
+      error: dispatchUnavailable ?? (preferredBackend
         ? `the selected terminal backend ${preferredBackend} cannot host a dispatched agent on this machine`
         : "no terminal backend can host a dispatched agent - install one of " +
-          [...MULTIPLEXER_IDS, ...EMULATOR_IDS].join(", "),
+          [...MULTIPLEXER_IDS, ...EMULATOR_IDS.filter((id) => !deps.emulators[id].dispatchUnavailable)].join(", ")),
     };
   }
   let last = "";

@@ -133,6 +133,7 @@ test("every registered backend gets a row, multiplexers first, unavailable ones 
         // conclude the feature is broken rather than that this backend cannot do it.
         ghostty: fakeEmulator({ id: "ghostty", label: "Ghostty" }),
         iterm: recordingEmu({ emulator: { id: "iterm", label: "iTerm2" } }).backend,
+        "macos-terminal": recordingEmu({ emulator: { id: "macos-terminal", label: "macOS Terminal" } }).backend,
       },
     }),
   );

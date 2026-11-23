@@ -1182,9 +1182,15 @@ export class Dispatcher {
       if (!spawnHasLaunchIdentity(home)) {
         throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
       }
-      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS);
+      // The last check that failed outright, so a timeout names it instead of blaming the agent.
+      let checkFailure: string | null = null;
+      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS, {
+        onCheckError: (error) => { checkFailure = error instanceof Error ? error.message : String(error); },
+      });
       if (!discovered) {
-        throw new Error("agent session never appeared (the launch may have exited immediately)");
+        throw new Error(checkFailure
+          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${checkFailure})`
+          : "agent session never appeared (the launch may have exited immediately)");
       }
       if (await settled()) return;
       if (home.terminalResourceId?.startsWith("emulator:")) {

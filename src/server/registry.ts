@@ -8351,6 +8351,10 @@ export class Registry extends EventEmitter {
    * on. One session is never checked twice at once. A session is resolved only if, re-read once
    * its check settles, it is still live and still at `cwd`.
    *
+   * A check that throws (an unreadable state home, a failed `ps`) leaves that session undecided
+   * and is retried like any other; `onCheckError` hears each such failure, so a caller that times
+   * out can name the real cause rather than suggest the agent never started.
+   *
    * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
    * `matches` defaults to `launchedSessionMatcher(home)`.
    */
@@ -8358,7 +8362,13 @@ export class Registry extends EventEmitter {
     cwd: string,
     home: SpawnedHome,
     timeoutMs: number,
-    matches: (session: Session) => Promise<boolean> = launchedSessionMatcher(home),
+    {
+      matches = launchedSessionMatcher(home),
+      onCheckError,
+    }: {
+      matches?: (session: Session) => Promise<boolean>;
+      onCheckError?: (error: unknown) => void;
+    } = {},
   ): Promise<Session | null> {
     if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
     return new Promise<Session | null>((resolve) => {
@@ -8383,7 +8393,9 @@ export class Registry extends EventEmitter {
             // a later sighting at `cwd` can still qualify.
             if (current && current.state !== "exited" && current.cwd === cwd) finish(current);
           },
-          () => {},
+          (error: unknown) => {
+            if (!settled) onCheckError?.(error);
+          },
         ).finally(() => checking.delete(s.id));
       };
       const scan = (): void => {

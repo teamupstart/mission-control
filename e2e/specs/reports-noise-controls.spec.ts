@@ -21,9 +21,18 @@ import type { Session, Task } from "../../src/shared/types.ts";
  * - **Mark all read** on the Reports heading clears exactly what was listed.
  *
  * Real daemon, real routes, real SSE and the real built dashboard. Reports are posted on the MCP
- * tool's own channel, the session's working and stopping arrive through the real hook ingest, the
- * agents are the suite's fakes, and only the OS notification constructor is stubbed - it records
- * each toast and keeps it so the test can click it the way a person would.
+ * tool's own channel, the session's working and stopping arrive through the real hook ingest, and
+ * the agents are the suite's fakes. The OS notification constructor is stubbed: it records each
+ * toast and keeps it so the test can click it the way a person would.
+ *
+ * The refusal cases also intercept the browser's request with `page.route` and answer it with a
+ * refusal the real daemon would not give on demand: `POST /api/reports/read-all` (503),
+ * `GET /api/reports/guidance` (500) and `PUT /api/reports/guidance` (403), `POST
+ * /api/reports/mutes` (503) and `DELETE /api/reports/mutes/:authorKey` (503). Those cases prove
+ * what the dashboard shows for a refusal, not how the daemon refuses. The routes' own refusals
+ * are covered in `test/reports-http.test.ts`. The already-unmuted case does not fake its answer:
+ * it unmutes on the daemon first, then lets the dashboard's request through to the real route,
+ * which answers 404.
  */
 
 const EVIDENCE = artifactsDir("reports-noise-controls");

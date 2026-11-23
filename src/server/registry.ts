@@ -9979,6 +9979,10 @@ export class Registry extends EventEmitter {
       this.observeAwaitingTurn(s);
       return;
     }
+    // A live sibling on the same key (a resumed process while the old one lingers) only keeps the
+    // key fresh. Its readings are not the holder's turns, and one last-state shared by the two
+    // would read each session's state change as the other's turn starting or ending.
+    if (record.sessionId !== s.id) return;
     // A presumed state says nothing about turns: discovery presumes `working` until a hook, a
     // transcript or a driver confirms what the session is doing.
     if (!s.stateConfirmed) return;

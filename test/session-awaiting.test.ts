@@ -1366,6 +1366,37 @@ test("a blocker that fails to write keeps the wait it would have replaced", () =
   assert.deepEqual(clearedEvents(d.syntheticId), []);
 });
 
+test("a live sibling sharing the key never starts or ends the holder's turn", () => {
+  const registry = new Registry();
+  const conversation = `sibling-conv-${++seq}`;
+  const a = mkDiscovered({ agent: "codex", agentSessionId: conversation });
+  const b = mkDiscovered({ agent: "codex", agentSessionId: conversation });
+  registry.applyDiscovery([a, b]);
+  let at = Date.now() - 60_000;
+  const read = (d: DiscoveredSession, state: "idle" | "working") => {
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity: at += 1_000 });
+    registry.applyDiscovery([a, b]);
+  };
+  read(a, "working");
+  read(b, "working");
+  assert.equal(registry.reportAwaiting(a.syntheticId, body()).ok, true);
+  const key = noteKeyFor(registry.getSession(a.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key)!;
+  // The sibling going idle is not the holder's declaring turn ending.
+  read(b, "idle");
+  assert.equal(stored().settledAt, null, "the sibling's idle settled the holder's declaring turn");
+  read(a, "idle");
+  assert.notEqual(stored().settledAt, null);
+  // The sibling working again is not the holder's next turn.
+  read(b, "working");
+  assert.ok(registry.getAwaiting(a.syntheticId), "the sibling's reading ended the holder's wait");
+  assert.deepEqual(clearedEvents(a.syntheticId), []);
+  // The holder's own next turn is the wake.
+  read(a, "working");
+  assert.equal(registry.getAwaiting(a.syntheticId), null);
+  assert.equal(clearedEvents(a.syntheticId).at(-1)?.actor, "wake");
+});
+
 test("a wake publishes the cleared wait of every session sharing its key", () => {
   const registry = new Registry();
   const conversation = `shared-conv-${++seq}`;

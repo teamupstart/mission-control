@@ -264,11 +264,16 @@ export class ReportManager {
     // is read when the session is first seen, or when the grace period ends. The grace period
     // keeps its original deadline, 20 seconds after the post: a restart neither extends it nor
     // restarts it.
+    //
+    // Only a report whose deadline passed at most one more grace period ago is recovered: that
+    // is a post the restart interrupted. Anything older stays unstamped and silent - every report
+    // posted before stamping existed has no stamp, and stamping a backlog of them on the first
+    // start would raise one notification per report long after anyone needed it.
     for (const report of this.listToRead()) {
       this.registry.upsertReport(report);
-      if (report.announcedAs === null) {
-        const remaining = Math.max(0, report.createdAt + REPORT_ANNOUNCE_GRACE_MS - this.now());
-        this.watch(report.id, report.sessionId, null, remaining);
+      const deadline = report.createdAt + REPORT_ANNOUNCE_GRACE_MS;
+      if (report.announcedAs === null && deadline + REPORT_ANNOUNCE_GRACE_MS >= this.now()) {
+        this.watch(report.id, report.sessionId, null, Math.max(0, deadline - this.now()));
       }
     }
     // The snapshot omits reports while the `inbox` flag is off, and the registry sends no report

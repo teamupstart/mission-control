@@ -365,7 +365,9 @@ A report the daemon had not yet worded when it stopped is worded from its sessio
 restart, against its original 20-second deadline: a restart neither extends nor restarts it. If
 that deadline has passed before the restarted daemon sees the session again, the wording waits
 for the session's first sighting, up to one more 20-second period, after which a session still
-unseen is taken to have left and the report is worded "back".
+unseen is taken to have left and the report is worded "back". Only a report whose deadline
+passed at most 20 seconds before the restart is recovered this way; an older one that was never
+worded, including every report posted before this build, is left alone and raises no notification.
 
 **Clicking a report notification** opens the inbox at that report. The first row that matches
 decides:

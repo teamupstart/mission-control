@@ -563,7 +563,7 @@ test("a report the daemon stopped before stamping is stamped from its session's 
   before.reports.stop();
 
   // The restarted daemon re-adopts sessions after the manager starts.
-  clock.now = 50_000;
+  clock.now = 30_000;
   const after = announcer(clock);
   for (const r of [idleReport, busyReport, unseenReport]) assert.equal(after.reports.get(r.id)?.announcedAs, null);
   after.set({ ...idle, state: "idle" });
@@ -601,11 +601,30 @@ test("after a restart an unconfirmed session's idle state is no evidence it stop
   // Restarted after the deadline, first sighting unconfirmed: announced as still working at once.
   const lateReport = await after.reports.post(late, { title: "Late", body: "b" });
   after.reports.stop();
-  clock.now = 60_000;
+  clock.now = 30_000;
   const later = announcer(clock);
   later.fireSetSoFar(); // the deadline passed with the session not yet re-adopted
   later.set({ ...late, state: "idle", stateConfirmed: false });
   assert.equal(later.reports.get(lateReport.id)?.announcedAs, "working");
+});
+
+test("a restart recovers only reports it interrupted: an older unstamped report is never stamped, and raises nothing", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-backlog");
+  before.set(session);
+  const old = await before.reports.post(session, { title: "From before stamping existed", body: "b" });
+  before.reports.stop();
+
+  // Long after its deadline: a backlog report, as every report from before this build is.
+  clock.now = 1_000 + 3 * 20_000;
+  const after = announcer(clock);
+  after.set({ ...session, state: "idle" }); // re-adopted idle and confirmed
+  after.fireAll();
+  assert.equal(after.reports.get(old.id)?.announcedAs, null, "left unstamped");
+  assert.ok(after.upserted.filter((r) => r.id === old.id).every((r) => r.announcedAs === null), "no stamp event, so no notification");
+  after.remove(session.id);
+  assert.equal(after.reports.get(old.id)?.announcedAs, null);
 });
 
 test("after a restart the grace period keeps its original deadline: still working at it is working", async () => {
@@ -641,9 +660,9 @@ test("after a restart past the deadline, the session's first sighting decides, a
   const lostReport = await before.reports.post(lost, { title: "Lost", body: "b" });
   before.reports.stop();
 
-  clock.now = 60_000;
+  clock.now = 30_000;
   const after = announcer(clock);
-  after.fireSetSoFar(); // both deadlines are long past; neither session has been re-adopted yet
+  after.fireSetSoFar(); // both deadlines have passed; neither session has been re-adopted yet
   assert.equal(after.reports.get(lateReport.id)?.announcedAs, null, "absence right after a restart says nothing");
   assert.equal(after.reports.get(lostReport.id)?.announcedAs, null);
   after.set(late); // first seen working, past its deadline

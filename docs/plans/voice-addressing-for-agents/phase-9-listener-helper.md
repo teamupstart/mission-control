@@ -6,8 +6,8 @@ this file. Owns V10 and V34.
 ## 1. Outcome
 
 A standalone listener program hears the microphone, transcribes speech with Parakeet through
-FluidAudio and posts utterances to the daemon. Started by hand, with the model downloaded, it makes
-voice work end to end on a development Mac.
+FluidAudio and posts utterances to the daemon. Started by hand, with the model downloaded, a
+sentence spoken on a development Mac reaches the named agent as a queued message.
 
 ## 2. Entry criteria
 
@@ -68,8 +68,9 @@ Nothing stored. The helper's hello carries the protocol version that Phase 1's r
   with a gap of at least `pauseMs`; a primed roster name is spelled as primed; silence produces no
   utterance.
 - Manual check, recorded in the pull request: with the model downloaded and the helper started,
-  say "<resident>, check the build"; the toast appears; mute closes the microphone (the macOS
-  orange dot goes out).
+  say "<resident>, check the build"; after the cancel window the message is in the resident's
+  conversation and `GET /api/voice/heard` lists the utterance; mute closes the microphone (the
+  macOS orange dot goes out). No card is drawn at this point: the toast is Phase 6's.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the tests.
 
 ## 8. Merge and exit criteria
@@ -86,3 +87,5 @@ reads contract I and nothing else, so whoever starts it needs no Electron.
 
 - If S1 is no-go, see Phase 8's audit record: the sherpa-onnx backend is built here instead.
 - After Phase 12: capture is paused through the directive while the system voice speaks.
+- Plan validation round 1: the manual check uses the queued message and the Recently heard
+  route, which Phase 3 built, and no longer a toast.

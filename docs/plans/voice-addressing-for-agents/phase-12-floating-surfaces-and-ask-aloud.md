@@ -38,7 +38,8 @@ As of `2088bd522`:
    outside the pill pass through.
 2. **Popover window.** `src/main/voice-popover-window.ts`: a frameless window anchored under the
    tray icon's bounds, loading `#/voice/popover`. It shows the live card when the placement is
-   `popover`, and Recently heard when opened from the tray menu's Recently Heard row.
+   `popover`, and Recently heard when opened from a Recently Heard row this phase adds to the
+   tray menu.
 3. **Placement.** The shell reports the `floating-windows` capability. The dashboard's host then
    draws no toast while the pill or popover is selected (contract G). Long text is truncated in
    the pill with the full text in its accessible name.
@@ -50,7 +51,9 @@ As of `2088bd522`:
    and the answer is the candidate's name (Phase 3's pick rule) or a click.
 6. **Setting.** The "When routing is unsure" row gains Ask aloud as an enabled choice when the
    `speech-output` capability is available; the placement previews drop "Needs the desktop app".
-7. **Docs.** `docs/voice.md`, `docs/ui.md`, `docs/desktop-and-packaging.md`.
+7. **Link.** The `unsure` card gains a Recently heard link, which opens the popover in the
+   desktop app and the table in Voice settings in a browser.
+8. **Docs.** `docs/voice.md`, `docs/ui.md`, `docs/desktop-and-packaging.md`.
 
 ## 6. Data and compatibility
 
@@ -85,3 +88,5 @@ None inside this plan. The Linux follow-on leaves `floating-windows` unavailable
 
 - If S9 finds that pausing capture does not stop the listener hearing the system voice, ask aloud
   ships off by default and the finding is recorded in `docs/voice.md`.
+- Plan validation round 1: the unsure card's Recently heard link is added here, because this is
+  the first phase that follows both the card (Phase 6) and Recently heard (Phase 7).

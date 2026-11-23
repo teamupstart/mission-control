@@ -38,8 +38,10 @@ As of `2088bd522`:
    phase fills the `fluidaudio` entry from the spike. A test fails on a URL that is not pinned.
 2. **Manager.** A server `VoiceModelManager`: download each file to a temporary name beside its
    destination, hash while writing, refuse a size or digest mismatch, rename into place, and keep
-   `VoiceState.model` current. A partial download is removed on failure or cancel. At start it
-   verifies sizes and a stored digest record; a missing file or wrong size reads `missing`.
+   `VoiceState.model` current. A partial download is removed on failure or cancel. At start, and
+   before it reports a model already on disk as `ready`, it hashes each file again and compares
+   it with the manifest's SHA-256, reading `verifying` meanwhile. A missing file reads `missing`;
+   a wrong size or digest reads `failed` with Retry. No stored record stands in for the hash.
 3. **Routes.** Contract H's download and cancel routes. The base URL can be overridden by
    `MISSION_VOICE_MODEL_BASE_URL` so tests serve small fixture files.
 4. **Setup rows.** `voice-model` with a new remedy kind `voice-model-download`: Download, a
@@ -63,7 +65,8 @@ the manifest downloads beside the old one, which is removed after the new one ve
 
 - `test/voice-models.test.ts`: the manifest's shape and pinning.
 - `test/voice-model-download.test.ts` against a local fixture server: success, a digest mismatch,
-  a short file, cancel, a retry after failure, verification at start.
+  a short file, cancel, a retry after failure, verification at start, and a file altered on
+  disk without changing its size, which is refused at the next start.
 - `e2e/specs/voice-model-setup.spec.ts`, with the fixture base URL: the row reads missing;
   Download shows progress then Verified; a corrupt fixture shows the error and Retry; the
   microphone row reads "Not checked yet".
@@ -85,3 +88,5 @@ nothing else here.
 - If S1 is no-go, this phase fills the `sherpa-onnx` entry instead and Phase 16's backend moves
   ahead of Phase 9's; the operator is asked before that swap.
 - After Phase 10: the microphone row's Fix asks macOS or opens System Settings.
+- Plan validation round 1: the start-up check hashes the files instead of trusting sizes and a
+  stored record, so "a tampered file is refused" holds for a same-size change.

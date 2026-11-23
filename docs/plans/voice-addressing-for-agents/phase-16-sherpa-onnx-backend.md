@@ -11,7 +11,8 @@ run.
 
 ## 2. Entry criteria
 
-Phase 9 is merged.
+Phases 9 and 10 are merged. Phase 10 supplies the shell's listener supervisor, which step 4
+changes.
 
 ## 3. Scope and non-goals
 
@@ -27,7 +28,8 @@ As of `2088bd522`:
   esbuild inlines JavaScript. A prebuilt addon has to be copied into `dist/` by a build script,
   through `publishNativeAddon`, to be packaged.
 - Inherited: contract I and the fake listener (Phase 9), the hello (contract B), `VOICE_MODELS`
-  and the manager (contract H), `backend` (contract A), and the spike's S2.
+  and the manager (contract H), `backend` (contract A), the shell's listener supervisor (Phase
+  10), and the spike's S2.
 
 ## 5. Implementation steps
 
@@ -65,8 +67,8 @@ downloads that backend's model; the other's files are left in place.
   the reason when the model is absent; the token-to-word merge is tested without a model.
 - `test/voice-backend-select.test.ts`: `auto` on each platform and the explicit overrides.
 - Manual check, recorded in the pull request: on a Mac with `backend` set to `sherpa-onnx`,
-  speak to a resident and see the toast; where a Linux desktop is at hand, the same with the
-  launcher.
+  speak to a resident and see the message arrive in its conversation; where a Linux desktop is at
+  hand, the same with the launcher.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and the tests.
 
 ## 8. Merge and exit criteria
@@ -85,3 +87,5 @@ hotkey and Linux call detection behind the shell-report fields of contract B.
   depend on it.
 - If S1 was no-go, this backend was built in Phase 9's place, and this phase builds FluidAudio
   when the operator still wants it.
+- Plan validation round 1: Phase 10 is a direct prerequisite, because step 4 changes the
+  supervisor that phase creates.

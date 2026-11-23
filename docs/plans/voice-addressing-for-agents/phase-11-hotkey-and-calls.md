@@ -66,7 +66,8 @@ keep-awake addon is.
 - `test/native-addon-publish.test.ts` covers the two new builders.
 - `e2e/specs/voice-hotkey-setting.spec.ts`: with a fake shell report offering the capability,
   capture a chord and see it saved; a reported `hotkeyError` shows the warning; a reported call
-  turns the status line to auto-muted and a reported hold to push-to-talk.
+  turns the mode line at the top of Voice settings (Phase 1's) to auto-muted, and a reported
+  hold to push-to-talk.
 - Manual check on a Mac, recorded in the pull request: tap from another app; join a call and see
   auto-mute; hold to talk; leave the call.
 

@@ -60,10 +60,10 @@ from the operator's reviews.
 | V20 | A hibernated session is resumed, then the message is delivered. |
 | V21 | A closed or exited agent: the card says "<name> isn't running" with a hint, relaunch for a resident or Start a follow-up task for a finished session. Completed sessions are not resumed. |
 | V22 | A spoken message gets one appended line: "When you have finished this, post a report." Typed messages do not. |
-| V23 | Speech is an ordinary message unless one of the agent's cards is open on screen. It does not fill or submit a card that is not open. |
+| V23 | Speech addressed to an agent is an ordinary message. It fills or submits a card in two cases and no other: one of the agent's cards is open on screen and the utterance carries V26's open-card signal; or the utterance is one of V26's explicit answer phrases, which reach the agent's pending question whether or not its card is open. "Steve, do X" with no card open is delivered as a message and touches no card. |
 | V24 | When the agent has open questions, a note listing them is appended at delivery, asking the agent to withdraw, with a reason, any question the message settles. |
 | V25 | A question that still blocks its agent is converted to a filed question so the message can be delivered. A session on an older MCP bundle cannot be converted: the message waits behind the question and the card says so. |
-| V26 | Answering needs an explicit signal: the card is open and the utterance starts with the agent's name or "reply"; or an explicit phrase from anywhere ("Steve, answer: Postgres", "Steve, option two", "Steve, go with your recommendation"). The model maps a loosely worded reply to the card's options. |
+| V26 | Answering needs an explicit signal, and there are two. The open-card signal: the card is open on screen and the utterance starts with the agent's name or "reply". The explicit answer phrase, which works from anywhere, card open or not: "Steve, answer: Postgres", "Steve, option two", "Steve, go with your recommendation". The model maps a loosely worded reply to the card's options. |
 | V27 | With the card open, a reply that matches an option ticks it and anything else goes into the text box. Naming a different agent routes to that agent. Speech with no name does not touch a card unless it starts with "reply". From anywhere, an explicit answer that matches no option is delivered as a message. |
 | V28 | A single `request_input` card: the tick or text appears visibly and Submit counts down on the routing cancel window. "Cancel" stops it. "No, A" switches the choice and restarts the countdown. With the window off it submits at once. |
 | V29 | A `request_plan_decisions` form is fill-only by voice. It waits for "<name>, submit", "reply, submit" or a click. A half-filled form cannot be submitted. |
@@ -188,7 +188,8 @@ Root plan review and the conversation that followed it.
     A session's role is its task title.
 15. **Storage.** Resident settings are revision JSON (`src/server/db.ts:2352`), so a reference name
     needs no SQL column. A call sign needs a `tasks` column (`addColumn`, `src/server/db.ts:5406`).
-    The schema is at version 42 (`:299`).
+    The schema is at version 42 (`:299`). A spoken turn adds two nullable columns to
+    `pending_turns` (Phase 5).
 16. **`agentDisplayName` is not on `main` yet.** It arrives with the inbox plan's Phase 1.
 17. **Cards print no option letters.** "Steve, option B" needs them
     (`src/web/components/PlanDecisions.tsx:218-249`). The adopted mock-ups add a letter per option.
@@ -268,7 +269,8 @@ toast in the dashboard, or in a frameless shell window as a pill or a tray popov
 - A spoken message is an operator turn in the pending-turn outbox. Its text is the operator's
   words followed by daemon-written notes: the post-a-report line, the open-questions note and the
   inbox plan's unseen-reports note. The conversation shows the words, with the exact text the
-  agent received behind a disclosure.
+  agent received behind a disclosure. The notes are written when the turn is delivered, so they
+  describe the agent at that moment; the row keeps the operator's words beside the composed text.
 - Idle starts a turn; busy queues; hibernated resumes then delivers. Not running sends nothing and
   shows the hint. "<name>, stop" calls the interrupt path.
 - Foreman is refused on that session's reviews from routing until the spoken turn has ended.
@@ -276,7 +278,9 @@ toast in the dashboard, or in a frameless shell window as a pill or a tray popov
 ### Answering cards
 
 - The dashboard reports which cards are open on screen. The voice target is the agent's one open
-  card, or the focused one when it has several.
+  card, or the focused one when it has several. An explicit answer phrase (V26) reaches the
+  agent's one pending question even when no card is open; the countdown is then drawn on a voice
+  card.
 - The daemon holds a pending voice answer and resolves it through the route a click uses. The
   dashboard mirrors it into the card: the tick or text, the countdown footer, the voice mark.
 - A plan form fills and waits. "Submit" is refused while a decision is unanswered, and the refusal

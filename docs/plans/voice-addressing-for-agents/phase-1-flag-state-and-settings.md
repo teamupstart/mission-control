@@ -56,8 +56,8 @@ As of `2088bd522`:
    /voice/listener/hello`. A hello carries a protocol version; one with an unknown major version
    is refused with 409 and the state says why.
 5. **Settings.** A `voice` category gated on the flag. Rows: auto-mute during calls, cancel window
-   (switch and seconds), when routing is unsure, plan forms by voice. A status line at the top
-   prints the mode and, when unavailable, the reasons with a link to Setup.
+   (switch and seconds), when routing is unsure, plan forms by voice. A mode line at the top
+   of the category prints the mode and, when unavailable, the reasons with a link to Setup.
 6. **Setup.** A `voice` family; the dependency `voice-previews`, optional, whose probe passes when
    the required flags are on; a new remedy kind `feature-flags` whose Fix button turns them on
    through `PUT /api/feature-flags`.
@@ -79,7 +79,7 @@ no category or family is drawn.
 - `test/feature-flags.test.ts` and the setup catalog tests cover the new entries.
 - `e2e/specs/voice-flag-and-settings.spec.ts`: the flag row toggles; the Voice category appears;
   changing the cancel window persists across a reload; the Setup row's Fix turns the three flags
-  on and the row passes; the status line reads unavailable, then listening once `beListener` runs.
+  on and the row passes; the mode line reads unavailable, then listening once `beListener` runs.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the spec.
 
 ## 8. Merge and exit criteria

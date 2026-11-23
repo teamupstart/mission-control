@@ -19,6 +19,35 @@ writes the plan and schedules the phases. It ships no product code.
 - Shell work needs a listener to supervise, and floating windows need the card component, so the
   shell phases follow both.
 
+## Plan validation round 1
+
+Five findings were accepted and applied across the bundle:
+
+- **One rule for a card that is not open.** V23 said speech does not fill a card that is not
+  open, while V26 and Phase 13 let an explicit answer phrase do so. The rule is now stated once,
+  in V23: speech reaches a card through the open-card signal or through an explicit answer
+  phrase, and through nothing else. V26 names the two signals, and Phase 13's step 3, tests and
+  exit criterion refer to them.
+- **Phase 9 is verified through what its prerequisites built.** Its manual check asked for a
+  toast, which is Phase 6's. It now checks the queued message in the agent's conversation and
+  the Recently heard route, both from Phase 3. Phase 16's manual check was corrected the same way.
+- **Phase 16 follows Phase 10.** It changes the shell's listener supervisor, which Phase 10
+  creates, so Phase 10 is now a direct prerequisite in the table, the graph and the task.
+- **A spoken turn's notes are composed once, at delivery.** Phase 5 said both that the turn is
+  created with the full text and that its notes are computed at delivery. Now the words are
+  stored at submit, the notes are composed when the outbox claims the turn, and `composed_at`
+  stops a retry or restart composing twice. Contract F carries the two columns and the
+  signature. Phase 5 gains a migration and three tests.
+- **A model is hashed again before it reads ready.** Phase 8's start-up check compared sizes and
+  a stored record, which a same-size change passes. It now hashes each file against the manifest
+  before reporting `ready`, with a same-size tampering test.
+
+The same pass checked each phase's verification against what its prerequisites built, and found
+two more of the second kind: the unsure card's Recently heard link sat in Phase 6, which does not
+follow Phase 7, so it moved to Phase 12; and Phase 11's spec read a "status line" that could be
+taken for Phase 7's indicator, so Phase 1's line at the top of Voice settings is now called the
+mode line in both phases.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -43,7 +72,7 @@ pull request holds a few hundred. A spike and sixteen phases:
 | 13 | `phase-13-answer-cards-by-voice.md` | Open-card report, voice answers, countdown footer, hints | 6 | Opus | 650 to 800 |
 | 14 | `phase-14-plan-forms-and-inbox-actions.md` | Plan forms by voice, spoken inbox actions | 13, filed 2, inbox 4, 5, 7 | Opus | 650 to 800 |
 | 15 | `phase-15-question-conversion.md` | Converting a blocking question | 5 | Astra | 300 to 400 |
-| 16 | `phase-16-sherpa-onnx-backend.md` | The portable listener backend | 9 | Astra | 400 to 550 |
+| 16 | `phase-16-sherpa-onnx-backend.md` | The portable listener backend | 9, 10 | Astra | 400 to 550 |
 
 "Inbox n" and "filed n" are phase tasks of the two prerequisite plans. "Opus" is Claude Opus 5.5
 at extra-high effort, for a phase with a UI part. "Astra" is GPT-6 Astra at extra-high effort.
@@ -94,6 +123,7 @@ graph LR
   I4[inbox 4, 5, 7] --> P14
   P5 --> P15[15 conversion]
   P9 --> P16[16 sherpa-onnx]
+  P10 --> P16
 ```
 
 ## Concurrency and merge order
@@ -101,11 +131,12 @@ graph LR
 - 0 runs beside 1 and 2. 8 runs beside 2 to 7 once 0 and 1 have merged.
 - After 3: phases 4, 5 and 7 may run together.
 - After 6: phase 13 runs beside the shell phases 10 to 12.
-- 15 and 16 run beside anything that is not their prerequisite.
+- 15 runs beside anything that is not its prerequisite. 16 runs beside 11 to 15 once 10 has
+  merged.
 - Phases that run together edit `src/server/routes.ts`, `src/shared/types.ts`,
   `src/web/useEventStream.ts`, `src/web/components/SettingsPage.tsx` and `docs/voice.md` in
-  different places; the later one rebases. A phase that adds a migration (2) takes the next
-  schema number at merge time, as the sibling plans do.
+  different places; the later one rebases. A phase that adds a migration (2 and 5) takes the
+  next schema number at merge time, as the sibling plans do.
 
 ## Cross-phase contracts
 
@@ -160,8 +191,10 @@ not return the key.
 
 **F. Spoken turns (Phase 5).** `VOICE_TURN_PREFIX`, `spokenMessageText(words, notes)` and
 `openQuestionsNote(asks)` in `src/shared/voice-delivery.ts`;
-`PendingTurnManager.submitSpoken(sessionId, words, notes, utteranceId)`; the delivery outcomes
-`sent`, `queued`, `held`, `not-running`, `failed`; `voiceHold(sessionId)`.
+`PendingTurnManager.submitSpoken(sessionId, words, utteranceId)`, which stores the words and
+composes the notes once, when the turn is claimed for delivery; the `pending_turns` columns
+`spoken_words` and `composed_at`; the delivery outcomes `sent`, `queued`, `held`, `not-running`,
+`failed`; `voiceHold(sessionId)`.
 
 **G. Card component (Phase 6).** `VoiceCardView` draws one `VoiceCard`. `VoiceCardHost` shows it
 as a toast when `ui.voice.confirmation` is `toast` or the `floating-windows` capability is
@@ -234,8 +267,8 @@ resident, cancel, mute by hotkey and tray, join a call, push to talk, answer a c
   give each surface one owner.
 - Each contract A to K has one owning phase, and its consumers depend on that phase directly or
   through the graph.
-- Phases that may run together (4, 5, 7; 13 beside 10 to 12; 15; 16) consume no contract owned by
-  one another.
+- Phases that may run together (4, 5, 7; 13 beside 10 to 12; 15; 16 beside 11 to 15) consume no
+  contract owned by one another.
 - Phase 3 leaves spoken messages working as plain queued messages, so phases 4 to 7 each merge
   onto an operable repository in any order the graph allows.
 - The settings fields in contract A cover what phases 4, 6, 7, 8, 11, 12, 14 and 16 read.
@@ -243,3 +276,6 @@ resident, cancel, mute by hotkey and tray, join a call, push to talk, answer a c
   a microphone, a model or macOS.
 - After the final approval round: the not-running card for a resident carries a Relaunch button,
   stated in the source plan's adopted decisions and in Phase 6.
+- After plan validation round 1: each of the five rules above reads the same in the source plan,
+  the contracts and the phase that owns it, and each phase's verification uses surfaces its own
+  prerequisites built.

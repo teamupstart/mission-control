@@ -43,12 +43,15 @@ As of `2088bd522`:
    target.
 2. **Letters.** `optionLetter(index)` (A, B, C) in shared code. `DecisionForm` prints the letter
    on each option row while the voice flag is on.
-3. **Answer forms**, added to the router ahead of the name rule:
-   - explicit, from anywhere: "<name>, answer: ...", "<name>, option B" or "option two",
-     "<name>, go with your recommendation". These target the agent's one pending `input` review,
-     open or not; with several pending they need a target.
-   - with a target card open: "<name>, ..." or "reply, ...". "reply" with no name uses the
-     focused card.
+3. **Answer forms**, added to the router ahead of the name rule. They are V23's two cases, and
+   speech reaches a card through nothing else:
+   - the explicit answer phrase, from anywhere: "<name>, answer: ...", "<name>, option B" or
+     "option two", "<name>, go with your recommendation". It targets the agent's one pending
+     `input` review whether or not its card is open. With several pending it uses the voice
+     target; with none, the router lists the questions as rows to pick from.
+   - the open-card signal: with a target card open, "<name>, ..." or "reply, ...". "reply" with
+     no name uses the focused card.
+   Other speech to an agent whose card is not open is delivered as a message and touches no card.
    A letter, an ordinal or an exact label is matched without a model; other wording goes to
    `ask` as an `option` question. A match ticks the option. No match: with the card open the words
    become the card's text answer; from anywhere they are delivered as a spoken message.
@@ -56,7 +59,9 @@ As of `2088bd522`:
 4. **Pending answer.** The daemon holds a `VoiceAnswer { reviewId, selections, text, deadline }`,
    emits `voice_answer`, and at the deadline resolves the review as the human through the resolve
    path. "Cancel" clears it. "No, A" replaces the selection and restarts the deadline. With the
-   cancel window off it resolves at once.
+   cancel window off it resolves at once. When no dashboard is showing that card, the router also
+   opens a `pending` voice card whose text is the answer, so the countdown and Cancel stay on
+   screen.
 5. **Card.** On `voice_answer` the dashboard writes the selection or text into the review draft
    with a voice mark, and `ReviewCard` swaps its action row for the countdown footer: what will
    be sent, the seconds, Cancel and Submit now. A click on another option during the window
@@ -73,13 +78,16 @@ foot line or report exists.
 
 ## 7. Tests and verification
 
-- `test/voice-answer-routing.test.ts`: each form, the target rule, a second agent named, no name.
+- `test/voice-answer-routing.test.ts`: each form, the target rule, a second agent named, no name,
+  an explicit phrase with no card open, and plain speech with no card open.
 - `test/voice-answer-http.test.ts`: deadline resolve, cancel, switch, window off, a review that
   settles meanwhile.
 - `e2e/specs/voice-answer-card.spec.ts`: open Steve's question; say "Steve, option B"; B is ticked
   and the footer counts down; say "no, A"; A is ticked; after the window the card is answered
   with A. Say "reply, neither yet" on a nameless agent's card; the text box fills and submits.
-  With the inbox closed, "Steve, do X" is delivered as a message and the card is untouched.
+  With the inbox closed, "Steve, do X" is delivered as a message and the card is untouched;
+  "Steve, option B" with the inbox closed shows a voice card that counts down, and the question
+  is then answered with B.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the spec.
 
 ## 8. Merge and exit criteria
@@ -94,3 +102,5 @@ Phase 14 extends the open-cards report with report and Stuck cards and reuses `C
 ## 10. Cross-phase audit record
 
 - After Phase 14: plan-decision reviews are excluded from step 3 here and handled there.
+- Plan validation round 1: V23 now states the two cases in which speech reaches a card, and step
+  3 names them instead of restating a rule of its own.

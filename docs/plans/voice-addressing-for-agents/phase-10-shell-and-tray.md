@@ -86,7 +86,8 @@ microphone. The tray shows the mode and a click mutes.
 ## 9. Downstream handoff
 
 Phase 11 adds the hotkey and call signals to the same shell report. Phase 12 reads the shell's
-card state for its windows.
+card state for its windows and adds a Recently Heard row to the tray menu. Phase 16 makes the
+supervisor follow the resolved backend.
 
 ## 10. Cross-phase audit record
 

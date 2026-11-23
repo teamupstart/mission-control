@@ -30,7 +30,7 @@ As of `2088bd522`:
   (`src/server/routes.ts:9607`). A queued turn is recalled with `POST
   /api/sessions/:id/pending-turns/:turnId/recall` (`:6736`).
 - Inherited: `VoiceCard` and its routes (contract D), the outcomes (contract F), `ui.voice`
-  (contract A), capabilities (contract B), the Recently heard routes (contract D).
+  (contract A), capabilities (contract B).
 
 ## 5. Implementation steps
 
@@ -39,8 +39,7 @@ As of `2088bd522`:
      Send now, and the hint: Say "cancel" to stop;
    - `resolving`: "Working out who this is for";
    - `unsure`: "Who is this for?", the words as heard, one roster row per candidate (name, role,
-     live state) and a Recently heard link; a row is a button; the hint says to say the name
-     again or click a row;
+     live state); a row is a button; the hint says to say the name again or click a row;
    - `sent` and `queued`: "Sent to <name>", or "Queued behind his current turn"; when the agent
      has open questions, the count and the hint: Say "<name>, answer" to reply to one;
    - `held`: "Held for <name>", the row, the question it waits behind, Open question, Cancel
@@ -108,3 +107,5 @@ Cancel and Submit now pair for the countdown footer.
   occurs and no copy.
 - After the final approval round: a resident that is not running gets a Relaunch button, as the
   selected mock-up shows, where the inbox plan's report card uses a sentence.
+- Plan validation round 1: the unsure card's Recently heard link moved to Phase 12, the first
+  phase that follows both this card and the Recently heard surfaces.

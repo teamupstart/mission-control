@@ -67,6 +67,26 @@ function publishedFiles(path: string) {
   return files;
 }
 
+function removeMarkedDirectory(path: string) {
+  const owner = join(path, "owner.json");
+  for (const name of readdirSync(path)) {
+    if (name !== "owner.json") rmSync(join(path, name), { recursive: true });
+  }
+  // Keep the ownership proof until every payload entry is gone. If final removal
+  // fails, leave the same directory marked for the next reconciliation.
+  const directory = lstatSync(path);
+  const marker = readFileSync(owner);
+  unlinkSync(owner);
+  try {
+    rmdirSync(path);
+  } catch (error) {
+    const current = lstatSync(path, { throwIfNoEntry: false });
+    if (current?.dev === directory.dev && current.ino === directory.ino)
+      writeFileSync(owner, marker, { flag: "wx", mode: 0o600 });
+    throw error;
+  }
+}
+
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
   private static readonly services = new Map<string, WorkflowRepositoryArtifactService>();
   static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories")) {
@@ -151,11 +171,21 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     if (marker.id !== id || marker.kind !== kind || (nonce && nonce !== marker.nonce)) unavailable();
     return path;
   }
-  private remove(kind: Marker["kind"], id: string, nonce: string) {
-    const path = this.marked(kind, id, nonce);
-    rmSync(path, { recursive: true });
+  private forget(id: string) {
     this.live.delete(id);
     this.candidates.delete(id);
+  }
+  private remove(kind: Marker["kind"], id: string, nonce: string) {
+    this.forget(id);
+    removeMarkedDirectory(this.marked(kind, id, nonce));
+  }
+  private abandon(marker: Pick<Marker, "kind" | "id" | "nonce">) {
+    try {
+      this.remove(marker.kind, marker.id, marker.nonce);
+    } catch (error) {
+      workflowLog("warn", { event: marker.kind === "pending" ? "repository_pending_cleanup" : "repository_lease_cleanup",
+        error: workflowErrorCode(error) });
+    }
   }
   async prepare(
     input: RepositoryCaptureInput,
@@ -172,7 +202,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         this.checkouts.set(candidate, input.checkout);
         return candidate;
       } catch (error) {
-        this.remove("pending", marker.id, marker.nonce);
+        this.abandon(marker);
         throw error;
       }
     });
@@ -217,8 +247,10 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   async discard(candidate: WorkflowRepositoryArtifactCandidate) {
     await this.exclusive(async () => {
       if (this.candidates.get(candidate.id) !== candidate) return;
-      await this.recoverPromotion(this.marked("pending", candidate.id, candidate.nonce));
-      this.remove("pending", candidate.id, candidate.nonce);
+      this.forget(candidate.id);
+      const path = this.marked("pending", candidate.id, candidate.nonce);
+      await this.recoverPromotion(path);
+      removeMarkedDirectory(path);
     });
   }
   promote(
@@ -259,13 +291,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             }
           } else if (!existing) renameSync(src, dest);
         });
-        try {
-          this.remove("pending", candidate.id, candidate.nonce);
-        } catch (error) {
-          this.candidates.delete(candidate.id);
-          this.live.delete(candidate.id);
-          workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) });
-        }
+        this.abandon({ kind: "pending", id: candidate.id, nonce: candidate.nonce });
         return snapshot;
       }),
     );
@@ -291,18 +317,15 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       unavailable();
     this.checkClaim(request);
   }
+  private verifyPublished(digest: string, signal: AbortSignal, lease?: string) {
+    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, lease,
+      () => this.ownership.unavailable(digest));
+  }
   verify(snapshot: WorkflowRepositoryProvisionalSnapshot, signal: AbortSignal) {
     return this.exclusive(() =>
       this.measured("repository_verify", async () => {
         this.checkClaim(snapshot);
-        const manifest = await verifyDirectory(
-          join(this.namespace("digests"), snapshot.digest),
-          snapshot.digest,
-          signal,
-        ).catch((error) => {
-          if (!signal.aborted && isArtifactIntegrityFailure(error)) this.ownership.unavailable(snapshot.digest);
-          throw error;
-        });
+        const manifest = await this.verifyPublished(snapshot.digest, signal);
         this.checkClaim(snapshot);
         this.ownership.verified(snapshot.digest);
         return { digest: snapshot.digest, objectCount: manifest.objects.length };
@@ -317,12 +340,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         signal.throwIfAborted();
         const { marker, path } = this.allocate("leases");
         try {
-          const manifest = await verifyDirectory(
-            join(this.namespace("digests"), identity.digest),
-            identity.digest,
-            signal,
-            path,
-          );
+          const manifest = await this.verifyPublished(identity.digest, signal, path);
           this.checkRequest(identity);
           this.ownership.verified(identity.digest);
           return {
@@ -334,7 +352,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             },
           };
         } catch (error) {
-          this.remove("leases", marker.id, marker.nonce);
+          this.abandon(marker);
           throw error;
         }
       }),
@@ -370,7 +388,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           try {
             const path = this.marked(kind, id);
             if (kind === "pending") await this.recoverPromotion(path);
-            rmSync(path, { recursive: true });
+            removeMarkedDirectory(path);
             deleted++;
           } catch (error) {
             workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });

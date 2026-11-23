@@ -26,6 +26,7 @@ import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
 import { RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
+import { MAX_WORKTREE_FILE_BYTES } from "../src/server/workflows/repository-artifact/checkout.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
 import { captureStableWorkflowContext } from "../src/server/workflows/context.ts";
@@ -328,6 +329,7 @@ test("transient verification I/O errors preserve ready claims and both submissio
     syncBuiltinESMExports();
     try {
       await assert.rejects(f.service.verify(first, signal), { code: "artifact_unavailable" });
+      await assert.rejects(f.service.materialize(f.request(second), signal), { code: "artifact_unavailable" });
       await assert.rejects(f.service.promote(candidate, incoming), { code: "artifact_unavailable" });
     } finally {
       failRead.mock.restore();
@@ -347,6 +349,154 @@ test("transient verification I/O errors preserve ready claims and both submissio
   await f.service.reconcile();
 });
 
+test("oversized tracked, untracked and denied worktree files fail capture before any payload read", async (t) => {
+  const f = fixture(t);
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  const warnings = t.mock.method(console, "warn", () => {});
+  const oversized = new Set<string>();
+  const read = () => assert.fail("attempted a payload read above the worktree limit");
+  const inspect = t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+    const fd = await open(...args);
+    if (oversized.has(String(args[0]))) {
+      t.mock.method(fd, "read", read);
+      t.mock.method(fd, "readFile", read);
+    }
+    return fd;
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const name of ["tracked", "untracked", ".env"]) {
+      f.write(name, "small");
+      if (name === "tracked") f.git("add", name);
+      const file = realpathSync(join(f.checkout, name));
+      truncateSync(file, MAX_WORKTREE_FILE_BYTES + 1);
+      oversized.add(file);
+      await assert.rejects(f.service.sampleBoundary(f.checkout, signal), { code: "artifact_unavailable" });
+      await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+      rmSync(file);
+    }
+  } finally {
+    inspect.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), Array.from({ length: 3 }, () => [
+    "[workflow] event=repository_boundary error=worktree_file_too_large",
+    "[workflow] event=repository_seal error=worktree_file_too_large",
+  ]).flat());
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  assert.deepEqual(f.service.artifacts(), []);
+});
+
+test("worktree growth after fstat retries without extending the read buffer", async (t) => {
+  const f = fixture(t);
+  f.write("growing", "a");
+  const path = realpathSync(join(f.checkout, "growing"));
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  let grew = false;
+  const inspect = t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+    const fd = await open(...args);
+    if (String(args[0]) === path && !grew) {
+      const stat = fd.stat.bind(fd);
+      t.mock.method(fd, "stat", async () => {
+        const observed = await stat();
+        writeFileSync(path, "grown bytes");
+        grew = true;
+        return observed;
+      });
+      const read = fd.read.bind(fd);
+      t.mock.method(fd, "read", (buf: Buffer, offset: number, length: number, position: number) => {
+        assert.equal(buf.length, 2);
+        return read(buf, offset, length, position);
+      });
+    }
+    return fd;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.prepare(), RepositoryCaptureChanged);
+  } finally {
+    inspect.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.ok(grew);
+  await f.service.discard(await f.prepare());
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+});
+
+for (const kind of ["pending", "leases"] as const) {
+  test(`failed ${kind} cleanup preserves the operation error and reconciliation retries without restart`, async (t) => {
+    const f = fixture(t);
+    f.write("a", "shared bytes");
+    const snapshot = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    const fs = (await import("node:fs")).default;
+    const promises = (await import("node:fs/promises")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const writeFile = promises.writeFile;
+    const code = kind === "pending" ? "ENOSPC" : "ENOENT";
+    const warnings = t.mock.method(console, "warn", () => {});
+    const write = t.mock.method(promises, "writeFile", (...args: Parameters<typeof writeFile>) => {
+      const path = String(args[0]);
+      if ((kind === "pending" && path.endsWith("/manifest.json")) ||
+          (kind === "leases" && path.includes("/leases/") && path.includes("/objects/")))
+        throw Object.assign(new Error("private write details"), { code });
+      return writeFile(...args);
+    });
+    const failCleanup = () => { throw Object.assign(new Error("private cleanup details"), { code: "EBUSY" }); };
+    // Fail once during payload deletion and once after the owner marker is unlinked.
+    const cleanup = kind === "pending" ? t.mock.method(fs, "rmSync", failCleanup)
+      : t.mock.method(fs, "rmdirSync", failCleanup);
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(kind === "pending" ? f.prepare() : f.service.materialize(f.request(snapshot), signal),
+        { code: "artifact_unavailable" });
+    } finally {
+      cleanup.mock.restore();
+      write.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
+      `[workflow] event=repository_${kind === "pending" ? "pending" : "lease"}_cleanup error=EBUSY`,
+      `[workflow] event=repository_${kind === "pending" ? "seal" : "materialize"} error=${code}`,
+    ]);
+    const dir = join(f.root, kind);
+    const leftovers = readdirSync(dir);
+    assert.equal(leftovers.length, 1);
+    assert.ok(existsSync(join(dir, leftovers[0]!, "owner.json")));
+    assert.deepEqual(await f.service.reconcile(), { deleted: 1, orphans: 0 });
+    assert.deepEqual(readdirSync(dir), []);
+    const lease = await f.service.materialize(f.request(snapshot), signal);
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
+
+test("materializing a damaged source object fails the shared digest for every holder", async (t) => {
+  const f = fixture(t);
+  f.write("file", "shared bytes");
+  const first = await f.service.promote(await f.prepare(), f.submission());
+  const second = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(first);
+  f.store.commitRepositoryCaptureActivation(second);
+  const path = join(f.root, "digests", first.digest, f.git("hash-object", "file"));
+  chmodSync(path, 0o600);
+  writeFileSync(path, "blob 12\0broken bytes");
+  chmodSync(path, 0o400);
+  await assert.rejects(f.service.materialize(f.request(first), signal), { code: "artifact_unavailable" });
+  assert.equal(f.service.artifacts().find(row => row.digest === first.digest)?.state, "failed");
+  for (const snapshot of [first, second]) {
+    assert.equal(f.service.activeSnapshot(snapshot.submissionId), null);
+    await f.service.release(snapshot.submissionId);
+  }
+  assert.deepEqual(readdirSync(join(f.root, "leases")), []);
+  await f.service.reconcile();
+});
+
 test("artifact readiness guards first activation and a failed artifact permits later running transitions", async (t) => {
   const f = fixture(t);
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
@@ -358,12 +508,12 @@ test("artifact readiness guards first activation and a failed artifact permits l
   await assert.rejects(f.service.verify(snapshot, cancelled), { code: "artifact_unavailable" });
   rmSync(join(f.root, "digests", snapshot.digest, "manifest.json"));
   await assert.rejects(f.service.materialize(f.request(snapshot), signal), { code: "artifact_unavailable" });
-  await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
   assert.equal(f.service.artifacts().find(artifact => artifact.digest === snapshot.digest)?.state, "failed");
+  await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
   assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
     "[workflow] event=repository_verify error=TypeError",
     "[workflow] event=repository_materialize error=ENOENT",
-    "[workflow] event=repository_verify error=ENOENT",
+    "[workflow] event=repository_verify error=artifact_unavailable",
   ]);
   assert.equal(f.store.updateSubmissionCapture(id, { context: {}, evidence: {} }).status, "running");
   f.store.setSubmissionState(id, "waiting_for_session");

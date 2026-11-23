@@ -53,6 +53,9 @@ blob, which has zero payload bytes. The sensitive path still denies reads.
 
 Capture reads index entries and Git's nonignored untracked enumeration with optional locks
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
+Each regular worktree file may be at most 64 MiB. The daemon checks the open file's size
+before allocating its read buffer and retries capture if the file grows or shrinks during
+the read. An oversized tracked, untracked or denied file fails the capture as a whole.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
@@ -69,7 +72,8 @@ worktree once, outside the history budget. Missing required objects fail sealing
 after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
 claim active and the submission running in one transaction. Multiple submissions can
 independently own the same bytes. Verification marks a missing or corrupt digest as failed
-for all its claims. A transient read error leaves the digest ready so any holder can retry.
+for all its claims, including when materialization discovers the damage. A transient source
+read error or a failure writing a private lease leaves the digest ready so any holder can retry.
 In either case the submission can still resume or retry.
 Promoting a fresh, verified copy of the same digest can repair its existing claims. The
 service replaces only a digest directory it owns and whose contents match the flat file
@@ -84,7 +88,9 @@ itself holds cleanup intent and any retryable deletion error. Publication and re
 their final row states atomically, so neither operation needs a separately committed
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A publication intent beside the
-candidate identifies a rename interrupted before database commit. Periodic maintenance
+candidate identifies a rename interrupted before database commit. Failed seal and
+materialization attempts relinquish their temporary directories even if removal fails.
+Maintenance can then retry cleanup using their ownership markers. Periodic maintenance
 skips live candidates and leases. Reconciliation inspects existing directories and leaves
 unused artifact storage absent. Its failures log `repository_reconcile_failed` independently
 of Workflow retention results. Artifact operation logs record the underlying error code

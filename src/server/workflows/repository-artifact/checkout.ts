@@ -1,16 +1,17 @@
 import { createRequire } from "node:module";
 import { nativeStateLockAddonPath } from "../../state-ownership-native.ts";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit } from "./git.ts";
-import { oid, ordinaryFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
+import { oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
 export type Entry = { mode: string; id: string };
 /** Hex keys sort in raw byte order, without Unicode decoding or case folding. */
 export type Layer = Map<string, Entry>;
+export const MAX_WORKTREE_FILE_BYTES = 64 * 1024 * 1024;
 export const decodedPath = (key: string) => {
   const raw = Buffer.from(key, "hex");
   const text = raw.toString("utf8");
@@ -150,6 +151,35 @@ async function openChecked(path: Buffer, directory = false) {
   }
 }
 
+async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSignal) {
+  const fd = await openChecked(path).catch(error => {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? ""))
+      throw new RepositoryCaptureChanged();
+    throw error;
+  });
+  try {
+    const stat = await fd.stat();
+    if (!stat.isFile() || observed.dev !== stat.dev || observed.ino !== stat.ino)
+      throw new RepositoryCaptureChanged();
+    if (stat.size > MAX_WORKTREE_FILE_BYTES)
+      throw Object.assign(new Error("Worktree file exceeds capture limit"), { code: "worktree_file_too_large" });
+    // The extra byte detects growth without extending the allocation. Short reads can
+    // occur on a regular file, so only EOF establishes the final size.
+    const buffer = Buffer.allocUnsafe(stat.size + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      signal.throwIfAborted();
+      const { bytesRead } = await fd.read(buffer, offset, buffer.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    if (offset !== stat.size) throw new RepositoryCaptureChanged();
+    return { data: buffer.subarray(0, offset), mode: stat.mode & 0o100 ? "100755" : "100644" };
+  } finally {
+    await fd.close();
+  }
+}
+
 export async function workingFile(
   executable: string,
   state: Awaited<ReturnType<typeof sample>>,
@@ -180,7 +210,7 @@ export async function workingFile(
       }
       let admin = marker;
       if (stat.isFile()) {
-        const text = (await ordinaryFile(marker)).toString("utf8").trimEnd();
+        const text = (await readWorkingFile(Buffer.from(marker), stat, signal)).data.toString("utf8").trimEnd();
         if (!text.startsWith("gitdir: ")) unavailable();
         admin = resolve(sub, text.slice(8));
       } else if (!stat.isDirectory()) unavailable();
@@ -217,18 +247,7 @@ export async function workingFile(
       }
     }
     if (!st.isFile()) unavailable();
-    const fd = await openChecked(path).catch(error => {
-      if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? ""))
-        throw new RepositoryCaptureChanged();
-      throw error;
-    });
-    try {
-      const stat = await fd.stat();
-      if (!stat.isFile() || st.dev !== stat.dev || st.ino !== stat.ino) throw new RepositoryCaptureChanged();
-      return { data: await fd.readFile({ signal }), mode: stat.mode & 0o100 ? "100755" : "100644" };
-    } finally {
-      await fd.close();
-    }
+    return await readWorkingFile(path, st, signal);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // Git projects an absent skip-worktree path from the index. Present files

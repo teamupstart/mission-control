@@ -84,7 +84,7 @@ import {
   MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
 import { isWorkUnitId, launchWorkUnitConflicts, WORK_UNIT_REUSE_REFUSAL } from "@shared/work-unit.ts";
-import { mintWorkUnitId } from "./work-unit.ts";
+import { mintWorkUnitId, sessionWorkUnitId } from "./work-unit.ts";
 import {
   isPersonaLaunchRefusal,
   personaLaunchRefusal,
@@ -5670,6 +5670,11 @@ export class TaskManager {
         runtime: live.runtime,
         workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
         trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
+        // No process starts here, so the work unit is the one the agent was started with, from
+        // its launch record, while the task has that same id - never the preview as it reads
+        // now. The reuse guard above already refused an agent started for another work unit,
+        // so this is the task's id or, for an agent started with none, nothing.
+        workUnitId: sessionWorkUnitId(live, ready),
         delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
         turnOnes: [],
         launch: null,

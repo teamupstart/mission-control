@@ -93,7 +93,7 @@ Mission Control writes no header into any MCP config.
 - **One decision per launch.** `launchWorkUnitId(task)` in `src/server/work-unit.ts` is the only
   place server code reads the flag. It is called once, where a launch begins, and returns the
   task's id when the preview is on and the id is well formed, and null otherwise. That one value
-  goes to the agent's environment, the launch record and (later) the shaping run, so a switch
+  goes to the agent's environment, the launch record and the shaping run, so a switch
   while a launch is in flight cannot give its parts different answers. An older task is given
   its id before that point, so its first dispatch carries it.
 
@@ -220,3 +220,38 @@ branch for both agents.
   (question 1, for each agent); sign in headerless, add the header, and connect with the
   headerless entry and with the new one (question 2); and if question 1 fails for Claude Code,
   whether a `headersHelper` that emits the header keeps the sign-in (question 3).
+
+## Task shaping
+
+When [task shaping](task-shaping.md) runs at dispatch, every shaper call carries the work unit
+decision of the launch it was made for, in the carrier its transport has. That is the value the
+launch's agent is started with, and the call keeps it if that agent then fails to start. The
+names are the ones the worker's own launch and MCP calls use, so a `get_guidance` call Mission
+Control makes is found by the same query as the worker's own calls.
+
+| Transport | Carrier |
+|---|---|
+| `http` | The `x-work-unit-id` header. No `_meta`: it is not an MCP call, and its request body does not change. |
+| `mcp` over streamable HTTP | The `x-work-unit-id` header on every request, and `params._meta.work_unit_id` on each `tools/call`. |
+| `mcp` over a local process | `WORK_UNIT_ID` in the server's environment, and `params._meta.work_unit_id` on each `tools/call`. |
+| `command` | `WORK_UNIT_ID` in the process's environment. |
+| `builtin` | None. It runs in the daemon. |
+
+- **Which value.** For a new agent, the launch's one decision: `launchWorkUnitId(task)`, made
+  where the dispatch begins. The shapers are handed that value and the agent is started with it,
+  so a switch of the preview while shapers run cannot make them differ. For a task handed to an
+  agent that is already running, `sessionWorkUnitId(session, task)`: the agent's launch record,
+  while the task has the same id. The preview at the moment of the handover does not matter.
+  Shaping never reads the flag itself.
+- **When there is none.** The preview was off at the launch's decision, the task has no id, the
+  task is handed to an agent that is already running and was started without the variable, or
+  the run is a dry run from Settings, which has no task. Then no call carries one.
+- **Only the launch's own value.** A configured header or variable named `x-work-unit-id` or
+  `WORK_UNIT_ID`, compared without case, is removed first, with or without a value to send. A
+  `command` shaper or a local MCP server never inherits a `WORK_UNIT_ID` from the daemon's own
+  environment. The value is an opaque id, not a credential or a reference, so it is never
+  redacted, and a reply that echoes it keeps it.
+- **A launch that fails.** A shaper call is made before the agent starts, so it belongs to the
+  launch it was made for. If the agent then fails to start, the call keeps the task's work unit:
+  it was made for that task's work. No launch record is written, and a retry is a new launch that
+  decides again.

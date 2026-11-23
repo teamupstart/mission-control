@@ -22,6 +22,11 @@ const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
 const { GRILL_FIRST_HEADING } = await import("../src/server/grill-first.ts");
+const shapingFlags = await import("../src/server/feature-flags/index.ts");
+const { currentShaping, SHAPING_SECTION_PREAMBLE } = await import("../src/shared/shaping.ts");
+const { getTaskShapingText } = await import("../src/server/db.ts");
+const workUnitHandOver = await import("../src/server/terminal-launch-work-units.ts");
+const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 
 /** Every git fixture this file built, removed together - they are whole checkouts. */
 const roots: string[] = [];
@@ -1577,9 +1582,6 @@ test("an assigned plan is typed the invocations THAT SESSION could actually run"
 
 // ---- task shaping on the handover ----
 
-const shapingFlags = await import("../src/server/feature-flags/index.ts");
-const { currentShaping, SHAPING_SECTION_PREAMBLE } = await import("../src/shared/shaping.ts");
-const { getTaskShapingText } = await import("../src/server/db.ts");
 type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
 
 const HANDOVER_SECTION = `${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: Idempotent charges\nCharge once per key.`;
@@ -1653,6 +1655,50 @@ test("with the flag off a handover calls nothing and types no task context", asy
   assert.doesNotMatch(typed!, /## Task context/);
   assert.equal(r.getTask("t1")?.shaping, undefined);
   assert.equal(getTaskShapingText("t1"), null);
+});
+
+function setWorkUnitPreview(enabled: boolean): void {
+  assert.equal(shapingFlags.applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled }).ok, true);
+}
+
+/**
+ * An idle agent in a real checkout, started beneath a launch wrapper that was handed
+ * `workUnitId` as its decision, so the registry installs that launch record when it first sees
+ * the agent. Null starts it with none, as an agent launched with the preview off was.
+ */
+function setupLaunchedWith(prefix: string, workUnitId: string | null) {
+  const launchHome = mkdtempSync(join(home, "launch-"));
+  const decision = workUnitHandOver.expectTerminalLaunchWorkUnit(launchHome, workUnitId);
+  const fixture = setupInRepo(prefix, { missionLaunched: true, missionLaunchHome: launchHome });
+  workUnitHandOver.settleTerminalLaunchWorkUnit(decision, "succeeded");
+  assert.equal(fixture.r.getSession(fixture.sessionId)?.launchWorkUnitId ?? null, workUnitId, "the fixture's launch record");
+  return fixture;
+}
+
+test("a handover's shapers carry the work unit the agent was started with, whatever the preview says now", async (t) => {
+  setShaping(true);
+  t.after(() => { setShaping(false); setWorkUnitPreview(false); });
+  const WU = "wu_01JD00000000000000000000AA";
+  // Started with the preview on, and handed a task of its own work unit after it was switched off.
+  const started = setupLaunchedWith("mission-assign-work-unit-shaping-", WU);
+  setWorkUnitPreview(false);
+  started.r.upsertTask(mkTask({ id: "wu-own", repoRoot: started.clone, workUnitId: WU }));
+  const own = handoverStandIn(HANDOVER_SECTION, started.r);
+  const handed = await started.tasks.assign("wu-own", started.sessionId, {
+    paneReady, reset: cleanReset, shapeTask: own.shapeTask, inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(handed.ok, true, handed.error);
+  assert.equal(own.calls[0]!.input.workUnitId, WU, "its launch record, not the preview as it reads now");
+  // Started with none, and handed a task after the preview was switched on: still none.
+  const bare = setupLaunchedWith("mission-assign-work-unit-shaping-none-", null);
+  setWorkUnitPreview(true);
+  bare.r.upsertTask(mkTask({ id: "wu-bare", repoRoot: bare.clone, workUnitId: "wu_01JD00000000000000000000BB" }));
+  const none = handoverStandIn(HANDOVER_SECTION, bare.r);
+  const plain = await bare.tasks.assign("wu-bare", bare.sessionId, {
+    paneReady, reset: cleanReset, shapeTask: none.shapeTask, inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(plain.ok, true, plain.error);
+  assert.equal(none.calls[0]!.input.workUnitId, null, "an agent started without the variable gives its shapers none");
 });
 
 test("a handover whose inject fails commits no shaping record", async () => {

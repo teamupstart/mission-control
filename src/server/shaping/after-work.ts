@@ -65,6 +65,15 @@ export interface AfterWorkSkillsDeps {
    * this way, so a daemon that keeps running never leaves it held. Defaults to an unref'd timer.
    */
   schedule?: (fn: () => void, ms: number) => () => void;
+  /**
+   * Sessions whose work a durable signal says is complete, read at start and when task shaping
+   * is turned on again: a workflow submission that is running, and when it was submitted. Each
+   * is prompted once its session is registered, so a first prompt lost to a database error and
+   * a restart is written then - but only for a launch no newer than the submission, so a later
+   * launch into the same session is never prompted for an earlier launch's work. The
+   * once-per-launch guard makes one already prompted a no-op.
+   */
+  owedSessions?: () => ReadonlyArray<{ sessionId: string; submittedAt: number }>;
   /** A catalog skill's checked invocation for a live session. */
   catalogCommand?: (session: Session, id: string) => RequiredSkillCommand;
   /** The catalog id behind a routed name, or null for a name Mission Control does not ship. */
@@ -169,7 +178,9 @@ export class AfterWorkSkills {
    * A wrap-up answered meanwhile clears `hold`: the wrap-up has reached the session, which is
    * all holding was for, and a row held after the answer would never be released.
    */
-  private readonly owedPrompts = new Map<string, { hold: boolean }>();
+  private readonly owedPrompts = new Map<string, { hold: boolean; notAfter: number }>();
+  /** Sessions `owedSessions` named that were not registered yet, with their submission time. */
+  private readonly owedAtStart = new Map<string, number>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -177,6 +188,7 @@ export class AfterWorkSkills {
       enabled: () => featureEnabled("task-shaping"),
       onFlagsChanged: (listener) => onFeatureFlagsChanged(() => listener()),
       now: Date.now,
+      owedSessions: () => [],
       schedule: (fn, ms) => {
         const timer = setTimeout(fn, ms);
         timer.unref?.();
@@ -195,7 +207,14 @@ export class AfterWorkSkills {
         if (event.type === "session_remove") this.sessionEnded(event.id);
         // A session that changes may be able to take its waiting prompt now: the outbox has
         // started, or it can receive messages again.
-        else if (event.type === "session_upsert") this.pendingChanged(event.session.id);
+        else if (event.type === "session_upsert") {
+          const submittedAt = this.owedAtStart.get(event.session.id);
+          if (submittedAt !== undefined) {
+            this.owedAtStart.delete(event.session.id);
+            this.promptOwed(event.session.id, submittedAt);
+          }
+          this.pendingChanged(event.session.id);
+        }
         else if (event.type === "task_upsert") this.follow(event.task);
         else if (event.type === "task_remove") this.shapingSessions.delete(event.id);
       }),
@@ -251,6 +270,16 @@ export class AfterWorkSkills {
    * still releases them, whatever the answer said), and prompts waiting on the outbox.
    */
   private recover(): void {
+    // A first prompt a durable signal says is owed, which a restart may have lost before it
+    // wrote its row. Prompting is once per launch, so one already written stays as it is.
+    try {
+      for (const { sessionId, submittedAt } of this.deps.owedSessions()) {
+        if (this.deps.registry.getSession(sessionId)) this.promptOwed(sessionId, submittedAt);
+        else this.owedAtStart.set(sessionId, submittedAt);
+      }
+    } catch (error) {
+      console.warn("[shaping] could not read the sessions owed an after-work prompt:", error);
+    }
     try {
       for (const sessionId of listAnsweredHeldTaskSkillPromptSessions()) this.heldCheck.add(sessionId);
     } catch (error) {
@@ -266,33 +295,62 @@ export class AfterWorkSkills {
     for (const sessionId of [...this.waiting]) this.retry(sessionId);
   }
 
+  /** Prompt a session a durable signal says is owed, when its current launch predates the signal. */
+  private promptOwed(sessionId: string, submittedAt: number): void {
+    try {
+      const taskId = this.deps.registry.getSession(sessionId)?.task?.id;
+      const task = taskId ? this.deps.registry.getTask(taskId) : undefined;
+      const record = task ? currentShaping(task) : null;
+      if (!record || record.sessionId !== sessionId || record.at > submittedAt) return;
+    } catch (error) {
+      // Unread, it is neither prompted (it might be a later launch) nor given up: the session's
+      // next update checks it again.
+      console.warn(`[shaping] could not check session ${sessionId}'s owed after-work prompt:`, error);
+      this.owedAtStart.set(sessionId, submittedAt);
+      return;
+    }
+    this.prompt(sessionId, { notAfter: submittedAt });
+  }
+
   stop(): void {
     for (const off of this.unsubscribe.splice(0)) off();
     for (const retry of this.retries.values()) retry.cancel();
     this.retries.clear();
     this.owedPrompts.clear();
+    this.owedAtStart.clear();
   }
 
   /**
    * Prompt this session's after-work skills, once per launch. `hold` is the no-workflow caller:
    * the row is written held and nothing is queued until `release`. Never throws.
    */
-  prompt(sessionId: string, options: { hold?: boolean } = {}): AfterWorkOutcome {
-    // A retry keeps the hold its first call asked for, unless an answer cleared it since.
-    const owed = this.owedPrompts.get(sessionId);
-    const hold = owed ? owed.hold : options.hold === true;
+  prompt(sessionId: string, options: { hold?: boolean; notAfter?: number } = {}): AfterWorkOutcome {
+    // A fresh call - an activation, a claim, a recovery - is decided by its own hold and bound,
+    // never by an earlier call's owed entry: a newer launch's own prompt must not be refused
+    // under an older launch's bound. It settles that entry either way, since the record it
+    // reads is the current one.
+    return this.attemptPrompt(sessionId, options.hold === true, options.notAfter ?? null);
+  }
+
+  /** One attempt to write and queue the prompt. A failure keeps it owed, with its hold and bound. */
+  private attemptPrompt(sessionId: string, hold: boolean, notAfter: number | null): AfterWorkOutcome {
     try {
-      const outcome = this.promptOnce(sessionId, hold);
+      const outcome = this.promptOnce(sessionId, hold, notAfter);
       this.owedPrompts.delete(sessionId);
       this.clearRetry(`prompt:${sessionId}`);
       return outcome;
     } catch (error) {
       // Nothing was written, and the caller - a submission's activation, a claim - may not
-      // come again: the prompt stays owed and is tried again until it writes its row.
+      // come again: the prompt stays owed and is tried again until it writes its row. It is
+      // owed to the launch current now, so a retry never prompts a launch written after this
+      // call (or, recovered at start, after the submission it was owed for).
       console.warn(`[shaping] could not prompt session ${sessionId}'s after-work skills:`, error);
-      this.owedPrompts.set(sessionId, { hold });
+      this.owedPrompts.set(sessionId, { hold, notAfter: notAfter ?? this.deps.now() });
+      // The timer's retry is the one caller that keeps the owed entry's hold - which an answered
+      // wrap-up may have cleared since - and its bound.
       this.retryLater(`prompt:${sessionId}`, () => {
-        if (this.owedPrompts.has(sessionId)) this.prompt(sessionId);
+        const owed = this.owedPrompts.get(sessionId);
+        if (owed) this.attemptPrompt(sessionId, owed.hold, owed.notAfter);
       });
       return { kind: "none", why: "retrying" };
     }
@@ -415,7 +473,11 @@ export class AfterWorkSkills {
     }
   }
 
-  private promptOnce(sessionId: string, hold: boolean): AfterWorkOutcome {
+  /**
+   * `notAfter`, when set, bounds the launch: a current record written after it belongs to a
+   * later launch, which is not prompted for this one's work.
+   */
+  private promptOnce(sessionId: string, hold: boolean, notAfter: number | null = null): AfterWorkOutcome {
     if (!this.deps.enabled()) return { kind: "none", why: "disabled" };
     const session = this.deps.registry.getSession(sessionId);
     const taskId = session?.task?.id;
@@ -423,6 +485,7 @@ export class AfterWorkSkills {
     // Only the launch the record describes: the task's current session, named by its record.
     const record = task ? currentShaping(task) : null;
     if (!session || !task || !record || record.sessionId !== sessionId) return { kind: "none", why: "no_record" };
+    if (notAfter !== null && record.at > notAfter) return { kind: "none", why: "no_record" };
     if (getTaskSkillPrompt(task.id, sessionId)) return { kind: "none", why: "already" };
     const routed = announcedSkills(record).filter((skill) => skill.lifecyclePoint === "after-work");
     if (routed.length === 0) return { kind: "none", why: "no_after_work_skills" };
@@ -516,6 +579,7 @@ export class AfterWorkSkills {
     this.clearRetry(`held:${sessionId}`);
     this.clearRetry(`prompt:${sessionId}`);
     this.owedPrompts.delete(sessionId);
+    this.owedAtStart.delete(sessionId);
     this.heldCheck.delete(sessionId);
     try {
       for (const row of listOpenTaskSkillPrompts(sessionId)) {

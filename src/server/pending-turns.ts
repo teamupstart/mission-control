@@ -127,6 +127,8 @@ interface PendingTurnDeps {
   afterWorkTurnOwed: (turnId: string) => boolean;
   /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
   afterWorkRecheckMs: number;
+  /** Retire a delivered turn with its after-work prompt row (`retireDeliveredPendingTurn`). */
+  retireDelivered: (id: string, revision: number, deliveredAt: number) => boolean;
 }
 
 /**
@@ -136,6 +138,9 @@ interface PendingTurnDeps {
  */
 const DEFAULT_STEER_RECEIPT_POLL_MS = 500;
 const DEFAULT_AFTER_WORK_RECHECK_MS = 1_000;
+/** The first and the longest wait before a delivered turn's failed retire is tried again. */
+const RETIRE_RETRY_BASE_MS = 1_000;
+const RETIRE_RETRY_MAX_MS = 5 * 60_000;
 
 /** How far one conversation's receipt scan has read its transcript. */
 interface SteerReceiptScan {
@@ -251,6 +256,8 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   /** After-work turns a delivery guard held back because their launch could not be checked. */
   private readonly unverifiedAfterWork = new Set<string>();
+  /** Retires of delivered turns that failed and are tried again, by turn id. */
+  private readonly retireRetries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -284,6 +291,7 @@ export class PendingTurnManager {
       afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
       afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
       afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
+      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurn,
     };
   }
 
@@ -310,6 +318,8 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
+    for (const timer of this.retireRetries.values()) clearTimeout(timer);
+    this.retireRetries.clear();
     this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
     if (this.steerTimer) clearTimeout(this.steerTimer);
@@ -614,7 +624,7 @@ export class PendingTurnManager {
     const key = noteKeyFor(session);
     const row = session.pendingTurns.find((turn) => turn.id === id);
     if (!row || row.noteKey !== key) return false;
-    const resolved = resolveUncertainPendingTurn(id, revision);
+    const resolved = resolveUncertainPendingTurn(id, revision, this.deps.now());
     if (resolved) {
       this.registry.refreshPendingTurns(key);
       this.scheduleDrain(key);
@@ -1233,8 +1243,7 @@ export class PendingTurnManager {
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
         }
-        // Retired with its after-work prompt row, if it has one, in one transaction.
-        retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
+        this.retireDelivered(turn);
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1654,10 +1663,33 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    // Retired with its after-work prompt row, if it has one, in one transaction.
-    retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
+    this.retireDelivered(turn);
     this.journalDelivered(sessionId, turn);
     this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  /**
+   * Retire a turn the agent took, with its after-work prompt row if it has one, in one
+   * transaction. The delivery has already happened, so a retire that throws is not the
+   * delivery's failure: it is tried again, backing off from 1 second to 5 minutes, until it
+   * commits or the row is gone. Meanwhile the row stays `sending`, which holds the
+   * conversation's next delivery behind it, and a restart turns it `uncertain` for the
+   * operator, never resending it. Marking that sent settles the prompt row too
+   * (`resolveUncertainPendingTurn`).
+   */
+  private retireDelivered(turn: PendingTurn, failures = 0): void {
+    this.retireRetries.delete(turn.id);
+    try {
+      this.deps.retireDelivered(turn.id, turn.revision, this.deps.now());
+    } catch (error) {
+      console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
+      if (this.stopped) return;
+      const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
+      this.retireRetries.set(turn.id, unref(setTimeout(() => {
+        this.retireDelivered(turn, failures + 1);
+        this.registry.refreshPendingTurns(turn.noteKey);
+      }, delay)));
+    }
   }
 
   /**

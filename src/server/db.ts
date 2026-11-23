@@ -15165,12 +15165,30 @@ export function retireDeliveredPendingTurn(id: string, revision: number, deliver
   }
 }
 
-export function resolveUncertainPendingTurn(id: string, revision: number): boolean {
-  return (
-    openDb()
-      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
-      .run(id, revision).changes === 1
-  );
+/**
+ * The operator marks an uncertain turn sent: it reached the agent. An after-work skills turn's
+ * prompt row is settled `delivered` in the same transaction, so a delivery whose retire failed
+ * before a restart is recorded once the operator confirms it, and is never sent again.
+ */
+export function resolveUncertainPendingTurn(id: string, revision: number, resolvedAt = Date.now()): boolean {
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT resolve_uncertain_turn" : "BEGIN IMMEDIATE");
+  try {
+    const resolved = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
+      .run(id, revision).changes === 1;
+    if (resolved && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?
+                   WHERE turn_id = ? AND state IN ('queued', 'not_delivered')`).run(resolvedAt, id);
+    }
+    d.exec(nested ? "RELEASE resolve_uncertain_turn" : "COMMIT");
+    return resolved;
+  } catch (error) {
+    if (d.isTransaction) {
+      d.exec(nested ? "ROLLBACK TO resolve_uncertain_turn; RELEASE resolve_uncertain_turn" : "ROLLBACK");
+    }
+    throw error;
+  }
 }
 
 /**

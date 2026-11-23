@@ -3940,6 +3940,12 @@ export type ServerEvent =
        * session's whole history is read per session from `GET /api/sessions/:id/reports`.
        */
       reports?: import("./reports.ts").ReportItem[];
+      /**
+       * Authors whose reports are muted (`report_mutes`). Present only while the `inbox` flag is
+       * on. `reports` still carries a muted author's reports: the dashboard's fold leaves them
+       * out, so unmuting brings them back without a fetch.
+       */
+      reportMutes?: import("./reports.ts").ReportMute[];
       tasks: Task[];
       personas: PersonaView[];
       /**
@@ -4112,6 +4118,11 @@ export type ServerEvent =
    * session and is never deleted, so a read or replaced one is upserted with its new state.
    */
   | { type: "report_upsert"; report: import("./reports.ts").ReportItem }
+  /**
+   * The whole list of muted report authors, after a mute or an unmute (`inbox` flag). Sent whole
+   * because it is small and a window that applies it twice ends in the same state.
+   */
+  | { type: "report_mutes"; mutes: import("./reports.ts").ReportMute[] }
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }

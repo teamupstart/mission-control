@@ -7987,6 +7987,46 @@ a.btn {
 .inbox-entry:first-child .inbox-section {
   margin-top: 8px;
 }
+/* Settings > Reports. */
+.reports-settings-group + .reports-settings-group {
+  margin-top: 20px;
+}
+.reports-muted-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.reports-muted-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.reports-muted-row .btn {
+  margin-left: auto;
+}
+.agent-report-muted {
+  margin-top: 6px;
+}
+/* A section heading that carries a section-wide control: Reports' Mark all read. */
+.inbox-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+.inbox-entry:first-child .inbox-section-head {
+  margin-top: 8px;
+}
+.inbox-section-head .inbox-section {
+  margin: 0;
+}
+.inbox-section-head .inbox-section-action {
+  font-size: 12px;
+  padding: 2px 8px;
+}
 .inbox-item {
   border: 1px solid var(--border-soft);
   border-radius: 10px;

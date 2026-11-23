@@ -63,11 +63,15 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `DELETE /api/voice/model/download` and the input devices' `GET /api/voice/devices`) answer 404
   // with the `voice` flag off, and `POST /api/setup/install`'s refusal names the new
   // `voice-previews`, `voice-model` and `voice-microphone` ids. `GET /api/setup/checks` is
-  // unchanged, and what voice adds to `GET /api/ui/config` is withheld with the flag off.
+  // unchanged, and what voice adds to `GET /api/ui/config` is withheld with the flag off. Then
+  // report noise controls' seven flag-gated routes (`GET /mcp/reports/guidance`, `GET` and `PUT
+  // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
+  // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
+  // `inbox` flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 452);
+  assert.equal(others.length, 459);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "e018dc46047b22a5868c43adc815a028477647764a30e44012860341ceca9dba");
+    "9f1131746b07d11232d5a235c786cd86915414eaaa58cc9435f8ce4f668b53c8");
 });
 
 function sourceFiles(dir: string): string[] {

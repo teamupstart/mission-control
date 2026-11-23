@@ -105,6 +105,11 @@ export interface Alert {
    * it was posted. The Away digest names who posted from it.
    */
   agentName?: string;
+  /**
+   * The author key a `kind === "report"` alert's report carries (`ReportAuthor.key`), which a
+   * mute is keyed by: `shouldDeliver` delivers nothing for a muted author.
+   */
+  authorKey?: string;
   severity: AlertSeverity;
 }
 
@@ -198,14 +203,24 @@ export function bufferable(a: Alert): boolean {
  * alert carrying a notify class obeys its switch; a report alert is also held while away, where
  * the return digest summarises it instead (the daemon buffers every alert whatever is delivered
  * here). Every alert without a class is delivered exactly as `deliverable` decides, so a stuck
- * session still breaks through Away mode unless its own switch is off.
+ * session still breaks through Away mode unless its own switch is off. `muted` holds the author
+ * keys whose reports are muted (`report_mutes`); a report alert from one of them is never raised.
  */
-export function shouldDeliver(a: Alert, notify: NotifySwitches | null, away: boolean): boolean {
+export function shouldDeliver(
+  a: Alert,
+  notify: NotifySwitches | null,
+  away: boolean,
+  muted: ReadonlySet<string> = NO_MUTES,
+): boolean {
   if (notify === null || !a.notify) return deliverable(a);
   if (!notify[SWITCH_FOR[a.notify]]) return false;
-  if (a.notify === "report") return !away;
+  // A muted author's report raises nothing, from the moment of the mute. Decided at delivery, so
+  // a notification already shown is never withdrawn: it stays clickable and opens its report.
+  if (a.notify === "report") return !away && !(a.authorKey !== undefined && muted.has(a.authorKey));
   return deliverable(a);
 }
+
+const NO_MUTES: ReadonlySet<string> = new Set();
 
 /**
  * How far a stamp may predate the previous scope's read and still be news. The dashboard builds a
@@ -272,6 +287,7 @@ export function reportAlert(report: ReportItem): Alert {
     sessionId: report.sessionId,
     reportId: report.id,
     agentName: name,
+    authorKey: report.author.key,
     notify: "report",
     severity: "info",
   };

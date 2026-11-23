@@ -139,7 +139,7 @@ test("notifier preserves workflow deep links and reconnect uses the shared detec
     /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliver\)/,
   );
   // The one delivery filter: `shouldDeliver`, exactly `deliverable` while the `inbox` flag is off.
-  assert.match(source, /shouldDeliver\(a, switches, away \?\? false\)/);
+  assert.match(source, /shouldDeliver\(a, switches, away \?\? false, muted\)/);
   assert.match(source, /"reconnect-catchup"/);
 });
 

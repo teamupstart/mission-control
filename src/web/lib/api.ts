@@ -115,9 +115,11 @@ import type {
   AttentionDismissal,
   AttentionDismissalWrite,
   InspectorFindingsResponse,
+  ReportGuidanceView,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  ReportGuidanceViewSchema,
   InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
@@ -2187,6 +2189,39 @@ export const api = {
    */
   followUpReport: (id: string, text: string) =>
     post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
+  /**
+   * Mark all read: exactly the reports the Reports section listed when it was pressed, so one
+   * that arrived after the click stays. Answers the reports it cleared.
+   */
+  markAllReportsRead: (ids: readonly string[]) =>
+    post<ActionResult & { reports?: ReportItem[] }>("/api/reports/read-all", { ids }),
+  /** Mute an author's reports from now on. Its reports are hidden, never marked read. */
+  muteReports: (authorKey: string) => post("/api/reports/mutes", { authorKey }),
+  /** Unmute an author: its reports still waiting to be read are listed again. */
+  unmuteReports: (authorKey: string) => del(`/api/reports/mutes/${encodeURIComponent(authorKey)}`),
+  /**
+   * Settings > Reports' guidance: the saved text, the text in force, the default and the limit.
+   * An answer missing any of them is a failed read, never filled in.
+   */
+  reportGuidance: async (): Promise<JsonRead<ReportGuidanceView>> => {
+    const read = await readJson<unknown>("/api/reports/guidance");
+    if (!read.ok) return read;
+    const view = ReportGuidanceViewSchema.safeParse(read.value);
+    return view.success ? { ok: true, value: view.data } : { ok: false, definite: true };
+  },
+  /**
+   * Save the guidance new sessions' `post_report` carries, or null to reset it to the default.
+   * Resolves to the stored view, or to why it failed; an accepted save whose answer is not a
+   * whole view is a failure, never filled in.
+   */
+  saveReportGuidance: async (guidance: string | null): Promise<{ ok: true; view: ReportGuidanceView } | { ok: false; error: string }> => {
+    const result = await put("/api/reports/guidance", { guidance });
+    if (!result.ok) return { ok: false, error: result.error ?? "Could not save the report guidance" };
+    const view = ReportGuidanceViewSchema.safeParse(result);
+    return view.success
+      ? { ok: true, view: view.data }
+      : { ok: false, error: "Mission Control saved the guidance but did not answer with it. Reload to see what is stored" };
+  },
   /**
    * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
    * A page the archive's checker refused answers with every problem in `problems`.

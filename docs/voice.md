@@ -197,7 +197,7 @@ optional: 1 to 40 characters, trimmed, with inner spaces collapsed. Closed, the 
 names it (`Persona: none · Call sign: Alice`). Reopening a backlog task reads it back, and
 clearing it saves `callSign: null`. See [Dispatch and the backlog](dispatch-and-backlog.md#a-call-sign-for-the-task).
 
-A call sign is `Task.callSign`, stored in `tasks.call_sign` (schema 50, nullable, no backfill),
+A call sign is `Task.callSign`, stored in `tasks.call_sign` (schema 51, nullable, no backfill),
 and carried to the session card as `TaskSummary.callSign` while the task has one. It is
 annotation, like priority: nothing is provisioned from it, so an update may set or clear it while
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
@@ -367,7 +367,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   session exiting, a hibernated task, the 24-hour and name-reuse removals, an evicted task, and the
   `voice_roster` frames from the real Registry.
 - `test/voice-call-sign.test.ts`: the schemas, and a call sign set and cleared on a running task.
-- `test/voice-call-sign-migration.test.ts`: a version 49 database gains `tasks.call_sign`.
+- `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
 - `test/display-name.test.ts`: a call sign and a reference name as the first rank.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
   enabled; dispatched as "Alice", the roster lists Alice running and the question card names the

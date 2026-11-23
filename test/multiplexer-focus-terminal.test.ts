@@ -236,6 +236,7 @@ const DOMAINS_APPENDED_SINCE: readonly string[] = [
   "feature-flags",
   "shaping",
   "voice",
+  "reports",
 ];
 
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {

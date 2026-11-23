@@ -195,7 +195,10 @@ export function SessionTile({
   // the run it returns is the one the tooltip names, so the mark cannot credit a sibling
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);
-  const held = heldBy !== null;
+  // A stalled card is not drawn as held: the ordering takes a held and stalled session out of the
+  // held partition (`orderSessions`), because "a workflow owns the next turn" is exactly what is no
+  // longer true of it. The tag, its tooltip and the held tone would say it anyway.
+  const held = heldBy !== null && !stall;
   // A durable blocker is the card's state, like `held`: the red tone and the `Blocked · age`
   // flag are always drawn, and only the blocker's own facts below are card items.
   const blocker = session.blocker ?? null;

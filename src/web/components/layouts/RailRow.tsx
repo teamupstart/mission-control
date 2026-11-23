@@ -113,7 +113,10 @@ export function RailRow({
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.
   const heldBy = heldByRun(workflowRuns, st.tone);
-  const held = heldBy !== null;
+  // A stalled card is not drawn as held: the ordering takes a held and stalled session out of the
+  // held partition (`orderSessions`), because "a workflow owns the next turn" is exactly what is no
+  // longer true of it. The tag, its tooltip and the held tone would say it anyway.
+  const held = heldBy !== null && !stall;
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {

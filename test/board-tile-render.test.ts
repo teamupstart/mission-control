@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
+import { ConsoleView } from "../src/web/components/layouts/ConsoleView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "../src/shared/pipeline.ts";
@@ -484,4 +485,34 @@ test("an idle stall is drawn in Idle's Stalled section with what is open and the
   // Without the map (the flag off), nothing about the section is drawn.
   const off = renderToStaticMarkup(createElement(BoardView, props([stalled, free])));
   assert.doesNotMatch(off, /stalled/i);
+});
+
+test("a held session that stalled reads stalled, never held, on the Board card and the Console rail", () => {
+  // The ordering takes it out of the held partition because "a workflow owns the next turn" is no
+  // longer true of it; the tag and its tooltip must not say it on the card or the row either.
+  const session = mkSession({ id: "held-stalled", name: "slate-finch", state: "idle", activity: null });
+  const runs = new Map([[session.id, [{ ...workflowRun, sessionId: session.id }]]]);
+  const stall = {
+    sessionId: session.id, kind: "workflow-parked" as const, forMs: 30 * 60_000,
+    reason: "idle 30m - No-Mistakes Review repair round 2 never reopened",
+    facts: {
+      kind: "workflow-parked" as const, runId: "run", workflowName: "No-Mistakes Review", status: "waiting_for_session" as const,
+      round: 2, resubmittable: true, externalSource: null, unpushedCommits: 0,
+    },
+    fingerprint: "held-stalled",
+  };
+  const withStall = { ...props([session]), workflowRunsBySession: runs, stalledById: new Map([[session.id, stall]]) };
+  for (const html of [
+    renderToStaticMarkup(createElement(BoardView, withStall)),
+    renderToStaticMarkup(createElement(ConsoleView, withStall)),
+  ]) {
+    assert.match(html, />stalled</);
+    assert.doesNotMatch(html, /class="(tile|rail)-held"/);
+    assert.doesNotMatch(html, /is-held/);
+    assert.doesNotMatch(html, /Held by No-Mistakes Review/);
+  }
+  // The same session with no stall is held, as before.
+  const heldOnly = { ...props([session]), workflowRunsBySession: runs };
+  assert.match(renderToStaticMarkup(createElement(BoardView, heldOnly)), /class="tile-held"/);
+  assert.match(renderToStaticMarkup(createElement(ConsoleView, heldOnly)), /class="rail-held"/);
 });

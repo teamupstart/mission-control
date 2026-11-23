@@ -576,3 +576,40 @@ test("Unmute for an agent another window already unmuted is no error: no alert, 
   await page.goto(`${daemon.baseURL}/#/`);
   await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
 });
+
+test("a Mark all read refusal goes with the reports it was for: cleared another way, a later report does not bring it back", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const name = "Audit the flaky suite";
+  const auditor = await agent(daemon, name);
+  await ready(page, daemon);
+  await post(daemon, auditor, { title: "Flaky suite audit one", body: "Two retries hide a race." });
+  await post(daemon, auditor, { title: "Flaky suite audit two", body: "A timer leaks between tests." });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("2", { timeout: 30_000 });
+
+  // Mark all read is refused (intercepted, as in the refused case above).
+  const refusal = "Mission Control could not mark these reports read: the database is busy";
+  await page.route("**/api/reports/read-all", (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: refusal }) }));
+  const inbox = await openInbox(page);
+  const row = inbox.getByRole("region", { name: `Reports from ${name}` });
+  await inbox.getByRole("button", { name: "Mark all read" }).click();
+  await expect(inbox.getByRole("alert")).toHaveText(refusal);
+  await page.unroute("**/api/reports/read-all");
+
+  // The operator clears both another way: Mark read on each card, which reaches the real daemon.
+  for (const title of ["Flaky suite audit one", "Flaky suite audit two"]) {
+    await row.getByRole("button", { name: title }).click();
+    await row.getByRole("button", { name: "Mark read", exact: true }).click();
+    await expect(row.getByRole("button", { name: title })).toHaveCount(0);
+  }
+  await expect(row).toHaveCount(0);
+  await expect(inbox.getByRole("alert")).toHaveCount(0);
+  await expect(toRead(page)).toHaveCount(0);
+
+  // A new report brings the section back, without the refusal nobody made for it.
+  await post(daemon, auditor, { title: "Flaky suite audit three", body: "Fixed the leaking timer." });
+  await expect(row.getByRole("button", { name: "Flaky suite audit three" })).toBeVisible({ timeout: 30_000 });
+  await expect(inbox.getByRole("heading", { name: "Reports", exact: true })).toBeVisible();
+  await expect(inbox.getByRole("alert")).toHaveCount(0);
+  await expect(inbox.getByText(refusal)).toHaveCount(0);
+});

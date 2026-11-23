@@ -192,11 +192,19 @@ export function AttentionInbox({
   // Mark all read sends the ids the Reports section lists now, never the pinned band's report:
   // a report that arrives after the click, or one opened only from a notification, stays.
   const listedReportIds = fold.items.flatMap((item) => (item.kind === "agent_reports" ? item.reports.map((report) => report.id) : []));
-  const [markAllRefused, setMarkAllRefused] = useState<string | null>(null);
+  // A refused Mark all read, kept with the reports the press was for, and drawn only while one of
+  // them is still listed. Cleared another way (Mark read, a reply, a mute), the line goes with
+  // them, and a report that arrives later never brings back a refusal nobody made for it. After a
+  // press refused partway, the reports of the refused batch are still listed, so the reason stays.
+  const [markAllRefused, setMarkAllRefused] = useState<{ error: string; ids: ReadonlySet<string> } | null>(null);
   const markAllRead = () => {
     setMarkAllRefused(null);
-    void reports.onMarkAllRead(listedReportIds).then(setMarkAllRefused);
+    const ids = listedReportIds;
+    void reports.onMarkAllRead(ids).then((error) => setMarkAllRefused(error ? { error, ids: new Set(ids) } : null));
   };
+  const markAllRefusal = markAllRefused && listedReportIds.some((id) => markAllRefused.ids.has(id))
+    ? markAllRefused.error
+    : null;
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
   const leave = (go: () => void) => () => {
@@ -320,7 +328,7 @@ export function AttentionInbox({
                       onClick={markAllRead}
                     />
                   </div>
-                  {markAllRefused && <p className="inbox-line inbox-error" role="alert">{markAllRefused}</p>}
+                  {markAllRefusal && <p className="inbox-line inbox-error" role="alert">{markAllRefusal}</p>}
                 </>
               ) : heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem

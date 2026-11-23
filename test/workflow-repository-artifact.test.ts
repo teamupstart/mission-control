@@ -984,6 +984,40 @@ test("a shallow merge preserves the breadth-first prefix when another branch has
   await f.service.reconcile();
 });
 
+test("history sealing releases commit and tree payloads during a zero-blob history walk", (t) => {
+  const f = fixture(t);
+  const { write, commit } = objects(f.checkout);
+  const revisions: string[] = [], trees: string[] = [];
+  for (let i = 0; i < 24; i++) {
+    // Distinct trees of gitlinks add no blob bytes to the history budget.
+    const entries = Array.from({ length: 96 }, (_, j) => Buffer.concat([
+      Buffer.from(`160000 module-${String(j).padStart(3, "0")}\0`), Buffer.alloc(20, i + 1),
+    ]));
+    const tree = write("tree", Buffer.concat(entries));
+    trees.push(tree);
+    revisions.push(commit(tree, revisions.slice(-1), "m".repeat(16 * 1024)));
+  }
+  f.git("update-ref", "HEAD", revisions.at(-1)!);
+  const pending = join(f.root, "probe");
+  mkdirSync(pending, { recursive: true });
+  const probeCommit = revisions[1]!;
+  const result = execFileSync(process.execPath, ["--expose-gc", "--import", "./test/setup-state.mjs",
+    "--import", "tsx", "test/helpers/repository-history-buffers.mjs", f.checkout, pending, probeCommit,
+    f.git("cat-file", "-s", probeCommit), f.git("cat-file", "-s", trees[1]!)], { encoding: "utf8" });
+  const sample = JSON.parse(result.trim());
+  for (const kind of ["commits", "trees"]) {
+    t.diagnostic(`${kind}: ${sample[kind].live} of ${sample[kind].allocated} payload buffers live at the traversal checkpoint`);
+    assert.ok(sample[kind].allocated >= 20, `expected the probe to see earlier ${kind}`);
+    assert.ok(sample[kind].live <= 3, `earlier ${kind} still occupy ${sample[kind].live} buffers`);
+  }
+  const artifact = join(pending, "artifact");
+  const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8"));
+  assert.equal(manifest.view.retainedBlobBytes, 0);
+  assert.deepEqual(manifest.view.retainedRevisions.map((r: { id: string }) => r.id), [...revisions].reverse());
+  for (const id of [...revisions, ...trees])
+    assert.equal(createHash("sha1").update(readFileSync(join(artifact, id))).digest("hex"), id);
+});
+
 test("2,048-commit breadth-first merge prefix survives source deletion with shallow blame and diff-only base", async (t) => {
   const f = fixture(t);
   f.write("a", "first\n");
@@ -1074,7 +1108,8 @@ test("512 MiB history limit stops before a large first parent and leaves the lat
     lease.descriptor.retainedRevisions.map((r) => r.id),
     [head],
   );
-  assert.equal(existsSync(join(f.root, "digests", s.digest, big)), false);
+  for (const id of [big, bigTree, expensive, cheap])
+    assert.equal(existsSync(join(f.root, "digests", s.digest, id)), false);
   await lease.release();
   await f.service.release(s.submissionId);
   await f.service.reconcile();

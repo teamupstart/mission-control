@@ -140,23 +140,51 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return id;
   }
 
-  const commits = new Map<
-    string,
-    { data: Buffer; record: RepositoryViewDescriptor["retainedRevisions"][number] }
-  >();
   async function commit(id: string) {
-    const cached = commits.get(id);
-    if (cached) return cached;
     const { data } = await reader.get(id, "commit");
-    const headers = data.toString("latin1").split("\n\n", 1)[0]!.split("\n");
-    const tree = oid.parse(headers[0]?.match(/^tree (.+)$/)?.[1]);
-    const parents = headers.filter((h) => h.startsWith("parent ")).map((h) => oid.parse(h.slice(7)));
-    const result = { data, record: { id, tree, parents } };
-    commits.set(id, result);
-    return result;
+    // Decode just the object IDs. A substring of a decoded commit can retain its
+    // entire message or signature for the lifetime of the history descriptor.
+    const firstNewline = data.indexOf(10);
+    const treeEnd = firstNewline < 0 ? data.length : firstNewline;
+    if (treeEnd !== 5 + id.length || data.toString("latin1", 0, 5) !== "tree ") unavailable();
+    const tree = oid.parse(data.toString("latin1", 5, treeEnd));
+    const parents: string[] = [];
+    for (let start = treeEnd + 1; start < data.length && data[start] !== 10;) {
+      const newline = data.indexOf(10, start);
+      const end = newline < 0 ? data.length : newline;
+      if (data.toString("latin1", start, start + 7) === "parent ") {
+        if (end - start !== 7 + id.length) unavailable();
+        parents.push(oid.parse(data.toString("latin1", start + 7, end)));
+      }
+      start = end + 1;
+    }
+    return { data, record: { id, tree, parents } };
   }
 
-  const trees = new Map<string, Buffer>();
+  async function scanTree(id: string, prefix: Buffer, layer: Layer) {
+    const { data } = await reader.get(id, "tree");
+    if (createHash(format).update(`tree ${data.length}\0`).update(data).digest("hex") !== id) unavailable();
+    const directories: { id: string; prefix: Buffer }[] = [];
+    for (let pos = 0; pos < data.length;) {
+      const space = data.indexOf(32, pos), nul = data.indexOf(0, space + 1);
+      const end = nul + 1 + id.length / 2;
+      if (space < pos || nul <= space + 1 || end > data.length) unavailable();
+      const name = data.subarray(space + 1, nul);
+      if (name.includes(47)) unavailable();
+      const path = Buffer.concat([prefix, name]);
+      const key = validPath(path);
+      const child = data.toString("hex", nul + 1, end);
+      const mode = data.toString("ascii", pos, space);
+      if (mode === "40000") directories.push({ id: child, prefix: Buffer.concat([path, Buffer.from("/")]) });
+      else {
+        if (!/^(100644|100755|120000|160000)$/.test(mode) || layer.has(key)) unavailable();
+        layer.set(key, { mode, id: child });
+      }
+      pos = end;
+    }
+    return directories;
+  }
+
   const includedTrees = new Set<string>();
   async function flatten(tree: string, incremental = false) {
     const layer: Layer = new Map();
@@ -169,30 +197,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       // influence the selection of any later revision.
       includedTrees.add(location);
       treeIds.add(id);
-      let bytes = trees.get(id);
-      if (!bytes) {
-        bytes = (await reader.get(id, "tree")).data;
-        if (hash(objectBytes("tree", bytes)) !== id) unavailable();
-        trees.set(id, bytes);
-      }
-      for (let pos = 0; pos < bytes.length;) {
-        const space = bytes.indexOf(32, pos),
-          nul = bytes.indexOf(0, space + 1);
-        const end = nul + 1 + id.length / 2;
-        if (space < pos || nul <= space + 1 || end > bytes.length) unavailable();
-        const name = bytes.subarray(space + 1, nul);
-        if (name.includes(47)) unavailable();
-        const path = Buffer.concat([prefix, name]);
-        const key = validPath(path);
-        const child = bytes.subarray(nul + 1, end).toString("hex");
-        const mode = bytes.toString("ascii", pos, space);
-        if (mode === "40000") await visit(child, Buffer.concat([path, Buffer.from("/")]));
-        else {
-          if (!/^(100644|100755|120000|160000)$/.test(mode) || layer.has(key)) unavailable();
-          layer.set(key, { mode, id: child });
-        }
-        pos = end;
-      }
+      for (const directory of await scanTree(id, prefix, layer)) await visit(directory.id, directory.prefix);
     }
     await visit(tree, Buffer.alloc(0));
     return { layer, treeIds };
@@ -236,10 +241,14 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     }
   }
 
-  async function include(id: string, treeIds: Set<string>, layer: Layer) {
+  async function include(revision: Awaited<ReturnType<typeof commit>>, treeIds: Set<string>, layer: Layer) {
     collect(layer);
-    await save("commit", (await commit(id)).data, id);
-    for (const tree of treeIds) if (!table.has(tree)) await save("tree", trees.get(tree)!, tree);
+    await save("commit", revision.data, revision.record.id);
+    // Selection can reject a revision. Copy each newly accepted tree by ID only after
+    // that decision and let save verify its bytes against the same ID.
+    for (const tree of treeIds) {
+      if (!table.has(tree)) await save("tree", (await reader.get(tree, "tree")).data, tree);
+    }
   }
 
   try {
@@ -247,8 +256,9 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     let baseLayer: Layer = new Map();
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;
-      const { layer, treeIds } = await flatten((await commit(anchor)).record.tree);
-      await include(anchor, treeIds, layer);
+      const revision = await commit(anchor);
+      const { layer, treeIds } = await flatten(revision.record.tree);
+      await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
       if (anchor === base) baseLayer = layer;
     }
@@ -267,7 +277,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       // parent, even when another branch in the queue has deeper history available.
       if (omittedParents.has(id)) break;
       if (seen.has(id)) continue;
-      const { record } = await commit(id);
+      const revision = await commit(id);
+      const { record } = revision;
       // A v1 frontier cannot declare an already-retained revision to be omitted.
       if (shallow.has(id) && record.parents.some(parent => seen.has(parent))) break;
       const { layer, treeIds } = await flatten(record.tree, true);
@@ -284,7 +295,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
         if (retainedBlobBytes + bytes > policy.maxUniqueBlobBytes) break;
       }
       if (retainedBlobBytes + bytes > policy.maxUniqueBlobBytes) break;
-      await include(id, treeIds, layer);
+      await include(revision, treeIds, layer);
       retainedBlobBytes += bytes;
       retainedRevisions.push(record);
       seen.add(id);

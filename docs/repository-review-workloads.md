@@ -74,6 +74,11 @@ omitted parent, including at a merge, and records the original parent IDs in the
 Missing objects inside the selected prefix fail sealing. Changing the source's shallow
 boundary also changes the stable capture fingerprint.
 
+During traversal the daemon retains revision metadata and tree IDs. It writes accepted
+commit payloads to the candidate and rereads newly selected trees by ID, verifying their
+bytes before storage. Earlier commit messages and tree payloads can be freed while
+later revisions are still being considered.
+
 `promote` publishes a verified candidate under its digest and attaches a provisional claim
 after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
 claim active and the submission running in one transaction. Multiple submissions can

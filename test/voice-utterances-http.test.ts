@@ -209,3 +209,26 @@ test("two weak matches followed by a bare name leave only ignored history", asyn
   assert.deepEqual(registry.voiceRouter!.pendingVoiceActions, []);
   assert.deepEqual(queued("Will"), before);
 });
+
+test("a sixth unsure card cancels the oldest unsure card and preserves pending delivery", async () => {
+  await say("Will keep this", "pending");
+  for (let i = 0; i < 6; i++) await say("Steven told Will about it", "unsure-" + i);
+  const openIds = ["pending", "unsure-1", "unsure-2", "unsure-3", "unsure-4", "unsure-5"];
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.id), openIds);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), openIds);
+  assert.deepEqual(cards.filter((card) => card.state === "cancelled").map((card) => card.id), ["unsure-0"]);
+  assert.equal((await readHeard()).find((entry) => entry.id === "unsure-0")?.outcome, "cancelled");
+  assert.equal((await act("unsure-0", "pick", { id: "task:Will" })).status, 409);
+});
+
+test("Recently heard keeps the refusal reasons from the queue and interrupt adapters", async (t) => {
+  t.mock.method(pending, "submit", () => ({ ok: false, error: "Queue full." }));
+  await say("Steve send this", "queue-refusal");
+  await act("queue-refusal", "send-now");
+  t.mock.method(sdk, "interrupt", async () => null);
+  await say("Steve stop", "interrupt-refusal");
+  await act("interrupt-refusal", "send-now");
+  assert.deepEqual((await readHeard()).map(({ outcome, detail }) => [outcome, detail]), [
+    ["failed", "this session has no live embedded driver"], ["failed", "Queue full."],
+  ]);
+});

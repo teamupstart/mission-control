@@ -2,8 +2,10 @@ import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type Voice
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceConfig, VoiceState } from "@shared/voice.ts";
 
+type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
+
 export interface VoiceDeliverer {
-  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand): Promise<VoiceDeliveryOutcome>;
+  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand): Promise<DeliveryResult>;
 }
 
 export interface PendingVoiceAction {
@@ -14,6 +16,7 @@ export interface PendingVoiceAction {
 }
 
 const HISTORY_LIMIT = 50;
+const MAX_UNSURE_CARDS = 5;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
@@ -95,6 +98,12 @@ export class VoiceRouter {
 
   private async openCard(item: OpenCard): Promise<void> {
     const { card, entry } = item;
+    if (card.state === "unsure") {
+      const unsure = this.activeCards().filter((open) => open.state === "unsure");
+      if (unsure.length >= MAX_UNSURE_CARDS) {
+        this.cancel(unsure[0]!.id, "Replaced by a newer unsure card.");
+      }
+    }
     this.open.set(card.id, item);
     this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt: Date.now(), cancel: () => this.cancel(card.id) });
     entry.outcome = card.state;
@@ -117,11 +126,12 @@ export class VoiceRouter {
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
   }
 
-  cancel(id: string): boolean {
+  cancel(id: string, detail?: string): boolean {
     const item = this.open.get(id);
     if (!item) return false;
     this.take(item);
     item.entry.outcome = "cancelled";
+    if (detail) item.entry.detail = detail;
     this.publish({ ...item.card, state: "cancelled", deadline: null });
     return true;
   }
@@ -148,15 +158,17 @@ export class VoiceRouter {
     const part = item.card.parts[0]!;
     const target = roster.find((name) => name.key === part.target?.key);
     this.delivering.set(id, item);
-    let outcome: VoiceDeliveryOutcome = "not-running";
+    let result: DeliveryResult = "not-running";
     try {
-      if (target) outcome = await this.deliverer.deliver(target, part.text, id, item.command);
-    } catch {
-      outcome = "failed";
+      if (target) result = await this.deliverer.deliver(target, part.text, id, item.command);
+    } catch (error) {
+      result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
     }
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
     if (this.delivering.get(id) !== item) return true;
     this.delivering.delete(id);
+    const outcome = typeof result === "string" ? result : result.outcome;
+    if (typeof result !== "string") item.entry.detail = result.detail;
     item.entry.outcome = outcome;
     if (this.state().mode !== "off") this.publish({ ...item.card, state: outcome, deadline: null });
     return true;

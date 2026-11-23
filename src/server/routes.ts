@@ -9299,11 +9299,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (target.state !== "running" || !target.sessionId) return "not-running";
       if (command === "stop") {
         const session = registry.getSession(target.sessionId);
-        if (!session || interruptUnsupportedWhy(session.agent, session.runtime)) return "failed";
+        if (!session) return { outcome: "failed", detail: "No such session." };
+        const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
+        if (unsupported) return { outcome: "failed", detail: unsupported };
         const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
-        return result.ok ? "sent" : "failed";
+        return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
-      return pendingTurns?.submit(target.sessionId, text).ok ? "sent" : "failed";
+      if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
+      const result = pendingTurns.submit(target.sessionId, text);
+      return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Queue refused the message." };
     },
   }, (card) => registry.emitVoiceCard(card));
 

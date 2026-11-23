@@ -48,6 +48,7 @@ test("a rejected delivery marks the card and Recently heard failed and cannot de
   assert.equal(await router.sendNow(utterance.id), false);
   await router.accept(utterance);
   assert.equal(deliver.mock.callCount(), 1);
+  assert.equal(router.heard.list()[0]?.detail, "queue unavailable");
   assert.deepEqual(cards.map(({ id, state }) => [id, state]), [["rejected", "pending"], ["rejected", "failed"]]);
   assert.deepEqual(router.heard.list().map(({ id, outcome }) => [id, outcome]), [["rejected", "failed"]]);
 });

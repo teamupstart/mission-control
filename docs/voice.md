@@ -35,12 +35,12 @@ two-word match. No model is called.
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the running target receives the remaining text verbatim through the standard
 operator queue. “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
-pending voice action. An unsure card has no deadline. Saying a candidate’s name selects it and
+pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card. Saying a candidate’s name selects it and
 opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
 `GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
-ignored speech, cancellations, the routing rule and any observed pause. Muted and unavailable
+ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
 card history exist only in memory and disappear on daemon restart or disabling voice. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.

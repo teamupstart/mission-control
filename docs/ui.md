@@ -1246,7 +1246,8 @@ available:
   Stuck row is one dismissal. Stalled wins over held, as blocked does: a parked run's session is
   stalled because its run did not move it. It also wins over a resident's pin: a pinned resident
   with an idle stall leaves the top of the column for the Stalled section, and leaves the inbox.
-  A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
+  It wins over a declared wait the same way: a stalled session leaves the Awaiting section for
+  Stalled, and its card still draws the wait's deadline track. A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
   row. The section is not framed by repository or by run. The Console
   rail marks the row **stalled** and names the rule in its tooltip; the fact sheet and fixes are
   on the Board card. **Silent while working** and **Foreman escalation unanswered** stay inbox

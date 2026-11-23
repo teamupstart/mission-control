@@ -241,7 +241,7 @@ With the **Stalled section in Idle** preview (`idle-stalled`) also on, the two i
 with work open** and **Workflow run parked**, leave this section: their sessions are cards in
 [Idle's Stalled section](ui.md) instead, with the facts and the same fixes on the card, and they
 no longer count in **to answer**. A pinned resident's idle stall leaves too: the stall outranks the
-pin, so its card moves to the Stalled section. Only a stall Idle cannot draw stays: a resident shown
+pin, and a declared wait, so its card moves to the Stalled section. Only a stall Idle cannot draw stays: a resident shown
 in the residents drawer is not on the fleet, so it keeps its Stuck row here. **Silent while working** and **Foreman escalation unanswered** stay
 here. Dismissing a stall on either surface is one dismissal, so a stall dismissed as a card
 stays hidden as a row when the preview is switched off, until its facts change. Either preview

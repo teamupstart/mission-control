@@ -27,9 +27,14 @@ test("only the two idle rules are idle stalls", () => {
 });
 
 /** What App does: order the fleet with the stalls, then drop from the inbox only what Idle drew. */
-function drawnBy(sessions: Session[], stalls: readonly Stall[], pinned: ReadonlySet<string> = new Set()) {
+function drawnBy(
+  sessions: Session[],
+  stalls: readonly Stall[],
+  pinned: ReadonlySet<string> = new Set(),
+  awaiting: ReadonlySet<string> = new Set(),
+) {
   const order = orderSessions(
-    sessions, new Set(), false, undefined, undefined, pinned, undefined, undefined,
+    sessions, new Set(), false, undefined, undefined, pinned, undefined, awaiting,
     stalledSessions(stalls, true, new Map()),
   );
   return stalledInOrder(order.groups);
@@ -107,4 +112,17 @@ test("with the preview on, Silent while working and an unanswered escalation sta
     stuck.map((item) => (item.kind === "session_stuck" ? `${item.session.id}:${item.stall.kind}` : "")).sort(),
     ["s-escalated:escalated", "s-silent:silent-working"],
   );
+});
+
+test("an idle stall on a session inside a declared wait is a Stalled card and leaves the inbox", () => {
+  // The stall outranks the wait, so the section draws it and the inbox fold has no row for it;
+  // a waiting session with no stall stays under Awaiting and owes nothing.
+  const sessions = [idleSession("s-idle"), idleSession("s-parked"), idleSession("s-calm")];
+  const waiting = new Set(["s-idle", "s-calm"]);
+  const drawn = drawnBy(sessions, ALL, new Set(), waiting);
+  assert.deepEqual([...drawn].sort(), ["s-idle", "s-parked"]);
+  const kept = inboxStalls(ALL, drawn);
+  assert.deepEqual(kept, [SILENT, ESCALATED]);
+  const fold = foldAttention({ sessions, reviews: [], ensembles: [], stalls: kept });
+  assert.equal(fold.items.some((item) => item.kind === "session_stuck" && item.session.id === "s-idle"), false);
 });

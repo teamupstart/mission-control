@@ -280,7 +280,7 @@ export type FleetBlock =
  * outranks the pin is a stall: a pinned resident with an idle stall (`stalled`) leaves its pinned
  * place for Idle's Stalled section, because that section is where an idle stall is drawn at all -
  * the inbox no longer lists it - and a card kept at the top without its facts and fixes would be
- * the stall shown nowhere.
+ * the stall shown nowhere. A stall outranks a declared wait for the same reason.
  *
  * IDLE BLOCKED SESSIONS ARE ONE GROUP, drawn where `blockedPlacement` says
  * (Settings → Display → Blocked sessions). An idle or unconfirmed session with a blocker
@@ -477,9 +477,17 @@ function clusterGroup(
   held: ReadonlySet<string>,
   byRepo: boolean,
   pinned: ReadonlySet<string>,
-  awaiting: ReadonlySet<string>,
+  awaitingIn: ReadonlySet<string>,
   stalled: ReadonlyMap<string, Stall> = NO_STALLED_SESSIONS,
 ): FleetToneGroup {
+  // A stall outranks a declared wait in Idle, as it outranks the pin below: an idle stall is drawn
+  // in the Stalled section and nowhere else (the inbox no longer lists it), so a stalled session
+  // kept under the Awaiting rule would be the stall shown nowhere. The daemon reports no stall for
+  // a session inside its own wait, so this is the moment a stall and a wait overlap - a poll
+  // straddling a new declaration - and the card still draws its wait track.
+  const awaiting = group.tone === "idle" && stalled.size > 0 && awaitingIn.size > 0
+    ? new Set([...awaitingIn].filter((id) => !stalled.has(id)))
+    : awaitingIn;
   // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
   // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
   // run id across everything handed to them, so a run with one free member and one held member
@@ -498,12 +506,11 @@ function clusterGroup(
   // That queue is kept as it is, never grouped by repository or clustered by run (see below).
   // A stall outranks the pin in Idle: a pinned resident with an idle stall sorts under the Stalled
   // rule like any other stalled session (see `orderSessions`). Removed from the pinned set here, so
-  // the rest of the partitioning treats it as the unpinned stalled session it is drawn as - but only
-  // when it will reach the Stalled span. A session inside a declared wait keeps its wait, and the
-  // Stalled span never takes it, so unpinning it would only move it under the Awaiting rule: it
-  // would lose its pinned place without being drawn as stalled.
+  // the rest of the partitioning treats it as the unpinned stalled session it is drawn as. Every
+  // stalled idle session reaches the Stalled span, a waiting one included (above), so dropping the
+  // pin never leaves a card in neither place.
   const pinnedHere = group.tone === "idle" && stalled.size > 0 && pinned.size > 0
-    ? new Set([...pinned].filter((id) => !stalled.has(id) || awaiting.has(id)))
+    ? new Set([...pinned].filter((id) => !stalled.has(id)))
     : pinned;
   const pinnedPart = pinnedHere.size > 0 ? group.sessions.filter((s) => pinnedHere.has(s.id)) : [];
   // Pinned residents inside a wait are their own partition, ahead of the other pinned ones, so
@@ -521,7 +528,7 @@ function clusterGroup(
   // Stalled sessions leave the free and held sides alike for a span of their own between them.
   // Stalled wins over held, as blocked does: a parked run's session is stalled precisely because
   // the run did not move it, so "a workflow owns the next turn" would be the wrong thing to say.
-  // A stalled pinned resident is already unpinned above; a session inside a wait keeps its wait.
+  // A stalled pinned or waiting session was already taken out of those partitions above.
   const stalledPart = group.tone === "idle" && stalled.size > 0
     ? afterWait.filter((s) => stalled.has(s.id)).sort(byStalledLongest(stalled))
     : [];

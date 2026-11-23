@@ -919,19 +919,35 @@ test("a stalled-only split still labels the free cards, and nothing stalled chan
   assert.deepEqual(idleHeadCounts(plainIdle), { awaiting: 0, free: null, stalled: null, held: null });
 });
 
-test("a stall on a session outside Idle, or inside a wait, does not move it into Stalled", () => {
+test("a stall on a session outside Idle does not move it into Stalled", () => {
   const working = plain("alpha");
-  const waiting = awaiting("charlie", 10 * 60_000);
-  const fleet = [working, waiting];
-  const stalled = new Map(fleet.map((s) => [s.id, stallFor(s, 30)]));
   const ordered = orderSessions(
-    fleet, new Set(), false, undefined, undefined, undefined, undefined,
-    awaitingSessionIds(fleet, true, AT), stalled,
+    [working], new Set(), false, undefined, undefined, undefined, undefined, undefined,
+    new Map([[working.id, stallFor(working, 30)]]),
   );
-  const idle = ordered.groups.find((g) => g.tone === "idle")!;
-  assert.equal(idle.stalled, null);
+  assert.equal(ordered.groups.find((g) => g.tone === "idle")!.stalled, null);
   assert.equal(stalledInOrder(ordered.groups).size, 0);
   assert.ok(ordered.groups.find((g) => g.tone === "working")!.sessions.includes(working));
+});
+
+test("a stall outranks a declared wait: the waiting session leaves Awaiting for Stalled", () => {
+  // An idle stall is drawn in Stalled and nowhere else, so a stalled session kept under the
+  // Awaiting rule would be the stall shown nowhere. The other waiting session keeps its wait.
+  const stalledWaiting = awaiting("alpha", 10 * 60_000);
+  const waiting = awaiting("bravo", 20 * 60_000);
+  const free = plain("charlie", IDLE);
+  const fleet = [stalledWaiting, waiting, free];
+  const ordered = orderSessions(
+    fleet, new Set(), false, undefined, undefined, undefined, undefined,
+    awaitingSessionIds(fleet, true, AT), new Map([[stalledWaiting.id, stallFor(stalledWaiting, 25)]]),
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : r.kind)),
+    ["--awaiting:1", "bravo", "--free:1", "charlie", "--stalled:1", "alpha"],
+  );
+  assert.deepEqual([...stalledInOrder(ordered.groups)], [stalledWaiting.id]);
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 1, stalled: 1, held: null });
 });
 
 test("a stall outranks a resident's pin: the stalled resident leaves the top for Stalled", () => {
@@ -955,9 +971,9 @@ test("a stall outranks a resident's pin: the stalled resident leaves the top for
   assert.deepEqual(idleHeadCounts(idle), { awaiting: 0, free: 2, stalled: 1, held: null });
 });
 
-test("a pinned resident inside a wait keeps its pinned place even with a stall: the pin yields only to Stalled", () => {
-  // The wait keeps the session out of the Stalled span, so dropping its pin would move it under
-  // the Awaiting rule and lose its pinned place without drawing it as stalled anywhere.
+test("a stalled pinned resident inside a wait lands in Stalled, never unpinned into Awaiting", () => {
+  // The stall outranks both the pin and the wait, so the resident is drawn as stalled rather than
+  // losing its pin to the Awaiting rule and being shown nowhere.
   const waitingResident = awaiting("alpha-resident", 30 * 60_000);
   const stalledResident = plain("bravo-resident", IDLE);
   const free = plain("charlie", IDLE);
@@ -970,12 +986,12 @@ test("a pinned resident inside a wait keeps its pinned place even with a stall: 
   );
   const idle = ordered.groups.find((g) => g.tone === "idle")!;
   const rows = fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : r.kind));
-  // The waiting resident leads as a pinned card above the Awaiting rule, as it would with no stall;
-  // the stalled resident without a wait leaves its pin for the Stalled section.
-  assert.deepEqual(rows, ["alpha-resident", "--awaiting:1", "delta", "--free:1", "charlie", "--stalled:1", "bravo-resident"]);
-  assert.deepEqual(idle.awaiting, { startIndex: 1, length: 1 });
-  assert.deepEqual([...stalledInOrder(ordered.groups)], [stalledResident.id]);
-  assert.deepEqual(idleHeadCounts(idle), { awaiting: 2, free: 1, stalled: 1, held: null });
+  // Both stalled residents are in Stalled (equal age, so by id); only the unstalled waiting session
+  // is under the Awaiting rule.
+  assert.deepEqual(rows, ["--awaiting:1", "delta", "--free:1", "charlie", "--stalled:2", "alpha-resident", "bravo-resident"]);
+  assert.deepEqual(idle.awaiting, { startIndex: 0, length: 1 });
+  assert.deepEqual([...stalledInOrder(ordered.groups)].sort(), [stalledResident.id, waitingResident.id].sort());
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 1, stalled: 2, held: null });
 });
 
 test("with repository grouping on, the Stalled section stays a flat longest-first queue", () => {

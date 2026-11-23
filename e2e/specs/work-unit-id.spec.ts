@@ -193,6 +193,7 @@ test("with the preview on, each launch carries its own task's work unit, and the
   const empty = await openSession(page, claude.title);
   await expect(empty.locator("dl.detail-sub")).toHaveCount(0);
   await expect(empty).not.toContainText(claude.workUnitId!);
+  await shoot(empty, "08-empty-band-absent", page);
 });
 
 test("with the preview off, a launch carries no variable and the detail shows no row", async ({ dashboard: page, daemon }) => {

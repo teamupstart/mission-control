@@ -190,6 +190,8 @@ filesystem path or the current global setting.
 
 Save the complete source, index and all phases with their HTML renderings. Obtain explicit final
 approval using `request_plan_decisions({managedPlan: {repoSlot, planId, revision}, ...})`.
+If the tool returns a receipt saying the form is filed, the approval has not happened yet: create
+no tasks, end your turn, and continue when the answer arrives as a message.
 Read that exact revision back: it must be approved, waiting for validation, or already published.
 Validation may still be pending when phases are created. Do not commit or push these artifacts.
 

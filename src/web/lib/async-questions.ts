@@ -6,7 +6,7 @@
 // drawer all ask these functions, which is how one question reads the same everywhere it appears.
 
 import { createContext, useContext } from "react";
-import { confirmedWorking, openQuestionCount } from "@shared/async-input.ts";
+import { agentKeepsWorking, confirmedWorking, isFiledGate, openQuestionCount } from "@shared/async-input.ts";
 import type { ResidentRunSummary } from "@shared/residents.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { relativeTime, type StateDisplay } from "./format.ts";
@@ -79,27 +79,37 @@ export function useQuestionAgent<T extends Pick<Session, "id">>(session: T | nul
   return session ? asQuestionAgent(session, paused) : null;
 }
 
-/** The card's status line for a message-mode question, as the operator reads it. */
+/** The card's status line for a message-mode review, as the operator reads it. */
 export interface QuestionStatusLine {
   status: QuestionAgentStatus;
-  /** "Still working" or "Stopped, waiting on this answer". */
+  /** "Still working", "Stopped, waiting on this answer", or for a filed plan form "Waiting on your decisions". */
   label: string;
   /** The agent's own meanwhile line, shown only while it is still working past the question. */
   meanwhile: string | null;
-  /** "asked 4m ago". */
+  /** "asked 4m ago", or "filed 4m ago" for a plan form. */
   asked: string;
 }
 
+/** The label a filed plan form's status line carries: its agent has stopped on it, whatever its state. */
+export const FILED_GATE_LABEL = "Waiting on your decisions";
+
 /**
- * The status line a question card carries, or null for a question the agent waits on inside its
+ * The status line a question card carries, or null for a review the agent waits on inside its
  * call: those render exactly as they always have.
+ *
+ * A filed plan form (`isFiledGate`) is a gate whose call returned: its agent has stopped on it,
+ * so it always reads as stopped and never carries a meanwhile line, even in the moments before
+ * the agent's turn ends.
  */
 export function questionStatusLine(
-  review: Pick<ReviewItem, "waitMode" | "meanwhile" | "createdAt">,
+  review: Pick<ReviewItem, "kind" | "waitMode" | "meanwhile" | "createdAt">,
   session: QuestionAgent | null | undefined,
   now = Date.now(),
 ): QuestionStatusLine | null {
   if (review.waitMode !== "message" || !session) return null;
+  if (isFiledGate(review)) {
+    return { status: "stopped", label: FILED_GATE_LABEL, meanwhile: null, asked: `filed ${relativeTime(review.createdAt, now)}` };
+  }
   const status = questionAgentStatus(session);
   const meanwhile = review.meanwhile?.trim() || null;
   return {
@@ -112,21 +122,24 @@ export function questionStatusLine(
 
 /**
  * Whether the agent behind a row of the inbox's "Questions from agents" has stopped on it: any
- * review it waits on inside a call (a gate, or a question asked with the flag off) always has, and
- * a row of message-mode questions has when its agent is no longer working. The inbox lists these
- * rows first. With the flag off every review is call-mode, so every row is stopped and the order
- * is exactly what it was.
+ * review it waits on inside a call (a gate, or a question asked with the flag off) or a filed plan
+ * form always has, and a row of message-mode questions has when its agent is no longer working.
+ * The inbox lists these rows first. With the flags off every review is call-mode, so every row is
+ * stopped and the order is exactly what it was.
  */
 export function stoppedOnQuestions(
   session: QuestionAgent,
-  reviews: readonly Pick<ReviewItem, "waitMode">[],
+  reviews: readonly Pick<ReviewItem, "kind" | "waitMode">[],
 ): boolean {
-  return reviews.some((review) => review.waitMode !== "message") || questionAgentStatus(session) === "stopped";
+  return reviews.some((review) => !agentKeepsWorking(review)) || questionAgentStatus(session) === "stopped";
 }
 
-/** Every review in the row is a message-mode question, so its agent is not waiting inside a call. */
-export function allMessageMode(reviews: readonly Pick<ReviewItem, "waitMode">[]): boolean {
-  return reviews.length > 0 && reviews.every((review) => review.waitMode === "message");
+/**
+ * Every review in the row is a question its agent works past (`agentKeepsWorking`), so its agent
+ * is not waiting on any of them. A filed plan form is a gate, so a row holding one is not.
+ */
+export function allMessageMode(reviews: readonly Pick<ReviewItem, "kind" | "waitMode">[]): boolean {
+  return reviews.length > 0 && reviews.every(agentKeepsWorking);
 }
 
 /** "1 question open", "3 questions open". */
@@ -230,10 +243,11 @@ export function questionOutcome(review: Pick<ReviewItem, "status" | "closedReaso
 export type QuestionWait = "call" | QuestionAgentStatus;
 
 export function questionWait(
-  review: Pick<ReviewItem, "waitMode">,
+  review: Pick<ReviewItem, "kind" | "waitMode">,
   session: QuestionAgent | null | undefined,
 ): QuestionWait {
-  if (review.waitMode !== "message") return "call";
+  // A filed plan form reads as `call`: its agent keeps waiting on it, as that copy says.
+  if (!agentKeepsWorking(review)) return "call";
   // Every caller passes the asking session; without one, the words fall back to what the agent
   // was told when it filed the question: keep working.
   return session ? questionAgentStatus(session) : "working";

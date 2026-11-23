@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import {
   DEFAULT_REVIEW_SNOOZE_DELAY,
@@ -79,7 +80,7 @@ function meanwhileFromChoice(choice: MeanwhileChoice): ReviewSnoozeMeanwhile {
  */
 export function SnoozeSheet({
   review,
-  wait = review.waitMode === "message" ? "working" : "call",
+  wait = agentKeepsWorking(review) ? "working" : "call",
   onBack,
 }: {
   review: ReviewItem;

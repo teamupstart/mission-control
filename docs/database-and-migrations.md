@@ -32,6 +32,38 @@ for reaches a terminal status, and prunes a key no session has held for the goal
 `last_held_at` records when a live session was last seen holding the key, so that window counts
 observed absence and a restart does not reset it.
 
+`session_awaitings` (schema 44) holds one [declared wait on a background process](sessions.md#sessions-awaiting-a-background-process-preview)
+per note key, with the bound `task_id` recorded for the terminal-task clear. It is created in
+`migrate()`, so an older database gains an empty table on its next open. The Registry loads it at
+construction, moves a row on every note-key rotation as it moves a blocker, and deletes a row on
+the session's next turn, when the session is removed after it exits, after three minutes with no
+live session holding its key, on a clear, when its task reaches a terminal status, and when the
+`session-awaiting` preview is off. A blocker replacing a wait deletes the wait's row in the same
+transaction that writes the blocker.
+`settled_at` records when the declaring turn was seen to end, which is what tells the wake from
+the rest of that turn: a reading that leaves the session's turn for idle, or, for a wait declared
+while the session already read idle, the first time its hooks or its transcript report it idle
+after the declaration. `pending_nudges` holds one entry for each delivery Mission Control's own
+automation claimed into the session while the wait stood, or in the ten minutes before it was
+declared with its prompt not yet back from the session, and that has not yet started its turn,
+with the delivered text's fingerprint, so the turn whose prompt it is reads as that nudge rather
+than as the wake, even when deliveries overlap, another message starts a turn first, or the
+daemon restarts in between. A delivery that provably never landed is removed. An entry carries
+`contestedBy`, the ids of a person's own messages in exactly the same words sent through Mission
+Control while it was pending, and while any stands the turn whose prompt matches it is read as the
+wake. A message that provably never landed removes only its own id, so a duplicate that fails,
+even after a daemon restart, leaves an earlier message's claim in place. `undecided_turn`
+marks a turn that started while a delivery was pending and whose prompt has not been reported
+yet, so a restart before that prompt arrives can still decide whose turn it was.
+`redeclared_in_turn` marks that the session declared its wait again during that turn: the turn
+is still decided, so a delivery that started it is used up, but it no longer ends the wait.
+`session_id` is the last session seen holding the wait, so a clear with no live holder (a prune
+after a restart, the preview switched off) still files its `session_awaiting_cleared` row under a
+session.
+`judged_turn_at` is the transcript time of the latest turn start the wait has already judged,
+so a transcript turn marker is compared in the transcript's own time rather than against when a
+sweep happened to look, and a turn already judged is not judged again after a restart.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

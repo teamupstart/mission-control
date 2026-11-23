@@ -1,7 +1,7 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
-import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
 import { OpenQuestionLimitError } from "./reviews.ts";
-import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
@@ -36,7 +36,9 @@ import { activeStackGitHub } from "./stacking/github.ts";
 import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
-import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
+import {
+  registerSessionControlRoutes, sessionControlActor, sessionControlCaller, sessionControlCallerRefusal,
+} from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
@@ -55,6 +57,7 @@ import {
   reusableStandingApproval,
   standingBundleAnswer,
   STANDING_FOLLOW_UP_NOTE,
+  filedPlanIdentityNote,
 } from "./plans/publication.ts";
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
@@ -257,6 +260,9 @@ import {
   StatusSchema,
   McpReportBlockerSchema,
   McpClearBlockerSchema,
+  McpClearAwaitingSchema,
+  McpReportAwaitingSchema,
+  ClearAwaitingSchema,
   FlagBlockerReplySchema,
   ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
@@ -305,7 +311,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -328,6 +334,7 @@ import type {
   InspectorStatus,
   LlmStatus,
   ReviewActor,
+  ReviewItem,
   Session,
   SessionBlocker,
   SkillsView,
@@ -359,8 +366,13 @@ import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs"
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import {
   confirmReservedInjection,
+  notePersonDelivery,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
+  PersonAttributionError,
+  type PersonDelivery,
+  withdrawPersonDelivery,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
@@ -369,7 +381,7 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -1878,6 +1890,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   if (residentInstructions) {
     reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
   }
+  // A filed plan form's answer names the managed plan and revision it approved or did not.
+  reviews?.addContinuationAddendum?.(filedPlanIdentityNote);
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -5190,6 +5204,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
+    // How this ask waits, decided once here and said in the response (`async-input`, and
+    // `filed-plan-decisions` for a plan form: the one reader of that flag). Read per ask so either
+    // flag takes effect without a restart. `call` is today's long poll; `message` returns the
+    // receipt for the MCP child to hand the agent at once.
+    const wait = decideWaitMode({
+      flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+      gateFlagOn: featureEnabled(FILED_PLAN_DECISIONS_FLAG),
+      kind,
+      snoozable: snoozable === true,
+      asyncCapable: parsed.data.asyncCapable === true,
+      messageable: canMessage(session),
+    });
+    const waitOptions = {
+      ...(wait === "message" ? { waitMode: "message" as const } : {}),
+      callerPolls: parsed.data.asyncCapable !== true,
+    };
+    // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+    // answer names the row's own mode rather than the one this ask would have had.
+    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
+      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    };
     try {
       const target = parsed.data.managedPlan;
       if (target) {
@@ -5218,40 +5255,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             });
           }
           const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
-          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id });
+          // Born settled: said as `call` even to a capable child, whose one poll returns the
+          // recorded approval as the tool result. Nothing is filed, so nothing is waited on.
+          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id, wait: "call" });
           const followUp = reviews.create(session.id, kind, title,
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
-            remaining);
+            remaining, waitOptions);
           recordStandingFollowUp(followUp.id, approvedId);
-          return c.json({ id: followUp.id, sessionId: session.id });
+          return created(followUp, { bundleApproved: true });
         }
-        const review = reviews.create(session.id, kind, title, fullBody, allDecisions);
+        const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
         // Offer "approve all future bundles" only where the resolve route can keep it.
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
-        return c.json({ id: review.id, sessionId: session.id });
+        return created(review);
       }
-      // How this ask waits, decided here and said in the response (`async-input`). Read per ask
-      // so the flag takes effect without a restart. `call` is today's long poll; `message`
-      // returns the receipt for the MCP child to hand the agent at once.
-      const wait = decideWaitMode({
-        flagOn: featureEnabled(ASYNC_INPUT_FLAG),
-        kind,
-        snoozable: snoozable === true,
-        asyncCapable: parsed.data.asyncCapable === true,
-        messageable: canMessage(session),
-      });
       const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
         snoozable,
-        ...(wait === "message" ? { waitMode: "message" as const } : {}),
+        ...waitOptions,
         meanwhile: parsed.data.meanwhile || null,
-        callerPolls: parsed.data.asyncCapable !== true,
       });
-      // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
-      // answer names the row's own mode rather than the one this ask would have had.
-      return review.waitMode === "message"
-        ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
-        : c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      return created(review);
     } catch (error) {
       if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
@@ -5504,8 +5528,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { env, sessionId, cwd } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
-    return c.json({ questions: reviews.openQuestions(session.id).map(({ id, title, createdAt, meanwhile, status }) =>
-      ({ id, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+    // Filed plan forms too (`openAsks`), each with its kind so the agent can tell the two apart.
+    return c.json({ questions: reviews.openAsks(session.id).map(({ id, kind, title, createdAt, meanwhile, status }) =>
+      ({ id, kind, title, createdAt, meanwhile: meanwhile ?? null, status })) });
   });
 
   app.post("/mcp/questions/:id/withdraw", async (c) => {
@@ -5611,6 +5636,55 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = registry.reportBlocker(session.id, body);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session a declared-wait call is about: the one its signed Registry credential names,
+  // never the body's `env` or `sessionId`, which any holder of the machine token can write. A
+  // body naming a different session is refused rather than silently retargeted.
+  const awaitingCaller = (
+    c: Context,
+    env: Parameters<Registry["findSessionByEnv"]>[0],
+    sessionId: string | null,
+  ): { ok: true; sessionId: string } | { ok: false; status: 403; error: string } => {
+    const caller = sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!caller) return { ok: false, status: 403, error: "Only a live session Mission Control registered can declare or clear its own wait." };
+    const named = registry.findSessionByEnv(env, sessionId);
+    if (named && named.id !== caller) return { ok: false, status: 403, error: "A session can only declare or clear its own wait." };
+    return { ok: true, sessionId: caller };
+  };
+
+  // A session declaring it is idle on purpose while a background process finishes. Bound to the
+  // caller by its signed credential (`awaitingCaller`), and refused while the session has a
+  // `request_input` pending or stands on a blocker. 404 with `feature` while the preview is off,
+  // which the tool reads.
+  app.post("/mcp/awaiting", requireFeature(SESSION_AWAITING_FLAG_ID), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    // Read again past the body's await: the preview switched off meanwhile ends every wait, and
+    // a declaration let through after that would stand until the next restart. No await
+    // separates this from the write below.
+    if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: SESSION_AWAITING_FLAG_ID }, 404);
+    }
+    const { env, sessionId, ...body } = parsed.data;
+    const caller = awaitingCaller(c, env, sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const result = registry.reportAwaiting(caller.sessionId, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: caller.sessionId, created: result.created, awaiting: result.awaiting });
+  });
+
+  // The session ending its own wait. Not gated on the preview, so a session can always end a
+  // wait it declared; with none it is a no-op success.
+  app.post("/mcp/awaiting/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const caller = awaitingCaller(c, parsed.data.env, parsed.data.sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const cleared = registry.clearAwaiting(caller.sessionId, "session", parsed.data.resolution);
+    return c.json({ sessionId: caller.sessionId, cleared });
   });
 
   // The session clearing its own blocker. Clearing a session with none is a no-op success.
@@ -6232,6 +6306,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
     // Mission Control, so it stays in flight until the race window closes.
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
+    // A person's words (the operator's, or a controlling session's) are always the session's
+    // wake, even when they repeat an automated delivery still on its way, so say so first.
+    // Taken back only on positive evidence that nothing landed, below; an unknown outcome keeps
+    // it, since the person's turn may still start.
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, parsed.data.text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        // Refused before anything is written: what these words are could not be stored on the
+        // waiting session's wait. Nothing landed, so it races nothing either.
+        if (otherSend) withdrawOtherSend(otherSend);
+        return c.json({ ok: false, error: error.message, pasted: false }, 500);
+      }
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -6244,7 +6334,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
-      if (otherSend && sent.pasted === false) withdrawOtherSend(otherSend);
+      if (sent.pasted === false) {
+        if (otherSend) withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
+      }
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
       // question this answers is how often conversation operations land, not what they said.
@@ -6271,6 +6364,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
+    // Refused before anything reached the pane (no handle, the pane lock held, a guard): the
+    // person's words never landed. A write that was attempted, even one whose Enter failed and
+    // left a draft, keeps the announcement.
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     observeSessionOperation({
       session,
       // An unsubmitted write leaves a draft in somebody's composer and starts no turn, which
@@ -6418,6 +6515,24 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
     if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
     return c.json({ ok: true, blocker });
+  });
+
+  // End this session's declared wait, from the dashboard's Clear or `control_session
+  // clear_awaiting`. Not gated on the preview: ending a hold is always allowed. The caller must
+  // name the wait it saw (`awaitingId`, required by the schema), and a stale one (the session
+  // re-declared since the caller looked) is refused rather than ending a wait it never saw.
+  app.post("/api/sessions/:id/awaiting/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const current = registry.getAwaiting(session.id);
+    if (current && current.id !== parsed.data.awaitingId) {
+      return c.json({ error: "This session declared a different wait since you looked. Read it again before clearing." }, 409);
+    }
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearAwaiting(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
   });
 
   // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
@@ -6610,7 +6725,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
+    // Refused when its attribution could not be stored on a waiting session's wait, an automated
+    // delivery's or a person's: nothing is typed, and the delivery settles below as one that
+    // never reached the pane.
+    let attributionRefused: string | null = null;
+    // Whether this call's own reservation was made: only that one is released below, since a
+    // refused one recorded nothing and releasing would give back an earlier one of the same text.
+    let reserved = false;
+    if (daemonOrigin) {
+      try {
+        reserveInjection(session.id, text, daemonOrigin);
+        reserved = true;
+      } catch (error) {
+        if (!(error instanceof AutomatedAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
+    // A person's words, the operator's or a controller's, announced as such before the write,
+    // for the reason `/send` gives.
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.
@@ -6627,14 +6768,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // can release it, so a reservation failure cannot strand this conversation's lock.
     if (claim) codeRabbitSending.add(claim.noteKey);
     if (stackRequest) stackSending.add(stackRequest.prKey);
-    const r = await injectPromptForRuntime(
-      sdkSessions,
-      session,
-      text,
-      undefined,
-      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
-        ?? registry.promptResourceBlockerForSession(session.id),
-      origin,
+    const r = await (attributionRefused !== null
+      ? Promise.resolve({ ok: false, error: attributionRefused, pasted: false })
+      : injectPromptForRuntime(
+        sdkSessions,
+        session,
+        text,
+        undefined,
+        () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+          ?? registry.promptResourceBlockerForSession(session.id),
+        origin,
+      )
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => {
         if (claim) codeRabbitSending.delete(claim.noteKey);
@@ -6660,7 +6804,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (daemonOrigin) {
+    if (reserved && daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
       // would each owe an echo for one delivery.
       if (r.ok) confirmReservedInjection(session.id, text, daemonOrigin);
@@ -6674,6 +6818,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
     if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
     // here rather than at the button for the reason this whole route exists: `ok` is the only
     // place delivery is actually known, and on the pane arm it is genuinely different from
@@ -7383,6 +7528,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
     }
+    // Nor is one awaiting its own background process inside the deadline it declared.
+    if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -7487,7 +7636,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
     // The session can report a blocker while the diff runs; the decision below reads the
     // object taken before the await, so ask the live one first.
-    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+    const live = registry.getSession(session.id) ?? session;
+    if (hasBlocker(live) || isAwaiting(live)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
     // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan

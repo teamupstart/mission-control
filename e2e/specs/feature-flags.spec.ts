@@ -41,6 +41,8 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(page.getByRole("button", { name: "Task shaping: off" })).toBeVisible();
   // And Session control requests. `session-control-requests.spec.ts` drives the card it gates.
   await expect(page.getByRole("button", { name: "Session control requests: off" })).toBeVisible();
+  // And Awaiting background work. `session-awaiting.spec.ts` drives the card and band it gates.
+  await expect(page.getByRole("button", { name: "Awaiting background work: off" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
@@ -58,6 +60,7 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
   await expect(peer.getByRole("button", { name: "Task shaping: on" })).toBeVisible();
   await expect(peer.getByRole("button", { name: "Session control requests: on" })).toBeVisible();
+  await expect(peer.getByRole("button", { name: "Awaiting background work: on" })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(master).toBeChecked();

@@ -50,11 +50,16 @@ import {
   confirmHumanEcho,
   expectHumanEcho,
   markHumanEchoCaptured,
+  notePersonDelivery,
   recordInjection,
   releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
+  PersonAttributionError,
+  withdrawPersonDelivery,
   type HumanEchoTicket,
+  type PersonDelivery,
 } from "./injections.ts";
 import { unref } from "./util/timers.ts";
 
@@ -1084,7 +1089,44 @@ export class PendingTurnManager {
     if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
   }
 
+  /**
+   * Say whose words a row carries before anything else of its send: a daemon-written row is
+   * reserved as such (`reserveInjection`), and the operator's own words are announced as a
+   * person's (`notePersonDelivery`), which is always the session's wake. Either one refused
+   * because its attribution could not be stored (`AutomatedAttributionError`,
+   * `PersonAttributionError`) wrote nothing: the row goes back to the queue as undelivered, as a
+   * busy agent's does, and the send stops here (null).
+   */
+  private announceTurn(
+    session: Session,
+    turn: PendingTurn,
+    author: TurnOrigin | null,
+  ): { personSend: PersonDelivery | null } | null {
+    try {
+      if (author) {
+        reserveInjection(session.id, turn.text, author);
+        return { personSend: null };
+      }
+      return { personSend: notePersonDelivery(session.id, turn.text) };
+    } catch (error) {
+      if (!(error instanceof AutomatedAttributionError) && !(error instanceof PersonAttributionError)) throw error;
+      releasePendingTurn(turn.id, turn.revision, error.message, this.deps.now());
+      this.registry.refreshPendingTurns(turn.noteKey);
+      return null;
+    }
+  }
+
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+    // Whose words these are, said BEFORE the send, because the prompt hook can report them back
+    // while the send is still in flight (see `reserveInjection`). First of all, so one refused
+    // for its attribution leaves nothing else to undo. The operator's own words are always the
+    // session's wake, even when they repeat an automated delivery still on its way (see
+    // `notePersonDelivery`); that announcement is withdrawn wherever this row is released as
+    // positively undelivered, beside `withdrawOutboxSend`.
+    const author = daemonAuthorOf(turn);
+    const announced = this.announceTurn(session, turn, author);
+    if (!announced) return;
+    const personSend = announced.personSend;
     // The operator's queued words may race a delegated send of the same ones. Every path below
     // that releases the row is positive evidence nothing landed, so it withdraws this record.
     const outboxSend = recordOutboxSend(session, turn);
@@ -1104,10 +1146,6 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
-    // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
-    // report it back while the send is still in flight (see `reserveInjection`).
-    const author = daemonAuthorOf(turn);
-    if (author) reserveInjection(session.id, turn.text, author);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -1141,10 +1179,15 @@ export class PendingTurnManager {
           "SDK conversation ownership changed during delivery.",
           handoff.acceptanceBoundaryCrossed,
         );
+        // The row stays uncertain either way, but a guard that refused before the acceptance
+        // boundary handed the driver nothing: the person's words did not land, so they no longer
+        // contest a delivery of the same words. Past the boundary they may have, and stand.
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -1217,6 +1260,8 @@ export class PendingTurnManager {
           `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
           handoff.acceptanceBoundaryCrossed,
         );
+        // Withdrawn only when the refusal came before the acceptance boundary (see above).
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (handoff.acceptanceBoundaryCrossed) {
         // Once the supervisor crossed its serialized acceptance guard, a thrown
         // transport response is not proof of refusal: Codex may already have written
@@ -1233,6 +1278,7 @@ export class PendingTurnManager {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
     } finally {
@@ -1248,9 +1294,12 @@ export class PendingTurnManager {
   }
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
-    const outboxSend = recordOutboxSend(session, turn);
+    // Whose words these are, said first and withdrawn as `deliverSdk` does.
     const author = daemonAuthorOf(turn);
-    if (author) reserveInjection(session.id, turn.text, author);
+    const announced = this.announceTurn(session, turn, author);
+    if (!announced) return;
+    const personSend = announced.personSend;
+    const outboxSend = recordOutboxSend(session, turn);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1315,6 +1364,7 @@ export class PendingTurnManager {
       } else {
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -1387,6 +1437,7 @@ export class PendingTurnManager {
     } else {
       if (author) releaseInjection(session.id, turn.text);
       withdrawOutboxSend(outboxSend);
+      withdrawPersonDelivery(personSend);
       releasePendingTurn(
         turn.id,
         turn.revision,

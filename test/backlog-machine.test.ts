@@ -54,6 +54,7 @@ function mkSession(over: Partial<Session> = {}): Session {
   const n = ++sessionSeq;
   return {
     blocker: null,
+    awaiting: null,
     id: `s${n}`,
     agent: "claude",
     name: `agent-${n}`,
@@ -1041,4 +1042,12 @@ test("a blocked agent is not free for another task until its blocker clears", ()
   assert.equal(agentIsFree(blocked, [blocked], [], CFG, NOW), false);
   const cleared = mkSession({ blocker: null });
   assert.equal(agentIsFree(cleared, [cleared], [], CFG, NOW), true);
+});
+
+test("an agent awaiting its own background process is not free until the deadline passes", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  const held = mkSession({ awaiting });
+  assert.equal(agentIsFree(held, [held], [], CFG, NOW), false);
+  // Past the deadline the wait no longer holds it: the safety net, not a permanent hold.
+  assert.equal(agentIsFree(held, [held], [], CFG, NOW + 60_000), true);
 });

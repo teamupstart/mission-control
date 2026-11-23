@@ -25,6 +25,7 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
 import { openQuestionsLabel } from "../../lib/async-questions.ts";
 import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
@@ -478,6 +479,11 @@ export function SessionTile({
           )}
         </span>
       )}
+
+      {/* A wait the session declared on its own background process: what, when it is due,
+          and how far through the window it is. Always drawn while it stands, like the blocker
+          state above, because it is why this idle card is quiet; nothing for any other card. */}
+      <AwaitingTileTrack session={session} />
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`

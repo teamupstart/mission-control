@@ -18,7 +18,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -135,6 +135,7 @@ import {
   recordInjection,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
 } from "../injections.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
@@ -5537,7 +5538,8 @@ export class WorkflowManager {
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
       // An outstanding request_input question, snoozed or not, holds evidence preparation too.
       && !this.registry.completionHeldByQuestion(session)
-      && !hasBlocker(session);
+      && !hasBlocker(session)
+      && !isAwaiting(session, now);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -6920,24 +6922,33 @@ export class WorkflowManager {
     // the write is still unresolved, and an echo that arrives with no authorship on file is
     // captured as the human's Goal - which for a repair packet means the next round reviews
     // the work against Mission Control's own previous complaint.
-    reserveInjection(session.id, sending.payload, "workflow", () => {
-      // The Registry consumes this receipt after recording the prompt's work episode.
-      // A later human retype has no receipt, even when its text equals this packet.
-      if (sending.kind !== "session_action") return;
-      const episode = this.registry.recordedWorkEpisodeForSession(session.id);
-      if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
-      try {
-        this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
-          deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
-          promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
-        });
-      } catch (error) {
-        workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
-          error: error instanceof Error ? error.name : "unknown" });
-      }
-    });
-    let result: InjectResult;
+    // A reservation refused because its attribution could not be stored typed nothing: refused
+    // below as a delivery that never reached the pane, without calling the transport.
+    let attributionRefused: string | null = null;
     try {
+      reserveInjection(session.id, sending.payload, "workflow", () => {
+        // The Registry consumes this receipt after recording the prompt's work episode.
+        // A later human retype has no receipt, even when its text equals this packet.
+        if (sending.kind !== "session_action") return;
+        const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+        if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+        try {
+          this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+            deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+            promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+          });
+        } catch (error) {
+          workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+            error: error instanceof Error ? error.name : "unknown" });
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof AutomatedAttributionError)) throw error;
+      attributionRefused = error.message;
+    }
+    let result: InjectResult;
+    if (attributionRefused !== null) result = { ok: false, error: attributionRefused, pasted: false, submitVerified: false };
+    else try {
       result = await this.inject(
         session,
         sending.payload,
@@ -6956,7 +6967,9 @@ export class WorkflowManager {
         // nothing reached the pane, so no echo is coming and the claim goes back. Every other
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
-        releaseInjection(session.id, sending.payload);
+        // Only a reservation this send made: a refused one recorded nothing, and releasing would
+        // give back an earlier reservation of the same text.
+        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
         if (result.error === "inspector_feedback_superseded") {
           if (this.store.getDelivery(sending.id)?.state === "sending") {
             this.store.setDeliveryState(sending.id, "prepared", null);
@@ -6994,7 +7007,7 @@ export class WorkflowManager {
           deliveryId: sending.id,
           reason,
           paneBlocked: Boolean(result.paneBlocked),
-          writeAttempted: true,
+          writeAttempted: attributionRefused === null,
         });
         this.publishRun(sending.runId);
         return;
@@ -8471,6 +8484,9 @@ export class WorkflowManager {
     // same reason, because to the operator it is the same fact: the session is waiting on them.
     if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
+    // Idle on purpose while its own CI or build finishes: resuming now would hand it a round
+    // before the result it is waiting for exists. Past its deadline it resumes as usual.
+    if (isAwaiting(session, now)) return held("session_awaiting");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
@@ -8784,6 +8800,10 @@ export class WorkflowManager {
     const current = this.registry.getSession(eligible.session.id);
     if (current && hasBlocker(current)) {
       this.recordResumptionWithheld(run, latest, "session_blocked", now);
+      return;
+    }
+    if (current && isAwaiting(current, now)) {
+      this.recordResumptionWithheld(run, latest, "session_awaiting", now);
       return;
     }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);

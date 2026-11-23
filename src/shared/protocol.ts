@@ -103,6 +103,8 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_AWAITING_LIMITS,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
@@ -680,9 +682,10 @@ export const CreateReviewSchema = z
      */
     snoozable: z.boolean().optional(),
     /**
-     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
-     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
-     * older build never sends this and is always told `call`.
+     * The MCP child can return a receipt instead of long-polling (`async-input`, and for a plan
+     * form `filed-plan-decisions` too). The daemon decides how the ask waits and answers
+     * `wait: "message"` or `wait: "call"`; a child from an older build never sends this and is
+     * always told `call`.
      */
     asyncCapable: z.boolean().optional(),
     /** What the agent does while the question is open: one line, `input` only. */
@@ -1162,6 +1165,50 @@ export const FlagBlockerReplySchema = z.object({
   blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
+
+/** What a session declares about itself through `report_awaiting`. */
+export const ReportAwaitingBodySchema = z.object({
+  what: blockerLine(SESSION_AWAITING_LIMITS.what),
+  wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES),
+  /**
+   * Required: when the process should be done, as an ISO 8601 date-time with a time zone. Read
+   * on the wire as text and handed on as epoch ms. Its bounds are relative to the moment the
+   * daemon receives it (after now, at most `SESSION_AWAITING_LIMITS.maxMinutes` later), so the
+   * registry checks them where the clock is read, not here.
+   */
+  expectedBy: z.string().trim().datetime({ offset: true }).transform((v) => Date.parse(v)),
+  referenceUrl: z.string().trim().max(SESSION_AWAITING_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+    .nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportAwaitingBody = z.infer<typeof ReportAwaitingBodySchema>;
+
+/** `POST /mcp/awaiting`: bound to the caller the way `/mcp/blocker` is. */
+export const McpReportAwaitingSchema = ReportAwaitingBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/** `POST /mcp/awaiting/clear`: the session clearing its own wait. */
+export const McpClearAwaitingSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+});
+
+/**
+ * `POST /api/sessions/:id/awaiting/clear`, and the session-control action that maps to it.
+ * `awaitingId` names the wait the caller was looking at, so a replacement is refused. Required:
+ * every view that offers Clear holds the id, and a Clear without one could end a wait the
+ * session declared after the caller looked.
+ */
+export const ClearAwaitingSchema = z.object({
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+  awaitingId: z.string().min(1).max(64),
+}).strict();
+export type ClearAwaiting = z.infer<typeof ClearAwaitingSchema>;
 
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
@@ -9522,6 +9569,8 @@ export const SessionControlReadSchema = z.object({
   transcript: z.boolean().optional().default(false),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
+  /** List form only: true lists only sessions that declared a wait on a background process. */
+  awaiting: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -9549,6 +9598,7 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
+  z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

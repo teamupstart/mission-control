@@ -1,5 +1,6 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
-import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import type { KindWorkflowDefaults } from "./task.ts";
+import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
@@ -12,11 +13,10 @@ import type {
   SessionIntentGuard,
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
+import type { ThinkingLevel } from "./types.ts";
 import { repoAllowlisted } from "./allowlist.ts";
-import {
-  NO_MISTAKES_REVIEW_WORKFLOW_ID,
-  parseBuiltinWorkflowVersionId,
-} from "./builtin-workflow.ts";
+import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -196,6 +196,15 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   checkVerdictOutput: 2_000,
 } as const;
 
+/** Browser-safe bounds shared by capture, persistence, HTTP and MCP readers. */
+export const WORKFLOW_COMMAND_OUTPUT_LIMITS = {
+  retainedBytesPerAttempt: 2 * 1_024 * 1_024,
+  retainedBytesPerRun: 64 * 1_024 * 1_024,
+  readBytesMin: 4,
+  readBytesMax: 64 * 1_024,
+  cursorChars: 1_024,
+} as const;
+
 /**
  * Workflow evidence inherits Phase 1's provider limits and adds bounds for durable metadata.
  * These are browser-safe because every intake surface and every retained row must agree.
@@ -362,6 +371,8 @@ export type WorkflowEvidenceReadinessWarningCode =
   (typeof WORKFLOW_EVIDENCE_READINESS_WARNING_CODES)[number];
 
 export interface WorkflowCanonicalCriterion {
+  /** Absent on legacy criteria; null records a non-publication outcome. Graph ownership still gates deferral. */
+  fulfilledByAction?: "pull_request" | null;
   id: string;
   text: string;
   material: boolean;
@@ -441,6 +452,8 @@ export interface WorkflowEvidenceReadinessLink {
 }
 
 export interface WorkflowEvidenceReadinessCriterion {
+  /** Still owed by a later workflow action, never a claim of satisfaction. */
+  deferredToAction?: "pull_request";
   criterionId: string;
   criterion: string;
   material: boolean;
@@ -623,6 +636,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   unavailableReason?: string | null;
   selection?: WorkflowCoverageSelection;
   enforceCoverage?: boolean;
+  pendingPullRequestAction?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
     ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
@@ -669,6 +683,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       ?? candidates[0] ?? null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
+    const deferred = canonical.fulfilledByAction === "pull_request" && input.pendingPullRequestAction;
     if (canonical.material && !claim) gaps.push("missing_coverage");
     if (matchedIds.length > 1) warnings.push("ambiguous_mapping");
     const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
@@ -680,6 +695,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       && canonical.suggestedProofClass !== claim.proofClass
     ) warnings.push("model_proof_class_disagreement");
     return {
+      ...(deferred ? { deferredToAction: "pull_request" as const } : {}),
       criterionId: canonical.id,
       criterion: canonical.text,
       material: canonical.material,
@@ -688,7 +704,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       authorProofClass: claim?.proofClass ?? null,
       suggestedProofClass: canonical.suggestedProofClass,
       links,
-      gaps: canonical.material ? [...new Set(gaps)].sort() : [],
+      gaps: canonical.material && !deferred ? [...new Set(gaps)].sort() : [],
       warnings,
     };
   });
@@ -988,6 +1004,11 @@ export interface Persona {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The reasoning effort this Persona's calls ask for, or null for the provider's default.
+   * One vocabulary with sessions and tasks (`THINKING_LEVELS`); see `personaEffortLevels`.
+   */
+  effort: ThinkingLevel | null;
   revision: number;
   archivedAt: number | null;
   createdAt: number;
@@ -1007,6 +1028,84 @@ export interface Persona {
 export interface PersonaExecutionView {
   runner: ResolvedLlmRunner;
   model: ResolvedModel;
+  /** Absent reads exactly as `{ level: null, unsupported: null }`: the provider default. */
+  effort?: ResolvedPersonaEffort;
+}
+
+/**
+ * The effort one Persona call runs at.
+ *
+ * `level` is what is actually passed to the provider; null means no effort flag at all, so the
+ * provider's own default applies. `unsupported` is a stored level the resolved provider and
+ * model do not offer - reported rather than dropped, so the surface showing the model can say
+ * that the configured effort did not apply. It is only ever non-null when `level` is null.
+ */
+export interface ResolvedPersonaEffort {
+  level: ThinkingLevel | null;
+  unsupported: ThinkingLevel | null;
+}
+
+/**
+ * The effort levels a Persona call may name, for one provider/model choice.
+ *
+ * The launch-time capability table sessions and tasks already use (`launchEffortLevels`), read
+ * through the headless runner id, which names the same provider as the harness of that id. A
+ * Persona that inherits its provider (`runner === null`) can land on any runner, so it is
+ * offered only the levels EVERY runner offers for that model - the same reasoning
+ * `portableEffortLevels` applies to a task that inherits its agent.
+ */
+export function personaEffortLevels(
+  runner: LlmRunnerId | null,
+  model: string | null,
+): readonly ThinkingLevel[] {
+  if (runner !== null) return launchEffortLevels(runner, model);
+  const [first, ...rest] = LLM_RUNNER_IDS;
+  return launchEffortLevels(first, model).filter((level) =>
+    rest.every((id) => launchEffortLevels(id, model).includes(level)));
+}
+
+/**
+ * Resolve a stored effort against the provider and model a call will actually use.
+ *
+ * Capability-checked at run time as well as at write time: a Persona that inherits its
+ * provider was validated against every runner, but an app-wide model environment override can
+ * still narrow the levels after the fact. An effort the call cannot honour is surfaced as
+ * `unsupported` rather than passed to a CLI that would reject it.
+ */
+export function resolvePersonaEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+  effort: ThinkingLevel | null | undefined,
+): ResolvedPersonaEffort {
+  if (!effort) return { level: null, unsupported: null };
+  return launchEffortLevels(runner, model).includes(effort)
+    ? { level: effort, unsupported: null }
+    : { level: null, unsupported: effort };
+}
+
+/**
+ * The effort half of a routing line, or null when the provider default applies by choice.
+ *
+ * Null rather than "default effort" so every routing line written before effort existed reads
+ * exactly as it did. An unsupported level is never null: it is the one case where the
+ * configured effort and the effort that runs differ, and that has to be readable.
+ */
+export function personaEffortLabel(effort: ResolvedPersonaEffort | undefined): string | null {
+  if (effort?.level) return `${effort.level} effort`;
+  if (effort?.unsupported) return `${effort.unsupported} effort unsupported, provider default`;
+  return null;
+}
+
+/** `runner · model`, plus ` · <effort>` when one is configured. One spelling for every surface. */
+export function routingLine(
+  runner: string,
+  model: string,
+  effort: ResolvedPersonaEffort | ThinkingLevel | null | undefined,
+): string {
+  const label = typeof effort === "string" || effort == null
+    ? effort ? `${effort} effort` : null
+    : personaEffortLabel(effort);
+  return label ? `${runner} · ${model} · ${label}` : `${runner} · ${model}`;
 }
 
 export interface PersonaDefaultsView {
@@ -1334,10 +1433,25 @@ export interface SessionAction {
   updatedAt: number;
   /**
    * Shipped with the application rather than authored here. Exactly `Persona.builtin`:
-   * app data, never a row, neither editable nor archivable, and Duplicate is the path to
-   * a customized copy.
+   * app data, never a row, never archivable, and Duplicate is the path to a customized copy -
+   * except for a built-in `editable` marks, whose instruction is edited in place.
    */
   builtin: boolean;
+  /**
+   * A built-in whose instruction the operator may edit in place and reset to the shipped
+   * text: the Grill action, which Grill me first delivers by id rather than by a stage an
+   * operator chose. Absent on every other action.
+   */
+  editable?: boolean;
+  /**
+   * False for an action a Workflow stage may never run: the Grill action, which runs ahead of a
+   * task through Grill me first and, bound after the work, would tell the agent to start that
+   * finished task over. Absent on every other action. Independent of `editable`, which says who
+   * may change the instruction, not where it may run.
+   */
+  workflowStage?: false;
+  /** An editable built-in whose instruction is the operator's rather than the shipped text. */
+  customized?: boolean;
 }
 
 /** SessionAction names use the same durable Unicode spelling rule as Persona names. */
@@ -1384,10 +1498,16 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "workflowStage">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+    .filter((action) =>
+      action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
+}
+
+/** Whether a Workflow stage may run this action. See `SessionAction.workflowStage`. */
+export function sessionActionIsStage(action: Pick<SessionAction, "workflowStage">): boolean {
+  return action.workflowStage !== false;
 }
 
 /**
@@ -1749,6 +1869,8 @@ export interface SessionActionWarning {
  */
 export type SessionActionContinuationExpectation =
   | { kind: "none" }
+  /** A clean checkout whose HEAD is already contained in the observed default branch. */
+  | { kind: "no_change"; headOid: string; treeOid: string; baseOid: string; baseRef: string }
   /**
    * The pull request adapter's observed publication, carried forward for comparison.
    *
@@ -1775,6 +1897,8 @@ export type SessionActionContinuationExpectation =
       expectedHeadOid: string | null;
       /** Complete content tree accepted by the parent judged submission. */
       acceptedContentTreeOid?: string | null;
+      /** Historical merge satisfaction requires this tree at continuation capture too. */
+      mergedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
       observedAt: number;
     };
@@ -1915,7 +2039,7 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation"] as const;
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
 /**
@@ -1941,6 +2065,14 @@ export interface WorkflowNodeExecutionOverride {
   runner: LlmRunnerId;
   /** Never empty. An empty box is an INCOMPLETE override, never a silent fallback. */
   model: string;
+  /**
+   * Optional, and part of the pair rather than a third independently inherited field, for the
+   * pair's own reason: which levels exist depends on the provider and model, so an effort
+   * chosen here is validated against THIS runner and model (`personaEffortLevels`). Absent
+   * means the provider's default, never the Persona's effort - the override replaces the
+   * Persona's whole execution choice. Graphs written before the field existed carry no key.
+   */
+  effort?: ThinkingLevel;
 }
 
 export type WorkflowDraftNode =
@@ -1983,6 +2115,11 @@ export interface PersonaSnapshot {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * Frozen with the model. OPTIONAL because every version published before effort existed
+   * carries no key, and absence reads exactly as null: the provider default.
+   */
+  effort?: ThinkingLevel | null;
 }
 
 /**
@@ -2002,6 +2139,9 @@ export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
     guidanceMarkdown: persona.guidanceMarkdown,
     runner: persona.runner,
     model: persona.model,
+    // Spread only when set, so a Persona with no effort freezes byte-identically to a version
+    // published before the field existed.
+    ...(persona.effort ? { effort: persona.effort } : {}),
   };
 }
 
@@ -2157,6 +2297,32 @@ export function sessionActionContinuationReachesOnlyEnd(
   return true;
 }
 
+/** Only successful forward routes count; a repair edge cannot promise future publication. */
+export function workflowHasPendingPullRequestAction(
+  graph: PublishedWorkflowGraph,
+  continuationNodeId: string | null = null,
+): boolean {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const start = continuationNodeId ?? graph.nodes.find((node) => node.kind === "session")?.id;
+  if (!start) return false;
+  const pending = graph.edges.filter((edge) => edge.source === start
+    && edge.sourcePort === (continuationNodeId ? "complete" : "submitted"))
+    .map((edge) => edge.target);
+  const visited = new Set<string>([start]);
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = nodes.get(id);
+    if (!node || node.kind === "session" || node.kind === "end") continue;
+    if (node.kind === "session_action" && node.action.completion.kind === "pull_request") return true;
+    pending.push(...graph.edges.filter((edge) => edge.source === id
+      && (edge.sourcePort === "pass" || edge.sourcePort === "complete"))
+      .map((edge) => edge.target));
+  }
+  return false;
+}
+
 export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_session",
   "multiple_sessions",
@@ -2191,6 +2357,8 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "archived_session_action",
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
+  "unsupported_effort",
+  "session_action_not_a_stage",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -2420,6 +2588,18 @@ export function workflowRunResumesItself(
 export const WORKFLOW_RUN_SPENT_PHASES = ["round_limit", "inspector_round_limit"] as const;
 
 /**
+ * The blocked phases, beside a spent budget, where only the operator or the session can restart
+ * the run, so it stops holding Foreman's PR follow-through (`workflowRunReleasesFollowup`).
+ *
+ * An allowlist on purpose: a blocked phase added later keeps holding the follow-through until
+ * someone decides it belongs here.
+ */
+export const WORKFLOW_FOLLOWUP_RELEASE_PHASES = [
+  "unchanged_evidence_exhausted",
+  "session_disappeared",
+] as const;
+
+/**
  * Has this run given up - stopped in a way that will NEVER clear on its own?
  *
  * The distinction this draws is the whole point of leaving `blocked` non-terminal (see
@@ -2448,6 +2628,25 @@ export function workflowRunGaveUp(run: {
   // step - the existing resume and full-restart moves gate on the same inequality and come
   // back by themselves.
   return workflowRunHasNoRepairsLeft(run);
+}
+
+/**
+ * Has this blocked run stopped where it will deliver nothing until the operator or the session
+ * restarts it, so Foreman's PR follow-through may type into its session again?
+ *
+ * Only the follow-through reads this. The run keeps its Shipping veto and its session
+ * ownership everywhere else; see "Blocked runs are recoverable, not terminal" in
+ * `docs/workflows.md`.
+ */
+export function workflowRunReleasesFollowup(run: {
+  status: WorkflowRunStatus;
+  phase: string;
+  round: number;
+  maxRepairRounds: number;
+}): boolean {
+  if (run.status !== "blocked") return false;
+  return workflowRunGaveUp(run)
+    || (WORKFLOW_FOLLOWUP_RELEASE_PHASES as readonly string[]).includes(run.phase);
 }
 
 /**
@@ -2506,6 +2705,10 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "session_needs_you",
   "packet_undelivered",
   "repository_unchanged",
+  // Appended: the bound session reported a durable blocker (waiting on someone else).
+  "session_blocked",
+  // Appended: the bound session declared a wait on its own background process, inside its deadline.
+  "session_awaiting",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2543,6 +2746,12 @@ export function workflowResumptionWithheldSentence(
     case "repository_unchanged":
       return `Waiting on the session: the repository has not changed since round ${round}.`
         + " Reviewing it again would return the same verdicts, so no round has been spent.";
+    case "session_blocked":
+      return "The session is blocked on someone other than you, so it has not been handed another"
+        + " round. The next round opens once its blocker is cleared.";
+    case "session_awaiting":
+      return "The session is waiting on a background process it started, such as CI checks, so it"
+        + " has not been handed another round. The next round opens once it wakes or its deadline passes.";
     default:
       return null;
   }
@@ -2561,10 +2770,18 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
   "findings",
   "pr_closed",
   "clean_review_pending",
+  "reviewed_tree_changed",
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
 export interface WorkflowInspectorGateState {
+  /** Present when a published shipping continuation differs from its semantic review. */
+  reviewedContent?: {
+    submissionId: string;
+    headSha: string | null;
+    treeOid: string;
+    publishedTreeOid: string;
+  };
   prKey: string | null;
   prUrl: string | null;
   targetHeadSha: string | null;
@@ -2684,6 +2901,7 @@ export const WORKFLOW_LLM_PURPOSES = [
   "context_compaction",
   "persona_review",
   "context_reconciliation",
+  "criterion_fulfillment",
 ] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -2787,6 +3005,75 @@ export interface WorkflowCheckCommand {
 export interface WorkflowCommandOverride {
   repoRoot: string;
   command: string[];
+  review?: CodeRabbitTuning;
+}
+
+export const CODERABBIT_SEVERITIES = ["critical", "major", "minor", "trivial", "info"] as const;
+export type CodeRabbitSeverity = (typeof CODERABBIT_SEVERITIES)[number];
+export const CODERABBIT_REVIEW_COMMAND = ["coderabbit", "review"] as const;
+export const DEFAULT_CODERABBIT_COMMAND = [...CODERABBIT_REVIEW_COMMAND, "--deep"] as const;
+export const CODERABBIT_COMMAND_HELP = 'Use coderabbit review with optional --deep, --deep "focus text", or --fresh. Mission Control adds the workflow review flags.';
+
+export function isCodeRabbitCommand(argv: readonly string[]): boolean {
+  if (argv[0] !== "coderabbit" || argv[1] !== "review") return false;
+  const flags = new Set<string>();
+  for (let index = 2; index < argv.length; index++) {
+    const flag = argv[index]!;
+    if ((flag !== "--deep" && flag !== "--fresh") || flags.has(flag)) return false;
+    flags.add(flag);
+    const focus = argv[index + 1];
+    if (flag === "--deep" && focus && !focus.startsWith("-")) {
+      if (!focus.trim() || focus.includes("\0") || focus.includes("\r") || focus.includes("\n")) return false;
+      index++;
+    }
+  }
+  return true;
+}
+
+export function codeRabbitReviewArgv(command: readonly string[], severity: CodeRabbitSeverity, mergeBase: string): string[] {
+  return [...command, "--agent", "--gate", severity, "--committed", "--base-commit", mergeBase];
+}
+
+export interface CodeRabbitTuning {
+  kind: "coderabbit";
+  baseRef: string | null;
+  severity: CodeRabbitSeverity;
+  command?: string[];
+}
+export interface CodeRabbitConfigSnapshot {
+  source: ".coderabbit.yaml" | ".coderabbit.config.ts";
+  committed?: boolean;
+  digest: string | null;
+  enabled: boolean;
+  state: "enabled" | "disabled" | "missing" | "invalid" | "unreadable";
+  diagnostic: string;
+}
+export interface CodeRabbitComparison {
+  interpreterVersion: 1;
+  yaml: CodeRabbitConfigSnapshot;
+  baseRef: string | null;
+  baseTip: string | null;
+  mergeBase: string | null;
+  head: string | null;
+  empty: boolean;
+  severity: CodeRabbitSeverity;
+  /** Frozen with the comparison. Earlier submissions used the original command without options. */
+  command?: string[];
+  ruleRevision: number;
+  timeoutMs: number;
+  maxRuns: number;
+  error: string | null;
+}
+export interface CodeRabbitReviewSummary {
+  comparison: CodeRabbitComparison;
+  status: "complete" | "incomplete" | "skipped";
+  counts: Record<CodeRabbitSeverity | "none", number>;
+  diagnostic: string;
+  titles: string[];
+  remainingRuns?: number;
+  retryableConnection?: true;
+  retryAt?: number;
+  expectedDuration?: string;
 }
 
 /**
@@ -2844,6 +3131,12 @@ export interface WorkflowCommandView {
    * again and is bounded separately by `MAX_INFRA_ATTEMPTS`.
    */
   maxRuns: number;
+  /** Null uses the slot's shipped default. */
+  timeoutMs: number | null;
+  /** What to do when an otherwise configured Command cannot execute. */
+  onUnavailable: WorkflowCommandFailurePolicy;
+  /** What to do after the Command has spent its per-run allowance. */
+  onBudgetExhausted: WorkflowCommandFailurePolicy;
   /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
   revision: number;
   createdAt: number;
@@ -2861,6 +3154,38 @@ export interface WorkflowCommandView {
  * `1` repeated in three files is three chances to disagree.
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
+export function defaultWorkflowCommandMaxRuns(slot: WorkflowCheckSlot): number {
+  return slot === "coderabbit" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+}
+
+/** Browser-safe result selection; server interpreters consume this descriptor. */
+export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit"> = {
+  test: "exit_code", lint: "exit_code", typecheck: "exit_code", build: "exit_code",
+  documentation: "exit_code", coderabbit: "coderabbit",
+};
+
+export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
+export type WorkflowCommandFailurePolicy =
+  (typeof WORKFLOW_COMMAND_FAILURE_POLICIES)[number];
+
+export const WORKFLOW_COMMAND_TIMEOUT_MIN_MS = 60_000;
+export const WORKFLOW_COMMAND_TIMEOUT_MAX_MS = 2 * 60 * 60_000;
+
+/** Existing slots retain their pre-policy runtime defaults. */
+export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, number> = {
+  test: 60 * 60_000,
+  lint: 10 * 60_000,
+  typecheck: 10 * 60_000,
+  build: 10 * 60_000,
+  documentation: 10 * 60_000,
+  coderabbit: 45 * 60_000,
+};
+
+export function effectiveWorkflowCommandTimeoutMs(
+  view: Pick<WorkflowCommandView, "slot" | "timeoutMs">,
+): number {
+  return view.timeoutMs ?? WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[view.slot];
+}
 
 /** The projected state of a slot nobody has configured yet. */
 export function emptyWorkflowCommandView(
@@ -2871,7 +3196,10 @@ export function emptyWorkflowCommandView(
     slot,
     defaultCommand: null,
     overrides: [],
-    maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    maxRuns: defaultWorkflowCommandMaxRuns(slot),
+    timeoutMs: null,
+    onUnavailable: slot === "coderabbit" ? "block" : "skip",
+    onBudgetExhausted: "skip",
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -2915,6 +3243,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
@@ -2948,6 +3277,9 @@ export const WORKFLOW_COMMAND_UNKNOWN = "Waiting for the daemon";
  */
 export const COMMAND_AUTHORIZATION_NOTE =
   "Running one also needs Commands allowed and the repository granted in Trust.";
+export const CODERABBIT_COMMAND_STATUS_NOTE =
+  "Root .coderabbit.yaml boolean true enables built-in defaults without a Library override. "
+  + "Enabled unavailability or incomplete review blocks; exhausted allowance skips with a warning.";
 
 /**
  * The DURABLE configuration state of one Command slot, as the line a card or a list row
@@ -2967,9 +3299,10 @@ export const COMMAND_AUTHORIZATION_NOTE =
  * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `YAML-enabled defaults${view.overrides.length ? ` · ${view.overrides.length} tuning ${view.overrides.length === 1 ? "rule" : "rules"}` : ""}`;
   if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
   const plural = overrides === 1 ? "override" : "overrides";
@@ -3002,9 +3335,10 @@ export function workflowCommandFact(
  * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
   if (!view && !hasSnapshot) {
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
   }
@@ -3045,6 +3379,7 @@ export function legacyCheckCommands(
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   const rows: WorkflowCheckCommand[] = [];
   for (const slot of WORKFLOW_CHECK_SLOTS) {
+    if (slot === "coderabbit") continue;
     for (const override of bySlot.get(slot)?.overrides ?? []) {
       rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
     }
@@ -3081,14 +3416,21 @@ export interface WorkflowPolicy {
   liveEnabled: boolean;
   repoAllowlist: string[];
   /**
-   * Workflow identity preselected for new single-agent dispatches, or null for none.
+   * The after-work Workflow each task kind preselects, overriding
+   * `BUILTIN_KIND_WORKFLOW_DEFAULTS` kind by kind. An absent kind follows the built-in, `null`
+   * is an explicit None, and a string is a workflow identity.
    *
    * The identity is resolved to its then-current immutable published version when the
    * dispatched session is bound. Keeping the workflow id here means publishing a new version
    * updates the default without rewriting machine settings, while each resulting binding still
-   * pins one immutable version.
+   * pins one immutable version. Resolve a kind through `taskDefaultWorkflowId`, never by
+   * reading this map directly.
+   *
+   * Replaced the single `defaultWorkflowId`, which is migrated on read by
+   * `StoredWorkflowPolicySchema`. `PUT /api/workflows/config` still accepts it as a deprecated
+   * alias for the Ship row (`WorkflowConfigSchema`).
    */
-  defaultWorkflowId: WorkflowId | null;
+  kindWorkflowDefaults: KindWorkflowDefaults;
   retention: WorkflowRetentionConfig;
   /**
    * Machine-wide consent for running a configured command from a workflow.
@@ -3154,10 +3496,9 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
   repoAllowlist: [],
-  // Store the stable workflow identity, not today's version. A task resolves it to the
-  // newest immutable shipped version when its session is armed (v5 in this build), while
-  // an explicit null in Settings or the dispatch form remains an opt-out.
-  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  // Every kind follows its built-in (`BUILTIN_KIND_WORKFLOW_DEFAULTS`) until an operator
+  // sets a row, so an untouched install dispatches exactly as it always has.
+  kindWorkflowDefaults: {},
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,
@@ -3190,9 +3531,15 @@ export interface WorkflowCommandResolution {
    * submission's commit rather than standing in the operator's own directory.
    */
   workingSubpath: string;
-  /** Which rung of the ladder answered. Diagnostic only; execution treats both alike. */
-  source: "override" | "default";
+  /**
+   * Which rung of the ladder answered. Execution treats both alike; the repair packet does
+   * not, because a failing global default may simply not apply to this repository.
+   */
+  source: WorkflowCommandSource;
 }
+
+export const WORKFLOW_COMMAND_SOURCES = ["override", "default"] as const;
+export type WorkflowCommandSource = (typeof WORKFLOW_COMMAND_SOURCES)[number];
 
 /**
  * Resolve one slot for one location: longest matching override, else the global default.
@@ -3448,6 +3795,9 @@ export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
   status: WorkflowCheckStatus;
+  review?: CodeRabbitReviewSummary;
+  warning?: string;
+  diagnosticError?: string;
   slot: WorkflowCheckSlot;
   /**
    * Null whenever no command was resolved, which is every `skipped` outcome.
@@ -3457,13 +3807,61 @@ export interface WorkflowCheckOutcome {
    * decide whether the cap is set where they want it.
    */
   command: string[] | null;
+  /**
+   * Which catalog rung supplied `command`: a repository override or the machine-wide default.
+   * Absent on outcomes recorded before it was captured and on every outcome with no command.
+   *
+   * Recorded because the two fail for different reasons. A repository override was written for
+   * this checkout; a global default was not, so its failure may mean the repository runs that
+   * slot some other way, and the repair is to configure the Command rather than to change code.
+   */
+  commandSource?: WorkflowCommandSource | null;
+  /**
+   * The configured launcher's own refusal when a failed command was one the repository does
+   * not provide (no such make target, package script or recipe) - see `command-fit.ts`. Null
+   * or absent for every other outcome, including a failure inside a command that did run.
+   *
+   * Recorded with the outcome because two readers need the same answer: the repair packet,
+   * which asks for configuration instead of a code fix, and the run budget, which returns
+   * only an execution that proved nothing about the change.
+   */
+  misfitSignal?: string | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
   output: string;
   /** Bytes of streamed output dropped to honour that bound, or 0 when nothing was. */
   truncatedBytes: number;
+  /** Bounded bodies captured outside output_json. Empty on historical/non-executed attempts. */
+  artifacts: WorkflowCommandArtifactDescriptor[];
+  /** The frozen timeout used by this attempt, null when no process was launched. */
+  timeoutMs: number | null;
   /** Always a complete sentence, including on a pass. */
   note: string;
+}
+
+export const WORKFLOW_COMMAND_ARTIFACT_KINDS = ["stdout", "stderr", "findings"] as const;
+export type WorkflowCommandArtifactKind =
+  (typeof WORKFLOW_COMMAND_ARTIFACT_KINDS)[number];
+export const WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY = [
+  "retained", "pruned", "unavailable",
+] as const;
+
+export interface WorkflowCommandArtifactDescriptor {
+  id: string;
+  kind: WorkflowCommandArtifactKind;
+  retainedBytes: number;
+  observedBytes: number;
+  droppedBytes: number;
+  sha256: string | null;
+  captureState: "complete" | "partial";
+  availability: (typeof WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY)[number];
+  unavailableReason: string | null;
+}
+
+export interface WorkflowCommandOutputPage {
+  artifact: WorkflowCommandArtifactDescriptor;
+  text: string;
+  nextCursor: string | null;
 }
 
 /**
@@ -3641,8 +4039,17 @@ export interface WorkflowDefinition {
    * A built-in workflow is app data, not operator data: it is not a row, it arrives already
    * published, and it can be neither edited, archived, nor published again. Duplicate is the
    * path to a customized copy, and that copy is an ordinary workflow like any other.
+   *
+   * The one exception is `bindingDefaults.maxRepairRounds`, which an operator may change in
+   * place. See `shippedMaxRepairRounds`.
    */
   builtin: boolean;
+  /**
+   * What this build ships as the built-in's maximum repair rounds, present only while the
+   * operator's own value replaces it. `bindingDefaults` (here and on every version of the
+   * built-in) already carries the operator's value; this is what Reset returns to.
+   */
+  shippedMaxRepairRounds?: number;
 }
 
 export interface WorkflowVersion {
@@ -4004,7 +4411,7 @@ export interface WorkflowRunIntentProvenance {
  * 6, 5, 5, 5, 5, 7, 2 across one observed run) even where the intent behind them had not
  * moved. A submission cannot be repaired against a target that moves while it is being
  * repaired, so the compaction runs once and every later submission of the run reuses the
- * result verbatim.
+ * stable result. Only missing publication timing metadata may be classified once later.
  *
  * Only the STABLE half lives here. Criterion mappings are per-submission by definition - they
  * bridge one submission's author coverage claims onto these criteria - so they stay on the
@@ -4253,6 +4660,7 @@ export interface WorkflowPersonaReviewInput {
   criteria: Array<{
     criterionId: string;
     material: boolean;
+    deferredToAction?: "pull_request";
     claimId: string | null;
     evidenceIds: string[];
     gaps: WorkflowEvidenceReadinessGapCode[];
@@ -4287,8 +4695,22 @@ export interface WorkflowNodeAttempt {
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The effort the provider was actually asked for, resolved with the model. Absent when the
+   * call passed none (the provider default), on non-Persona attempts, and on every attempt
+   * recorded before effort existed.
+   */
+  effort?: ThinkingLevel;
+  /**
+   * A configured effort the resolved provider and model could not run, so the call ran at the
+   * provider default instead. Recorded beside `effort` so the drop is visible on the run rather
+   * than silent; only ever present when `effort` is absent.
+   */
+  effortUnsupported?: ThinkingLevel;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
+  /** Attempt-owned retained Command bodies, including on infrastructure failures. */
+  commandArtifacts?: WorkflowCommandArtifactDescriptor[];
   retryAt: number | null;
   inputFingerprint: string;
   error: string | null;
@@ -4343,6 +4765,8 @@ export interface WorkflowLlmCall {
   purpose: WorkflowLlmPurpose;
   runner: LlmRunnerId;
   model: string;
+  /** The effort passed with the model; absent for the provider default. See the attempt's. */
+  effort?: ThinkingLevel;
   attempt: number;
   state: WorkflowLlmCallState;
   startedAt: number;
@@ -4426,6 +4850,7 @@ export interface WorkflowCheckEvidence {
   omittedBytes: number;
   headSha: string | null;
   note: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type WorkflowContextSnapshot = WorkflowSteeringContext & {
@@ -4461,9 +4886,26 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /** Daemon-derived publication proof. Older captures retain their strict dirty-tree rule. */
+    publication?: {
+      version: 1;
+      treeOid: string;
+      unpublishedPaths: string[];
+      pathsTruncated: boolean;
+      localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
+      artifactProblems?: string[];
+    };
+    /**
+     * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
+     * uncommitted one, a Mission Control review snapshot of the publication tree parented on
+     * HEAD (the complete content tree for captures made before publication proofs existed).
+     * Null for snapshots captured before review snapshots existed, or with no Command to run.
+     */
+    reviewCommit?: string | null;
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;
+    coderabbit?: CodeRabbitConfigSnapshot;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
     workingTreeStatusTruncated: boolean;
@@ -4726,6 +5168,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 
@@ -4741,7 +5189,15 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
-  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
+  /** Live sibling ownership of the conversation, independent of paginated event history. */
+  deliveryHold?: {
+    runId: string;
+    deliveryId: string;
+    repoRoot: string | null;
+    kind: WorkflowDeliveryKind;
+    state: WorkflowDeliveryState;
+  } | null;
+  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review" | "publication"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;
   version: WorkflowVersion | null;

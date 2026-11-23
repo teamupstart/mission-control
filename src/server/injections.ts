@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import type { TurnOrigin } from "@shared/types.ts";
+import { createHash, randomUUID } from "node:crypto";
+import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
 
 /**
  * Who typed a given user turn - the one fact the transcript file cannot carry.
@@ -48,6 +48,8 @@ import type { TurnOrigin } from "@shared/types.ts";
  */
 interface RememberedInjection {
   origin: TurnOrigin;
+  /** Receipt for one unambiguous prompt echo; never retained after consumption. */
+  onEcho?: () => void;
   /** Echoes delivered and not yet claimed by the Goal path. Incremented per delivery. */
   pending: number;
   /**
@@ -125,8 +127,266 @@ export function observeInjections(fn: InjectionObserver | null): void {
   observer = fn;
 }
 
+/**
+ * The origins that are Mission Control's own automation: Foreman, a workflow, the harness (the
+ * restart continuation, the skills broadcast, the retro packet) and a resident's scheduled
+ * wake. Not `session`: a controlling session is another agent speaking, like a person would.
+ */
+const AUTOMATED_ORIGINS: ReadonlySet<TurnOrigin> = new Set<TurnOrigin>(["foreman", "workflow", "harness", "resident"]);
+
+/**
+ * Every delivery Mission Control's automation has claimed into each session and not given back,
+ * oldest first: when it was claimed and which text. A LIST, not the latest claim alone, because
+ * claims overlap. Foreman can claim one delivery and a workflow another before the session's
+ * next turn, and when the second provably fails to land, the first is still on its way and its
+ * turn is still Mission Control's.
+ */
+const automatedClaims = new Map<string, Array<{ at: number; key: string; landed: boolean }>>();
+
+/** Outstanding claims kept per session: far more than overlap in practice, never unbounded. */
+const CLAIMS_PER_SESSION = 32;
+
+/**
+ * One automated delivery claimed into a session, or (`released`) the claim made at `at` that
+ * provably never landed and is given back. Each claim is announced exactly once, with `key`,
+ * the delivered text's `injectionFingerprint`, so a listener can match each one to the turn
+ * whose prompt it is: every one that lands starts a turn of Mission Control's own.
+ */
+export interface AutomatedDelivery {
+  sessionId: string;
+  at: number;
+  key: string;
+  released: boolean;
+}
+
+export type AutomatedDeliveryListener = (delivery: AutomatedDelivery) => void;
+
+const automatedListeners = new Set<AutomatedDeliveryListener>();
+
+/**
+ * Hear every delivery Mission Control's own automation claims into a session, and every such
+ * claim given back. Returns the unsubscribe.
+ *
+ * The declared-wait writer (`Registry.noteAutomatedDelivery`): a session that declared it is
+ * waiting on a background process ends that wait on its own next turn, and Mission Control's
+ * own nudges must not count as that turn. Every automated sender reserves here BEFORE it types,
+ * so this is told before the nudged turn can start, and the registry stores it on the wait
+ * itself: the turn may only be observed after a daemon restart, and this module forgets
+ * everything across one.
+ *
+ * A listener that throws on a claim about to be typed refuses that delivery: the claim is taken
+ * back and `reserveInjection` throws `AutomatedAttributionError`, so the sender types nothing.
+ * A delivery whose attribution cannot be stored must not land, or its turn would read as the
+ * session's own wake.
+ */
+export function onAutomatedDelivery(listener: AutomatedDeliveryListener): () => void {
+  automatedListeners.add(listener);
+  return () => automatedListeners.delete(listener);
+}
+
+/**
+ * An automated delivery refused before anything was typed, because a listener could not store
+ * its attribution (`onAutomatedDelivery`). Thrown by `reserveInjection`; every sender treats it
+ * as positive evidence that nothing was delivered.
+ */
+export class AutomatedAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record this delivery as its own, so it was not sent", { cause });
+    this.name = "AutomatedAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announceAutomated(delivery: AutomatedDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
+  for (const listener of automatedListeners) {
+    try {
+      listener(delivery);
+    } catch (err) {
+      // Logged whether or not the caller can still refuse: a nudge the declared-wait writer
+      // failed to store reads as the session's wake, and this line is the trace of why.
+      console.error(
+        `[injections] automated delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
+      failure ??= { error: err };
+    }
+  }
+  return failure;
+}
+
+/** A person's words Mission Control is about to write into a session (`notePersonDelivery`). */
+export interface PersonDelivery {
+  sessionId: string;
+  /** This send's own id, so a withdrawal takes back only it and not another of the same words. */
+  id: string;
+  at: number;
+  /** `injectionFingerprint` of the text, as an automated delivery's `key` is. */
+  key: string;
+  /** The send provably never landed, and is taken back (`withdrawPersonDelivery`). */
+  released: boolean;
+}
+
+export type PersonDeliveryListener = (delivery: PersonDelivery) => void;
+
+const personListeners = new Set<PersonDeliveryListener>();
+
+/**
+ * Hear every delivery of a person's own words Mission Control writes into a session: the
+ * operator's composer turns and sends, and a controlling session's messages, and each one taken
+ * back because it provably never landed. Returns the unsubscribe.
+ *
+ * The declared-wait writer's other half (`Registry.notePersonDelivery`). Its nudge matching
+ * reads a turn's prompt, and a person can send the very words an automated delivery still on
+ * its way carries. Neither turn of those words says whose it is, so the registry needs to know
+ * the two are contested, and a person's turn is always the session's wake.
+ */
+export function onPersonDelivery(listener: PersonDeliveryListener): () => void {
+  personListeners.add(listener);
+  return () => personListeners.delete(listener);
+}
+
+/**
+ * A person's send refused before anything was written, because a listener could not store that
+ * these words are a person's (`onPersonDelivery`). Thrown by `notePersonDelivery`; every door
+ * treats it as positive evidence that nothing was delivered.
+ */
+export class PersonAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record these words as a person's, so they were not sent", { cause });
+    this.name = "PersonAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announcePerson(delivery: PersonDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
+  for (const listener of personListeners) {
+    try {
+      listener(delivery);
+    } catch (err) {
+      // Logged for `announceAutomated`'s reason.
+      console.error(
+        `[injections] person delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
+      failure ??= { error: err };
+    }
+  }
+  return failure;
+}
+
+/**
+ * Announce that a person's words are about to be written into this session. Called by every
+ * door Mission Control carries them through, before the write, like `reserveInjection`: the
+ * prompt hook can report the text back while the send is still in flight. Nothing is stored
+ * here; the listeners decide what it means. The returned delivery is what
+ * `withdrawPersonDelivery` takes back. Throws `PersonAttributionError` when a listener could not
+ * store it; the door then writes nothing.
+ */
+export function notePersonDelivery(sessionId: string, text: string): PersonDelivery {
+  const delivery: PersonDelivery = {
+    sessionId, id: randomUUID(), at: Date.now(), key: injectionFingerprint(text), released: false,
+  };
+  // Not yet written, so a send whose attribution could not be stored is refused, as an
+  // automated delivery's is: written anyway, a person's turn in the words of a pending nudge
+  // would be used up as Mission Control's and leave the wait standing. Every listener that did
+  // hear it is told it is taken back.
+  const failure = announcePerson(delivery);
+  if (failure) {
+    announcePerson({ ...delivery, released: true });
+    throw new PersonAttributionError(sessionId, failure.error);
+  }
+  return delivery;
+}
+
+/**
+ * Take back a person's send with POSITIVE evidence that nothing landed, the same line
+ * `releaseInjection` and `withdrawOtherSend` draw: a send whose outcome is unknown keeps its
+ * announcement, because its turn may still start. A null delivery (a door that announced
+ * nothing, such as an automated origin) is a no-op.
+ */
+export function withdrawPersonDelivery(delivery: PersonDelivery | null): void {
+  if (!delivery || delivery.released) return;
+  announcePerson({ ...delivery, released: true });
+}
+
+/**
+ * Count one automated delivery into this session, once. A delivery recorded as landed after its
+ * own reservation (the resident loop reserves, then records on acceptance) is the same delivery,
+ * so it confirms that reservation's claim rather than adding a second turn to expect.
+ */
+function noteAutomatedClaim(sessionId: string, key: string, landed: boolean): void {
+  const claims = automatedClaims.get(sessionId) ?? [];
+  if (landed) {
+    const reserved = claims.findLast((claim) => claim.key === key && !claim.landed);
+    if (reserved) {
+      reserved.landed = true;
+      return;
+    }
+  }
+  const at = Date.now();
+  // Moved to the back on every write, so the ceiling below forgets the quietest session.
+  automatedClaims.delete(sessionId);
+  const claim = { at, key, landed };
+  claims.push(claim);
+  if (claims.length > CLAIMS_PER_SESSION) claims.shift();
+  automatedClaims.set(sessionId, claims);
+  if (automatedClaims.size > SESSIONS) {
+    const oldest = automatedClaims.keys().next();
+    if (!oldest.done) automatedClaims.delete(oldest.value);
+  }
+  const failure = announceAutomated({ sessionId, at, key, released: false });
+  // A reservation is made before anything is typed, so a claim whose attribution could not be
+  // stored is refused here: taken back, and thrown to the sender. One recorded after it already
+  // landed cannot be refused, and stays logged.
+  if (failure && !landed) {
+    const i = claims.lastIndexOf(claim);
+    if (i >= 0) claims.splice(i, 1);
+    if (claims.length === 0 && automatedClaims.get(sessionId) === claims) automatedClaims.delete(sessionId);
+    // Every listener that did store it is told it is taken back, as a refused person's send is:
+    // a pending nudge kept for a delivery never typed would be matched by the session's real wake.
+    announceAutomated({ sessionId, at, key, released: true });
+    throw new AutomatedAttributionError(sessionId, failure.error);
+  }
+}
+
+/**
+ * The automated deliveries claimed into this session since `since` whose prompt has not come
+ * back yet: each text's newest claims, as many as it still owes echoes. A wait declared while
+ * one of these is on its way must count it, or its turn would read as the session's wake.
+ */
+export function outstandingAutomatedClaims(sessionId: string, since: number): Array<{ at: number; key: string }> {
+  const claims = (automatedClaims.get(sessionId) ?? []).filter((claim) => claim.at >= since);
+  const byText = seen.get(sessionId);
+  const owed = new Map<string, number>();
+  const out: Array<{ at: number; key: string }> = [];
+  for (let i = claims.length - 1; i >= 0; i--) {
+    const claim = claims[i]!;
+    const left = owed.get(claim.key) ?? byText?.get(claim.key)?.pending ?? 0;
+    if (left <= 0) continue;
+    owed.set(claim.key, left - 1);
+    out.unshift({ at: claim.at, key: claim.key });
+  }
+  return out;
+}
+
+/** Give back the newest outstanding automated claim of this text: it provably never landed. */
+function withdrawAutomatedClaim(sessionId: string, key: string): void {
+  const claims = automatedClaims.get(sessionId);
+  if (!claims) return;
+  for (let i = claims.length - 1; i >= 0; i--) {
+    if (claims[i]!.key !== key || claims[i]!.landed) continue;
+    const [withdrawn] = claims.splice(i, 1);
+    if (claims.length === 0) automatedClaims.delete(sessionId);
+    announceAutomated({ sessionId, at: withdrawn!.at, key, released: true });
+    return;
+  }
+}
+
 /** Write the label and count one owed echo. `landed` marks the label permanent. */
-function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean): void {
+function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean, onEcho?: () => void): void {
+  if (AUTOMATED_ORIGINS.has(origin)) noteAutomatedClaim(sessionId, injectionFingerprint(text), landed);
   let byText = seen.get(sessionId);
   if (!byText) {
     // Insertion order is the Map's own, so the first key is the least recently STARTED
@@ -151,6 +411,8 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
     // had before reservations existed.
     origin: prior?.delivered && !landed ? prior.origin : origin,
     pending: (prior?.pending ?? 0) + 1,
+    // Identical outstanding sends cannot identify which delivery an echo belongs to.
+    onEcho: prior?.pending ? undefined : onEcho,
     // Sticky: one confirmed delivery makes the label permanent for every later reservation
     // of the same text, which is what stops a refused retry from erasing it.
     delivered: (prior?.delivered ?? false) || landed,
@@ -193,9 +455,13 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
  * Deliberately does NOT notify the observer. A reservation is a claim about a send that has
  * not happened yet, and the durable journal must archive turns that exist rather than turns
  * that were attempted - so the journal waits for `recordInjection` to confirm.
+ *
+ * Throws `AutomatedAttributionError` for an automated origin whose claim could not be stored
+ * on a waiting session's wait (`onAutomatedDelivery`). Nothing is reserved then, and the sender
+ * types nothing: it handles the throw as positive evidence that nothing was delivered.
  */
-export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin): void {
-  remember(sessionId, text, origin, false);
+export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: () => void): void {
+  remember(sessionId, text, origin, false, onEcho);
 }
 
 /**
@@ -212,6 +478,10 @@ export function releaseInjection(sessionId: string, text: string): void {
   const key = injectionFingerprint(text);
   const prior = byText.get(key);
   if (!prior) return;
+  // A delivery that provably never landed nudged nobody, so its automated claim is given back,
+  // and only its own: the newest outstanding claim of this text. Every other claim stays, so a
+  // delivery that did land still has its turn read as Mission Control's, not as a wake.
+  if (AUTOMATED_ORIGINS.has(prior.origin)) withdrawAutomatedClaim(sessionId, key);
   if (prior.pending > 1) {
     byText.set(key, { ...prior, pending: prior.pending - 1 });
     return;
@@ -220,7 +490,7 @@ export function releaseInjection(sessionId: string, text: string): void {
   // label with nothing owed: the earlier turn is still in the conversation, and answering
   // `undefined` for it would re-attribute machine-typed words to the operator.
   if (prior.delivered) {
-    byText.set(key, { ...prior, pending: 0 });
+    byText.set(key, { ...prior, pending: 0, onEcho: undefined });
     return;
   }
   byText.delete(key);
@@ -276,6 +546,12 @@ export function confirmReservedInjection(
   // - the reservation already counted it, and by now it may already have been spent.
   const prior = seen.get(sessionId)?.get(injectionFingerprint(text));
   if (prior) prior.delivered = true;
+  // Its automated claim landed too, so no later release of the same text may withdraw it.
+  if (AUTOMATED_ORIGINS.has(origin)) {
+    const key = injectionFingerprint(text);
+    const claim = automatedClaims.get(sessionId)?.findLast((c) => c.key === key && !c.landed);
+    if (claim) claim.landed = true;
+  }
   notifyObserver(sessionId, text, origin);
 }
 
@@ -297,6 +573,9 @@ export function claimInjectionEcho(sessionId: string, text: string): TurnOrigin 
   const prior = byText?.get(injectionFingerprint(text));
   if (!prior || prior.pending <= 0) return undefined;
   prior.pending -= 1;
+  const onEcho = prior.onEcho;
+  prior.onEcho = undefined;
+  onEcho?.();
   return prior.origin;
 }
 
@@ -307,8 +586,354 @@ export function originOf(sessionId: string, text: string): TurnOrigin | undefine
   return seen.get(sessionId)?.get(injectionFingerprint(text))?.origin;
 }
 
+// ---- the human's own follow-ups, expected back from the prompt hook ----
+
+/**
+ * A human follow-up sent to an Agent SDK session, waiting for its prompt-hook echo.
+ *
+ * The other half of the same problem, with the opposite answer. A daemon-typed packet must
+ * never reach the Goal; a human follow-up must reach it exactly ONCE, and it has two doors
+ * that each see it. The send's own acknowledgement captures it (`SdkSupervisor.send` for a
+ * direct `/send`, `PendingTurnManager.deliverSdk` for the composer outbox), and then the
+ * agent's prompt hook reports the same text back to `Registry.captureHookGoalPrompt`. Each is
+ * an accepted human instruction by every test available at its door, so before this each
+ * opened a prompt revision, and the second was classified against a conversation that had
+ * already moved on.
+ *
+ * One entry per SEND, never per text. A retype of the same words is its own send with its
+ * own entry, so it is captured by its own door like any other follow-up: a person repeating
+ * an instruction is heard. An echo for one text goes to the oldest of its sends still waiting
+ * for a revision, and is spent against an already recorded one only when none is waiting
+ * (see `claimHumanEcho`).
+ *
+ * States, in the order a send moves through them:
+ *
+ * - `open`: about to be handed to the driver, not acknowledged yet. The hook may already
+ *   fire, because Claude submits the turn before the send's promise resolves.
+ * - `confirmed`: acknowledged, and no door has captured it.
+ * - `captured`: one door's `captureAcceptedPrompt` returned a goal. `markHumanEchoCaptured`
+ *   is the only way here, and every door calls it AFTER its capture succeeded, never before:
+ *   a door that marked first and then failed to write would leave the other door skipping a
+ *   turn that was never recorded.
+ *
+ * `echoed` is separate from the state because the two doors finish in either order. An entry
+ * whose echo the hook already used must not answer a LATER echo of the same text - that one
+ * belongs to the next send - so a claim passes over it.
+ *
+ * Lifetime is the turn the send belongs to. `turnGeneration` is that turn's work-cycle
+ * generation: the conversation's completed generation plus one for an idle session, plus two
+ * when a cycle is active at the send, because the driver queues it behind the running turn
+ * and Claude fires its prompt hook only once it dequeues it, after that turn's Stop. An
+ * acknowledged entry expires when its own turn completes (`expireHumanEchoes`), never at the
+ * end of the turn it was queued behind; an unacknowledged one waits for the driver's answer,
+ * because until then the stamp is the registry's guess. Once its turn is the next one it is ELIGIBLE, and from then on it also
+ * ages out after `HUMAN_ECHO_TTL_MS`, for a session that never finishes a turn. Age is read
+ * lazily on every access, so no timer exists.
+ *
+ * In memory, like the authorship ledger, for the same reason and with the same trade: a
+ * restart between a delivery and its echo lets one duplicate revision through.
+ */
+interface ExpectedHumanEcho {
+  readonly sessionId: string;
+  /** `injectionFingerprint` of the sent text. */
+  readonly key: string;
+  /**
+   * The conversation the send was accepted into. A clear starts a different one. A launch-window
+   * follow-up is registered under the session id and re-keyed when the conversation binds
+   * (`rekeyHumanEchoes`).
+   */
+  noteKey: string;
+  /** The conversation's completed work-cycle generation when the send was made. */
+  readonly baseGeneration: number;
+  turnGeneration: number;
+  /**
+   * The latest completed generation seen for this conversation. Recorded even while the entry
+   * is `open`, because a completion can arrive before the driver says which turn the send
+   * belongs to, and the acknowledgement settles the entry against it.
+   */
+  completedGeneration: number;
+  /** When this entry started aging: its creation for an idle send, else when the turn ahead of it completed. */
+  eligibleAt: number | null;
+  state: "open" | "confirmed" | "captured";
+  echoed: boolean;
+}
+
+declare const humanEchoTicket: unique symbol;
+
+/** One send's entry, held by the door that will settle it. Opaque outside this module. */
+export type HumanEchoTicket = { readonly [humanEchoTicket]: true };
+
+/** What a prompt-hook echo should do about the follow-ups it might be the echo of. */
+export type HumanEchoClaim =
+  | { kind: "skip" }
+  | { kind: "capture"; ticket: HumanEchoTicket }
+  | { kind: "none" };
+
+/**
+ * How long an eligible entry waits for its echo.
+ *
+ * A hook reports a turn within moments of the agent taking it, so this is generous on
+ * purpose. It only has to be shorter than the time before a person plausibly re-sends the
+ * same words with no send of their own - which on an SDK session cannot happen at all - and
+ * long enough that a slow hook is not mistaken for a lost one.
+ */
+export const HUMAN_ECHO_TTL_MS = 120_000;
+
+/** Session id -> outstanding follow-ups, oldest first. */
+const expected = new Map<string, ExpectedHumanEcho[]>();
+
+const asTicket = (entry: ExpectedHumanEcho): HumanEchoTicket => entry as unknown as HumanEchoTicket;
+const fromTicket = (ticket: HumanEchoTicket): ExpectedHumanEcho => ticket as unknown as ExpectedHumanEcho;
+
+/** A session's live entries, after dropping every eligible one that has aged out. */
+function liveEchoes(sessionId: string, now: number): ExpectedHumanEcho[] | undefined {
+  const list = expected.get(sessionId);
+  if (!list) return undefined;
+  const live = list.filter((e) => e.eligibleAt === null || now - e.eligibleAt <= HUMAN_ECHO_TTL_MS);
+  if (live.length === 0) {
+    expected.delete(sessionId);
+    return undefined;
+  }
+  if (live.length === list.length) return list;
+  expected.set(sessionId, live);
+  return live;
+}
+
+/** Whether this ticket's entry is still on file once age has been applied. */
+function live(entry: ExpectedHumanEcho, now: number): boolean {
+  return liveEchoes(entry.sessionId, now)?.includes(entry) ?? false;
+}
+
+function drop(entry: ExpectedHumanEcho): void {
+  const list = expected.get(entry.sessionId);
+  if (!list) return;
+  const index = list.indexOf(entry);
+  if (index < 0) return;
+  list.splice(index, 1);
+  if (list.length === 0) expected.delete(entry.sessionId);
+}
+
+/** Both doors are done with it: acknowledged, and its echo was the one that captured. */
+function settled(entry: ExpectedHumanEcho): boolean {
+  return entry.state === "captured" && entry.echoed;
+}
+
+/**
+ * Register a human follow-up just before the driver is handed it.
+ *
+ * `cycle` is the session's work cycle as the registry projects it at that moment, which is
+ * what decides the turn the send belongs to (see `ExpectedHumanEcho`).
+ */
+export function expectHumanEcho(
+  sessionId: string,
+  text: string,
+  options: { noteKey: string; cycle: WorkCycleSummary | undefined; now?: number },
+): HumanEchoTicket {
+  const now = options.now ?? Date.now();
+  let list = liveEchoes(sessionId, now);
+  if (!list) {
+    if (expected.size >= SESSIONS) {
+      const oldest = expected.keys().next();
+      if (!oldest.done) expected.delete(oldest.value);
+    }
+    list = [];
+    expected.set(sessionId, list);
+  }
+  const base = options.cycle?.generation ?? 0;
+  const queued = options.cycle?.active === true;
+  const entry: ExpectedHumanEcho = {
+    sessionId,
+    key: injectionFingerprint(text),
+    noteKey: options.noteKey,
+    baseGeneration: base,
+    turnGeneration: base + (queued ? 2 : 1),
+    completedGeneration: base,
+    eligibleAt: queued ? null : now,
+    state: "open",
+    echoed: false,
+  };
+  list.push(entry);
+  // Oldest first. A session's follow-ups are serialized and each is echoed within moments,
+  // so reaching this is pathological; the ceiling holds regardless.
+  while (list.length > PER_SESSION) list.shift();
+  return asTicket(entry);
+}
+
+/**
+ * The driver acknowledged this follow-up. Reports whether the hook already captured it, in
+ * which case the acknowledging door must not capture it again.
+ *
+ * `queued` is the driver's own answer that the turn waits behind a running one (`steered`).
+ * The registry's projection of the cycle can lag the driver by an event, so a send stamped
+ * against an idle session is moved to the turn after the running one - never earlier, which
+ * would expire it before its echo.
+ *
+ * A capture is answered from the ticket, never from whether its entry is still on file. The
+ * hook can capture the follow-up and the turn it started can complete, expiring the entry,
+ * all before `handle.send` resolves: a quick turn on an idle session does exactly that. The
+ * ledger has then forgotten the entry, but the send holding this ticket has not, and reading
+ * "gone" as "not captured" would have it record the same turn a second time.
+ */
+export function confirmHumanEcho(
+  ticket: HumanEchoTicket,
+  options: { queued?: boolean; now?: number } = {},
+): { captured: boolean } {
+  const entry = fromTicket(ticket);
+  if (!live(entry, options.now ?? Date.now())) return { captured: entry.state === "captured" };
+  const now = options.now ?? Date.now();
+  if (entry.state === "open") entry.state = "confirmed";
+  if (options.queued && entry.turnGeneration < entry.baseGeneration + 2) {
+    entry.turnGeneration = entry.baseGeneration + 2;
+    // The turn ahead of it may already have completed while this send was unacknowledged;
+    // then it is next, and ages from now.
+    entry.eligibleAt = entry.turnGeneration <= entry.completedGeneration + 1 ? now : null;
+  }
+  const captured = entry.state === "captured";
+  // Its own turn completed before the driver answered: whatever echo it had has come and gone,
+  // so once this door has its answer nothing is left to wait for.
+  if (settled(entry) || entry.turnGeneration <= entry.completedGeneration) drop(entry);
+  return { captured };
+}
+
+/**
+ * One door's `captureAcceptedPrompt` returned a goal for this follow-up. `echoed` says that
+ * door was the prompt hook, so this entry's echo has been spent.
+ */
+export function markHumanEchoCaptured(
+  ticket: HumanEchoTicket,
+  options: { echoed?: boolean; now?: number } = {},
+): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, options.now ?? Date.now())) return;
+  const acknowledged = entry.state !== "open";
+  entry.state = "captured";
+  if (options.echoed) entry.echoed = true;
+  if (acknowledged && settled(entry)) drop(entry);
+}
+
+/**
+ * The prompt hook has reported this follow-up's echo, whatever its own capture did.
+ *
+ * Spending the echo is a separate fact from recording the turn, and the hook door marks it
+ * before it attempts the capture. If that capture returns null or throws, the acknowledgement
+ * still records the turn, but this entry must not stay open to an echo that has already come:
+ * the next send of the same words would have its own echo matched here, skipped as this
+ * one's, and lost.
+ */
+export function markHumanEchoSeen(ticket: HumanEchoTicket, now = Date.now()): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, now)) return;
+  entry.echoed = true;
+  if (entry.state !== "open" && settled(entry)) drop(entry);
+}
+
+/**
+ * A launch-window follow-up's conversation has bound: move its entries from the session id
+ * to the native key the hook will report, or drop them (`toKey` null) when a clear discarded
+ * that launch generation and nothing will record them.
+ */
+export function rekeyHumanEchoes(sessionId: string, fromKey: string, toKey: string | null): void {
+  const list = expected.get(sessionId);
+  if (!list) return;
+  for (const entry of list.filter((e) => e.noteKey === fromKey)) {
+    if (toKey === null) drop(entry);
+    else entry.noteKey = toKey;
+  }
+}
+
+/**
+ * The driver positively refused this follow-up, so no echo will come. A captured entry is
+ * kept: its turn is in the Goal, and the only reader left is its own echo.
+ */
+export function releaseHumanEcho(ticket: HumanEchoTicket, now = Date.now()): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, now)) return;
+  if (entry.state !== "captured") drop(entry);
+}
+
+/**
+ * Decide a prompt-hook arrival against the follow-ups this session is waiting on.
+ *
+ * `capture` when an unechoed entry for this text has not been recorded yet: the hook is a
+ * door for it, and the caller marks the ticket once its own capture succeeded. The entry is
+ * left exactly as it was, so a capture that fails leaves the acknowledgement to record the
+ * turn. `skip` when every unechoed entry for this text was already recorded: this is one of
+ * their echoes, and it is spent. `none` when nothing matches, and the arrival takes the
+ * ordinary path.
+ */
+export function claimHumanEcho(
+  sessionId: string,
+  noteKey: string,
+  text: string,
+  now = Date.now(),
+): HumanEchoClaim {
+  const key = injectionFingerprint(text);
+  const candidates = (liveEchoes(sessionId, now) ?? []).filter(
+    (e) => e.key === key && e.noteKey === noteKey && !e.echoed,
+  );
+  // A send still waiting for its revision first, oldest first; only then a recorded one. The
+  // texts are identical, so which send an echo "belongs to" decides nothing but the count, and
+  // oldest-first alone lets an earlier send whose echo never came absorb a later send's only
+  // remaining path. Preferring the unrecorded send cannot double-count: the hook marks it
+  // captured, and that send's own acknowledgement then skips it.
+  const entry = candidates.find((e) => e.state !== "captured") ?? candidates[0];
+  if (!entry) return { kind: "none" };
+  if (entry.state === "captured") {
+    drop(entry);
+    return { kind: "skip" };
+  }
+  return { kind: "capture", ticket: asTicket(entry) };
+}
+
+/**
+ * A turn of this conversation completed, leaving it at `completedGeneration`.
+ *
+ * Drops every acknowledged entry whose own turn that was, and starts the next turn's entries
+ * aging. An entry from a conversation a clear has replaced can never be expired by generation,
+ * so it starts aging too.
+ *
+ * An `open` entry is never dropped here, only told about the completion. Until the driver
+ * answers, its turn is a guess: a send stamped against an idle session may be queued behind a
+ * turn the registry has not seen start, and that turn can complete before `handle.send`
+ * resolves `steered`. Dropping it then would let the acknowledgement capture the follow-up and
+ * its later echo capture it again. `confirmHumanEcho` settles it against what it was told, and
+ * an acknowledgement that never comes leaves it to age out.
+ */
+export function expireHumanEchoes(
+  sessionId: string,
+  noteKey: string,
+  completedGeneration: number,
+  now = Date.now(),
+): void {
+  const list = liveEchoes(sessionId, now);
+  if (!list) return;
+  for (const entry of list) {
+    if (entry.noteKey === noteKey) {
+      entry.completedGeneration = Math.max(entry.completedGeneration, completedGeneration);
+    }
+  }
+  const kept = list.filter((entry) => entry.noteKey !== noteKey
+    || entry.state === "open"
+    || entry.turnGeneration > completedGeneration);
+  for (const entry of kept) {
+    if (entry.eligibleAt === null
+      && (entry.noteKey !== noteKey || entry.turnGeneration <= completedGeneration + 1)) {
+      entry.eligibleAt = now;
+    }
+  }
+  if (kept.length === 0) expected.delete(sessionId);
+  else expected.set(sessionId, kept);
+}
+
 /** Forget a session's deliveries. For tests, and for a reset that clears the context. */
 export function forgetInjections(sessionId?: string): void {
-  if (sessionId === undefined) seen.clear();
-  else seen.delete(sessionId);
+  if (sessionId === undefined) {
+    seen.clear();
+    expected.clear();
+    automatedClaims.clear();
+  } else {
+    seen.delete(sessionId);
+    expected.delete(sessionId);
+    automatedClaims.delete(sessionId);
+  }
 }

@@ -1,8 +1,10 @@
 import type { SettingsStatus } from "@shared/types.ts";
 import { countWritebacks } from "./db.ts";
 import { getPipelinesConfig } from "./pipelines/config.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { effectiveStacking } from "@shared/stacking.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
 import {
@@ -57,17 +59,23 @@ export function settingsStatus(): SettingsStatus {
   const pipelines = getPipelinesConfig();
   return {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
-    shipping: { autoMerge: shipping.autoMerge },
+    shipping: { autoMerge: shipping.autoMerge, stacking: effectiveStacking(shipping), maxStackDepth: shipping.maxStackDepth },
     taskSources: { failing },
     // Keep the append-only `present` compatibility fact for older dashboards. The current
-    // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch
-    // gates. Both values are cheap reads and spawn nothing.
-    pipelines: {
-      present: pipelinesPresent(),
-      observing: pipelinesObserving(),
-      observedRepoKeys: pipelineObservedRepoKeys(),
-      launchRuntime: pipelines.launchRuntime,
-    },
+    // dashboard draws Conductor whenever the integration is offered and uses `observing` alone
+    // for the Runs and Dispatch gates. Both values are cheap reads and spawn nothing.
+    //
+    // While the ai-conductor integration is hidden nothing is observed, whatever consent is
+    // stored: the Runs page's Pipelines tab and the Pipeline task kind both key off these, and
+    // the consent itself is kept untouched so flipping the switch back restores it.
+    pipelines: conductorIntegrationEnabled()
+      ? {
+          present: pipelinesPresent(),
+          observing: pipelinesObserving(),
+          observedRepoKeys: pipelineObservedRepoKeys(),
+          launchRuntime: pipelines.launchRuntime,
+        }
+      : { present: false, observing: 0, observedRepoKeys: [], launchRuntime: pipelines.launchRuntime },
     // The one fact in this tuple that moves without anybody writing a config: a queue drains, a
     // destination pauses itself, a backlog ages. It is here rather than behind a panel poll so
     // there is one store of queue state, and the export cycle republishes the tuple when it

@@ -65,6 +65,7 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 // Browser-safe and imported here on purpose: the notice is only correct if the field the
 // DAEMON puts on the detail is the field the browser reads, and asserting the two halves in
 // different files is how they drift.
@@ -189,6 +190,7 @@ interface Probe {
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
+  retainedArtifacts?: Array<{ path: string; sha256: string; bytes: number }>;
 }
 
 interface Harness {
@@ -199,6 +201,7 @@ interface Harness {
   injected: string[];
   head: { sha: string };
   probe: Probe;
+  probedArtifacts: Array<readonly { path: string }[] | undefined>;
   duringProbe: { fn: (() => void) | null };
   /**
    * The transcript anchor a CAPTURE would read. Deliberately not on `Probe`: the observer's
@@ -237,6 +240,7 @@ function harness(
   const injected: string[] = [];
   const head = { sha: "head-1" };
   const probe: Probe = { headSha: "head-1", workingTreeStatus: [], diffFingerprint: "content-1" };
+  const probedArtifacts: Harness["probedArtifacts"] = [];
   /** Run once inside the next repository read. See `readEvidenceProbe` below. */
   const duringProbe: { fn: (() => void) | null } = { fn: null };
   const transcript = { anchor: 0 };
@@ -257,7 +261,8 @@ function harness(
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readEvidenceProbe: async () => {
+    readEvidenceProbe: async (_registry, _binding, retainedArtifacts) => {
+      probedArtifacts.push(retainedArtifacts);
       // Fired INSIDE the read, which is the only place a test can stand in the window the
       // reminder's rechecks exist to cover: two git commands take long enough for a session
       // to pick up its turn, and every gate after this await is asked because of it.
@@ -266,6 +271,7 @@ function harness(
         ...probe,
         headSha: head.sha,
         diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
+        localArtifactHashes: probe.retainedArtifacts,
       };
     },
     readContextRaw: async (_registry, binding) => {
@@ -287,6 +293,15 @@ function harness(
           transcriptTruncated: false,
           standards: [],
           standardsTruncated: false,
+          ...(probe.retainedArtifacts ? {
+            publication: {
+              version: 1 as const,
+              treeOid: "1".repeat(40),
+              unpublishedPaths: [],
+              pathsTruncated: false,
+              localArtifacts: probe.retainedArtifacts.map((artifact) => ({ ...artifact })),
+            },
+          } : {}),
         },
       };
       return {
@@ -322,7 +337,7 @@ function harness(
     personas,
     workflows: manager,
   });
-  return { registry, store, manager, app, injected, head, probe, transcript, duringProbe };
+  return { registry, store, manager, app, injected, head, probe, probedArtifacts, transcript, duringProbe };
 }
 
 /**
@@ -545,6 +560,29 @@ test("unchanged evidence leaves the run WAITING, and never blocks or re-captures
   await h.manager.stop();
 });
 
+test("retained raw report changes resume a repair even when Git identity is unchanged", async () => {
+  const retained = { path: "docs/reports/probe/report.html", sha256: "1".repeat(64), bytes: 80 };
+  const h = await personaFeedbackRun("raw-report", "v-raw-report", "auto", undefined, {
+    workingTreeStatus: ["?? docs/"],
+    retainedArtifacts: [retained],
+  });
+  try {
+    reportIdle(h, "raw-report", h.agentSessionId, h.paneId);
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1);
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "probe must receive the judged snapshot's receipts");
+    h.probe.retainedArtifacts = [{ ...retained, sha256: "2".repeat(64) }];
+    await h.manager.sweepResumptions(SETTLED());
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "comparison must use the prior receipts");
+    const submissions = h.store.listSubmissions(h.runId);
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[1]!.round, 2);
+    assert.notEqual(submissions[1]!.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+  } finally {
+    await h.manager.stop();
+  }
+});
+
 test("content changes inside the same dirty paths resume the next repair round", async () => {
   const h = await personaFeedbackRun(
     "content-persona",
@@ -629,6 +667,108 @@ test("a session that is still working, or needs you, is left alone", async () =>
   assert.ok(h.registry.getSession("busy-persona")?.paneDialog, "the dialog did not land");
   await h.manager.sweepResumptions(SETTLED());
   assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  await h.manager.stop();
+});
+
+test("a blocked session is not handed the next round until its blocker clears", async () => {
+  const h = await personaFeedbackRun("blocked-persona", "v-blocked-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "blocked-persona", h.agentSessionId, h.paneId);
+  const reported = h.registry.reportBlocker("blocked-persona", {
+    kind: "dependency", reason: "Needs #1402 merged", waitingOn: "Platform team",
+    resumeWhen: "#1402 merges", referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a blocked session was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_blocked");
+
+  h.registry.clearBlocker("blocked-persona", "operator");
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "clearing the blocker did not release the round");
+  await h.manager.stop();
+});
+
+test("a session awaiting its own background process is not handed the next round until its deadline passes", async () => {
+  const h = await personaFeedbackRun("awaiting-persona", "v-awaiting-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "awaiting-persona", h.agentSessionId, h.paneId);
+  // Further out than the sweep's settled clock, so the first sweep falls inside the deadline.
+  const expectedBy = Date.now() + 20 * 60_000;
+  const declared = h.registry.reportAwaiting("awaiting-persona", {
+    what: "CI checks on PR #7", wakeSource: "command", expectedBy, referenceUrl: null, details: null,
+  });
+  assert.equal(declared.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a session awaiting its CI was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+
+  // No wake came and the deadline passed: the hold lifts and the round is handed over.
+  await h.manager.sweepResumptions(expectedBy + 1);
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "the deadline passing did not release the round");
+  await h.manager.stop();
+});
+
+test("a wait declared while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-awaiting", "v-probe-awaiting", "auto");
+  reportIdle(h, "probe-awaiting", h.agentSessionId, h.paneId);
+  h.duringProbe.fn = () => {
+    h.registry.reportAwaiting("probe-awaiting", {
+      what: "CI checks on PR #7", wakeSource: "command", expectedBy: Date.now() + 20 * 60_000,
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for an awaiting session");
+  await h.manager.stop();
+});
+
+test("an outstanding request_input question holds the next round, snoozed or not, until it is answered (async-input)", async () => {
+  const h = await personaFeedbackRun("asked-persona", "v-asked-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "asked-persona", h.agentSessionId, h.paneId);
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  try {
+    const reviews = new ReviewManager(h.registry);
+    // A call-mode question the operator snoozed: it turns nothing amber, so only the completion
+    // hold can stop the run being resumed around it.
+    const question = reviews.create("asked-persona", "input", "Which linter?", "Which linter?", [
+      { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+    ], { snoozable: true });
+    reviews.snooze(question.id, 60 * 60_000);
+    assert.notEqual(h.registry.getSession("asked-persona")?.pendingReviews, 1, "a snoozed question is not pending");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1, "the run resumed around an outstanding question");
+    assert.equal(withheldReasons(h, h.runId).at(-1), "session_needs_you");
+
+    reviews.resolve(question.id, "answer", "eslint", "human");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 2, "answering the question did not release the round");
+  } finally {
+    applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false });
+    await h.manager.stop();
+  }
+});
+
+test("a blocker reported while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-blocked", "v-probe-blocked", "auto");
+  reportIdle(h, "probe-blocked", h.agentSessionId, h.paneId);
+  // The head does not move, so without the recheck this round would be recorded as
+  // `repository_unchanged` - the branch that can also hand a PR to the Inspector.
+  h.duringProbe.fn = () => {
+    h.registry.reportBlocker("probe-blocked", {
+      kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_blocked");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for a blocked session");
   await h.manager.stop();
 });
 
@@ -886,7 +1026,7 @@ async function inspectorFindingsRun(
     transcriptPath: null,
     env: { tmuxPane: paneId },
     prUrl: url,
-    prCreated: false,
+    prCreated: true,
   });
   h.manager.start();
   const bound = h.manager.createBinding({ workflowVersionId: versionId, sessionId });

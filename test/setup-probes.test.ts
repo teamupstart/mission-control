@@ -9,17 +9,22 @@ import type { TerminalTargetView } from "../src/shared/terminal.ts";
 import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
+  CODERABBIT_CHECK_REMEDY,
   HERDR_SERVER_REMEDY,
-  PI_OTEL_PACKAGE,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupReadingFlags,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
-import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
+import { SETUP_PROBES, setupChecksView, setupProbeResult, voicePreviewsStatus } from "../src/server/setup/index.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { ACLI_TIMEOUT_MS } from "../src/server/task-sources/jira-acli.ts";
+
+/** What `acli jira auth status` prints when signed in, with the account address it carries. */
+const ACLI_SIGNED_IN = "✓ Authenticated\n  Site: example.atlassian.net\n  Email: operator@example.invalid\n  Authentication Type: oauth\n";
 
 function conductor(found = true): PipelineProbe {
   return {
@@ -37,18 +42,10 @@ function conductor(found = true): PipelineProbe {
 
 function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
   return {
+    mcpTrust: () => ({ state: "satisfied", evidence: "fixture MCP trust" }),
     environment: {
       homeDir: "/home/operator",
-      readText: async (path) => {
-        const packageDir = `/home/operator/.pi/agent/npm/node_modules/${PI_OTEL_PACKAGE.name}`;
-        const files: Record<string, string> = {
-          "/home/operator/.pi/agent/settings.json": JSON.stringify({ packages: [`npm:${PI_OTEL_PACKAGE.name}`] }),
-          [`${packageDir}/package.json`]: JSON.stringify({ name: PI_OTEL_PACKAGE.name, version: PI_OTEL_PACKAGE.version, pi: { extensions: [PI_OTEL_PACKAGE.entry] } }),
-          [`${packageDir}/${PI_OTEL_PACKAGE.entry}`]: "export default function () {}",
-        };
-        return path in files ? { ok: true, text: files[path]!, truncated: false }
-          : { ok: false, missing: true, reason: "missing" };
-      },
+      readText: async () => ({ ok: false, missing: true, reason: "missing" }),
       subdirectories: async () => [],
     },
     agentBin: (agent) => `/tools/${agent}`,
@@ -56,8 +53,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
-    runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
+    resolveBinPath: async (bin) => bin === "coderabbit" ? "/tools/coderabbit" : bin === "node" ? "/tools/node" : bin === "acli" ? "/tools/acli" : bin.startsWith("/tools/") ? bin : null,
+    runCommand: async (bin, argv) => stubRun({ stdout: bin === "/tools/coderabbit" ? argv[0] === "--version" ? "0.9.1" : JSON.stringify({type:"status", authenticated:true}) : bin === "/tools/node" ? "24.0.0" : bin === "/tools/acli" ? ACLI_SIGNED_IN : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
       plugins: [{ plugin: "one", marketplace: "official", version: "1", installPath: "/plugins/one" }],
@@ -66,9 +63,15 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     skills: () => ({ enabled: true, readable: true, configured: 2, directories: ["/home/operator/.claude/skills"], problems: [] }),
     conductorProbe: async () => conductor(),
     terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    repositoryIndex: async () => ({ repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] }),
     environmentChecks: async () => [],
     readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
     writeBannerDismissal: () => {},
+    // Every probe is under test here, ai-conductor's included, though the shipped build hides
+    // it. `conductor-integration-switch.test.ts` pins the hidden reading.
+    conductorIntegration: () => true,
+    // And every flag-gated family (Voice), with every flag on.
+    flagEnabled: () => true,
     ...overrides,
   };
 }
@@ -379,7 +382,7 @@ test("one thrown probe becomes its own unknown row", async () => {
   const view = await setupChecksView(deps({
     conductorProbe: async () => { throw new Error("broken probe"); },
   }));
-  assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 1);
+  assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 2);
   const row = view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "ai-conductor");
   assert.equal(row?.status.state, "unknown");
   assert.match(row?.status.state === "unknown" ? row.status.why : "", /broken probe/);
@@ -418,6 +421,51 @@ test("the required terminal pair follows usable composition, not backend presenc
   assert.equal(pair?.requirement, "required");
 });
 
+function repositoriesRow(view: Awaited<ReturnType<typeof setupChecksView>>) {
+  return view.rows.find((row) => row.rowId.source === "derived" && row.rowId.id === "indexed-repositories");
+}
+
+test("setup passes the repository check once at least one repository is detected", async () => {
+  const view = await setupChecksView(deps());
+  const row = repositoriesRow(view);
+  assert.equal(row?.family, "repositories");
+  assert.equal(row?.requirement, "required");
+  assert.deepEqual(row?.status, { state: "satisfied", evidence: "2 repositories in ~/workspace" });
+  assert.ok(!view.banner.attentionRowIds.some((id) => id.id === "indexed-repositories"));
+});
+
+test("no detected repository is a required setup gap that names what the walk saw", async () => {
+  const empty = await setupChecksView(deps({
+    repositoryIndex: async () => ({
+      repoCount: 0,
+      directories: [
+        { path: "~/workspace", status: "ok", repoCount: 0 },
+        { path: "~/code", status: "missing", repoCount: null },
+      ],
+    }),
+  }));
+  const row = repositoriesRow(empty);
+  assert.equal(row?.status.state, "needs-setup");
+  assert.match(row?.status.state === "needs-setup" ? row.status.why : "", /None of the 2 indexed directories holds a git repository/);
+  assert.equal(row?.status.state === "needs-setup" ? row.status.evidence : null, "~/workspace (0 repositories), ~/code (missing)");
+  assert.ok(empty.banner.attentionRowIds.some((id) => id.source === "derived" && id.id === "indexed-repositories"));
+  assert.equal(empty.banner.visible, true);
+
+  const nothingIndexed = repositoriesRow(await setupChecksView(deps({
+    repositoryIndex: async () => ({ repoCount: 0, directories: [] }),
+  })));
+  assert.equal(nothingIndexed?.status.state, "needs-setup");
+  assert.match(nothingIndexed?.status.state === "needs-setup" ? nothingIndexed.status.why : "", /No directories are indexed/);
+});
+
+test("an unreadable repository index is unknown rather than a pass", async () => {
+  const row = repositoriesRow(await setupChecksView(deps({
+    repositoryIndex: async () => { throw new Error("scan exploded"); },
+  })));
+  assert.equal(row?.status.state, "unknown");
+  assert.match(row?.status.state === "unknown" ? row.status.why : "", /scan exploded/);
+});
+
 test("external Node gaps remain feature-scoped, preserve acknowledgements, and cannot hide required gaps", async () => {
   const acknowledgement = {source:"dependency" as const,id:"node-runtime" as const};
   let writes = 0;
@@ -436,4 +484,292 @@ test("external Node gaps remain feature-scoped, preserve acknowledgements, and c
   assert.equal(writes,0,"existing node dismissal remains readable without resetting other records");
   const first = await setupChecksView(deps({resolveBinPath:async bin=>bin === "node" ? null : bin}));
   assert.equal(first.banner.visible,true,"first-launch guidance remains present");
+});
+
+test("the Atlassian CLI rows report its path, its site, and never the account address", async () => {
+  const cli = await probe("acli-cli");
+  assert.deepEqual(cli, { state: "satisfied", evidence: "/tools/acli" });
+  const auth = await probe("acli-auth", { acliSourceSites: () => ["example.atlassian.net"] });
+  assert.deepEqual(auth, { state: "satisfied", evidence: "Signed in to example.atlassian.net" });
+  assert.doesNotMatch(JSON.stringify(auth), /operator@example\.invalid/);
+  // The sign-in row is a Jira-family row with a runnable sign-in, not a link.
+  assert.equal(SETUP_DEPENDENCY_INFO["acli-auth"].family, "jira");
+  const remedy = SETUP_DEPENDENCY_INFO["acli-auth"].remedy;
+  assert.equal(remedy.kind, "command");
+  assert.equal(remedy.kind === "command" && remedy.purpose, "sign-in");
+  assert.deepEqual(remedy.kind === "command" && remedy.argv, ["acli", "jira", "auth", "login", "--web"]);
+});
+
+test("the CodeRabbit rows split install from sign-in, the way acli's do", async () => {
+  // Installed and new enough reads as installed; the sign-in row answers authentication.
+  assert.deepEqual(await probe("coderabbit-cli"), { state: "satisfied", evidence: "/tools/coderabbit (CodeRabbit 0.9.1)" });
+  assert.deepEqual(await probe("coderabbit-auth"), { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" });
+
+  // No sign-in is offered before the CLI is usable: the route would refuse it while the CLI is
+  // missing, and an obsolete CLI is not one to sign in with. The row carries no command.
+  const absent = await probed("coderabbit-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
+  assert.equal(absent.status.state, "needs-setup");
+  assert.match("why" in absent.status ? absent.status.why : "", /Install the CodeRabbit CLI first/);
+  assert.deepEqual(absent.remedy, CODERABBIT_CHECK_REMEDY);
+
+  const signedOut = (argv: readonly string[]) => stubRun({
+    stdout: argv[0] === "--version" ? "0.9.1" : JSON.stringify({ type: "status", authenticated: false }),
+    stderr: "", code: 0,
+  });
+  // A signed-out CLI is still installed: the install row stays ready, the sign-in row asks.
+  assert.equal((await probe("coderabbit-cli", { runCommand: async (_bin, argv) => signedOut(argv) })).state, "satisfied");
+  const loggedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) });
+  assert.deepEqual(loggedOut, { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: "/tools/coderabbit" });
+
+  // A probe that cannot tell is not a sign-out. It keeps its own diagnostic, but neither
+  // advises nor offers a login for a sign-in state nobody read: the remedy becomes the CLI
+  // guide, never the sign-in command or a second install.
+  const inconclusive = (why: string) => ({
+    status: { state: "unknown", why, evidence: "/tools/coderabbit" },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  // The path is shell-quoted, so the suggested command still runs from a path with spaces.
+  const UNAVAILABLE = "CodeRabbit authentication is unavailable. Press Re-check; if it persists, run `'/tools/coderabbit' 'auth' 'status'` to see why.";
+  const UNCONFIRMED = "CodeRabbit stored authentication could not be confirmed. Press Re-check; if it persists, run `'/tools/coderabbit' 'auth' 'status'` to see why.";
+  const answering = (auth: { stdout: string; code: number }) => async (_bin: string, argv: readonly string[]) =>
+    argv[0] === "--version" ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 }) : stubRun({ ...auth, stderr: "boom" });
+  for (const [label, auth, why] of [
+    ["a failing command", { stdout: "", code: 1 }, UNAVAILABLE],
+    ["an unparseable answer", { stdout: "not json", code: 0 }, UNCONFIRMED],
+    // Beside a signed-in status, so the case fails if the error guard is removed.
+    ["an error event", {
+      stdout: [JSON.stringify({ type: "status", authenticated: true }), JSON.stringify({ type: "error", message: "rate limited" })].join("\n"),
+      code: 0,
+    }, UNCONFIRMED],
+  ] as const) {
+    const reading = await probed("coderabbit-auth", { runCommand: answering(auth) });
+    assert.deepEqual(reading, inconclusive(why), label);
+    assert.doesNotMatch(why, /auth login/, label);
+  }
+  // A confirmed sign-out keeps the catalog's sign-in action.
+  assert.equal((await probed("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) })).remedy, undefined);
+  // Isolates `outcomeUnknown`: the same clean, signed-in answer is Ready without the flag and
+  // Unknown with it, so the test fails if the probe stops honouring a timeout.
+  const signedInAnswer = (outcomeUnknown: boolean) => async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
+    ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
+    : { ...stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 }), outcomeUnknown };
+  assert.equal((await probe("coderabbit-auth", { runCommand: signedInAnswer(false) })).state, "satisfied");
+  assert.deepEqual(await probed("coderabbit-auth", { runCommand: signedInAnswer(true) }), inconclusive(UNAVAILABLE));
+  // An explicit action_required is the CLI saying it needs a login.
+  const actionRequired = await probe("coderabbit-auth", { runCommand: answering({ stdout: JSON.stringify({ type: "action_required" }), code: 0 }) });
+  assert.equal(actionRequired.state, "needs-setup");
+
+  // A version that could not be read is not an old version, and not a reason to install a
+  // second copy or to sign in: both rows read Unknown and offer the CLI guide.
+  const versionTimesOut = async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
+    ? { ...stubRun({ stdout: "0.9.1", stderr: "", code: 0 }), outcomeUnknown: true }
+    : stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 });
+  assert.deepEqual(await probed("coderabbit-cli", { runCommand: versionTimesOut }), {
+    status: {
+      state: "unknown",
+      why: "The CodeRabbit CLI at /tools/coderabbit did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run `'/tools/coderabbit' '--version'` to see why.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  assert.deepEqual(await probed("coderabbit-auth", { runCommand: versionTimesOut }), {
+    status: {
+      state: "unknown",
+      why: "The CodeRabbit CLI did not report a readable version, so its sign-in was not checked. Press Re-check once it answers.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  // A confirmed old version names the binary the daemon selected, since installing the cask
+  // elsewhere would leave a per-user install selected.
+  // Nor is the cask offered for it, which would install a second copy and leave this one selected.
+  const oldCli = await probed("coderabbit-cli", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  assert.deepEqual(oldCli, {
+    status: {
+      state: "needs-setup",
+      why: "CodeRabbit 0.8.0 at /tools/coderabbit is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  // A missing CLI still gets the Homebrew install.
+  assert.equal((await probed("coderabbit-cli", { resolveBinPath: async () => null, executableDiagnostic: async () => null })).remedy, undefined);
+
+  const old = await probed("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  assert.match("why" in old.status ? old.status.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
+  assert.deepEqual(old.remedy, CODERABBIT_CHECK_REMEDY);
+});
+
+test("one Setup check reads the CodeRabbit version once, so its two rows cannot disagree", async () => {
+  // The first --version answers 0.9.1 and any later one would time out. Both rows must come
+  // from the first: a ready CLI row beside a sign-in row withheld for an unreadable version
+  // is the disagreement this guards.
+  let versionReads = 0;
+  const view = await setupChecksView(deps({
+    runCommand: async (bin, argv) => {
+      if (bin === "/tools/coderabbit" && argv[0] === "--version") {
+        versionReads += 1;
+        return versionReads === 1
+          ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
+          : { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true };
+      }
+      if (bin === "/tools/coderabbit") return stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 });
+      return stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : bin === "/tools/acli" ? ACLI_SIGNED_IN : "Logged in to github.com account operator", stderr: "", code: 0 });
+    },
+  }));
+  const row = (id: string) => view.rows.find((r) => r.rowId.source === "dependency" && r.rowId.id === id)!;
+  assert.equal(versionReads, 1);
+  assert.equal(row("coderabbit-cli").status.state, "satisfied");
+  assert.equal(row("coderabbit-auth").status.state, "satisfied");
+});
+
+test("the acli sign-in row names the missing install, the missing login, and the wrong site", async () => {
+  const absent = await probe("acli-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
+  assert.equal(absent.state, "needs-setup");
+  assert.match("why" in absent ? absent.why : "", /Install the Atlassian CLI first/);
+
+  const loggedOut = await probe("acli-auth", {
+    runCommand: async () =>
+      stubRun({ stdout: "", stderr: "✗ Error: unauthorized: use 'acli jira auth login' to authenticate (operator@example.invalid)\nmore", code: 1 }),
+  });
+  assert.equal(loggedOut.state, "needs-setup");
+  assert.match("why" in loggedOut ? loggedOut.why : "", /installed but not signed in to Jira/);
+  assert.ok("evidence" in loggedOut && loggedOut.evidence);
+  assert.doesNotMatch(loggedOut.evidence, /operator@example\.invalid|more/);
+
+  const elsewhere = await probe("acli-auth", { acliSourceSites: () => ["example.atlassian.net", "other.atlassian.net"] });
+  assert.equal(elsewhere.state, "needs-setup");
+  assert.match("why" in elsewhere ? elsewhere.why : "", /signed in to example\.atlassian\.net, but a Jira source reads other\.atlassian\.net\. Run `acli jira auth switch --site other\.atlassian\.net`/);
+
+  const silent = await probe("acli-auth", {
+    runCommand: async () => ({ ...stubRun({ stdout: "", stderr: "", code: null }), outcomeUnknown: true }),
+  });
+  assert.equal(silent.state, "unknown");
+
+  const siteless = await probe("acli-auth", {
+    runCommand: async () => stubRun({ stdout: "✓ Authenticated\n", stderr: "", code: 0 }),
+  });
+  assert.equal(siteless.state, "unknown");
+});
+
+test("the acli sign-in probe gives auth status the sweep's own time budget", async () => {
+  const budgets: (number | undefined)[] = [];
+  await probe("acli-auth", {
+    runCommand: async (_bin, _argv, _env, timeoutMs) => {
+      budgets.push(timeoutMs);
+      return stubRun({ stdout: ACLI_SIGNED_IN, stderr: "", code: 0 });
+    },
+  });
+  assert.deepEqual(budgets, [ACLI_TIMEOUT_MS]);
+});
+
+test("an acli status failure that is not a sign-out asks for a sign-in, with a scrubbed diagnostic", async () => {
+  const broken = await probe("acli-auth", {
+    runCommand: async () => stubRun({
+      stdout: "",
+      stderr: "✗ Error: keychain read failed for operator@example.invalid token=abcdef0123456789abcdef\nsecond line",
+      code: 1,
+    }),
+  });
+  assert.equal(broken.state, "needs-setup");
+  assert.equal("why" in broken ? broken.why : "", "The Atlassian CLI could not report a Jira sign-in. Sign in again to repair it.");
+  assert.ok("evidence" in broken && broken.evidence);
+  assert.match(broken.evidence, /keychain read failed/);
+  assert.doesNotMatch(broken.evidence, /operator@example\.invalid|abcdef0123456789abcdef|second line/);
+});
+
+test("a missing acli reads Missing on its own row, which offers the tap-qualified install", async () => {
+  const absent = { resolveBinPath: async () => null, executableDiagnostic: async () => null };
+  assert.deepEqual(await probe("acli-cli", absent), { state: "missing" });
+  const view = await setupChecksView(deps(absent));
+  const row = view.rows.find((r) => r.rowId.source === "dependency" && r.rowId.id === "acli-cli");
+  assert.ok(row);
+  assert.equal(row.family, "jira");
+  assert.deepEqual(row.status, { state: "missing" });
+  assert.equal(row.remedy.kind, "command");
+  assert.equal(row.remedy.kind === "command" && row.remedy.purpose, "install");
+  assert.deepEqual(row.remedy.kind === "command" && row.remedy.argv, ["brew", "install", "atlassian/acli/acli"]);
+});
+
+test("several other configured sites are all named, with the first one's switch command", async () => {
+  const status = await probe("acli-auth", {
+    acliSourceSites: () => ["first.atlassian.net", "second.atlassian.net"],
+  });
+  assert.equal(status.state, "needs-setup");
+  assert.equal(
+    "why" in status ? status.why : "",
+    "acli is signed in to example.atlassian.net, but Jira sources read first.atlassian.net, second.atlassian.net. Run `acli jira auth switch --site first.atlassian.net`, or sign in to that site.",
+  );
+  assert.equal("evidence" in status ? status.evidence : null, "Signed in to example.atlassian.net");
+});
+
+test("voice-previews names which flags are on and off, and its Fix turns on exactly the ones that are off", () => {
+  const only = (...on: string[]) => (id: string) => on.includes(id);
+  assert.deepEqual(voicePreviewsStatus(only("async-input", "inbox", "filed-plan-decisions")), {
+    status: { state: "satisfied", evidence: "Ask without stopping, Reports and inbox upgrades and File plan decisions are on" },
+  });
+  const two = voicePreviewsStatus(only("async-input"));
+  assert.deepEqual(two.status, {
+    state: "needs-setup",
+    why: "Ask without stopping is on. Reports and inbox upgrades and File plan decisions are off.",
+    evidence: null,
+  });
+  assert.equal(two.remedy?.kind, "feature-flags");
+  if (two.remedy?.kind === "feature-flags") {
+    assert.deepEqual(two.remedy.flags, ["inbox", "filed-plan-decisions"]);
+    assert.equal(two.remedy.label, "Turn on the two that are off");
+  }
+  const none = voicePreviewsStatus(only());
+  assert.equal(none.status.state === "needs-setup" ? none.status.why : "", "Ask without stopping, Reports and inbox upgrades and File plan decisions are off.");
+  assert.equal(none.remedy?.kind === "feature-flags" ? none.remedy.label : "", "Turn on all three");
+  const one = voicePreviewsStatus(only("async-input", "filed-plan-decisions"));
+  assert.equal(one.remedy?.kind === "feature-flags" ? one.remedy.label : "", "Turn on Reports and inbox upgrades");
+  assert.deepEqual(one.remedy?.kind === "feature-flags" ? one.remedy.flags : null, ["inbox"]);
+});
+
+test("the Voice family is probed and listed only while the voice flag is on", async () => {
+  const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" && id !== "enterprise-packages" }));
+  assert.equal(off.rows.some((row) => row.family === "voice"), false);
+  // With the Voice family off the reading carries no flags stamp, so the response is unchanged.
+  assert.equal("flagsKey" in off, false);
+  const on = await setupChecksView(deps({ flagEnabled: (id) => id === "voice" }));
+  // With it on, the reading names the flags it was taken under, as the dashboard computes them.
+  assert.equal(on.flagsKey, setupReadingFlags((id) => id === "voice"));
+  assert.equal(on.flagsKey, "10000");
+  const row = on.rows.find((candidate) => candidate.family === "voice");
+  assert.deepEqual(row?.rowId, { source: "dependency", id: "voice-previews" });
+  assert.equal(row?.requirement, "optional", "an optional row never raises the Setup banner");
+  assert.equal(row?.label, "Voice previews");
+  assert.equal(row?.status.state, "needs-setup");
+  assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id === "voice-previews"), false);
+});
+
+test("a reading uses the flags as they were when it started, even if one switches while probes run", async () => {
+  // Voice is off when the reading starts and switches on while the repository index is read.
+  let voiceOn = false;
+  const view = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = true;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(voiceOn, true, "the switch happened mid-reading");
+  // One consistent reading: no Voice rows and no stamp, so the dashboard sees a mismatch with its
+  // live flags and reads again, rather than Voice rows missing under a Voice-on stamp.
+  assert.equal(view.rows.some((row) => row.family === "voice"), false);
+  assert.equal("flagsKey" in view, false);
+
+  // And the other way: Voice on at the start, off by the end, keeps its rows, its probe and its stamp.
+  voiceOn = true;
+  const on = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = false;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(on.rows.some((row) => row.family === "voice"), true);
+  assert.equal(on.flagsKey, "10000");
+  assert.equal(on.rows.find((row) => row.family === "voice")?.status.state, "needs-setup");
 });

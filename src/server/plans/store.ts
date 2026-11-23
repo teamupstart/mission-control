@@ -9,7 +9,10 @@ import { STATE_DIR } from "../config.ts";
 import { resolveRepoRoot } from "../repos.ts";
 import { getSkillsConfig, skillsConfigProblem } from "../skills/config.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run } from "../util/exec.ts";
+import { resolveRoots } from "../archives/checkout.ts";
+import { scoutRepoSlots } from "../scouts/repos.ts";
+import { discoverPlanCaptureScopes } from "./capture-scopes.ts";
 import { PlanStoreError, digest, readSafe, replaceSafe, withPlanDirectory } from "./files.ts";
 export { PlanStoreError } from "./files.ts";
 
@@ -119,13 +122,25 @@ export async function planContext(authority: PlanAuthority) {
     policy: reservation ? ManagedPlanPolicySchema.parse(JSON.parse(reservation.policy)) : authority.policy ?? newPlanPolicy() };
 }
 
-export function newPlanPolicy(): ManagedPlanPolicy {
+export function newPlanPolicy(storage?: "repository" | "local" | null): ManagedPlanPolicy {
   const problem = skillsConfigProblem();
   if (problem) throw new PlanStoreError(problem);
   const config = getSkillsConfig();
-  return config.planStorage === "local"
+  return (storage ?? config.planStorage) === "local"
     ? { version: 2, storage: "local", commitPlanHtml: config.commitPlanHtml }
     : { storage: "repository", commitPlanHtml: config.commitPlanHtml };
+}
+
+/** A reserved identity or any saved artifact makes the task's storage immutable. */
+export async function taskPlanStorageLocked(task: Task): Promise<boolean> {
+  if (openDb().prepare(
+    "SELECT 1 FROM managed_plan_reservations WHERE task_id = ? UNION ALL SELECT 1 FROM managed_plans WHERE task_id = ? LIMIT 1",
+  ).get(task.id, task.id)) return true;
+  // Older tasks wrote plans without managed identities. Reuse task-owned diff discovery
+  // so a plan elsewhere in the repository cannot lock an unrelated backlog task.
+  const discovery = await discoverPlanCaptureScopes(await resolveRoots(scoutRepoSlots(task)));
+  if (discovery.unreadable.length) throw new PlanStoreError("Cannot verify existing plan artifacts; plan storage cannot change while a task checkout is unavailable");
+  return discovery.scopes.length > 0;
 }
 
 /** Pre-policy plan tasks keep Git publication, with the saved HTML choice at first pin. */
@@ -242,6 +257,9 @@ async function finish(plan: PlanRow, saved: RevisionRow, authority: PlanAuthorit
   return receipt(manifest);
 }
 
+/** How long the new-plan save waits for `git ls-files` before saying it could not check. */
+const PLAN_TRACKED_CHECK_TIMEOUT_MS = 30_000;
+
 /** Saves never approve, publish, stage Git, or satisfy task dependencies. */
 export async function savePlan(authority: PlanAuthority, request: SavePlanInput, hooks: SavePlanHooks = {}): Promise<ManagedPlanRevision> {
   authority = { ...authority, checkout: realpathSync(authority.checkout) };
@@ -268,8 +286,18 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     } else {
       if (db.prepare("SELECT id FROM managed_plans WHERE repo_key = ? AND slug = ?").get(context.repoKey, input.slug)) throw new PlanStoreError("This plan already exists; use its id and expected revision");
       const existing = path.join(authority.checkout, "docs/plans", input.slug);
-      const tracked = await run("git", ["-C", authority.checkout, "ls-files", "--", `docs/plans/${input.slug}/`]);
-      if (tracked.code !== 0 || tracked.stdout.trim()) throw new PlanStoreError("Existing tracked plans cannot be adopted or migrated by a new-plan save");
+      // A read of the local index, cheap however large the repository - so a slow answer is a
+      // host under load, not a big checkout. `run`'s 4 s default was routinely exceeded there,
+      // and a git that never answered was then reported as tracked plans that do not exist.
+      const tracked = await run("git", ["-C", authority.checkout, "ls-files", "--", `docs/plans/${input.slug}/`], { timeoutMs: PLAN_TRACKED_CHECK_TIMEOUT_MS });
+      // Only an answer counts as a refusal: git ran, exited 0, and listed files. Any other
+      // outcome - a timeout, a kill, an overflow, or an error exit such as a held index lock
+      // or a corrupt index - says nothing about tracked plans, so it is reported as the
+      // check it is, with git's own reason.
+      if (tracked.outcomeUnknown || tracked.overflowed || tracked.code !== 0) {
+        throw new PlanStoreError(`Could not check docs/plans/${input.slug} for tracked files: ${describeCommandFailure("git ls-files", tracked)}. Retry the save.`);
+      }
+      if (tracked.stdout.trim()) throw new PlanStoreError("Existing tracked plans cannot be adopted or migrated by a new-plan save");
       if (existsSync(existing) || (() => { try { return !!lstatSync(existing); } catch { return false; } })()) throw new PlanStoreError("Unmanaged plan already exists. Edit its tracked layout explicitly; migration is not supported");
       const id = context.reservedPlanId && !db.prepare("SELECT 1 FROM managed_plans WHERE id = ?").get(context.reservedPlanId) ? context.reservedPlanId : randomUUID();
       plan = { id, repo_root: context.repoRoot, repo_key: context.repoKey, store_path: path.relative(STATE_DIR, path.join(context.localStore, id)), slug: input.slug, policy: JSON.stringify(context.policy), current_revision: 0 };

@@ -138,6 +138,7 @@ export const claudeRunner: LlmRunner = {
     // shape for every caller that embeds untrusted text, which is all of them but one.
     const raw = await runClaudeText(prompt, {
       model: opts.model,
+      effort: opts.effort,
       timeoutMs: opts.timeoutMs,
       schema: opts.schema ? JSON.stringify(opts.schema) : undefined,
       images: opts.images,

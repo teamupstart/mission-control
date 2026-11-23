@@ -1,7 +1,11 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { dispatchPhase, type DispatchPhase } from "@shared/session.ts";
 import { fullTaskTitle } from "@shared/title.ts";
-import type { Task } from "@shared/types.ts";
+import type { Task, TaskProvisioning } from "@shared/types.ts";
+import { shapingView } from "@shared/shaping.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { repoLeaf } from "../lib/format.ts";
+import { ClaimStopButton, formatElapsed, useNow } from "./ClaimProgress.tsx";
 import { AgentDot } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -40,11 +44,52 @@ import { Tooltip } from "./Tooltip.tsx";
 
 /** What the phase says, in words. The only copy in the app that names a provisioning step. */
 const PHASE_COPY: Record<DispatchPhase, (task: Task) => string> = {
-  prepare: () => "Provisioning its worktree",
+  prepare: (task) => taskHasRepository(task) ? "Provisioning its worktree" : "Preparing its working directory",
   launch: (task) => `Launching ${task.agent}`,
   discover: (task) => `Waiting for ${task.agent} to appear`,
   handover: () => "Handing over the task",
 };
+
+/**
+ * What the phase says. Provisioning that waits on a pool's dependency claim says so instead of
+ * the generic worktree line: a claim can run for many minutes, and "Provisioning its worktree"
+ * for that long reads as a dispatch that hung.
+ */
+function phaseCopy(task: Task, phase: DispatchPhase, shaping: boolean): string {
+  if (task.provisioning) return "Installing dependencies";
+  // Between "Provisioning its worktree" and "Launching", while task shaping asks its shapers.
+  if (shaping && shapingView(task)?.state === "shaping") return "Shaping context";
+  return PHASE_COPY[phase](task);
+}
+
+/**
+ * The running claim's step, its elapsed time and Stop. The step count and the clock are the
+ * only proof a long install is moving; Stop hands the tree over with a warning, so the
+ * dispatch continues rather than waiting the claim out.
+ */
+function ClaimLine({ task, provisioning }: { task: Task; provisioning: TaskProvisioning }): React.JSX.Element {
+  const now = useNow(true);
+  const { step } = provisioning;
+  // Named after the repository only when the task has more than one: that is when "which
+  // tree" is a question at all.
+  const where = task.extraRepos.length > 0 ? ` in ${repoLeaf(provisioning.repoRoot)}` : "";
+  return (
+    <span className="pend-claim">
+      <Tooltip label={step.command}>
+        <span className="pend-claim-step">
+          Step {step.step} of {step.stepCount}{where}
+          <span className="pend-sep" aria-hidden>·</span>
+          <span>{formatElapsed(now - provisioning.startedAt)} elapsed</span>
+        </span>
+      </Tooltip>
+      <ClaimStopButton
+        slotId={provisioning.slotId}
+        claimId={provisioning.claimId}
+        label={`Stop installing dependencies for ${pendingTitle(task)}`}
+      />
+    </span>
+  );
+}
 
 /** How far along the four-segment meter sits, by phase. */
 const PHASE_INDEX: Record<DispatchPhase, number> = {
@@ -107,6 +152,7 @@ function PhaseMeter({ phase }: { phase: DispatchPhase }): React.JSX.Element {
 function PendingTile({ task }: { task: Task }): React.JSX.Element {
   const phase = dispatchPhase(task);
   const title = pendingTitle(task);
+  const shaping = useFeatureFlag("task-shaping");
   return (
     <div className="tile tone-working pend-tile" data-phase={phase}>
       <span className="tile-head">
@@ -117,17 +163,23 @@ function PendingTile({ task }: { task: Task }): React.JSX.Element {
       </span>
       <span className="pend-phase">
         <PhaseMeter phase={phase} />
-        {PHASE_COPY[phase](task)}
+        {phaseCopy(task, phase, shaping)}
       </span>
-      <span className="pend-skel pend-skel-a" aria-hidden />
-      <span className="pend-skel pend-skel-b" aria-hidden />
+      {task.provisioning ? (
+        <ClaimLine task={task} provisioning={task.provisioning} />
+      ) : (
+        <>
+          <span className="pend-skel pend-skel-a" aria-hidden />
+          <span className="pend-skel pend-skel-b" aria-hidden />
+        </>
+      )}
       <span className="tile-foot pend-foot">
         {/* The branch appears the moment the worktree is leased, which is also the moment
             the phase advances - so the foot fills in as the row progresses rather than
             reserving space for a value that may never arrive. */}
         <span className="pend-branch">{task.branch ?? "no branch yet"}</span>
-        <Tooltip label={task.repoRoot}>
-          <span className="pend-repo">{repoLeaf(task.repoRoot)}</span>
+        <Tooltip label={taskHasRepository(task) ? task.repoRoot : "No repository"}>
+          <span className="pend-repo">{taskHasRepository(task) ? repoLeaf(task.repoRoot) : "no repository"}</span>
         </Tooltip>
       </span>
     </div>
@@ -144,6 +196,7 @@ function PendingTile({ task }: { task: Task }): React.JSX.Element {
 function PendingRailRow({ task }: { task: Task }): React.JSX.Element {
   const phase = dispatchPhase(task);
   const title = pendingTitle(task);
+  const shaping = useFeatureFlag("task-shaping");
   return (
     <div className="rail-row tone-working pend-rail" data-phase={phase}>
       <AgentDot agent={task.agent} />
@@ -160,10 +213,11 @@ function PendingRailRow({ task }: { task: Task }): React.JSX.Element {
           above the frames - they are not sessions, so they are in no repository span - and
           this is the rail's only line that can say where the task is going. */}
       <span className="rail-sub">
-        {PHASE_COPY[phase](task)}
+        {phaseCopy(task, phase, shaping)}
         <span className="pend-sep" aria-hidden>·</span>
-        {repoLeaf(task.repoRoot)}
+        {taskHasRepository(task) ? repoLeaf(task.repoRoot) : "no repository"}
       </span>
+      {task.provisioning && <ClaimLine task={task} provisioning={task.provisioning} />}
       <span className="rail-right">
         <span className="rail-state-line">
           {/* The word a session in this state would show, so the rail's state column reads

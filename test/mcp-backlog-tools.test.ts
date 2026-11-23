@@ -1,19 +1,22 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Task } from "../src/shared/types.ts";
-import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
-import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
-import { McpTaskConfigurationSchema } from "../src/shared/protocol.ts";
+import { TASK_STATUSES, type Task } from "../src/shared/types.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-backlog-"));
 const repos = join(home, "repos");
@@ -46,7 +49,7 @@ afterEach(() => openDb().exec("DELETE FROM app_config"));
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** Real stdio MCP -> authenticated HTTP -> route validation -> TaskManager -> SQLite. */
-async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchiveGate) {
+async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchiveGate, mcpPreload?: string) {
   const registry = new Registry();
   const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
   const queues = new QueueManager(registry);
@@ -60,7 +63,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete" || path === "/mcp/tasks/cancel")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -77,7 +80,8 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   assert.ok(address && typeof address !== "string");
   await client.connect(new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
+    args: ["--import", "tsx", ...(mcpPreload ? ["--import", mcpPreload] : []),
+      fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
     env: {
       ...process.env,
       MISSION_HOME: home,
@@ -87,7 +91,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     } as Record<string, string>,
     stderr: "pipe",
   }));
-  async function call(name: string, args: Record<string, unknown>, error?: RegExp) {
+  async function call<T = Task & { repository: string; additionalRepositories: string[] }>(name: string, args: Record<string, unknown>, error?: RegExp) {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as Array<{ type: string; text: string }>;
     const text = content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
@@ -96,13 +100,130 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
       assert.match(text, error);
       return null;
     }
-    return JSON.parse(text) as Task & { repository: string; additionalRepositories: string[] };
+    return JSON.parse(text) as T;
   }
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
-  return { client, call, create, registry, tasks, app, paths, reviews };
+  function disconnectHttp() {
+    // Keep the port reserved but terminate connections before any HTTP response can exist.
+    server.on("connection", (socket) => socket.destroy());
+  }
+  return { client, call, create, registry, tasks, app, paths, reviews, disconnectHttp };
 }
+
+test("MCP dispatch uses the dashboard's validation and TaskManager launch path", async (t) => {
+  const f = await fixture(t);
+  const launched: string[] = [];
+  const seam = f.tasks as unknown as { dispatcher: { dispatch: (id: string) => Promise<unknown> } };
+  seam.dispatcher.dispatch = async (id) => { launched.push(id); return { ok: true }; };
+  const task = await f.create({ workflowId: null, enabled: false });
+
+  const unauthenticated = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  assert.equal(unauthenticated.status, 401);
+  const malformed = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ overrideDisabled: "yes" }),
+  });
+  assert.equal(malformed.status, 400);
+  await f.call("dispatch_task", { taskId: "missing" }, /404.*no such task/);
+  await f.call("dispatch_task", { taskId: task.id }, /409.*disabled/i);
+  assert.equal(getTask(task.id)!.status, "backlog");
+  assert.deepEqual(launched, []);
+
+  const dispatched = await f.call("dispatch_task", { taskId: task.id, overrideDisabled: true });
+  assert.equal(dispatched!.id, task.id);
+  assert.deepEqual(launched, [task.id]);
+  // The dispatcher is the only stubbed boundary; a real launch is covered in Playwright.
+  // Model its in-flight state to check TaskManager's existing repeat-dispatch behavior.
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "dispatching" });
+  const repeated = await f.call("dispatch_task", { taskId: task.id });
+  assert.equal(repeated!.status, "dispatching");
+  assert.deepEqual(launched, [task.id], "a repeated dispatch does not launch again");
+
+  const prerequisite = await f.create({ workflowId: null });
+  const dependent = await f.create({ workflowId: null, dependsOnTaskIds: [prerequisite.id] });
+  await f.call("dispatch_task", { taskId: dependent.id }, /409.*waiting on/);
+  assert.equal(getTask(dependent.id)!.status, "backlog");
+  const blocked = await f.create({ workflowId: null });
+  f.registry.upsertTask({ ...getTask(blocked.id)!, workflowId: "missing-workflow" });
+  await f.call("dispatch_task", { taskId: blocked.id }, /409.*[Ww]orkflow/);
+  assert.equal(getTask(blocked.id)!.status, "backlog");
+  assert.deepEqual(launched, [task.id]);
+});
+
+test("MCP dispatch on an older daemon reports failure without another launch route", async (t) => {
+  const f = await fixture(t, true);
+  await f.call("dispatch_task", { taskId: "old-task" }, /404/);
+  assert.deepEqual(f.paths, ["/mcp/tasks/old-task/dispatch"]);
+});
+
+test("MCP dispatch returns an error result when the HTTP request rejects", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  const result = await f.client.callTool({ name: "dispatch_task", arguments: { taskId: "unreachable-task" } });
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.content, [{
+    type: "text", text: "Could not reach Mission Control: TypeError: fetch failed",
+  }]);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP dispatch defaultModel selects an unpinned launch model and preserves a pinned model", async (t) => {
+  const f = await fixture(t);
+  const { Dispatcher } = await import("../src/server/dispatcher.ts");
+  const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+  type Supervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  type Start = Parameters<Supervisor["start"]>[0];
+  const starts: Start[] = [];
+  const supervisor = {
+    async start(input: Start) {
+      starts.push(input);
+      return f.registry.registerSdkSession({
+        id: `sdk:model-selection-${starts.length}`, agent: input.agent, name: input.name, cwd: input.cwd,
+      });
+    },
+    taskLiveness: () => null,
+    stop: async () => {},
+  } as unknown as Supervisor;
+  const priorBin = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  t.after(() => {
+    if (priorBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = priorBin;
+  });
+  const repo = gitRepo("dispatch-model-selection");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  setHarnessesConfig({ defaultModel: { claude: "claude-haiku-4-5" } });
+  const dispatcher = new Dispatcher(f.registry, async () => {}, {
+    supervisor, resolveRuntime: () => "sdk", ...MISSION_TEST_MCP_DEPS,
+    worktrees: new WorktreeManager(undefined, {
+      resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
+    }),
+  });
+  // Keep model resolution and launch composition real; fake only the SDK process boundary.
+  // Track the asynchronous dispatch so assertions run after it has reached the supervisor.
+  const launches: Promise<void>[] = [];
+  const seam = f.tasks as unknown as { dispatcher: Pick<typeof dispatcher, "dispatch"> };
+  seam.dispatcher = { dispatch: (...args) => {
+    const launch = dispatcher.dispatch(...args);
+    launches.push(launch);
+    return launch;
+  } };
+  for (const [pin, expected] of [[null, "claude-sonnet-5"], ["claude-opus-5", "claude-opus-5"]] as const) {
+    const task = await f.create({ repository: repo, agent: "claude", model: pin, workflowId: null });
+    await f.call("dispatch_task", { taskId: task.id, defaultModel: "claude-sonnet-5" });
+    await Promise.all(launches);
+    const stored = getTask(task.id)!;
+    assert.equal(stored.status, "running", stored.error ?? "dispatch must reach running");
+    assert.equal(starts.find((start) => start.taskId === task.id)?.model, expected,
+      "the resolved model must reach the SDK launch boundary");
+    assert.equal(stored.model, pin, "a launch default must not change the durable model pin");
+  }
+});
 
 test("MCP configuration and exact local plan inputs coexist without changing either dependency boundary", async (t) => {
   applySkillsConfig({ planStorage: "local", commitPlanHtml: true });
@@ -150,6 +271,109 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
   const edited = await f.call("update_task", { taskId: created.id, title: "Retain exact input", priority: "high" });
   assert.equal(edited!.priority, "high");
   assert.deepEqual(getTask(created.id)!.planInputs, planInputs);
+  const read = (await f.call("get_task", { taskId: created.id }))!;
+  assert.deepEqual(read.planInputs, planInputs);
+  assert.deepEqual(read.dependencies, stored.dependencies);
+
+  await t.test("update_task previews and atomically replaces exact pins and prerequisites", async (t) => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const subject = await f.create({ workflowId: null, planInputs, planPrerequisites: [identity],
+      dependencies: [{ type: "task", taskId: code.id }] });
+    const second = await savePlan(planAuthority(f.registry, f.registry.getSession("sdk:backlog-test")!, "repo-01"), {
+      repoSlot: "repo-01", requestId: randomUUID(), planId: identity.planId, slug: "merged-mcp-contract", expectedRevision: 1,
+      files: [{ name: "plan.md", content: "# Revision two" }, { name: "phase.md", content: "# Implementation" }, { name: "phase.html", content: "<h1>Implementation</h1>" },
+        { name: "plan.html", content: "<h1>Revision two</h1>" }],
+    });
+    const to = { ...identity, revision: second.manifest.revision, files: ["phase.md"] };
+    const before = getTask(subject.id)!;
+    const planInputChange = { from: planInputs[0], to, expectedUpdatedAt: before.updatedAt };
+    await f.call("update_task", { taskId: subject.id, planInputChange, previewOnly: true }, /preview is disabled/);
+    applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+    t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
+    for (const conflicting of [{ planInputs: [to] }, { dependencies: [] }]) {
+      await f.call("update_task", { taskId: subject.id, planInputChange, ...conflicting },
+        /Use planInputChange separately from planInputs and dependencies/);
+      assert.deepEqual(getTask(subject.id), before, "mixed revision-change payload leaves the saved pin and dependencies unchanged");
+    }
+    await f.call("update_task", { taskId: subject.id, planInputs: [to] }, /must also be an exact Markdown input/);
+    await f.call("update_task", { taskId: subject.id, planInputChange: { ...planInputChange, to: { ...to, files: ["missing.md"] } } }, /absent/);
+    assert.deepEqual(getTask(subject.id), before, "refused edits do not write either half");
+    const preview = await f.call<{ before: Task; after: Task }>("update_task", { taskId: subject.id, planInputChange, previewOnly: true });
+    assert.deepEqual(preview!.before.planInputs, planInputs);
+    assert.deepEqual(preview!.after.planInputs, [to]);
+    assert.deepEqual(getTask(subject.id), before, "preview writes nothing");
+    const updated = await f.call("update_task", { taskId: subject.id, planInputChange });
+    assert.deepEqual(updated!.planInputs, [to]);
+    assert.deepEqual(updated!.dependencies[0], before.dependencies[0], "unrelated work edge is retained");
+    assert.equal(updated!.dependencies[1]!.type, "plan");
+    assert.equal((updated!.dependencies[1] as { revision: number }).revision, 2);
+    await f.call("update_task", { taskId: subject.id, planInputChange }, /Task changed|Pinned input changed/);
+    const deps = before.dependencies.map(edge => edge.type === "task" ? { type: "task", taskId: edge.taskId }
+      : { type: "plan", ...identity });
+    applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false });
+    await f.call("update_task", { taskId: subject.id, planInputs, dependencies: deps });
+    assert.deepEqual(getTask(subject.id)!.planInputs, planInputs, "raw MCP atomic updates remain available with the preview disabled");
+    const restored = getTask(subject.id)!;
+    await f.call("update_task", { taskId: subject.id, planInputs: [to] }, /must also be an exact Markdown input/);
+    await f.call("update_task", { taskId: subject.id, planInputChange: { from: planInputs[0], to } }, /preview is disabled/);
+    assert.deepEqual(getTask(subject.id), restored, "validation and the new action gate still refuse without writing");
+    const dashboard = await f.app.request("/api/tasks/" + subject.id + "/update", {
+      method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ planInputs: [to], dependencies: [
+        { type: "task", taskId: code.id }, { type: "plan", ...identity, revision: 2 },
+      ] }),
+    });
+    assert.equal(dashboard.status, 200, await dashboard.clone().text());
+    assert.deepEqual(getTask(subject.id)!.planInputs, [to], "dashboard atomic updates also remain available with the preview disabled");
+    assert.deepEqual(getTask(subject.id)!.dependencies[0], before.dependencies[0]);
+  });
+
+  await t.test("list_tasks returns saved configuration, exact plan inputs and the running task's durable PR", async () => {
+    const labels = ["mcp", "read-payload"];
+    await f.call("update_task", { taskId: created.id, labels, enabled: false });
+    const sessionId = `sdk:listed-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/1369";
+    // Persist execution facts without launching a session. The PR exists only in the
+    // work-episode binding: a running task has no completion outcome to fall back to.
+    openDb().prepare("UPDATE tasks SET status = 'running', session_id = ? WHERE id = ?")
+      .run(sessionId, created.id);
+    openDb().prepare(`INSERT INTO task_work_episode_bindings
+      (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "listed-native-id", prUrl);
+
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels }))!;
+    assert.equal(page.tasks.length, 1);
+    assert.equal(page.nextCursor, null);
+    const listed = page.tasks[0]!;
+    const expected = {
+      id: created.id,
+      title: "Retain exact input",
+      status: "running",
+      kind: "bugfix",
+      repository: repoA,
+      additionalRepositories: [],
+      agent: "codex",
+      model: "gpt-6-sol",
+      effort: "high",
+      advisorModel: null,
+      workflowId: null,
+      planPolicy: stored.planPolicy,
+      priority: "high",
+      labels,
+      enabled: false,
+      dependencies: stored.dependencies,
+      planInputs,
+      sessionId,
+      prUrl,
+      outcomeUrl: null,
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      assert.deepEqual(listed[field as keyof ReadTask], value, `list_tasks preserves ${field}`);
+    }
+    assert.equal(Object.hasOwn(listed, "intent"), false, "the default list remains compact");
+    const full = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels, includeIntent: true }))!;
+    assert.deepEqual(full.tasks, [{ ...listed, intent: stored.intent }], "full lists retain every summary field and add intent");
+  });
 });
 
 test("MCP advertises and persists every backlog configuration field without launching", async (t) => {
@@ -165,7 +389,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   const prerequisite = await f.create();
   const created = await f.create({
     kind: "bugfix", agent: "codex", model: "gpt-6-sol", effort: "high",
-    workflowId: DEFAULT_WORKFLOW_POLICY.defaultWorkflowId, enabled: false,
+    workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID, enabled: false,
     priority: "high", labels: [" api ", "api", "mcp"],
     additionalRepositories: ["secondary"], dependsOnTaskIds: [prerequisite.id],
   });
@@ -174,7 +398,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
   assert.equal(created.kind, "bugfix");
-  assert.equal(created.workflowId, DEFAULT_WORKFLOW_POLICY.defaultWorkflowId);
+  assert.equal(created.workflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.equal(created.enabled, false);
   assert.equal(created.priority, "high");
   assert.deepEqual(created.labels, ["api", "mcp"]);
@@ -285,7 +509,7 @@ test("MCP refuses invalid configuration, dependencies, repositories, and non-bac
   const before = getTask(task.id);
   for (const [patch, error] of [
     [{ model: "--bad-model" }, /model id/],
-    [{ effort: "impossible" }, /Invalid enum/],
+    [{ effort: "impossible" }, /Invalid option/],
     [{ kind: "chat" }, /launched immediately/],
     [{ agent: "codex", effort: "max" }, /not supported/],
     [{ workflowId: "missing-workflow" }, /published version/],
@@ -344,6 +568,32 @@ test("the daemon independently rejects malformed configuration and inherited uns
   }
 });
 
+test("a task can no longer be created with an advisor pin: MCP refuses the key, the dashboard drops it", async (t) => {
+  // The advisor moved to Settings -> Harnesses. The MCP create schema is strict, so an agent
+  // still sending a pin is told; the dashboard's dispatch schema strips it like any unknown
+  // key, and the task is stored with no pin either way.
+  const f = await fixture(t);
+  const count = f.registry.snapshot().tasks.length;
+  const mcp = await f.app.request("/mcp/v3/tasks", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, cwd: repoA, repoRoot: repoA, title: "Advisor pin", intent: "No pin here",
+      workflowId: null, advisorModel: "opus" }),
+  });
+  assert.equal(mcp.status, 400);
+  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key: \\"advisorModel\\"/);
+  assert.equal(f.registry.snapshot().tasks.length, count);
+  const dashboard = await f.app.request("/api/tasks", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ repoRoot: repoA, title: "Advisor pin", intent: "No pin here",
+      workflowId: null, backlog: true, advisorModel: "off" }),
+  });
+  assert.equal(dashboard.status, 200);
+  const created = (await dashboard.json()) as { id: string; advisorModel: string | null };
+  assert.equal(created.advisorModel, null);
+});
+
 test("configured MCP tasks combine direct prerequisites and the calling session", async (t) => {
   const f = await fixture(t);
   const prerequisite = await f.create();
@@ -365,7 +615,7 @@ test("configured MCP tasks combine direct prerequisites and the calling session"
   const created = (await f.call("create_task", args))!;
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
-  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.sessionId), [prerequisite.id, "sdk:backlog-test"]);
+  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.type === "session" ? edge.sessionId : edge.type), [prerequisite.id, "sdk:backlog-test"]);
   assert.equal(created.status, "backlog");
 });
 
@@ -404,9 +654,141 @@ test("new task configuration never falls back to an older daemon that would drop
   await f.call("update_task", { taskId: "old-task", model: null }, /Could not update task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/old-task/update");
   const retained = await f.create();
+  await f.call("cancel_task", { taskId: retained.id }, /Could not cancel task \(404\)/);
+  assert.equal(f.paths.at(-1), "/mcp/tasks/cancel");
+  assert.equal(getTask(retained.id)!.status, "backlog", "unsupported cancellation does not fall back to deletion");
   await f.call("delete_task", { taskId: retained.id }, /Could not delete task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/delete");
   assert.ok(getTask(retained.id), "an unsupported delete route never falls back to another operation");
+});
+
+test("MCP cancels sessionless running ship and scout tasks, then permits deletion", async (t) => {
+  const f = await fixture(t);
+  const seen: string[] = [];
+  f.registry.on("event", (event) => {
+    if (event.type === "task_upsert" && event.task.status === "cancelled") seen.push(event.task.id);
+  });
+  for (const kind of ["ship", "scout"] as const) {
+    const task = await f.create({ kind, agent: "codex", workflowId: kind === "ship" ? NO_MISTAKES_REVIEW_WORKFLOW_ID : null });
+    f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null, dispatchedAt: Date.now() - 13 * 86400_000 });
+    await f.call("update_task", { taskId: task.id, title: "Cannot edit running work" }, /not in the backlog/);
+    await f.call("delete_task", { taskId: task.id }, /cancel the task before removing it/);
+    assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
+    const saved = getTask(task.id)!;
+    assert.equal(saved.status, "cancelled");
+    assert.equal(saved.sessionId, null);
+    assert.ok(saved.completedAt);
+    assert.equal(seen.at(-1), task.id);
+    const listed = await f.call<{ tasks: Task[] }>("list_tasks", { status: "running" });
+    assert.ok(!listed!.tasks.some((entry) => entry.id === task.id));
+    await f.call("delete_task", { taskId: task.id });
+    assert.equal(getTask(task.id), undefined);
+  }
+});
+
+test("MCP cancellation validates input and authenticates before mutating tasks", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create();
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  const before = getTask(task.id);
+  await f.call("cancel_task", { taskId: "missing" }, /Could not cancel task \(404\).*no such task/);
+  await f.call("cancel_task", { taskId: " " }, /validation/i);
+  await f.call("cancel_task", { taskId: task.id, force: true }, /validation/i);
+  const unauthenticated = await f.app.request("/mcp/tasks/cancel", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id }),
+  });
+  assert.equal(unauthenticated.status, 401);
+  for (const body of [{}, { taskId: " " }, { taskId: 123 }, { taskId: task.id, force: true }]) {
+    const response = await f.app.request("/mcp/tasks/cancel", {
+      method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400, await response.text());
+  }
+  assert.deepEqual(getTask(task.id), before);
+});
+
+test("MCP cancellation timeout reports an unknown outcome while daemon cancellation can still finish", { timeout: 20_000 }, async (t) => {
+  let releaseArchive!: (result: { ok: true }) => void;
+  const archive = new Promise<{ ok: true }>((resolve) => { releaseArchive = resolve; });
+  let entered = false;
+  // Accelerate the child's real abort timer without changing production configuration.
+  const preload = "data:text/javascript," + encodeURIComponent(
+    "const timeout = AbortSignal.timeout; AbortSignal.timeout = ms => timeout(Math.min(ms, 1_000));",
+  );
+  const f = await fixture(t, false, {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: () => { entered = true; return archive; },
+  }, preload);
+  const task = await f.create({ kind: "scout", workflowId: null });
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  const cancelled = new Promise<void>((resolve) => {
+    f.registry.on("event", (event) => {
+      if (event.type === "task_upsert" && event.task.id === task.id && event.task.status === "cancelled") {
+        resolve();
+      }
+    });
+  });
+  try {
+    const result = await f.client.callTool({ name: "cancel_task", arguments: { taskId: task.id } }, undefined, { timeout: 10_000 });
+    assert.ok(entered, "the daemon received the request before the client timed out");
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /timed out.*outcome is unknown.*get_task/);
+    assert.equal(getTask(task.id)!.status, "running", "the daemon is still waiting on archive capture");
+    assert.equal(f.paths.filter((path) => path === "/mcp/tasks/cancel").length, 1, "an uncertain request is never retried automatically");
+  } finally {
+    releaseArchive({ ok: true });
+  }
+  await cancelled;
+  assert.equal(getTask(task.id)!.status, "cancelled", "the client timeout did not roll back daemon cancellation");
+});
+
+test("MCP cancellation reports transport failure without claiming a known outcome", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  await f.call("cancel_task", { taskId: "unreachable-task" }, /Could not reach Mission Control.*outcome is unknown.*get_task/);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP cancellation reports archive refusal without deleting the task and permits retry", async (t) => {
+  let ready = false;
+  const f = await fixture(t, false, {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: async () => ready ? { ok: true } : { ok: false, error: "archive unavailable" },
+  });
+  const task = await f.create({ kind: "scout", workflowId: null });
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  await f.call("cancel_task", { taskId: task.id }, /Could not cancel task \(409\).*task cancelled, but.*archive unavailable/);
+  assert.equal(getTask(task.id)!.status, "cancelled");
+  assert.ok(getTask(task.id)!.completedAt);
+  // A refused archive must also leave a retained report and its checkout ownership intact.
+  const repo = gitRepo("retained-cancellation");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  const retained = await f.create({ kind: "scout", workflowId: null, repository: repo });
+  const worktreePath = join(home, "retained-scout-worktree");
+  const branch = "harness/retained-cancellation";
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", branch, worktreePath]);
+  const baseSha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(worktreePath, "report.md"), "Unpublished findings");
+  f.registry.upsertTask({ ...getTask(retained.id)!, status: "running", sessionId: null, worktreePath, branch, baseSha, provider: "git" });
+  await f.call("cancel_task", { taskId: retained.id }, /409.*resources remain tracked.*archive unavailable/);
+  assert.equal(getTask(retained.id)!.worktreePath, worktreePath);
+  assert.equal(readFileSync(join(worktreePath, "report.md"), "utf8"), "Unpublished findings");
+  ready = true;
+  assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
+  assert.deepEqual(await f.call("cancel_task", { taskId: retained.id }), { taskId: retained.id, cancelled: true });
+  const saved = getTask(retained.id)!;
+  assert.equal(saved.status, "cancelled");
+  assert.ok(saved.completedAt);
+  assert.equal(saved.worktreePath, null);
+  assert.equal(saved.branch, null);
+  assert.equal(saved.provider, null);
+  assert.equal(saved.worktreeLeaseId, null);
+  assert.equal(saved.baseSha, null);
+  assert.equal(f.registry.getTask(retained.id)?.id, retained.id, "cancellation preserves the task record");
+  assert.equal(existsSync(worktreePath), false, "the retained worktree was removed on retry");
+  assert.ok(!execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" }).includes(worktreePath));
 });
 
 test("MCP deletes backlog and finished tasks durably and publishes each removal", async (t) => {
@@ -513,4 +895,348 @@ test("concurrent backlog-only edits refuse a stale update and preserve the newer
     assert.deepEqual(stored[field], saved.task[field], `stale edit preserves saved ${field}`);
   }
   assert.equal(registry.getTask(task.id), saved.task);
+});
+
+test("update_task preview uses the preparation base after an in-flight title settles", async (t) => {
+  const f = await fixture(t);
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
+  const task = await f.create({ workflowId: null });
+  const titling = (f.tasks as unknown as { titling: Map<string, Promise<void>> }).titling;
+  let finishTitle!: () => void;
+  titling.set(task.id, new Promise<void>(resolve => { finishTitle = resolve; }));
+  t.after(() => { finishTitle(); titling.delete(task.id); });
+  let enteredUpdate!: () => void;
+  const entered = new Promise<void>(resolve => { enteredUpdate = resolve; });
+  const update = f.tasks.update.bind(f.tasks);
+  t.mock.method(f.tasks, "update", (...args: Parameters<typeof update>) => {
+    const result = update(...args);
+    enteredUpdate();
+    return result;
+  });
+  const previewing = f.call<{ before: Task; after: Task }>("update_task", {
+    taskId: task.id, priority: "high", previewOnly: true,
+  });
+  await entered;
+  const stored = f.registry.getTask(task.id)!;
+  const base = { ...stored, title: "Title settled meanwhile", updatedAt: stored.updatedAt + 1 };
+  f.registry.upsertTask(base);
+  const savedBase = getTask(task.id);
+  finishTitle();
+  const preview = (await previewing)!;
+  assert.equal(preview.before.title, base.title);
+  assert.equal(preview.after.title, base.title);
+  assert.equal(preview.before.priority, null);
+  assert.equal(preview.after.priority, "high");
+  assert.deepEqual(getTask(task.id), savedBase, "preview leaves the newly saved task unchanged");
+});
+
+test("MCP creates and edits storage overrides without changing global settings", async (t) => {
+  const f = await fixture(t);
+  applySkillsConfig({ planStorage: "repository" });
+  const local = await f.create({ kind: "plan", planStorage: "local" });
+  assert.equal(local.planPolicy?.storage, "local");
+  assert.equal(local.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  const repository = await f.create({ kind: "plan" });
+  assert.equal(repository.planPolicy?.storage, "repository");
+  const changed = await f.call("update_task", { taskId: local.id, planStorage: "repository" });
+  assert.equal(changed?.planPolicy?.storage, "repository");
+  applySkillsConfig({ planStorage: "local" });
+  const explicitRepo = await f.create({ kind: "plan", planStorage: "repository" });
+  assert.equal(explicitRepo.planPolicy?.storage, "repository");
+  const inherited = await f.call("update_task", { taskId: local.id, planStorage: null });
+  assert.equal(inherited?.planPolicy?.storage, "local");
+  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid option/);
+  await f.call("create_task", { title: "Invalid storage kind", intent: "Ship", repository: repoA, kind: "ship", planStorage: "local" }, /only available for plan tasks/);
+});
+
+test("MCP rejects storage overrides on backlog ship updates without changing saved state", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create({ kind: "ship", workflowId: null });
+  const before = getTask(task.id)!;
+  assert.equal(before.status, "backlog");
+  assert.equal(before.kind, "ship");
+  const registeredBefore = structuredClone(f.registry.getTask(task.id));
+  for (const planStorage of ["local", "repository", null]) {
+    await f.call("update_task", {
+      taskId: task.id,
+      planStorage,
+      title: "This change must not be saved",
+    }, /Plan storage is only available for plan tasks/);
+    assert.deepEqual(getTask(task.id), before, "a refused edit must not change persisted task state");
+    assert.deepEqual(f.registry.getTask(task.id), registeredBefore, "a refused edit must not change live task state");
+  }
+});
+
+test("MCP plan conversion chooses storage-compatible workflows unless explicitly supplied", async (t) => {
+  const f = await fixture(t);
+  for (const planStorage of ["local", "repository"] as const) {
+    const workflowId = planStorage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID;
+    const task = await f.create({ kind: "ship" });
+    const converted = await f.call("update_task", { taskId: task.id, kind: "plan", planStorage });
+    assert.equal(converted?.workflowId, workflowId);
+    assert.equal(getTask(task.id)?.planPolicy?.storage, planStorage);
+    const explicitNone = await f.create({ kind: "ship", workflowId: null });
+    const withoutWorkflow = await f.call("update_task", { taskId: explicitNone.id, kind: "plan", planStorage, workflowId: null });
+    assert.equal(withoutWorkflow?.workflowId, null);
+  }
+});
+
+type ReadTask = Omit<McpTaskSnapshot, "repoRoot"> & { repository: string; additionalRepositories: string[] };
+type TaskPage = { tasks: ReadTask[]; nextCursor: string | null };
+
+test("read-only MCP task tools filter and page durable tasks without writes or session control", async (t) => {
+  const f = await fixture(t);
+  const label = `read-${randomUUID().slice(0, 8)}`;
+  const prerequisite = await f.create({ workflowId: null });
+  const config = { workflowId: null, labels: [label, "api"], priority: "high", enabled: false,
+    kind: "bugfix", dependsOnTaskIds: [prerequisite.id] };
+  const wanted = [];
+  for (let i = 0; i < 3; i++) wanted.push(await f.create({ ...config, title: `Read ${i}` }));
+  // Each near-match differs in exactly one filter, so dropping any predicate fails.
+  for (const patch of [
+    { repository: repoB }, { labels: [label] }, { priority: null }, { enabled: true },
+    { kind: "ship" }, { dependsOnTaskIds: [] },
+  ]) await f.create({ ...config, ...patch });
+  const running = await f.create(config);
+  openDb().prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(running.id);
+  // Identical timestamps exercise the id tie-breaker, not the clock's resolution.
+  for (const task of wanted) openDb().prepare("UPDATE tasks SET created_at = 1000 WHERE id = ?").run(task.id);
+  const query = { repository: "primary", status: "backlog", kind: "bugfix", labels: [label, "api"],
+    priority: "high", enabled: false, dependsOnTaskId: prerequisite.id, limit: 1 };
+  const before = listTasks();
+  const board = f.registry.snapshot();
+  const changes = openDb().prepare("SELECT total_changes() AS n").get();
+  const events: unknown[] = [];
+  const unsub = f.registry.subscribe((event) => {
+    if (event.type.startsWith("task_") || event.type.startsWith("session_")) events.push(event);
+  });
+  t.after(unsub);
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = (await f.call<TaskPage>("list_tasks", { ...query, ...(cursor ? { cursor } : {}) }))!;
+    assert.equal(page.tasks.length, 1);
+    const task = page.tasks[0]!;
+    assert.equal(Object.hasOwn(task, "intent"), false);
+    assert.equal(task.repository, repoA);
+    assert.deepEqual(task.labels, [label, "api"]);
+    assert.equal(task.sessionId, null);
+    assert.equal(task.outcomeUrl, null);
+    ids.push(task.id);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(ids, wanted.map((task) => task.id).sort().reverse());
+  const full = (await f.call<TaskPage>("list_tasks", { ...query, limit: 100, includeIntent: true }))!;
+  assert.equal(full.nextCursor, null);
+  assert.equal(full.tasks[0]!.intent, wanted[0]!.intent);
+  const empty = (await f.call<TaskPage>("list_tasks", { labels: [randomUUID()] }))!;
+  assert.deepEqual(empty, { tasks: [], nextCursor: null });
+  assert.deepEqual(listTasks(), before, "no task configuration, status, timestamp or rank changes");
+  assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "no SQLite writes");
+  const after = f.registry.snapshot();
+  assert.deepEqual(after.sessions, board.sessions, "no sessions launched");
+  assert.deepEqual(after.tasks, board.tasks, "no board task mutations");
+  assert.deepEqual(events, [], "reads publish no task or session events");
+});
+
+test("get_task reads full configuration in every status, including off-board completed tasks", async (t) => {
+  const f = await fixture(t);
+  const advertised = (await f.client.listTools()).tools;
+  for (const name of ["list_tasks", "get_task"]) {
+    const tool = advertised.find((tool) => tool.name === name)!;
+    assert.match(tool.description!, /read-only/i);
+    assert.equal(tool.annotations?.readOnlyHint, true);
+    assert.equal(tool.annotations?.destructiveHint, false);
+  }
+  const label = `statuses-${randomUUID().slice(0, 8)}`;
+  for (const status of TASK_STATUSES) {
+    const created = await f.create({ title: `Read ${status}`, intent: `Full ${status} intent`, labels: [label],
+      workflowId: null, agent: "codex", model: "gpt-6-sol", effort: "high", additionalRepositories: [repoB] });
+    // Update storage directly, leaving the board stale, as with records not restored at startup.
+    const sessionId = `sdk:private-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/42";
+    const outcomeUrl = status === "running" ? null : prUrl;
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ?, outcome_url = ? WHERE id = ?")
+      .run(status, sessionId, outcomeUrl, created.id);
+    if (status === "running") {
+      openDb().prepare(`INSERT INTO task_work_episode_bindings
+        (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "private-native-id", prUrl);
+    }
+    const before = getTask(created.id)!;
+    const changes = openDb().prepare("SELECT total_changes() AS n").get();
+    const read = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    for (const [key, value] of Object.entries(created)) {
+      if (["status", "dependsOnTaskIds", "dependsOnCurrentSession", "planPrerequisites"].includes(key)) continue;
+      assert.deepEqual(read[key as keyof ReadTask], value, `get_task preserves ${key}`);
+    }
+    assert.equal(read.status, status);
+    assert.equal(read.sessionId, sessionId);
+    assert.equal(read.outcomeUrl, outcomeUrl);
+    assert.equal(read.prUrl, prUrl, "running tasks expose durable PR bindings before an outcome exists");
+    assert.equal(read.repoPrs[0]?.prUrl, prUrl);
+    assert.equal(Object.hasOwn(read, "transcript"), false);
+    const page = (await f.call<TaskPage>("list_tasks", { status, labels: [label], repository: "secondary" }))!;
+    assert.deepEqual(page.tasks.map((task) => task.id), [created.id], "status and secondary repo match durable rows");
+    assert.deepEqual(getTask(created.id), before);
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "get_task and list_tasks perform no writes");
+  }
+  await f.call("get_task", { taskId: "missing-task" }, /404.*no such task/);
+});
+
+test("task read cursors survive deletion and newer inserts and reject invalid or changed-filter requests", async (t) => {
+  const f = await fixture(t);
+  const label = `cursor-${randomUUID().slice(0, 8)}`;
+  const older = await f.create({ labels: [label], workflowId: null });
+  const newer = await f.create({ labels: [label], workflowId: null });
+  openDb().prepare("UPDATE tasks SET created_at = 100 WHERE id = ?").run(older.id);
+  openDb().prepare("UPDATE tasks SET created_at = 200 WHERE id = ?").run(newer.id);
+  const first = (await f.call<TaskPage>("list_tasks", { labels: [label], limit: 1 }))!;
+  assert.deepEqual(first.tasks.map((task) => task.id), [newer.id]);
+  assert.ok(first.nextCursor);
+  await f.call("delete_task", { taskId: newer.id });
+  await f.create({ labels: [label], workflowId: null });
+  const next = (await f.call<TaskPage>("list_tasks", { labels: [label], cursor: first.nextCursor }))!;
+  assert.deepEqual(next.tasks.map((task) => task.id), [older.id]);
+  assert.equal(next.nextCursor, null);
+  await f.call("list_tasks", { labels: [label], enabled: false, cursor: first.nextCursor }, /Invalid task cursor or changed filters/);
+  await f.call("list_tasks", { cursor: "not-a-cursor" }, /Invalid task cursor/);
+  for (const body of [{ labels: [label], enabled: false, cursor: first.nextCursor }, { cursor: "not-a-cursor" }]) {
+    const response = await f.app.request("/mcp/tasks/list", { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid task cursor or changed filters" });
+  }
+  for (const args of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { status: "unknown" }, { kind: "unknown" },
+    { enabled: "false" }, { labels: "api" }, { priority: "unknown" }, { taskId: "ignored" }]) {
+    await f.call("list_tasks", args, /Invalid|Unrecognized|Number/);
+  }
+  const unset = (await f.call<TaskPage>("list_tasks", { labels: [label], priority: null }))!;
+  assert.equal(unset.tasks.length, 2);
+});
+
+test("task read HTTP routes enforce token authentication and independent body validation", async (t) => {
+  const f = await fixture(t);
+  for (const [route, body] of [["list", {}], ["get", { taskId: "missing" }]] as const) {
+    for (const token of [undefined, "wrong-token"]) {
+      const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { "x-harness-token": token } : {}) },
+        body: JSON.stringify(body) });
+      assert.equal(response.status, 401);
+    }
+  }
+  for (const [route, body] of [["list", { limit: 101 }], ["list", { status: "unknown" }],
+    ["list", { cursor: "invalid" }], ["get", {}], ["get", { taskId: " " }], ["get", { taskId: "id", intent: "no writes" }]] as const) {
+    const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400, await response.text());
+  }
+});
+
+test("list_tasks canonicalizes linked worktree repository selectors", async (t) => {
+  const f = await fixture(t);
+  const root = gitRepo(`read-worktree-${randomUUID().slice(0, 8)}`);
+  execFileSync("git", ["-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]);
+  const worktree = join(home, `linked-${randomUUID()}`);
+  execFileSync("git", ["-C", root, "worktree", "add", "--detach", worktree], { stdio: "pipe" });
+  const first = await f.create({ repository: root, workflowId: null });
+  const second = await f.create({ repository: root, workflowId: null });
+  const fromWorktree = (await f.call<TaskPage>("list_tasks", { repository: worktree, limit: 1 }))!;
+  assert.equal(fromWorktree.tasks[0]!.repository, root);
+  assert.ok(fromWorktree.nextCursor);
+  const fromRoot = (await f.call<TaskPage>("list_tasks", { repository: root, cursor: fromWorktree.nextCursor }))!;
+  assert.deepEqual([...fromWorktree.tasks, ...fromRoot.tasks].map((task) => task.id).sort(), [first.id, second.id].sort());
+  assert.equal(fromRoot.nextCursor, null);
+});
+
+test("read tools include durable attached-repository PRs without live session feedback", async (t) => {
+  const f = await fixture(t);
+  const labels = [`attached-pr-${randomUUID().slice(0, 8)}`];
+  const created = await f.create({ agent: "codex", additionalRepositories: [repoB], labels, workflowId: null });
+  const sessionId = `sdk:attached-pr-${created.id}`;
+  const episodeId = randomUUID();
+  const abandonedEpisodeId = randomUUID();
+  const attachedPrUrl = "https://github.com/example/secondary/pull/1369";
+  openDb().prepare(`INSERT INTO task_work_episode_bindings
+    (task_id, episode_id, session_id, agent_session_id, bound_at, updated_at)
+    VALUES (?, ?, ?, 'attached-native-id', 1, 1)`).run(created.id, episodeId, sessionId);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'attached-head', NULL, 1)`)
+    .run(episodeId, repoB, sessionId, created.id, attachedPrUrl);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'abandoned-head', NULL, 2)`)
+    .run(abandonedEpisodeId, repoB, sessionId, created.id, "https://github.com/example/secondary/pull/1368");
+  const abandonedRow = openDb().prepare("SELECT * FROM work_episode_prs WHERE task_id = ? AND episode_id = ? AND repo_root = ?");
+  const abandonedBefore = abandonedRow.get(created.id, abandonedEpisodeId, repoB);
+  assert.equal(f.registry.getTask(created.id)!.extraRepos[0]!.prUrl, null,
+    "the live board has not loaded the durable attached PR");
+  assert.deepEqual(f.registry.snapshot().sessions, [], "no session or live PR feedback is needed");
+
+  for (const stage of [
+    { name: "current open PR", episode: episodeId, status: "running", prUrl: attachedPrUrl, prState: "open", mergedAt: null },
+    { name: "abandoned unmerged PR", episode: randomUUID(), status: "running", prUrl: null, prState: null, mergedAt: null },
+    { name: "merged PR from a previous episode", episode: randomUUID(), status: "done", prUrl: attachedPrUrl, prState: "merged", mergedAt: 1000 },
+  ] as const) {
+    openDb().prepare("UPDATE task_work_episode_bindings SET episode_id = ? WHERE task_id = ?")
+      .run(stage.episode, created.id);
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ? WHERE id = ?")
+      .run(stage.status, sessionId, created.id);
+    openDb().prepare("UPDATE work_episode_prs SET pr_state = ?, merged_at = ? WHERE task_id = ? AND episode_id = ? AND repo_root = ?")
+      .run(stage.mergedAt === null ? "open" : "merged", stage.mergedAt, created.id, episodeId, repoB);
+    const writesBefore = openDb().prepare("SELECT total_changes() AS n").get();
+    const task = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoB, labels }))!;
+    assert.equal(page.tasks.length, 1);
+    const expectedRepos = [
+      { repoRoot: repoA, primary: true, prUrl: null, prState: null, mergedAt: null, feedback: null },
+      { repoRoot: repoB, primary: false, prUrl: stage.prUrl, prState: stage.prState, mergedAt: stage.mergedAt, feedback: null },
+    ];
+    for (const [tool, result] of [["get_task", task], ["list_tasks", page.tasks[0]!]] as const) {
+      assert.equal(result.id, created.id);
+      assert.equal(result.status, stage.status);
+      assert.equal(result.prUrl, null, "the secondary PR is not substituted for the primary");
+      assert.equal(result.outcomeUrl, null, "there is no outcome URL to fall back to");
+      assert.deepEqual(result.repoPrs, expectedRepos, `${tool}: ${stage.name}`);
+    }
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), writesBefore,
+      "loading durable PR bindings is read-only");
+    assert.deepEqual(abandonedRow.get(created.id, abandonedEpisodeId, repoB), abandonedBefore,
+      "the distinct abandoned open PR is preserved and never returned");
+  }
+});
+
+test("the MCP tools carry the work unit: a plan's phase task shares it, and list_tasks filters by it", async (t) => {
+  const f = await fixture(t);
+  const createTool = (await f.client.listTools()).tools.find((tool) => tool.name === "create_task")!;
+  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] }).enum, ["inherit", "new"]);
+  const listTool = (await f.client.listTools()).tools.find((tool) => tool.name === "list_tasks")!;
+  assert.ok(listTool.inputSchema.properties?.workUnitId);
+
+  // The MCP child identifies itself as `sdk:backlog-test`; make that session a running plan task.
+  const plan = f.tasks.create({
+    repoRoot: repoA, intent: "Phase the plan", title: "Plan", kind: "plan", agent: "claude",
+    workflowId: null, backlog: true,
+  });
+  f.registry.registerSdkSession({ id: "sdk:backlog-test", agent: "claude", name: "Plan", cwd: repoA });
+  f.registry.upsertTask({ ...f.registry.getTask(plan.id)!, status: "running", sessionId: "sdk:backlog-test" });
+
+  const phase = await f.create({ workflowId: null });
+  assert.equal(phase.workUnitId, plan.workUnitId, "the create_task result carries the plan's work unit");
+  const own = await f.create({ workflowId: null, workUnit: "new" });
+  assert.ok(own.workUnitId);
+  assert.notEqual(own.workUnitId, plan.workUnitId);
+  // Every route the child picks carries the choice: configuration selects /mcp/v3/tasks.
+  const configured = await f.create({ workflowId: null, priority: "high", workUnit: "inherit" });
+  assert.equal(configured.workUnitId, plan.workUnitId);
+
+  const got = (await f.call<ReadTask>("get_task", { taskId: phase.id }))!;
+  assert.equal(got.workUnitId, plan.workUnitId);
+  const page = (await f.call<TaskPage>("list_tasks", { workUnitId: plan.workUnitId, limit: 100 }))!;
+  assert.deepEqual(page.tasks.map((task) => task.id).sort(), [plan.id, phase.id, configured.id].sort());
+  await f.call("list_tasks", { workUnitId: "wu_not-a-work-unit" }, /workUnitId must be a work unit id/);
 });

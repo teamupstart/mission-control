@@ -9,9 +9,13 @@ and get your decision back.
 
 ## What it does
 
-- **Discovers** every terminal-backed `claude` / `codex` / `pi` session by walking process →
-  controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
-  No per-session setup is required for terminal discovery. First-class emulator support
+- **Discovers** the terminal-backed `claude` / `codex` / `pi` sessions it started by walking
+  process → controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
+  A few other sessions are always shown, such as agents an external engine starts in an
+  observed pipeline run's worktree; [sessions started outside Mission
+  Control](sessions.md#sessions-started-outside-mission-control) lists every case. Sessions you
+  started yourself in a terminal appear too once **Show sessions started outside Mission
+  Control** is on. No per-session setup is required for terminal discovery. First-class emulator support
   includes WezTerm, Ghostty, and iTerm2, with tmux and cmux composition.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   session detail's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
@@ -40,7 +44,10 @@ and get your decision back.
   A checkout already on the default branch is left on it.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
-  answer - your decision flows straight back to the agent.
+  answer - your decision flows straight back to the agent. With the `async-input`
+  preview flag, a question is
+  [filed without stopping](sessions.md#asking-without-stopping): the agent keeps
+  working and your answer reaches it later as a message.
 - **Answers the menus** a session is parked on - a permission prompt, an
   `AskUserQuestion` clarification, a folder-trust check - as
   [clickable options on the session detail](sessions.md#answer-a-sessions-menu-from-the-dashboard).
@@ -177,8 +184,9 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mi
 The binary bootstrap downloads a canonical signed DMG and ready manifest, verifies them with
 native macOS tools, and uses a private copy of the app's embedded runtime for installation.
 It requires macOS 12+ on Apple Silicon and authenticated native `gh`, without host Node, npm,
-npx, Git or build tools. Signed publication and clean-account qualification are still pending;
-an unavailable binary is refused. See [binary recovery and enrollment](desktop-and-packaging.md#binary-installation-and-manual-recovery).
+npx, Git or build tools. Clean-account qualification is still pending. Without `--ref` it
+installs the newest release with a ready binary, never one still publishing, and installs the
+newest alpha while no stable release has one; an unavailable pinned binary is refused. See [binary recovery and enrollment](desktop-and-packaging.md#binary-installation-and-manual-recovery).
 Quit the existing app before replacement. Reruns preserve its state and recorded destination.
 Bash installs into `~/Applications` by default on a new installation. Reruns preserve an
 existing receipt's system, personal, or custom destination. Pass `--scope user`,

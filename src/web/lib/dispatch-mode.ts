@@ -34,9 +34,11 @@ import type { ActionResult } from "./api.ts";
 import type { DispatchDraft } from "./task-draft.ts";
 import type { GuidedPass } from "./guided-dispatch-steps.ts";
 import type { EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
+import type { ResidentDispatchDraft } from "../residents/dispatch-draft.ts";
 
-/** Single vs Ensemble, the one mode choice the operator makes from inside the open form. */
-export type DispatchLaunchMode = "single" | "ensemble";
+/** Single, Ensemble or Resident: the one mode choice the operator makes from inside the open form. */
+export type DispatchLaunchMode = "single" | "ensemble" | "resident";
 
 /** Temporary input owned by DispatchLayer while the See the work tour is active. */
 export interface SeeWorkTourDispatchPreview {
@@ -76,6 +78,8 @@ export const DispatchOpeningSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ensemble"), strategyId: z.enum(ENSEMBLE_STRATEGY_IDS) }).strict(),
   z.object({ kind: z.literal("edit"), task: TaskField }).strict(),
   z.object({ kind: z.literal("tour"), demo: TourDemoField }).strict(),
+  /** Resident mode, optionally on one profile - the Residents page's Launch. */
+  z.object({ kind: z.literal("resident"), profileId: z.string().nullable() }).strict(),
 ]);
 export type DispatchOpening = z.infer<typeof DispatchOpeningSchema>;
 export type DispatchOpeningKind = DispatchOpening["kind"];
@@ -120,6 +124,20 @@ export const DispatchModeSchema = z.discriminatedUnion("kind", [
     >().optional(),
   }).strict(),
   z.object({ kind: z.literal("tour"), demo: TourDemoField }).strict(),
+  z.object({
+    kind: z.literal("resident"),
+    onLaunchModeChange: LaunchModeChangeField,
+    resident: record<ResidentDispatchDraft>(),
+    onResidentChange: callback<(draft: ResidentDispatchDraft) => void>(),
+    /** A launch was accepted; the draft is consumed and the form closes. */
+    onResidentLaunched: callback<(submitted: ResidentDispatchDraft) => void>(),
+    /** Live resident profiles, from the SSE collection. */
+    profiles: z.custom<ResidentProfile[]>(Array.isArray),
+    /** Live Personas, to name each profile's role. */
+    personas: z.custom<PersonaView[]>(Array.isArray),
+    /** Leave for the Residents page, on one profile or on its rail. */
+    onEditProfile: callback<(profileId: string | null) => void>(),
+  }).strict(),
 ]);
 export type DispatchMode = z.infer<typeof DispatchModeSchema>;
 export type DispatchModeKind = DispatchMode["kind"];
@@ -152,7 +170,8 @@ function problemWith(what: string, schema: AnyDispatchUnion, value: unknown): st
   if (issue.code === z.ZodIssueCode.invalid_type && issue.path.length === 0) {
     return `a ${what} that is not an object`;
   }
-  if (issue.code === z.ZodIssueCode.invalid_union_discriminator) {
+  // A discriminated union that matched no option by its discriminator tried none of them.
+  if (issue.code === z.ZodIssueCode.invalid_union && issue.errors.length === 0) {
     const kind = isRecord(value) ? (value as { kind?: unknown }).kind : undefined;
     const kinds = schema.options.map((option) => option.shape.kind.value).join(", ");
     return `an unsupported ${what} ${JSON.stringify(kind ?? null)}; expected one of ${kinds}`;
@@ -193,7 +212,8 @@ export function dispatchModeProblem(mode: DispatchMode): string | null {
 export type DispatchRequest =
   | { kind: "new" }
   | { kind: "edit"; taskId: string }
-  | { kind: "ensemble"; strategyId: EnsembleStrategyId };
+  | { kind: "ensemble"; strategyId: EnsembleStrategyId }
+  | { kind: "resident"; profileId: string | null };
 
 /** A resolved request: the opening to hand the layer, or why there is none. */
 export type DispatchResolution =
@@ -240,6 +260,15 @@ export function resolveDispatchOpening(
               "holds the fresh-dispatch form",
           }
         : { opening: { kind: "ensemble", strategyId: request.strategyId }, problem: null };
+    case "resident":
+      // The tour owns the fresh-dispatch form and fixes it to one Single demo, so a resident
+      // request meets it the way an Ensemble request does: refused and said.
+      return world.tourDemo
+        ? {
+            opening: null,
+            problem: "a Resident request while the See the work tour holds the fresh-dispatch form",
+          }
+        : { opening: { kind: "resident", profileId: request.profileId }, problem: null };
     case "new":
       return world.tourDemo
         ? { opening: { kind: "tour", demo: world.tourDemo }, problem: null }

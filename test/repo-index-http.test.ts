@@ -39,14 +39,26 @@ mkdirSync(stateHome, { recursive: true });
 // Set the supported test home before importing any server module that can resolve the DB.
 process.env.MISSION_HOME = stateHome;
 process.env.HOME = operatorHome;
+// Short enough for the stalled-mount case below to finish quickly, long enough that no
+// ordinary walk of these small fixture trees ever reaches it, even on a loaded runner.
+process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "3000";
 for (const name of WORKSPACE_ENV_NAMES) delete process.env[name];
 
 const { openDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { invalidateReposCache } = await import("../src/server/repos.ts");
 
+let repoIndexAnnouncements = 0;
+let lastAnnouncedIdentity = "";
+let announcementFails = false;
 const app = buildApp({
-  registry: {} as Registry,
+  registry: {
+    emitRepoIndexChanged: (identity: string) => {
+      if (announcementFails) throw new Error("event stream unavailable");
+      repoIndexAnnouncements += 1;
+      lastAnnouncedIdentity = identity;
+    },
+  } as unknown as Registry,
   reviews: {} as ReviewManager,
   tasks: {} as TaskManager,
   queues: {} as QueueManager,
@@ -243,6 +255,27 @@ test("a saved missing directory is reported unsafe if it later resolves at or ab
   assert.equal(view.repoCount, 0);
 });
 
+test("a saved directory list is announced to every window; a refused one and a Rescan are not", async () => {
+  const workspace = join(operatorHome, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  const before = repoIndexAnnouncements;
+  assert.equal((await putDirectories([workspace])).status, 200);
+  assert.equal(repoIndexAnnouncements, before + 1, "other windows must forget their repository lists");
+  const repos = await app.request("/api/repos", { headers: HEADERS });
+  assert.equal(repos.status, 200);
+  assert.equal(
+    repos.headers.get("x-repo-index-identity"),
+    lastAnnouncedIdentity,
+    "the announcement names the identity the next repository answer carries",
+  );
+  assert.match(lastAnnouncedIdentity, /^[0-9a-f]{16}$/);
+
+  assert.equal((await putDirectories(["relative/path"])).status, 400);
+  const rescan = await app.request("/api/repo-index/rescan", { method: "POST", headers: HEADERS });
+  assert.equal(rescan.status, 200);
+  assert.equal(repoIndexAnnouncements, before + 1, "nothing changed, so no window is told to forget");
+});
+
 test("a config write and Rescan now both invalidate the repository cache", async () => {
   const workspace = join(operatorHome, "workspace");
   mkdirSync(workspace, { recursive: true });
@@ -280,3 +313,111 @@ test("unreadable directories have a stable view status when the host enforces pe
     chmodSync(unreadable, 0o700);
   }
 });
+
+test("a stalled mount with no scan held leaves the Repositories view open, with the count unknown", async (t) => {
+  const workspace = join(operatorHome, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  makeRepo(join(workspace, "alpha"));
+  const fsPromises = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === realpathSync(workspace)) await recovered;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    // The save is what the operator does; the walk behind the view it returns stalls.
+    const saved = await putDirectories([workspace]);
+    assert.equal(saved.status, 200, "the editor's own write must not fail on a stalled scan");
+    const view = await saved.json() as RepoIndexView;
+    assert.equal(view.repoCount, null);
+    assert.equal(view.scannedAt, null);
+    assert.match(view.scanUnavailable ?? "", /did not finish within 3 s and was abandoned/);
+    assert.equal(view.directories[0]?.status, "ok", "the directory rows still render, so it can be removed");
+    assert.equal(view.directories[0]?.repoCount, null);
+
+    // A read while the walk is stuck is refused at once, and still answers 200.
+    const again = await getView();
+    assert.equal(again.repoCount, null);
+    assert.match(again.scanUnavailable ?? "", /waiting on an earlier scan that is still stuck/);
+
+    // The mount recovers: the count comes back.
+    recover();
+    const deadline = Date.now() + 5_000;
+    let current = await getView();
+    while (current.repoCount === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      current = await getView();
+    }
+    assert.equal(current.repoCount, 1);
+    assert.equal(current.scanUnavailable, null);
+  } finally {
+    recover();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test("the repo list on a stalled mount with no scan held is a 503 naming why, not a bare 500", async (t) => {
+  // Its own directory set: a scan of the shared "workspace" may already be held by an earlier
+  // case, and then the route would rightly answer from it.
+  const workspace = join(operatorHome, "never-scanned");
+  mkdirSync(workspace, { recursive: true });
+  makeRepo(join(workspace, "alpha"));
+  const fsPromises = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === realpathSync(workspace)) await recovered;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    // Saved straight to config: no scan of the new directories is held anywhere.
+    const { setRepoIndexConfig } = await import("../src/server/repo-index.ts");
+    setRepoIndexConfig({ directories: [{ path: workspace }] });
+    const timedOut = await app.request("/api/repos", { headers: HEADERS });
+    assert.equal(timedOut.status, 503);
+    assert.match((await timedOut.json() as { error: string }).error, /^workspace scan unavailable: .*did not finish within 3 s/);
+    // Refused over the stuck walk: the same answer, at once.
+    const refused = await app.request("/api/repos?rescan=1", { headers: HEADERS });
+    assert.equal(refused.status, 503);
+    assert.match((await refused.json() as { error: string }).error, /^workspace scan unavailable: .*still stuck/);
+  } finally {
+    recover();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test("a save whose change announcement fails is still a saved 200, and the failure is logged", async (t) => {
+  const workspace = join(operatorHome, "announce-fails");
+  mkdirSync(workspace, { recursive: true });
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  announcementFails = true;
+  try {
+    const res = await putDirectories([workspace]);
+    assert.equal(res.status, 200, "the write is persisted, so the caller must not be told it failed");
+    assert.deepEqual((await getView()).directories.map((row) => row.path), [workspace], "and it really is saved");
+    assert.ok(
+      warned.some((line) => /\[repos\] saved the repository index but could not announce it to open windows: event stream unavailable/.test(line)),
+    );
+  } finally {
+    announcementFails = false;
+  }
+});
+

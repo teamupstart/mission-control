@@ -470,7 +470,7 @@ async function assertStillLockedWithdrawing(): Promise<void> {
   assert.equal(put.status, 403);
   const status = telemetryStatus().organization;
   assert.equal(status?.withdrawing, true);
-  assert.match(status?.evidence ?? "", /removing Upstart's telemetry settings has not finished/);
+  assert.match(status?.evidence ?? "", /removing your organization's telemetry settings has not finished/);
   assert.equal(setPilotEnrollment(true).ok, false, "the pilot cannot be joined while withdrawing");
   // Nothing reaches the gateway in the meantime, though collection itself keeps running.
   const net = collectors();
@@ -759,7 +759,7 @@ async function send(path: string, method: string, body: unknown) {
 test("while managed, settings writes and destructive operations answer 403; probe and retry work", async () => {
   await manage();
   const refusal = {
-    error: "Telemetry settings on this Mac are managed by Upstart",
+    error: "Telemetry settings on this Mac are managed by your organization",
     managedBy: "upstart",
   };
   assert.deepEqual(await send("/api/telemetry/config", "PUT", { enabled: true }), {
@@ -866,7 +866,7 @@ test("the default-on notice is acknowledged once and persists across reapplicati
   assert.equal((await send("/api/telemetry/organization/notice", "POST", {})).status, 409);
   await manage();
   assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, null);
-  assert.deepEqual(telemetrySettingsSummary().organizationNotice, { label: "Upstart" });
+  assert.deepEqual(telemetrySettingsSummary().organizationNotice, { label: "your organization" });
   const revision = getTelemetryConfig().revision;
   const first = await send("/api/telemetry/organization/notice", "POST", {});
   assert.equal(first.status, 200);

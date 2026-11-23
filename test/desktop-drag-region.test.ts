@@ -21,7 +21,11 @@ import { fileURLToPath } from "node:url";
 
 const CSS_PATH = fileURLToPath(new URL("../src/web/styles.css", import.meta.url));
 const css = readFileSync(CSS_PATH, "utf8");
-const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+// The topbar's markup, which `App` renders through `components/Topbar.tsx`.
+const topbar = readFileSync(
+  fileURLToPath(new URL("../src/web/components/Topbar.tsx", import.meta.url)),
+  "utf8",
+);
 
 /** Comments carry `position: fixed` in prose, so they go before anything is parsed. */
 function stripComments(source: string): string {
@@ -156,7 +160,7 @@ test("the page segment lives in the topbar's explicit no-drag button coverage", 
   // The one control that says which page you are on. It replaced a single ghost button, and
   // it is still plain `<button>`s inside the bar - so the blanket rule below is what keeps
   // the desktop shell's drag region from eating the clicks that switch homes.
-  assert.match(app, /className={`page-seg-btn/);
+  assert.match(topbar, /className={`page-seg-btn/);
   assert.ok(
     ALL.some(
       (rule) =>

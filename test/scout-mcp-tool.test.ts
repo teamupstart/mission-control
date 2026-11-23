@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 test("the scout MCP tool gates older daemons, refreshes session authority, and never completes work", { timeout: 60_000 }, async () => {
   const home = mkdtempSync(join(tmpdir(), "mission-scout-mcp-"));
   let supported = false;
+  let explicitSupported = false;
   const submissions: { body: Record<string, unknown>; authority: unknown }[] = [];
   const daemon = createServer((req, res) => {
     let body = "";
@@ -18,7 +19,7 @@ test("the scout MCP tool gates older daemons, refreshes session authority, and n
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/health") {
-        res.end(JSON.stringify({ service: "mission-control", capabilities: supported ? ["multiple-scout-reports-v1"] : [] }));
+        res.end(JSON.stringify({ service: "mission-control", capabilities: [...(supported ? ["multiple-scout-reports-v1"] : []), ...(explicitSupported ? ["explicit-scout-files-v1"] : [])] }));
       } else if (req.url === "/mcp/scouts/submit") {
         submissions.push({ body: JSON.parse(body), authority: req.headers["x-mission-scout-credential"] });
         res.end(JSON.stringify({ replayed: submissions.length > 1, archive: { key: "producer~report", artifactCount: 2, captureStatus: "complete" } }));
@@ -54,9 +55,26 @@ test("the scout MCP tool gates older daemons, refreshes session authority, and n
     assert.match(JSON.stringify(first.content), /does not complete your task/);
     assert.equal(submissions[0]?.body.title, args.title);
     assert.equal(submissions[0]?.body.sessionId, undefined);
+    const files = [{ repoSlot: "repo-01", path: args.reportPath }];
+    const unsupportedSelection = await client.callTool({ name: "submit_scout_artifacts", arguments: { ...args, files } });
+    assert.equal(unsupportedSelection.isError, true);
+    assert.match(JSON.stringify(unsupportedSelection.content), /does not support explicit report files/);
+    assert.equal(submissions.length, 1, "never silently downgrade selection to directory capture");
+    explicitSupported = true;
+    const explicit = await client.callTool({ name: "submit_scout_artifacts", arguments: { ...args, files } });
+    assert.notEqual(explicit.isError, true);
+    assert.deepEqual(submissions[1]?.body.files, files, "MCP preserves the complete selection");
+    const empty = await client.callTool({ name: "submit_scout_artifacts", arguments: { ...args, files: [] } });
+    assert.equal(empty.isError, true);
+    assert.equal(submissions.length, 2, "invalid selection never reaches HTTP");
+    const oversized = await client.callTool({ name: "submit_scout_artifacts",
+      arguments: { ...args, files: Array.from({ length: 513 }, () => ({})) } });
+    assert.equal(oversized.isError, true);
+    assert.ok(JSON.stringify(oversized.content).length < 2000, "oversized selections return a bounded error, not per-element issues");
+    assert.equal(submissions.length, 2, "oversized selection never reaches HTTP");
     provisionSessionScoutCredential({ ...authority, episodeId: "episode-two" });
     const retry = await client.callTool({ name: "submit_scout_artifacts", arguments: args });
-    assert.notEqual(submissions[0]?.authority, submissions[1]?.authority);
+    assert.notEqual(submissions[0]?.authority, submissions[2]?.authority);
     assert.match(JSON.stringify(retry.content), /Edited source bytes were not republished/);
     assert.match(JSON.stringify(retry.content), /#\/scouts\/producer~report/);
   } finally {

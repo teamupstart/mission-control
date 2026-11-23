@@ -63,6 +63,7 @@ export const OVERLAY_IDS = {
   tourPicker: "tour-picker",
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
+  shapingContext: "shaping-context",
   foremanGuide: "foreman-guide",
   restoreSettings: "restore-settings",
   taskSourceWritebackDiscard: "task-source-writeback-discard",
@@ -85,6 +86,24 @@ export const OVERLAY_IDS = {
   // The session footer's Return to backlog confirm. A per-session confirm like Kill, so the
   // fleet's `k` and `r` must not reach the session behind it while it is up.
   requeue: "requeue",
+  // Report bug on a dispatch that did not start. A confirm over the board, so the fleet's
+  // `k` and `r` must not reach the session behind it while it is up.
+  launchFailureReport: "launch-failure-report",
+  // A resident profile's confirmation before it imports all native MCP sources. Opened over the
+  // Residents editor, so the fleet's `k` and `r` must not reach a session behind it.
+  residentMcpAllSources: "resident-mcp-all-sources",
+  // Settings > GitHub Inspector's read-only findings for one pull request.
+  inspectorFindings: "inspector-findings",
+  prChecks: "pr-checks",
+  featureFlagsConfirm: "feature-flags-confirm",
+  // Settings > Task shaping's manifest import, and its dry run of one shaper.
+  shapingImport: "shaping-import",
+  shapingTest: "shaping-test",
+  // A revised plan form's earlier version, read-only. Opened from a review card inside the
+  // inbox or the review modal, so it is a layer of its own above them.
+  reviewEarlierVersion: "review-earlier-version",
+  // An agent report's attached document, opened from its inbox card or conversation entry.
+  reportDocument: "report-document",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -233,6 +252,27 @@ function useOverlayRegistration(id: string): boolean {
   return stack.length > 0 && stack[stack.length - 1]?.token === token;
 }
 
+/** Read the live tab order: controls can disappear or become disabled while a modal is open. */
+function modalTabStops(panel: HTMLElement): HTMLElement[] {
+  const candidates = [...panel.querySelectorAll<HTMLElement>(
+    'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]',
+  )].filter(element =>
+    (element.tabIndex >= 0 || (element.isContentEditable && !element.hasAttribute("tabindex"))) &&
+    !element.matches(":disabled") && !element.closest("[inert]") &&
+    element.closest(".modal-backdrop") === panel.parentElement &&
+    element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible",
+  );
+  // A radio group contributes one tab stop, even though each radio has tabIndex 0.
+  return candidates.filter(element => {
+    if (!(element instanceof HTMLInputElement) || element.type !== "radio" || !element.name) return true;
+    const group = candidates.filter((candidate): candidate is HTMLInputElement =>
+      candidate instanceof HTMLInputElement && candidate.type === "radio" &&
+      candidate.name === element.name && candidate.form === element.form,
+    );
+    return element === (group.find(radio => radio.checked) ?? group[0]);
+  }).sort((a, b) => (a.tabIndex > 0 ? a.tabIndex : Infinity) - (b.tabIndex > 0 ? b.tabIndex : Infinity));
+}
+
 export function Overlay({
   id,
   onClose,
@@ -242,9 +282,9 @@ export function Overlay({
   ariaLabel,
   ariaModal,
   closable = true,
-  ignoreBackdropDrag = false,
   onEscape,
   onKeyDown,
+  onDefaultAction,
   surfaceRef,
   children,
 }: {
@@ -266,14 +306,14 @@ export function Overlay({
    * one guard rather than two is what keeps them from drifting apart.
    */
   closable?: boolean;
-  /** Opt in to ignoring backdrop clicks from a drag across the panel boundary. */
-  ignoreBackdropDrag?: boolean;
   /**
    * Keys the overlay wants beyond Escape (the diff viewer walks its file list). Only
    * fires while this overlay is topmost. Memoise it, or the listener re-subscribes on
    * every render.
    */
   onKeyDown?: (e: KeyboardEvent) => void;
+  /** Override activation for actions that require the original trusted keyboard gesture. */
+  onDefaultAction?: (e: KeyboardEvent) => void;
   /** Semantic owner ref for narrow integrations such as the product-tour spotlight. */
   surfaceRef?: (element: HTMLElement | null) => void;
   /**
@@ -286,6 +326,33 @@ export function Overlay({
 }): React.JSX.Element {
   const isTop = useOverlayRegistration(id);
   const backdropPress = useRef(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  // Capture before children commit their autofocus, and retain the same opener across
+  // stack changes. Covering this modal is not a dismissal.
+  const [opener] = useState(() => typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+    ? document.activeElement : null);
+  const setPanelRef = useCallback((element: HTMLElement | null) => {
+    panelRef.current = element;
+    surfaceRef?.(element);
+  }, [surfaceRef]);
+
+  useRegistrationEffect(() => {
+    const panel = panelRef.current;
+    if (!ariaModal || !isTop || !panel || panel.contains(document.activeElement)) return;
+    (modalTabStops(panel)[0] ?? panel).focus({ preventScroll: true });
+  }, [ariaModal, isTop]);
+
+  useEffect(() => {
+    if (!ariaModal) return;
+    const panel = panelRef.current;
+    return () => {
+      // Passive cleanup runs after removal, so an opener in a removed parent cannot
+      // take focus. Do not steal focus from a different dialog already on top.
+      if (opener?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement))) {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }, [ariaModal, opener]);
 
   useEffect(() => {
     if (!isTop) return;
@@ -322,17 +389,64 @@ export function Overlay({
         return;
       }
       onKeyDown?.(e);
+      if (ariaModal && e.key === "Tab" && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const panel = panelRef.current;
+        if (!panel) return;
+        const stops = modalTabStops(panel);
+        const first = stops[0];
+        const last = stops.at(-1);
+        const active = document.activeElement;
+        if (!first || !panel.contains(active) || active === panel ||
+          (e.shiftKey ? active === first : active === last)) {
+          e.preventDefault();
+          ((e.shiftKey ? last : first) ?? panel).focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (
+        e.defaultPrevented || e.key !== "Enter" || (!e.metaKey && !e.ctrlKey) ||
+        e.altKey || e.shiftKey || e.isComposing
+      ) return;
+      // Consume the chord even if this layer has no action, or its action is disabled.
+      // Never let a covered dialog or the session behind it answer the same keystroke.
+      e.preventDefault();
+      if (e.repeat) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      // A queue can contain several independent questions. Focus owns its question;
+      // otherwise the first visible question is next. Do not skip a disabled default to
+      // submit a different question. Native form submit buttons already declare a default;
+      // non-form actions opt in with data-dialog-default, independent of their styling.
+      const selector = 'button[data-dialog-default], button[type="submit"]';
+      const focused = document.activeElement?.closest("[data-dialog-action-scope], form");
+      const scope = focused && panel.contains(focused) && focused.querySelector(selector) ? focused : panel;
+      const button = [...scope.querySelectorAll<HTMLButtonElement>(
+        selector,
+      )].find((candidate) =>
+        candidate.closest(".modal-backdrop") === panel.parentElement &&
+        !candidate.closest("[inert]") &&
+        candidate.getClientRects().length > 0 &&
+        getComputedStyle(candidate).visibility !== "hidden",
+      );
+      if (!button || button.matches(":disabled") || button.getAttribute("aria-disabled") === "true") return;
+      if (onDefaultAction) onDefaultAction(e);
+      else button.click();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isTop, closable, onClose, onEscape, onKeyDown]);
+  }, [isTop, ariaModal, closable, onClose, onEscape, onKeyDown, onDefaultAction]);
 
   return (
     <div
       className="modal-backdrop"
       data-overlay-top={isTop ? "true" : undefined}
-      // A drag across the panel boundary can produce a click targeted at the backdrop.
-      // Capture both endpoints, even when a child stops propagation, before dismissing.
+      // Only a complete press AND release on the backdrop dismisses. A drag that crosses
+      // the panel boundary in either direction - most often selecting text inside the panel
+      // and letting go past its edge - still produces a `click`, and the browser targets it
+      // at the nearest common ancestor, which is this backdrop. Dismissing on that click
+      // throws away whatever the operator was reading or typing. Both endpoints are taken
+      // in the CAPTURE phase so a child that stops propagation cannot hide either one.
+      // Every overlay gets this; it is not a per-modal opt-in.
       onPointerDownCapture={(e) => {
         backdropPress.current = e.button === 0 && e.target === e.currentTarget;
       }}
@@ -343,17 +457,21 @@ export function Overlay({
         backdropPress.current = false;
       }}
       onClick={(e) => {
-        const dismiss = !ignoreBackdropDrag || (backdropPress.current && e.target === e.currentTarget);
+        // A modal may live inside a clickable board tile. Dismissing it must not
+        // activate that ancestor, including when the overlay is portaled.
+        e.stopPropagation();
+        const dismiss = backdropPress.current && e.target === e.currentTarget;
         backdropPress.current = false;
         if (closable && dismiss) onClose();
       }}
     >
       <Tag
-        ref={surfaceRef}
+        ref={setPanelRef}
         className={className}
         role={role}
         aria-label={ariaLabel}
         aria-modal={ariaModal}
+        tabIndex={ariaModal ? -1 : undefined}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

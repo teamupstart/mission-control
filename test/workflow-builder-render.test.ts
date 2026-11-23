@@ -240,11 +240,15 @@ test("generated create and duplicate names honor normalized durable uniqueness",
 
 test("the top-bar segment reaches the Library, and the builder is one level under it", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  const read = (rel: string): string =>
+    readFileSync(fileURLToPath(new URL(`../src/web/${rel}`, import.meta.url)), "utf8");
   // The segment navigates to primary pages and nothing deeper: the builder is reached from
   // a Workflows shelf card, which is what makes the shelf the place you learn what a
-  // workflow is before you open one.
-  assert.match(source, /id: "runs",[\s\S]*?action: "runs"/);
-  assert.match(source, /onClick=\{\(\) => navigate\(\{ page: id \}\)\}/);
+  // workflow is before you open one. The segment table lives in the topbar registry, the
+  // button in `Topbar`, and `App` turns the page id into a route with nothing added.
+  assert.match(read("lib/topbar-items.ts"), /id: "runs",[\s\S]*?action: "runs"/);
+  assert.match(read("components/Topbar.tsx"), /onClick=\{\(\) => props\.onNavigatePage\(id\)\}/);
+  assert.match(source, /onNavigatePage=\{\(page\) => navigate\(\{ page \}\)\}/);
   assert.match(source, /<WorkflowLibrary[\s\S]*?initialWorkflowId=\{libraryAssetId\}/);
   assert.match(source, /onOpenAsset=\{\(shelf, assetId\) => navigate\(\{ page: "library", shelf, assetId \}\)\}/);
 });

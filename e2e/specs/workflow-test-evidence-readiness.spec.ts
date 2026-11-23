@@ -165,8 +165,8 @@ async function seedRejectedRun(
 /**
  * The card, found by its heading rather than by any text it contains.
  *
- * `hasText` matched two cards here: the seeded workflow's NAME appears in the dispatch-default
- * card's options, so a substring match over the panel is not a stable way to name this one.
+ * `hasText` once matched two cards here: the seeded workflow's NAME appeared in another card's
+ * options, so a substring match over the panel is not a stable way to name this one.
  */
 const readinessCard = (page: Page): Locator =>
   page.locator("section.sc-card").filter({

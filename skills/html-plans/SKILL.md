@@ -1,6 +1,6 @@
 ---
 name: html-plans
-description: Render every written plan as a self-contained HTML page retained with its Markdown revision, draw data/request-flow changes between major components or external services as inline SVG diagrams, and when a plan has open choices, present them as selectable options the human can submit or dismiss from the Mission Control dashboard. Use whenever you write, publish, render, or share a plan, or a plan needs the human to decide between options.
+description: Render and review Mission Control-managed plans as self-contained HTML retained with their Markdown revisions, with inline flow diagrams and selectable dashboard decisions. Use when html-plans is explicitly invoked or the active workflow requires Mission Control-managed planning. Do not apply to explicitly selected repository-native planning workflows unless they explicitly opt into Mission Control-managed plans.
 metadata:
   mission:
     category: planning
@@ -9,25 +9,33 @@ metadata:
 
 # HTML plans
 
-A plan that only exists as markdown in a diff gets read by whoever is already in the
-diff. Rendering it as a page makes it skimmable by everyone else. And a plan whose open
-questions are buried in prose gets answered by whoever happens to reply - if anyone does.
-This skill fixes both: every plan becomes a page, and every plan that needs a decision
-asks for it as clickable options.
+Render Mission Control-managed plans as reviewable pages and collect their decisions as
+clickable options. Markdown remains authoritative; the page renders its exact revision.
 
 ## When this applies
 
-Whenever you write a plan. Not only when asked to "share" one - the page is cheap and the
-skim is the point. When the plan has genuine open choices the human should make, also use
-the interactive path below instead of asking in prose.
+Apply this skill when the user explicitly invokes `html-plans`, or the active workflow
+explicitly requires Mission Control-managed planning, such as a Mission Control plan task
+or the Mission Control `phased-plan` skill.
+
+An explicitly selected repository-native planning workflow owns its artifact locations,
+Git-tracked artifacts, and approval and publication contracts. Follow that workflow unless
+the user or workflow explicitly opts into Mission Control-managed plans. Do not call Mission Control tools,
+require an HTML companion, move its artifacts, or add dashboard approval or phased follow-up
+steps on this skill's authority. Missing Mission Control tools do not block that workflow.
+
+Installing or enabling this skill, running inside Mission Control, or merely writing or
+sharing a plan does not select the managed planning workflow. Establish ownership before
+calling any managed tool. All instructions below, including every "Always" requirement,
+apply only to plans owned by this Mission Control workflow.
 
 ## Always: render the plan as HTML
 
 1. Call `get_plan_context` for the issued repository slot before writing a new plan. Use
    `read_plan` to discover an existing managed plan and read its exact revision. Catalog reads
    return `plans` and `nextCursor`; pass that cursor with the same repository slot until it is null.
-   If registration
-   or the managed tools are unavailable, report the refusal; do not fall back to writing plans into Git.
+   For this Mission Control workflow only, if registration or the managed tools are unavailable,
+   report the refusal and stop managed planning; do not fall back to writing plans into Git.
 2. Author `plan.md` and a self-contained static `plan.html` rendering in memory. Markdown is
    authoritative. Inline CSS, SVG, and data images; no scripts or external requests. Keep
    headings, tables, and diagrams consistent, support light/dark via `prefers-color-scheme`
@@ -48,7 +56,8 @@ the interactive path below instead of asking in prose.
    cleanup. Do not copy excluded HTML into a normal checkout path or stage it manually.
 6. For final local approval, call `request_plan_decisions` with `managedPlan: {repoSlot,
    planId, revision}` for the complete final bundle. The daemon adds its explicit final-approval
-   decision and exact preview. Dismissal and choices from an earlier revision are not approval.
+   decision and exact preview. Dismissal and choices from an earlier revision are not approval,
+   and neither is a filed receipt: wait for the answer message before reading the revision back.
    If phasing or repairs change any file, save the complete new revision and obtain approval again.
    Save is neither approval nor publication. Commit and verify only returned `requiredPaths`
    when the task's completion handoff permits it. Cite repository Markdown in downstream tasks;
@@ -118,9 +127,18 @@ human selects and submits, and act on what comes back.
 
 Call the Mission Control MCP tool **`request_plan_decisions`**. It shows the plan in the
 dashboard with your decision points rendered as radio buttons (choose one) or checkboxes
-(choose many) plus Submit and Dismiss buttons, **blocks until the human submits or dismisses
-that decision set**, and returns either their selections or an explicit dismissal as the
-tool result. You do not need to know your session id or post anything yourself - the
+(choose many) plus Submit and Dismiss buttons, and is a **gate until the human submits or
+dismisses that decision set**. The tool result is one of two things. Either it carries their
+selections or an explicit dismissal, because the call waited for them; or it is a receipt
+saying the plan is filed and not answered. On a receipt, do only read-only preparation - no
+edits, saves, commits, pushes or tasks - do not file the form again or poll, then say what is
+waiting and end your turn. The answer arrives later as a message that restates the plan and
+each decision, and you act on it exactly as you would on the tool result. If the operator tells
+you the scope changed, file the revised plan with `request_plan_decisions` and `revises` set to
+the earlier form's review id. An open form is withdrawn for you; one you already took back with
+`withdraw_question` is linked the same way. Without `revises` the revised plan is an unlinked new
+form, so the operator gets no Revision tag and no Earlier version (see "Revising a filed plan" in
+`docs/sessions.md`). You do not need to know your session id or post anything yourself - the
 dashboard binds the resolution straight back to this session. On the root plan's first review,
 append the phased implementation follow-up above after these plan-specific decisions. If the request is
 dismissed, stop without applying a choice or invoking `phased-plan`; never infer selections

@@ -20,8 +20,13 @@ import {
   type PaletteRow,
   type PaletteStores,
 } from "../src/web/lib/palette-index.ts";
-import { SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
-import { SETTINGS_CATEGORIES } from "../src/web/lib/settings-registry.ts";
+import { settingsControls } from "../src/web/lib/settings-search.ts";
+import { visibleSettingsCategories } from "../src/web/lib/settings-registry.ts";
+import { FEATURE_FLAGS_DEFAULTS } from "../src/shared/feature-flags.ts";
+
+// The stores' default flags are the suite's: previews off.
+const SETTINGS_CONTROLS = settingsControls(FEATURE_FLAGS_DEFAULTS);
+const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FEATURE_FLAGS_DEFAULTS);
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 
@@ -123,6 +128,7 @@ function persona(over: Partial<PersonaView> = {}): PersonaView {
     guidanceMarkdown: "# Risk",
     runner: null,
     model: null,
+    effort: null,
     revision: 1,
     archivedAt: null,
     createdAt: NOW,
@@ -190,7 +196,9 @@ function stores(over: Partial<PaletteStores> = {}): PaletteStores {
     sessionActions: [],
     schedules: [],
     sessionNames: new Map(),
+    residents: [],
     settingsBindings: new Map(),
+    featureFlags: FEATURE_FLAGS_DEFAULTS,
     ...over,
   };
 }
@@ -452,6 +460,7 @@ test("the fixed commands include one row per registered tour beside existing aff
     "browse-tours",
     "dispatch",
     "report-product-issue",
+    "residents-dock",
     "route",
     "route",
     "route",
@@ -618,10 +627,28 @@ test("searching a specific shortcut's name lands on that action's own binding", 
   );
 });
 
+test("a settings panel behind a feature flag, and its controls, are offered exactly while the flag is on", () => {
+  const offered = (flags: PaletteStores["featureFlags"]) => paletteRows(stores({ featureFlags: flags }))
+    .filter((row) => row.id === "panel:task-shaping" || row.id.startsWith("setting:task-shaping-"))
+    .map((row) => row.id);
+  assert.deepEqual(offered(FEATURE_FLAGS_DEFAULTS), []);
+  assert.deepEqual(offered({ enableAll: false, overrides: { "task-shaping": true } }), [
+    "setting:task-shaping-shapers",
+    "setting:task-shaping-import",
+    "setting:task-shaping-identity",
+    "setting:task-shaping-limits",
+    "panel:task-shaping",
+  ].sort((a, b) => (a.startsWith("panel:") ? 1 : 0) - (b.startsWith("panel:") ? 1 : 0)));
+  const on = stores({ featureFlags: { enableAll: false, overrides: { "task-shaping": true } } });
+  assert.ok(searchPalette("shaper", on).rows.some((row) => row.id === "panel:task-shaping"));
+  assert.ok(!searchPalette("shaper", stores()).rows.some((row) => row.id === "panel:task-shaping"));
+});
+
 test("a settings panel is reachable by name and by its registry keywords", () => {
   const rows = paletteRows(stores()).filter((row) => row.kind === "panel");
-  assert.equal(rows.length, SETTINGS_CATEGORIES.length);
-  for (const category of SETTINGS_CATEGORIES) {
+  // Every category this build draws; a hidden one (Conductor) is not offered as a jump.
+  assert.equal(rows.length, VISIBLE_SETTINGS_CATEGORIES.length);
+  for (const category of VISIBLE_SETTINGS_CATEGORIES) {
     const row = find(rows, `panel:${category.id}`);
     assert.deepEqual(row.target, {
       kind: "route",
@@ -708,4 +735,21 @@ test("tab cycles through the kinds present and back out to everything", () => {
   // A filter whose kind has been typed away narrows to what is left rather than silently
   // widening back to everything under the operator.
   assert.equal(nextPaletteKind(kinds, "ensemble"), "workflow");
+});
+
+test("a live resident is found by name or label and opens its detail", () => {
+  const rows = paletteRows(stores({
+    residents: [
+      { sessionId: "s-res", name: "Fleet Triage", label: "OPS", state: "needs input", attention: true },
+    ],
+  }));
+  const row = find(rows, "resident:s-res");
+  assert.equal(row.kind, "resident");
+  assert.equal(paletteKindGroup(row.kind), "jump");
+  assert.equal(row.title, "Fleet Triage");
+  assert.equal(row.detail, "OPS · needs input");
+  assert.equal(row.attention, true);
+  assert.ok(row.keywords.includes("OPS"));
+  assert.deepEqual(row.target, { kind: "open-resident", sessionId: "s-res" });
+  assert.match(paletteRowHint(row), /resident's conversation/);
 });

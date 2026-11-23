@@ -19,6 +19,10 @@ app.whenReady().then(async () => {
   ipcMain.on("mission:product-issue-report-click", (event) => {
     event.returnValue = event.sender === win.webContents;
   });
+  let windowBackground = null;
+  ipcMain.handle("mission:set-window-background", (event, color) => {
+    if (event.sender === win.webContents) windowBackground = color;
+  });
 
   try {
     await win.loadFile(page);
@@ -27,7 +31,21 @@ app.whenReady().then(async () => {
       hasDesktopClass: document.documentElement.classList.contains("is-desktop"),
       capability: window.missionDesktop?.claimProductIssueAuthorization?.() ?? null,
     })`);
+    // The skin bridge: the renderer reports a background and main receives exactly it.
+    await win.webContents.executeJavaScript(
+      `window.missionDesktop?.setWindowBackground?.("#f5f7fa")`,
+    );
+    result.windowBackground = windowBackground;
     win.webContents.on("console-message", (details) => {
+      if (details.message.startsWith("preload-test:key:")) {
+        const gesture = details.message.slice("preload-test:key:".length);
+        const modifiers = gesture === "plain" ? [] : gesture === "repeat" ? ["meta", "isAutoRepeat"]
+          : gesture === "other" ? ["control"] : [gesture];
+        const keyCode = gesture === "other" ? "A" : "Enter";
+        win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+        win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+        return;
+      }
       if (details.message !== "preload-test:ready") return;
       win.webContents.sendInputEvent({ type: "mouseDown", x: 30, y: 15, button: "left", clickCount: 1 });
       win.webContents.sendInputEvent({ type: "mouseUp", x: 30, y: 15, button: "left", clickCount: 1 });
@@ -58,7 +76,35 @@ app.whenReady().then(async () => {
       // the capability to that event's sender or synthesizing a DOM click.
       console.info("preload-test:ready");
     })`, true);
-    process.stdout.write(`${JSON.stringify({ ...result, preloadError, authorization })}\n`);
+    const keyboardAuthorization = await win.webContents.executeJavaScript(`new Promise((resolve) => {
+      const capability = ${JSON.stringify(result.capability)};
+      const input = {
+        requestId: "11111111-2222-4333-8444-555555555555",
+        draftIdentity: "a".repeat(64),
+      };
+      const authorize = (candidate = capability) =>
+        window.missionDesktop.authorizeProductIssue(candidate, input);
+      const checks = {};
+      const gestures = ["plain", "other", "repeat", "meta", "control"];
+      let gesture = "synthetic";
+      window.addEventListener("keydown", () => {
+        checks[gesture] = authorize();
+        checks[gesture + "WrongCapability"] = authorize("wrong-capability");
+        if (gesture === "synthetic") return;
+        setTimeout(() => {
+          checks[gesture + "After"] = authorize();
+          next();
+        }, 0);
+      });
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
+      function next() {
+        gesture = gestures.shift();
+        if (!gesture) { resolve(checks); return; }
+        console.info("preload-test:key:" + gesture);
+      }
+      next();
+    })`, true);
+    process.stdout.write(`${JSON.stringify({ ...result, preloadError, authorization, keyboardAuthorization })}\n`);
     app.quit();
   } catch (error) {
     console.error(error);

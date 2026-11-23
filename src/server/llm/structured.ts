@@ -1,4 +1,4 @@
-import type { ZodTypeAny, TypeOf } from "zod";
+import type { ZodIssue, ZodTypeAny, TypeOf } from "zod";
 import { providerFailureKind, type ProviderFailureKind } from "./provider-failure.ts";
 
 // Asking a model for a VALUE rather than for text, and the two helpers every caller that
@@ -97,23 +97,24 @@ export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) =>
  * existing extractor (with its envelope/fence handling) stays the single source of that
  * logic.
  */
-export async function runStructured<S extends ZodTypeAny>(
+// `S` only names the reply's type when a caller states it (`runStructured<typeof Schema>`);
+// otherwise `T` is inferred from `extract`, which is the one argument that carries it.
+export async function runStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   run: (prompt: string) => Promise<string>,
   prompt: string,
-  extract: (raw: string) => TypeOf<S> | null,
+  extract: (raw: string) => T | ModelReplyMiss | null,
   label = "The model",
   observer?: StructuredAttemptObserver,
   opts?: { shapeGuaranteed?: boolean; maxAttempts?: 1 | 2 },
-): Promise<StructuredResult<TypeOf<S>>> {
+): Promise<StructuredResult<T>> {
   // A provider-guaranteed INPUT shape makes a JSON-syntax re-prompt redundant. Extraction
   // still runs below on every path: callers consume Zod's OUTPUT type, including transforms
   // and refinements no provider-side JSON Schema can execute.
   // A caller that owns its retry budget can independently cap this helper at one execution.
-  const attempts = opts?.shapeGuaranteed || opts?.maxAttempts === 1
-    ? [prompt]
-    : [prompt, `${prompt}\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.`];
-  for (let index = 0; index < attempts.length; index++) {
-    const p = attempts[index]!;
+  const attempts = opts?.shapeGuaranteed || opts?.maxAttempts === 1 ? 1 : 2;
+  let miss: ModelReplyMiss | null = null;
+  for (let index = 0; index < attempts; index++) {
+    const p = index === 0 ? prompt : `${prompt}\n\n${retryInstruction(miss)}`;
     const attempt = index + 1;
     let raw: string;
     try {
@@ -132,14 +133,102 @@ export async function runStructured<S extends ZodTypeAny>(
       return { kind: "failed", reason: `${label} failed: ${error}`, cause: "transport", providerFailure: providerFailure ?? undefined };
     }
     const value = extract(raw);
-    observer?.finish(attempt, { parsed: value !== null, raw, error: null });
-    if (value) return { kind: "ok", value };
+    const parsed = value !== null && !(value instanceof ModelReplyMiss);
+    observer?.finish(attempt, { parsed, raw, error: null });
+    if (parsed && value) return { kind: "ok", value };
+    miss = value instanceof ModelReplyMiss ? value : null;
   }
   return {
     kind: "failed",
-    reason: `${label} could not parse a valid reply from the model.`,
+    reason: miss?.kind === "schema"
+      ? `${label} returned a reply that ${replyMissClause(miss)}.`
+      : `${label} could not parse a valid reply from the model.`,
     cause: "parse",
   };
+}
+
+/**
+ * Why a model reply could not be used, in terms safe to hand straight back to the model.
+ *
+ * `json` means no candidate parsed as JSON at all. `schema` means one did and failed
+ * validation; `issues` then names at most `MAX_REPLY_ISSUES` field paths with a clipped
+ * message each, built from the issue's code and never from the reply's own content, so a
+ * retry prompt can quote it without echoing untrusted text back.
+ *
+ * A class rather than a tagged object so `runStructured` can tell it apart from any value a
+ * caller's schema could produce.
+ */
+export class ModelReplyMiss {
+  constructor(
+    readonly kind: "json" | "schema",
+    readonly issues: readonly string[] = [],
+  ) {}
+}
+
+const MAX_REPLY_ISSUES = 3;
+const MAX_ISSUE_PATH = 80;
+const MAX_ISSUE_MESSAGE = 160;
+
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 3)}...`;
+}
+
+/** A primitive an enum or literal accepts, quoted as JSON where JSON can say it. */
+function expectedValue(value: unknown): string {
+  return typeof value === "bigint" ? `${value}n` : JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * The received TYPE of an `invalid_type` issue. Zod 4 drops the input from the issue, so it
+ * is read back from Zod's own default message, which names only a type; a custom message
+ * gives none.
+ */
+function receivedType(message: string): string | null {
+  return /^Invalid input: expected \S+, received (\S+)$/.exec(message)?.[1] ?? null;
+}
+
+/** One `path: message` line per issue. Enum and key issues drop the received value. */
+export function describeReplyIssues(issues: readonly ZodIssue[]): string[] {
+  return issues.slice(0, MAX_REPLY_ISSUES).map((issue) => {
+    const path = issue.path.length ? clip(issue.path.map(String).join("."), MAX_ISSUE_PATH) : "(root)";
+    const received = issue.code === "invalid_type" ? receivedType(issue.message) : null;
+    const message = issue.code === "invalid_type"
+      ? `Expected ${issue.expected}${received ? `, received ${received}` : ""}`
+      : issue.code === "invalid_value"
+        ? `Expected one of ${issue.values.map(expectedValue).join(" | ")}`
+        : issue.code === "unrecognized_keys"
+          ? "Unrecognized key(s) in object"
+          : issue.message;
+    return `${path}: ${clip(message, MAX_ISSUE_MESSAGE)}`;
+  });
+}
+
+/**
+ * A miss as a clause: "was not valid JSON", or "did not match the required shape (...)".
+ * For callers that phrase their own correction, such as the workflow engine's.
+ */
+export function replyMissClause(miss: ModelReplyMiss): string {
+  return miss.kind === "json" || !miss.issues.length
+    ? "was not valid JSON"
+    : `was valid JSON but did not match the required shape (${miss.issues.join("; ")})`;
+}
+
+/** The retry instruction for a miss: it says what was actually wrong, and no more. */
+function retryInstruction(miss: ModelReplyMiss | null): string {
+  if (miss?.kind === "json") {
+    return "Your previous reply was not valid JSON. Reply with ONLY the JSON object.";
+  }
+  if (miss?.kind === "schema" && miss.issues.length) {
+    return [
+      "Your previous reply was valid JSON but did not match the required shape:",
+      ...miss.issues.map((issue) => `- ${issue}`),
+      ...(miss.issues.some((issue) => issue.endsWith("received null"))
+        ? ["Omit an optional field you have no value for instead of sending null."]
+        : []),
+      "Reply with ONLY the corrected JSON object.",
+    ].join("\n");
+  }
+  return "Your previous reply could not be used. Reply with ONLY the JSON object in the required shape.";
 }
 
 /**
@@ -162,6 +251,17 @@ export async function runStructured<S extends ZodTypeAny>(
  * told not to, observed on a real probe.
  */
 export function parseModelJson<S extends ZodTypeAny>(raw: string, schema: S): TypeOf<S> | null {
+  const value = parseModelReply(raw, schema);
+  return value instanceof ModelReplyMiss ? null : value;
+}
+
+/**
+ * `parseModelJson`, but a miss says why: the extractor to hand `runStructured`, so its retry
+ * names the real problem. Issues come from the first candidate that parsed as JSON, which
+ * is the most specific one the ladder found.
+ */
+export function parseModelReply<S extends ZodTypeAny>(raw: string, schema: S): TypeOf<S> | ModelReplyMiss {
+  let firstIssues: ZodIssue[] | null = null;
   for (const candidate of jsonCandidates(unwrapEnvelope(raw))) {
     let obj: unknown;
     try {
@@ -171,8 +271,11 @@ export function parseModelJson<S extends ZodTypeAny>(raw: string, schema: S): Ty
     }
     const r = schema.safeParse(obj);
     if (r.success) return r.data;
+    firstIssues ??= r.error.issues;
   }
-  return null;
+  return firstIssues
+    ? new ModelReplyMiss("schema", describeReplyIssues(firstIssues))
+    : new ModelReplyMiss("json");
 }
 
 /**

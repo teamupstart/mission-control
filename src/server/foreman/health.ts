@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   FOREMAN_HEALTH_MAX_ISSUES, FOREMAN_HEALTH_MAX_SESSIONS, foremanErrorText,
 } from "@shared/foreman-health.ts";
@@ -38,10 +38,12 @@ export class ForemanHealthTracker {
       .update(JSON.stringify([operation, runner, model, fingerprint(error)])).digest("hex");
     const previous = this.issues.get(id);
     const issue: ForemanHealthIssue = previous ?? {
-      id, operation, runner, model, error, count: 0, firstSeenAt: now, lastSeenAt: now,
-      sessions: [], sessionsTruncated: false,
+      id, operation, runner, model, error, count: 0, occurrenceId: "", firstSeenAt: now,
+      lastSeenAt: now, sessions: [], sessionsTruncated: false,
     };
     issue.error = error;
+    // Every failure, including one capped by `count` or inside the same millisecond.
+    issue.occurrenceId = randomUUID();
     issue.count = Math.min(1_000_000, issue.count + 1);
     issue.lastSeenAt = Math.max(issue.lastSeenAt, now);
     const session = context.session;

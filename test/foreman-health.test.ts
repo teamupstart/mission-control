@@ -107,6 +107,17 @@ test("publisher coalesces, retries failed delivery, and republishes after daemon
   assert.deepEqual(sent, [0, 1, 1]);
 });
 
+test("every failure mints a fresh occurrence id, even inside the same millisecond", () => {
+  const tracker = new ForemanHealthTracker();
+  tracker.failure(review, "Usage limit reached", 500);
+  const first = tracker.snapshot().issues[0]!;
+  tracker.failure(review, "Usage limit reached", 500);
+  const second = tracker.snapshot().issues[0]!;
+  assert.equal(second.id, first.id);
+  assert.equal(second.lastSeenAt, first.lastSeenAt);
+  assert.notEqual(second.occurrenceId, first.occurrenceId);
+});
+
 test("wire validation rejects unbounded or contradictory health reports", () => {
   const tracker = new ForemanHealthTracker();
   tracker.failure(review, "failure", 100);

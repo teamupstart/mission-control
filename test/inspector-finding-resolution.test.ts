@@ -112,6 +112,8 @@ if (args[0] === "api" && args[1] === "user") {
             state: "OPEN",
             headRefOid: state.headSha,
             headRefName: "feature",
+            baseRefName: "main",
+            repository: { defaultBranchRef: { name: "main" } },
             isDraft: false,
             title: "Inspector finding resolution",
             body: "Exercise the route out of an open finding.",
@@ -188,7 +190,8 @@ const {
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
-const { formatMarker } = await import("../src/server/inspector/marker.ts");
+const { fingerprint, formatMarker } = await import("../src/server/inspector/marker.ts");
+const { findingPublication } = await import("../src/shared/inspector-findings.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { INSPECTOR_LIMITS } = await import("../src/shared/inspector.ts");
 
@@ -249,9 +252,11 @@ function registryStub(): Registry {
 }
 
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  // This is a hang ceiling, not a performance assertion. The Inspector's analogous clean-review
-  // fixture uses the same budget because six test files run concurrently and can delay a tick.
-  const deadline = Date.now() + 30_000;
+  // This is a hang ceiling, not a performance assertion. Every sweep spawns fake `gh` and model
+  // processes, and the retry scenarios need several sweeps: on a host running more than one full
+  // suite (load averages above 50 were measured) 30 s was reached by a loop that was still
+  // progressing. A genuine hang still fails here, just later.
+  const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -331,6 +336,7 @@ function armConsent(): void {
   });
   setShippingConfig({
     autoMerge: true,
+    codeRabbitAutoResolve: false,
     soakMinutes: 0,
     repoAllowlist: [project],
   });
@@ -354,7 +360,7 @@ for (const reason of ["over-cap", "off-diff"] as const) {
       : [{ ...finding, path: "outside-the-diff.ts" }]);
     writeGithubState({});
     setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 1 });
-    setShippingConfig({ autoMerge: false });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
     const key = adopt(601);
     await runOneSweep();
     assert.equal(getInspectorPr(key)?.reviewComplete, false, "the first verdict really loses a finding");
@@ -394,7 +400,7 @@ test("an unreviewable live diff reports a bounded recovery wait instead of pendi
   writeGithubState({});
   process.env.FAKE_EMPTY_DIFF = "1";
   setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project] });
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   const key = adopt(603);
   await runOneSweep();
   assert.match(getInspectorPr(key)?.lastError ?? "", /no reviewable.*diff/i);
@@ -430,23 +436,28 @@ test("an operator can resolve a finding no review round is left to close", async
   // FIRST, the dead end itself: the head has already been reviewed, so no later round can
   // ever list this fingerprint as resolved, and the block survives every sweep.
   const stop = startInspector(registryStub());
-  await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
 
-  assert.equal(getInspectorPr(key)!.mergeBlock, "findings", "stuck on the open finding");
-  assert.equal(loadInspectorComments(key)[0]!.status, "open", "and no round closes the row");
-  assert.equal(readGithubState().merged, false, "so it never lands on its own");
-  assert.equal(getInspectorPr(key)!.round, 5, "no further round ran - the head was reviewed");
+    assert.equal(getInspectorPr(key)!.mergeBlock, "findings", "stuck on the open finding");
+    assert.equal(loadInspectorComments(key)[0]!.status, "open", "and no round closes the row");
+    assert.equal(readGithubState().merged, false, "so it never lands on its own");
+    assert.equal(getInspectorPr(key)!.round, 5, "no further round ran - the head was reviewed");
 
-  // THEN the operator resolves it - the same writer `/api/inspector/resolve-findings`
-  // calls - while the loop keeps running, and the next sweep lands the pull request.
-  assert.equal(resolveInspectorFindings(key, Date.now()), 1, "one finding closed");
-  await waitFor(
-    "the pull request and its durable ledger record to merge on the next sweep",
-    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
-  );
-  await stopAndSettle(stop);
+    // THEN the operator resolves it - the same writer `/api/inspector/resolve-findings`
+    // calls - while the loop keeps running, and the next sweep lands the pull request.
+    assert.equal(resolveInspectorFindings(key, Date.now()), 1, "one finding closed");
+    await waitFor(
+      "the pull request and its durable ledger record to merge on the next sweep",
+      () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+    );
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   assert.equal(loadInspectorComments(key)[0]!.status, "resolved");
   assert.notEqual(getInspectorPr(key)!.mergedAt, null, "and it merged rather than needing a human");
@@ -469,11 +480,16 @@ test("resolving findings does not merge over a review thread GitHub still has op
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
-  assert.equal(resolveInspectorFindings(key, Date.now()), 1);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
+    assert.equal(resolveInspectorFindings(key, Date.now()), 1);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   // The operator's word closes OUR ledger and nothing else. `threads` counts GitHub's own
   // unresolved review threads, so clearing findings moves the PR from one block to the
@@ -507,14 +523,19 @@ test("a finding the Inspector drops in conversation closes its thread, its row, 
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  // Every other gate in this fixture is green, so the finding was the only thing left. The
-  // pull request landing on its own is the end-to-end proof the dead end is gone: this is
-  // the PR that previously had to be merged by hand.
-  await waitFor(
-    "the pull request to merge itself and record that merge",
-    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
-  );
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    // Every other gate in this fixture is green, so the finding was the only thing left. The
+    // pull request landing on its own is the end-to-end proof the dead end is gone: this is
+    // the PR that previously had to be merged by hand.
+    await waitFor(
+      "the pull request to merge itself and record that merge",
+      () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+    );
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   const state = readGithubState();
   const row = loadInspectorComments(key)[0]!;
@@ -559,10 +580,15 @@ test("a reply that only answers a question leaves the finding blocking the merge
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  await waitFor("the Inspector to answer the follow-up", () => readGithubState().replies.length > 0);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the Inspector to answer the follow-up", () => readGithubState().replies.length > 0);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   const state = readGithubState();
   const row = loadInspectorComments(key)[0]!;
@@ -572,9 +598,11 @@ test("a reply that only answers a question leaves the finding blocking the merge
   assert.equal(state.merged, false, "an answered question must never land the pull request");
 });
 
-for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resolution-in-review", "reply-resolution-retry", "resolution-retry"] as const) {
+for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "reply-on-author-resolved-thread", "resolution-in-review", "reply-resolution-retry", "resolution-retry"] as const) {
   test(`final clean review after finding resolution: ${scenario}`, async () => {
     const viaReview = scenario === "resolution-in-review" || scenario === "resolution-retry";
+    const authorResolved = scenario === "reply-on-author-resolved-thread";
+    const sameHead = scenario === "reply-on-reviewed-head" || authorResolved;
     const fingerprint = "dc436b4e2f";
     const marker = formatMarker({ id: "finding-1", fingerprint, round: 4 });
     process.env.FAKE_REPLY_RESOLVED = "1";
@@ -586,14 +614,14 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
       databaseId: 202, body: "The latest push fixes this issue.",
       createdAt: "2026-07-23T13:00:00Z", author: { login: "author" },
     });
-    writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: false, threadComments: comments,
+    writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: authorResolved, threadComments: comments,
       failResolves: scenario.endsWith("retry") ? 1 : 0 });
     setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
-    setShippingConfig({ autoMerge: false });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
     const key = adopt(501);
     seedReviewedPr(key, fingerprint);
     updateInspectorPr(key, { reviewComplete: true }, Date.now());
-    if (scenario !== "reply-on-reviewed-head") updateInspectorPr(key, { headSha: "head-before-fix" }, Date.now());
+    if (!sameHead) updateInspectorPr(key, { headSha: "head-before-fix" }, Date.now());
     const stop = startInspector(registryStub());
     try {
       await waitFor("finding to resolve and head to be recorded", () =>
@@ -612,8 +640,173 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
     assert.equal(ledger.lastError, null);
     assert.equal(state.posts.length, 1, "every resolution path publishes exactly one final clean review");
     assert.equal(ledger.cleanReviewHeadSha, "head-fixed");
-    assert.equal(ledger.round, scenario === "reply-on-reviewed-head" ? 5 : 6);
+    assert.equal(ledger.round, sameHead ? 5 : 6);
+    if (authorResolved) assert.deepEqual(state.actions, ["posted reply", "accepted review for head-fixed"],
+      "evaluate the author reply without requiring a push or resolving the closed thread again");
     assert.equal(state.replies.length, viaReview ? 0 : 1);
     assert.equal(loadInspectorComments(key)[0]?.resolutionPending ?? false, false);
   });
 }
+
+// GitHub resolution is context, never proof that Inspector withdrew its finding.
+for (const scenario of ["disagrees", "no-reply", "already-answered", "already-resolved", "reply-cap", "foreign-thread", "dry-run"] as const) {
+  test(`author-resolved threads retain reply safeguards: ${scenario}`, async () => {
+    const fingerprint = "dc436b4e2f";
+    const marker = formatMarker({ id: "finding-1", fingerprint, round: 4 });
+    process.env.FAKE_REPLY_RESOLVED = scenario === "disagrees" ? "0" : "1";
+    const comments: FakeComment[] = [{
+      databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z",
+      author: { login: scenario === "foreign-thread" ? "someone-else" : "operator" },
+    }];
+    if (scenario !== "no-reply") comments.push({
+      databaseId: 202, body: "This is already handled by the guard.",
+      createdAt: "2026-07-23T13:00:00Z", author: { login: "author" },
+    });
+    writeGithubState({ threadBody: marker, threadResolved: true, threadComments: comments });
+    setInspectorConfig({ enabled: true, mode: scenario === "dry-run" ? "dry-run" : "live", repoAllowlist: [project] });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
+    const key = adopt(502);
+    seedReviewedPr(key, fingerprint, {
+      status: scenario === "already-resolved" ? "resolved" : "open",
+      answeredCommentId: scenario === "already-answered" ? 202 : null,
+      replies: scenario === "reply-cap" ? 6 : 0,
+    });
+    updateInspectorPr(key, { reviewComplete: true }, Date.now());
+    await runOneSweep();
+    await runOneSweep();
+    const state = readGithubState();
+    assert.equal(state.replies.length, scenario === "disagrees" ? 1 : 0,
+      "only a new, eligible reply on a still-open Inspector finding is evaluated, once");
+    assert.equal(loadInspectorComments(key)[0]?.status, scenario === "already-resolved" ? "resolved" : "open");
+    assert.equal(state.actions.includes("resolved thread T_1"), false);
+    if (scenario !== "already-resolved") {
+      assert.equal(getInspectorPr(key)?.cleanReviewHeadSha, null, "GitHub resolution alone cannot certify a clean review");
+      assert.equal(state.posts.length, 0);
+    }
+  });
+}
+// ---- Posting state: when GitHub confirmed a finding ----
+//
+// `posted_at` is stamped at the two points where this build learns a finding is on GitHub,
+// and carried, never cleared, everywhere else. These drive the real loop so the stamp is
+// pinned at the worker's confirmation points rather than at the upsert alone.
+
+test("an accepted live review stamps posted_at on every row it carried", async () => {
+  // Three findings in one review, so a promotion loop that stamped only its first row
+  // cannot pass.
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title: "Posted finding", body: "Needs attention", severity: "major" },
+    { path: "src/example.ts", line: 1, title: "Second posted finding", body: "Also this", severity: "minor" },
+    { path: "src/example.ts", line: 1, title: "Third posted finding", body: "And this", severity: "nit" },
+  ]);
+  writeGithubState({});
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
+  const key = adopt(610);
+  const before = Date.now();
+  await runOneSweep();
+  const after = Date.now();
+
+  assert.equal(readGithubState().posts.length, 1, "one review carried every finding and was accepted");
+  const rows = loadInspectorComments(key);
+  assert.deepEqual(
+    rows.map((r) => r.title).sort(),
+    ["Posted finding", "Second posted finding", "Third posted finding"],
+  );
+  for (const row of rows) {
+    assert.equal(row.status, "open", `${row.title} was promoted`);
+    assert.ok(row.postedAt != null && row.postedAt >= before && row.postedAt <= after,
+      `${row.title}: posted_at ${row.postedAt} is the confirmation time`);
+    assert.equal(row.githubUrl, null, "posted after this tick read its snapshot, so the link lands on the next tick");
+    assert.equal(row.legacyPosted, null);
+    assert.equal(findingPublication(row).state, "posted");
+  }
+
+  // Resolution carries it, so a posted finding still reads posted once it is closed.
+  assert.equal(resolveInspectorFindings(key, Date.now()), rows.length);
+  const stamped = new Map(rows.map((r) => [r.fingerprint, r.postedAt]));
+  for (const resolved of loadInspectorComments(key)) {
+    assert.equal(resolved.status, "resolved");
+    assert.equal(resolved.postedAt, stamped.get(resolved.fingerprint));
+    assert.equal(findingPublication(resolved).state, "posted");
+  }
+});
+
+test("posting reconciliation stamps a row it finds published, and only that row", async () => {
+  const publishedFp = "aaaaaaaaaaaa";
+  const lostFp = "bbbbbbbbbbbb";
+  const marker = formatMarker({ id: "finding-1", fingerprint: publishedFp, round: 1 });
+  writeGithubState({
+    headSha: "head-fixed",
+    threadBody: marker,
+    threadComments: [
+      { databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z", author: { login: "operator" } },
+    ],
+  });
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
+  const key = adopt(611);
+  // A round whose response was lost: both rows were written in `posting` ahead of a POST,
+  // on a head the next push has moved past.
+  updateInspectorPr(key, { headSha: "head-old", reviewPosture: "live", round: 1, lastReviewedAt: 1 }, Date.now());
+  //
+  // The lost row is about a file the new head no longer changes. Reconciliation turns it back
+  // into a draft, and a live round would otherwise carry that draft and post it at once (see
+  // `test/inspector-drafts-after-live.test.ts`), which would hide what reconciliation alone did.
+  for (const [id, fp, path, line] of [
+    ["finding-1", publishedFp, "src/example.ts", 1],
+    ["finding-2", lostFp, "src/no-longer-in-the-diff.ts", 3],
+  ] as const) {
+    upsertInspectorComment({
+      id, prKey: key, fingerprint: fp, path, line, title: `Issue ${fp}`,
+      body: "detail", severity: "major", round: 1, status: "posting", replies: 0,
+      answeredCommentId: null, postedAt: null, createdAt: 1, updatedAt: 1,
+    });
+  }
+  const before = Date.now();
+  await runOneSweep();
+
+  assert.equal(readFileSync(reviewCountPath, "utf8"), "1", "the new head was reviewed");
+  const rows = new Map(loadInspectorComments(key).map((r) => [r.fingerprint, r]));
+  const published = rows.get(publishedFp)!;
+  assert.equal(published.status, "open", "its marker thread is on the pull request");
+  assert.ok(published.postedAt != null && published.postedAt >= before);
+  const lost = rows.get(lostFp)!;
+  assert.equal(lost.status, "drafted", "no thread carries its marker, so it never posted");
+  assert.equal(lost.postedAt, null);
+});
+
+test("a finding raised again carries its earlier post until a new one is confirmed", async () => {
+  const title = "Retained finding";
+  const fp = fingerprint("src/example.ts", title);
+  const url = "https://github.com/mission/control/pull/612#discussion_r9";
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title, body: "Back again", severity: "major" },
+  ]);
+  writeGithubState({});
+  // Dry run, so the re-raise is drafted rather than posted, and nothing re-stamps it.
+  setInspectorConfig({ enabled: true, mode: "dry-run", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
+  const key = adopt(612);
+  upsertInspectorComment({
+    id: "finding-1", prKey: key, fingerprint: fp, path: "src/example.ts", line: 1, title,
+    body: "First time", severity: "major", round: 1, status: "resolved", replies: 1,
+    answeredCommentId: 7, postedAt: 1_234, githubUrl: url, createdAt: 1, updatedAt: 1,
+  });
+  await runOneSweep();
+
+  assert.equal(readGithubState().posts.length, 0, "dry run posts nothing");
+  const row = loadInspectorComments(key)[0]!;
+  assert.equal(row.status, "drafted");
+  assert.equal(row.body, "Back again", "the row really was raised again");
+  assert.equal(row.postedAt, 1_234);
+  assert.equal(row.githubUrl, url);
+  assert.deepEqual(findingPublication(row), {
+    state: "not-posted",
+    url,
+    postedAt: 1_234,
+    earlierPost: true,
+    refusals: 0,
+    reason: null,
+  });
+});

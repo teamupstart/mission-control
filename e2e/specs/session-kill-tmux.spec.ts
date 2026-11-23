@@ -44,6 +44,7 @@ const test = base.extend<{ terminal: TmuxFixture }>({
 });
 
 test.describe("Kill in tmux", () => {
+  test.use({ outsideSessions: true });
   test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is not installed");
 
   for (const shared of [true, false]) {

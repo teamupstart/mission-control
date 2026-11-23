@@ -91,3 +91,18 @@ export function useTerminalTargets(revision = 0): TerminalTargetsState {
   }, [revision]);
   return state;
 }
+
+/**
+ * The target a terminal picker starts on before the operator chooses one.
+ *
+ * The operator's macOS default terminal when it can open a window right now, and only then
+ * the first usable row. Registry order is a fact about Mission Control's adapters, not a
+ * preference anyone expressed, so starting on it opened installers in a terminal the
+ * operator had already chosen against for their whole machine.
+ */
+export function initialTerminalTarget(
+  targets: readonly TerminalTargetView[] | null,
+): TerminalTargetView | null {
+  const available = targets?.filter((target) => target.unavailable === null) ?? [];
+  return available.find((target) => target.systemDefault) ?? available[0] ?? null;
+}

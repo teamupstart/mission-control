@@ -1,0 +1,99 @@
+import { useCallback } from "react";
+import type { Session } from "@shared/types.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
+import { SubagentChip } from "../components/layouts/SubagentChip.tsx";
+import { useDisplayChoice } from "../lib/board-card.ts";
+import { ResidentChip } from "./ResidentChip.tsx";
+import { residentAccentStyle, type ResidentSessionMark } from "./marker.ts";
+
+/** The line every visitor card carries under the resident's name. */
+export const RESIDENT_VISITOR_NOTE = "Resident · opens its conversation";
+
+/**
+ * A resident that needs you, standing in Needs you while the Residents drawer is closed: a
+ * dashed outline in its marker color with the chip, its name and where it opens. It is a
+ * doorway to the resident, never a session card - a click or Enter opens its conversation, the
+ * same full detail ⌥N and the drawer's Open reach.
+ *
+ * Registered with App like a card or rail row, so the arrow keys reach it, keep it in view and
+ * hand it focus. It carries no ⌘-number.
+ */
+export function ResidentVisitorCard({ session, mark, variant, selected, registerEl, onOpen }: {
+  session: Session;
+  mark: ResidentSessionMark;
+  /** A Board tile, or a Console (and drill-in) rail row. */
+  variant: "tile" | "rail";
+  selected: boolean;
+  registerEl?: (id: string, el: HTMLElement | null) => void;
+  /** Open the resident's conversation. */
+  onOpen: (sessionId: string) => void;
+}): React.JSX.Element {
+  const setRef = useCallback(
+    (el: HTMLElement | null) => registerEl?.(session.id, el),
+    [registerEl, session.id],
+  );
+  const name = mark.name || session.name || "(unnamed)";
+  const label = `${name} needs you - resident, opens its conversation`;
+  const open = (): void => onOpen(session.id);
+  const hint = `Open ${name}'s conversation; it needs you`;
+  // A resident can have background agents too. Under Nested sub-cards the board hangs them
+  // beneath this tile as it does under any card; under Chip and popover this tile carries the
+  // same chip a session card does, so the choice never leaves a resident's agents unseen.
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
+
+  if (variant === "rail") {
+    return (
+      <Tooltip label={hint}>
+        <button
+          ref={setRef}
+          type="button"
+          className={`rail-row tone-attention resident-visitor resident-visitor-rail${selected ? " selected" : ""}`}
+          style={residentAccentStyle(mark.colorId)}
+          aria-current={selected}
+          aria-label={label}
+          onClick={open}
+        >
+          <span className="rail-name">
+            <ResidentChip mark={mark} tooltip={false} />
+            {name}
+          </span>
+          <span className="rail-sub resident-visitor-note">{RESIDENT_VISITOR_NOTE}</span>
+        </button>
+      </Tooltip>
+    );
+  }
+  // The Board tile follows `SessionTile`'s split: the pointer half is the root, the keyboard
+  // half a stretched `.tile-open` button App's arrow cursor focuses.
+  return (
+    <div
+      ref={setRef}
+      className={`resident-visitor resident-visitor-tile${selected ? " selected" : ""}`}
+      style={residentAccentStyle(mark.colorId)}
+      onClick={open}
+    >
+      <Tooltip label={hint}>
+        <button
+          type="button"
+          className="tile-open"
+          aria-label={label}
+          aria-current={selected}
+          onClick={(e) => {
+            e.stopPropagation();
+            open();
+          }}
+        />
+      </Tooltip>
+      <span className="resident-visitor-head">
+        <ResidentChip mark={mark} tooltip={false} />
+        <span className="resident-visitor-name">{name}</span>
+      </span>
+      <span className="resident-visitor-note">{RESIDENT_VISITOR_NOTE}</span>
+      {/* The tile's flag row, drawn only for the chip; empty (and so hidden) without agents. */}
+      {agentsChip && (
+        <span className="tile-marks">
+          <SubagentChip session={session} />
+        </span>
+      )}
+    </div>
+  );
+}

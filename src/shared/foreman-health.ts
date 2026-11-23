@@ -38,6 +38,12 @@ export const ForemanHealthIssueSchema = z.object({
   model: z.string().min(1).max(200).nullable(),
   error: z.string().min(1).max(FOREMAN_HEALTH_ERROR_LENGTH).transform(foremanErrorText),
   count: z.number().int().min(1).max(1_000_000),
+  /**
+   * Fresh for every failure in the group, so an operator's dismissal can name exactly the
+   * occurrence they read. `lastSeenAt` repeats within a millisecond and `count` stops at its
+   * cap; this never repeats.
+   */
+  occurrenceId: z.string().min(1).max(80),
   firstSeenAt: z.number().int().nonnegative(),
   lastSeenAt: z.number().int().nonnegative(),
   sessions: z.array(z.object({
@@ -67,6 +73,19 @@ export const ForemanHealthReportSchema = z.object({
   health: ForemanHealthSnapshotSchema,
 });
 export type ForemanHealthReport = z.infer<typeof ForemanHealthReportSchema>;
+/**
+ * An operator acknowledging error groups; each stays hidden until it fails again.
+ *
+ * Each group carries the `occurrenceId` of the occurrence the operator was shown, so a report
+ * landing between display and dismissal cannot hide an occurrence nobody saw.
+ */
+export const ForemanHealthDismissSchema = z.object({
+  issues: z.array(z.object({
+    id: ForemanHealthIssueSchema.shape.id,
+    occurrenceId: ForemanHealthIssueSchema.shape.occurrenceId,
+  }).strict()).min(1).max(FOREMAN_HEALTH_MAX_ISSUES),
+}).strict();
+export type ForemanHealthDismiss = z.infer<typeof ForemanHealthDismissSchema>;
 export interface ForemanHealthStatus extends ForemanHealthSnapshot {
   reportedAt: number;
   /** False when the snapshot belongs to a stopped/replaced worker or reporting is stale. */

@@ -1,5 +1,8 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
+  ["POST", "/mcp/questions/list", "Read-only outstanding-question query for the calling session."],
+  ["POST", "/mcp/tasks/list", "Read-only saved-task query with filters and pagination; no task is launched, modified or reordered."],
+  ["POST", "/mcp/tasks/get", "Read-only saved-task configuration query; no task is launched, modified or reordered."],
   ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
   ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],
   ["POST", "/mcp/plans/read", "Read-only exact revision or catalog query; not a publication or action outcome."],
@@ -13,8 +16,10 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/ingest/conductor", "Provider notifications are reconciled at the normalized pipeline owner; ingest traffic is not a second action."],
   ["POST", "/v1/metrics", "Existing agent cost receiver; Phase 3 owns deduplicated usage."],
   ["POST", "/mcp/status", "Presence/status refresh, not intentional feature use."],
+  ["POST", "/api/residents/mcp/redeem", "A resident MCP launcher redeeming its single-use ticket at process start; the launch that issued it is the action, and the answer carries secrets that must not reach any record."],
   ["POST", "/api/sessions/:id/composer-activity", "High-frequency typing/liveness signal; explicitly excluded from activity telemetry."],
   ["POST", "/api/sessions/:id/send", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/api/sessions/:id/inbox-message", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/select-option", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/submit-options", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/handoff", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
@@ -39,7 +44,9 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/telemetry/organization/notice", "Managed telemetry notice acknowledgement; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/organization/recheck", "Managed telemetry detection refresh; excluded from recursive primary-action and error capture like the other telemetry controls."],
   ["POST", "/api/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/mcp/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard dispatch path; add request surface only."],
   ["POST", "/api/tasks/:id/assign", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/mcp/tasks/cancel", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard cancellation path; add request surface only."],
   ["POST", "/api/tasks/:id/cancel", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/complete", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
 ] as const;

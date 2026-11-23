@@ -33,7 +33,12 @@ function token(ts: string): string {
   });
 }
 
-async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+// The ceiling is generous rather than tuned. The poller ticks every 15ms here and this returns
+// on the first tick that satisfies the check, so a long ceiling costs nothing on a machine
+// that is keeping up. One second was about sixty ticks, and under `npm test` contention a
+// single SQLite commit or a delayed timer could spend all of them, failing a case whose
+// outcome was already decided: the header is re-read on every pass.
+async function eventually(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const until = performance.now() + timeoutMs;
   while (performance.now() < until) {
     if (check()) return;

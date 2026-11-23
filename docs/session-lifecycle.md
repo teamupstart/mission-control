@@ -33,6 +33,39 @@ pane coordinates does not let an auxiliary CLI replace the owner, rotate its tas
 or detach its workflow and evidence. Terminal sessions retain their hook-based binding and
 clear behavior.
 
+For SDK sessions, a matching end-of-query or context hook cannot mark the card Gone.
+Only the owned driver's final exit closes the durable SDK row and begins eviction; late
+hooks cannot reopen a closing card. Explicit stop stays closed across restart, while daemon
+shutdown suspends the row for restoration.
+
+### Model capacity retries
+
+When the provider ends an SDK turn because the selected model is at capacity, the turn is
+not reported as finished. Codex reports this as `serverOverloaded` ("Selected model is at
+capacity"). Claude Code reports it once its own 529 retries are spent ("Repeated 529
+Overloaded errors") or through its "experiencing high load" off-switch. The
+[SDK supervisor](../src/server/sdk/supervisor.ts) keeps the card working, shows
+`Model at capacity - retrying in 15s (attempt 1 of 8)`, and keeps the durable
+`turn_in_progress` bit set. When the wait elapses it sends a continuation prompt, recorded as
+Mission Control's words rather than the operator's. Workflows and Foreman therefore never
+receive half-finished work as a completed turn.
+
+The waits double from 15 seconds up to a 10 minute ceiling: 15s, 30s, 1m, 2m, 4m, 8m, 10m,
+then 10m. After eight attempts the turn is reported finished, so a model that stays down
+cannot hold a session busy indefinitely. Any turn that ends normally resets the count. A
+message delivered during the wait replaces the retry. An interrupt cancels it and settles
+the card idle, and a daemon restart during the wait continues the work through the ordinary
+restart continuation. The schedule lives in
+[`capacity-retry.ts`](../src/server/sdk/capacity-retry.ts). Terminal sessions are unchanged:
+their harness's own interface shows the error.
+
+Startup retires a live SDK row whose original task is cancelled and detached only when no
+other task currently owns that session and no replacement work episode began at or after
+the cancellation. Reset & clear can cancel the old task while retaining the replacement
+conversation. Startup uses the ordinary eviction lifecycle for stale rows without
+launching a driver or sending a continuation. Completed tasks may retain or reuse their
+agents; task completion alone does not exclude an SDK session from restoration.
+
 For the exact startup ordering, eviction requirements, and task-binding rules, read the
 authoritative [session ownership](agent-guides/architecture.md#session-ownership) and
 [session removal](agent-guides/architecture.md#a-session-going-away) contracts. The related
@@ -86,3 +119,53 @@ transfers. Use Check again to adopt a proven successor or End transfer only when
 permits it. If process or launch proof is still unavailable, remain on this version; do not
 delete reservations or force a second launch to make rollback possible. Once all transfers
 are resolved, stop the daemon before starting an older build against the same state home.
+
+## Embedded Claude usage across resume
+
+Claude result frames can carry conversation-to-date usage, including earlier queries.
+The daemon commits each accepted result's cumulative snapshot and per-model ledger delta
+in one SQLite transaction. The checkpoint follows the native conversation ID, so daemon
+restart, authentication recovery, capacity retry and model replacement preserve the same
+accounting boundary. A changed conversation ID (including `/clear`) starts a new boundary.
+Each accepted result also records a `driver_usage_receipts` identity in that transaction,
+including baseline-only results that create no spend row. These compact conversation/result
+ID pairs are retained without an age limit, independently of ledger retention or session
+lifetime. Repeated recorded result IDs therefore cannot advance the checkpoint or emit
+usage telemetry again, even after their ledger rows have been pruned.
+
+`driver_usage_snapshots` retains the last accepted counters independently of the ledger's
+180-day retention. Token counters and the last known per-model reported cumulative cost totals survive restart;
+an observed provider counter reset starts a fresh window. Unidentified results do not
+advance the checkpoint. The upgrade seeds receipts from retained driver ledger rows and
+saved checkpoint and legacy-gap IDs. IDs already lost before this upgrade cannot be
+reconstructed; they remain part of the pre-checkpoint uncertainty described below.
+Codex's rollout accounting is unchanged.
+
+### Pre-checkpoint history and transition gaps
+
+The upgrade retains old Claude driver rows and marks their `accounting_issue` as
+`possible_resume_replay`. This is an uncertainty flag, not proof every marked row is wrong.
+Existing card and fleet totals still include these rows until their normal retention expires;
+no heuristic discount or transcript reconstruction changes economic history.
+
+A resumed conversation without a saved checkpoint uses its first identifiable result only
+as a baseline. That transition turn is unmeasured, not a zero-cost turn. The daemon logs the
+gap and stores its result ID in `driver_usage_snapshots.baseline_gap_turn_id`, retaining it
+across subsequent turns. All later results contribute deltas. If the initial baseline
+has no reported cumulative cost for a model, the first later reported cumulative cost
+establishes that model's cost baseline too. The corresponding ledger delta remains
+unpriced rather than booking historical cost. A proven counter reset clears that pending
+cost baseline, so the reset window's reported cost counts as fresh spend, even when it
+arrives after an unpriced reset result. New conversations account
+from their first result, including new conversation IDs created by `/clear`.
+
+For a read-only audit of retained uncertainty:
+
+```sql
+SELECT note_key, COUNT(*) AS flagged_rows, SUM(cost_usd) AS flagged_reported_usd
+FROM usage_ledger WHERE accounting_issue = 'possible_resume_replay'
+GROUP BY note_key;
+
+SELECT note_key, baseline_gap_turn_id FROM driver_usage_snapshots
+WHERE baseline_gap_turn_id IS NOT NULL;
+```

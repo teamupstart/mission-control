@@ -17,7 +17,7 @@
 // Browser-safe by construction: no `node:` imports, so the renderer and the Electron main
 // process read one owner rather than two copies.
 
-import { UPDATE_COPY, migrationReadyDetail } from "./update-copy.ts";
+import { UPDATE_COPY, migrationReadyDetail, pendingBuildNotice } from "./update-copy.ts";
 import { updatePrepareProgress, type UpdateApplyOutcome, type UpdateMigration, type UpdateSnapshot } from "./update.ts";
 
 /** Which conversation this is. Carried on the wire so a surface can style or find one. */
@@ -127,12 +127,12 @@ export const UPDATE_DIALOGS = {
       ],
     };
   },
-  upToDate(version: string): UpdateDialogContent {
+  upToDate(version: string, pendingVersion?: string): UpdateDialogContent {
     return {
       kind: "up-to-date",
       tone: "success",
       title: `Mission Control ${version} is up to date`,
-      detail: null,
+      detail: pendingVersion ? pendingBuildNotice(pendingVersion) : null,
       actions: acknowledge("Close this update notice"),
     };
   },

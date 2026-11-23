@@ -52,7 +52,12 @@ test("Add to backlog can create a task parked from autopilot", async ({ dashboar
   await expect(autopilot).toHaveAttribute("aria-checked", "false");
   await expect(dialog.getByText("This task stays parked until you dispatch it or turn this back on."))
     .toBeVisible();
-  await shoot(dashboard, "01-dispatch-toggle-off", dialog.locator(".dispatch-more-wrap"));
+  await shoot(
+    dashboard,
+    "01-dispatch-toggle-off",
+    // Advanced is a fold of the same shape; this picture is of the backlog one.
+    dialog.locator(".dispatch-more-wrap").filter({ has: dashboard.getByRole("button", { name: /^Backlog details/ }) }),
+  );
 
   const created = dashboard.waitForResponse(
     (response) =>

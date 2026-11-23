@@ -17,8 +17,15 @@ name: CI
 # matrices split both suites far enough that slower runs preserve their diagnostics instead of
 # being terminated by an aggressive timeout.
 #
-# The release-only package job stays pinned to `macos-14` because changing that image changes
-# the operating system used to build the shipped dmg.
+# The one macOS job, `package`, runs only on `workflow_dispatch`, never on a push. A push run's
+# conclusion is the readiness signal `distribution.yml` consumes: it signs and publishes a
+# commit only after push CI for that exact commit and ref concludes `success`. A job that
+# runs on tag pushes alone can therefore decide whether a stable release ever gets a binary.
+# That happened to v2.0.0 and v2.0.1: GitHub retired the `macos-14` image the package job was
+# pinned to, the job was cancelled before it started, every other check passed, and the
+# whole tag run concluded `cancelled`, so neither release was signed. Every job a push runs
+# is a Linux job that also runs on `main`, so a tag run gates exactly what a main run gates.
+# `test/distribution-workflow.test.ts` pins this.
 
 on:
   push:
@@ -28,8 +35,11 @@ on:
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't queue behind stale work.
+# The event is part of the group so a manual dispatch never cancels, or is cancelled by, the
+# push run on the same ref: a cancelled push run on `main` or a `v*` tag means no binary is
+# signed for that commit.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -131,6 +141,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The packaged app's `package.json` version is what the updater compares against a
+      # release tag, so a tag that disagrees produces a release the updater either never offers
+      # or offers forever. Failing the tag's push CI here stops distribution before it signs
+      # anything. This check needs no macOS runner, so it lives on this Linux job rather than
+      # the dispatch-only `package` job.
+      - name: Assert the tag, package.json, and lockfile agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
+
   # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
   # unflagged from Node 24); this pins the supported floor and the current release. Node 25
   # is EOL.
@@ -139,23 +158,22 @@ jobs:
   # an oversight. Smoke is the only step here that executes the built bundle, so it is
   # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
   # after every test shard so each check remains self-contained and exercises its own output.
-  # Six shards leave practical headroom below the three-minute target. Four shards put the
-  # slowest partition at 179.7 seconds before its required posttest, which was too close to
-  # the target to absorb ordinary runner variance.
+  # Twelve shards target four minutes for the whole job, including setup, posttest, build
+  # and smoke. Compiler mutation probes are separate files so Node can shard them too.
+  # Keep the denominator derived from the matrix, as in E2E, so count edits cannot omit tests.
   unit-node-24:
-    name: unit (node 24, shard ${{ matrix.shard }}/6)
+    name: unit (node 24, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: dependencies-node-24
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
 
     steps:
       - name: Checkout
@@ -166,22 +184,21 @@ jobs:
         with:
           node-version: '24'
           shard: ${{ matrix.shard }}
-          shard-total: 6
+          shard-total: ${{ strategy.job-total }}
 
   unit-node-26:
-    name: unit (node 26, shard ${{ matrix.shard }}/6)
+    name: unit (node 26, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: dependencies-node-26
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
 
     steps:
       - name: Checkout
@@ -192,23 +209,25 @@ jobs:
         with:
           node-version: '26'
           shard: ${{ matrix.shard }}
-          shard-total: 6
+          shard-total: ${{ strategy.job-total }}
 
   # Browser-level end-to-end tests, sharded. This suite drives the BUILT dashboard served
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
   # is also why it lives in `e2e/` and not `test/`.
   #
-  # Each shard builds its own `dist/` rather than downloading one from `unit`. A build is
-  # 5 seconds; uploading and downloading an artifact is slower than that, and it would also
-  # make every shard wait on a job it otherwise has no reason to know about.
+  # Each shard builds its own `dist/` rather than downloading one from `unit`. On
+  # 2026-11-02, the 15 E2E Build steps on ubuntu-latest / Node 24 took 16-26 seconds
+  # (median 21s): https://github.com/teamupstart/mission-control/actions/runs/41478674815
+  # Sharing an artifact would add a dependency and transfer overhead. Keep the browser
+  # jobs independent of the unit jobs.
   #
   # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Fifteen shards keep the 688-test browser suite bounded even when a shard contains the
-  # suite's long outlier. The target is measured rather than enforced by a timeout so a
-  # regression leaves complete diagnostics.
+  # Sixty shards target four minutes for the whole job, including cache restore and build.
+  # The 1,200+ tests outgrew the old fifteen-shard allocation. Keep four workers per runner
+  # and retain generous timeouts so slow or failing runs still leave complete diagnostics.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -228,7 +247,7 @@ jobs:
         # `--shard=X/N` partitions purely by the N it is handed and never checks it against
         # how many jobs actually ran. Hardcoding the denominator would mean editing this
         # list alone silently runs a fraction of the suite and still reports green.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
 
     steps:
       - name: Checkout
@@ -306,17 +325,25 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
-  # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
-  # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.
-  # There are no native modules to rebuild (node:sqlite is a builtin), so this just
-  # bundles + wraps with electron-builder and uploads the dmg as an artifact.
+  # Unsigned macOS app packaging for developers. It's slow (downloads the Electron runtime +
+  # builds a dmg), so it only runs on a manual dispatch. There are no native modules to rebuild
+  # (node:sqlite is a builtin), so this just bundles + wraps with electron-builder and uploads
+  # the dmg as an artifact.
   #
-  # Stays pinned to GitHub's macOS 14 image. Moving it to `macos-latest` would silently bump
-  # the operating system used to build the shipped dmg.
+  # Dispatch-only, never on a tag push. The signed, notarized dmg a release ships comes from
+  # `distribution.yml`; this dmg is a developer artifact and must not be able to decide
+  # whether that happens. See the runner policy at the top of this file. A dispatched run is
+  # `event: workflow_dispatch`, which distribution ignores, and its concurrency group is
+  # separate from the push run on the same ref.
+  #
+  # Pinned to the same image as the signing producer in `distribution.yml`, so this build runs
+  # on the OS the shipped app is built on. Not `macos-latest`: that label moves without notice.
+  # When GitHub retires this image, move both jobs together.
   package:
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
     name: package (macOS arm64)
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -329,14 +356,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      # A dmg is only worth building if its version is the one the tag claims: the packaged
-      # app's `package.json` version is what the updater compares against a release tag, so a
-      # tag that disagrees produces an artifact the updater either never offers or offers
-      # forever. Tag runs only - a `workflow_dispatch` build has no tag to agree with.
-      - name: Assert the tag, package.json, and lockfile agree
-        if: startsWith(github.ref, 'refs/tags/')
-        run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
 
       - name: Package
         run: npm run package

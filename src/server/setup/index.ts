@@ -1,3 +1,13 @@
+import { mcpTrustStatus } from "./mcp-trust.ts";
+import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
+import { shellCommand } from "../terminal/shell.ts";
+import { scrubCheckEnv } from "../workflows/check-env.ts";
+import { join } from "node:path";
+import { ENTERPRISE_PACKAGES_FLAG } from "@shared/enterprise-packages.ts";
+import { readEnterprisePackages } from "./enterprise-packages.ts";
+import { expandPiAgentDir } from "./pi-package.ts";
+import { stateDir, readToken } from "../../shared/harness-runtime.mjs";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
 import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
@@ -9,10 +19,15 @@ import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
+  CODERABBIT_CHECK_REMEDY,
   HERDR_SERVER_REMEDY,
-  SETUP_DEPENDENCY_IDS,
+  INDEXED_REPOSITORIES_INFO,
+  SETUP_DEPENDENCY_DISPLAY_ORDER,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupFamilyFlagOn,
+  SETUP_FLAG_INPUTS,
+  setupReadingFlags,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
   type SetupDependencyId,
@@ -21,11 +36,17 @@ import {
 } from "@shared/setup-catalog.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 
-import { ghBin } from "../config.ts";
+import { acliBin, ghBin } from "../config.ts";
+import { JiraConfigSchema } from "@shared/task-source.ts";
+import { getTaskSourcesConfig } from "../task-sources/config.ts";
+import { firstLine, siteHost } from "../task-sources/jira.ts";
+import { ACLI_TIMEOUT_MS, acliActiveSite, acliFault, writeDiagnostic } from "../task-sources/jira-acli.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
 import { resolveAgentBin } from "../harness/index.ts";
 import { installedPluginsRead, claudePluginsDir } from "../plugins/installed-plugins.ts";
 import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
+import { conductorIntegrationEnabled } from "../pipelines/availability.ts";
+import { availableSetupDependencyIds } from "@shared/conductor-integration.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
@@ -38,11 +59,16 @@ import { configuredTerminalTargetDeps } from "../terminals-config.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
-import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
+import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
+import { repoIndexView } from "../repo-index.ts";
+import { listRepos } from "../repos.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
-import { expandPiAgentDir, piOtelPackageStatus } from "./pi-otel.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import { VOICE_REQUIRED_FLAGS } from "@shared/voice.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -301,7 +327,221 @@ async function cmuxStatus(deps: SetupDeps): Promise<SetupProbeResult> {
   return { status: { state: "needs-setup", why: control.error, evidence: installed.evidence } };
 }
 
+/**
+ * Signed in, and to the site the configured sources read.
+ *
+ * The same `acli jira auth status` reading the sweep's site gate makes, through the same
+ * parser, so this row cannot call a machine ready that every sweep then refuses. The site is
+ * the evidence and the email never is: acli prints the account address beside it.
+ */
+async function acliAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const installed = await present(acliBin(), deps, "acli");
+  if (installed.state !== "satisfied") {
+    return { state: "needs-setup", why: "Install the Atlassian CLI first, press Re-check, then sign in.", evidence: null };
+  }
+  // The sweep's own budget for this command. A shorter one would report "did not answer" on
+  // a busy machine where every sweep's site gate still succeeds.
+  const result = await deps.runCommand(installed.evidence, ["jira", "auth", "status"], undefined, ACLI_TIMEOUT_MS);
+  if (result.outcomeUnknown) {
+    return { state: "unknown", why: "acli did not answer `acli jira auth status` in time.", evidence: null };
+  }
+  if (result.code !== 0) {
+    const said = writeDiagnostic(firstLine(result.stderr || result.stdout)) || null;
+    return {
+      state: "needs-setup",
+      why: acliFault(result) === "unauthenticated"
+        ? "The Atlassian CLI is installed but not signed in to Jira."
+        : "The Atlassian CLI could not report a Jira sign-in. Sign in again to repair it.",
+      evidence: said,
+    };
+  }
+  const active = acliActiveSite(result);
+  if (!active) {
+    return {
+      state: "unknown",
+      why: "acli answered, but Mission Control could not tell which Jira site it is signed in to. Run `acli jira auth status` to check.",
+      evidence: null,
+    };
+  }
+  const elsewhere = (deps.acliSourceSites?.() ?? []).filter((site) => site !== active);
+  if (elsewhere.length > 0) {
+    return {
+      state: "needs-setup",
+      why: `acli is signed in to ${active}, but ${elsewhere.length === 1 ? "a Jira source reads" : "Jira sources read"} ${elsewhere.join(", ")}. Run \`acli jira auth switch --site ${elsewhere[0]}\`, or sign in to that site.`,
+      evidence: `Signed in to ${active}`,
+    };
+  }
+  return { state: "satisfied", evidence: `Signed in to ${active}` };
+}
+
+/** Every Jira site an acli source reads, whether or not that source is paused right now. */
+function configuredAcliSites(): string[] {
+  const sites = new Set<string>();
+  for (const source of getTaskSourcesConfig().sources) {
+    if (source.kind !== "jira") continue;
+    const parsed = JiraConfigSchema.safeParse(source.config ?? {});
+    if (!parsed.success || parsed.data.queryVia !== "acli") continue;
+    const host = siteHost(parsed.data.site);
+    if (host) sites.add(host);
+  }
+  return [...sites].sort();
+}
+
+interface CodeRabbitSelection {
+  installed: SetupStatus;
+  /** Null when no CLI was found, so no version was asked for. */
+  version: CodeRabbitVersionReading | null;
+}
+
+/**
+ * One executable lookup and one `--version` per Setup check, shared by both CodeRabbit rows.
+ *
+ * Keyed on the deps object `setupChecksView` scopes to a single check, so the two rows can
+ * never disagree within one response - a CLI row reading 0.9.1 beside a sign-in row whose own
+ * `--version` timed out - and a later check reads the machine again.
+ */
+const codeRabbitSelections = new WeakMap<SetupDeps, Promise<CodeRabbitSelection>>();
+
+function codeRabbitSelection(deps: SetupDeps): Promise<CodeRabbitSelection> {
+  let selection = codeRabbitSelections.get(deps);
+  if (!selection) {
+    selection = (async () => {
+      const installed = await present("coderabbit", deps, "coderabbit");
+      if (installed.state !== "satisfied") return { installed, version: null };
+      const version = await codeRabbitVersionReading((args) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV));
+      return { installed, version };
+    })();
+    codeRabbitSelections.set(deps, selection);
+  }
+  return selection;
+}
+
+/** Installed and new enough. Sign-in is `coderabbit-auth`'s question, the way acli splits it. */
+async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
+  const { installed: status, version: reading } = await codeRabbitSelection(deps);
+  if (status.state !== "satisfied" || !reading) return status;
+  switch (reading.state) {
+    case "compatible":
+      return { ...status, evidence: `${status.evidence} (CodeRabbit ${reading.version})` };
+    case "obsolete":
+      // Named by path: the locator prefers a per-user install over PATH, so installing the
+      // cask elsewhere would leave this binary selected and the row unchanged.
+      // The guide, not the cask, for the same reason: a fresh install elsewhere changes nothing.
+      return {
+        status: {
+          state: "needs-setup",
+          why: `CodeRabbit ${reading.version} at ${status.evidence} is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.`,
+          evidence: status.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+    case "unreadable":
+      return {
+        status: {
+          state: "unknown",
+          why: `The CodeRabbit CLI at ${status.evidence} did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run \`${shellCommand([status.evidence, "--version"])}\` to see why.`,
+          evidence: status.evidence,
+        },
+        // Not the cask: a second install would leave this binary selected and still silent.
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+  }
+}
+
+/**
+ * The same `coderabbit auth status --agent` reading a workflow review makes before it runs,
+ * so this row and a review can never disagree about whether the CLI is signed in.
+ */
+async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
+  const { installed, version } = await codeRabbitSelection(deps);
+  // Sign-in is offered only once the CLI passes the version check. Before that the row says
+  // which prerequisite is missing and carries no command, rather than a sign-in the route
+  // would refuse (missing) or that would run an unsupported CLI (obsolete).
+  if (installed.state !== "satisfied" || !version) {
+    return {
+      status: { state: "needs-setup", why: "Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.", evidence: null },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
+  if (version.state === "obsolete") {
+    return {
+      status: { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  if (version.state === "unreadable") {
+    return {
+      status: { state: "unknown", why: "The CodeRabbit CLI did not report a readable version, so its sign-in was not checked. Press Re-check once it answers.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  const reading = await codeRabbitAuthReading(execute);
+  switch (reading.state) {
+    case "ready":
+      return { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" };
+    case "signed-out":
+      return { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence };
+    case "unverified":
+      // The probe could not tell. Keep its own diagnostic, but neither advise nor offer a
+      // login for a sign-in state that was never read: that is for a confirmed sign-out.
+      return {
+        status: {
+          state: "unknown",
+          why: `${reading.diagnostic}. Press Re-check; if it persists, run \`${shellCommand([installed.evidence, "auth", "status"])}\` to see why.`,
+          evidence: installed.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+  }
+}
+
+function flagLabel(id: FeatureFlagId): string {
+  return FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+}
+
+/** "a", "a and b", "a, b and c". */
+function listSentence(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Whether the flags voice depends on are on. Unsatisfied, the row names which are on and which
+ * are off, and its Fix turns on exactly the ones that are off.
+ */
+export function voicePreviewsStatus(flagEnabled: (id: FeatureFlagId) => boolean): SetupProbeResult {
+  const on = VOICE_REQUIRED_FLAGS.filter((id) => flagEnabled(id));
+  const off = VOICE_REQUIRED_FLAGS.filter((id) => !flagEnabled(id));
+  const names = (ids: readonly FeatureFlagId[]) => listSentence(ids.map(flagLabel));
+  const verb = (ids: readonly FeatureFlagId[]) => (ids.length === 1 ? "is" : "are");
+  if (off.length === 0) {
+    return { status: { state: "satisfied", evidence: `${names(on)} ${verb(on)} on` } };
+  }
+  const why = on.length > 0
+    ? `${names(on)} ${verb(on)} on. ${names(off)} ${verb(off)} off.`
+    : `${names(off)} ${verb(off)} off.`;
+  // Voice needs three flags, so one, two or all three can be off here.
+  const label = off.length === 1
+    ? `Turn on ${flagLabel(off[0]!)}`
+    : off.length === VOICE_REQUIRED_FLAGS.length
+      ? "Turn on all three"
+      : "Turn on the two that are off";
+  return {
+    status: { state: "needs-setup", why, evidence: null },
+    remedy: {
+      kind: "feature-flags",
+      flags: off,
+      label,
+      note: `Turn on ${names(off)}, as switching ${off.length === 1 ? "it" : "them"} in Settings > Feature flags would.`,
+    },
+  };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
+  "claude-mcp-trust": async (deps) => deps.mcpTrust?.("claude") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
+  "codex-mcp-trust": async (deps) => deps.mcpTrust?.("codex") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
+  "coderabbit-cli": codeRabbitStatus,
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
@@ -317,7 +557,13 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
   "node-runtime": nodeRuntimeStatus,
-  "pi-otel": (deps) => piOtelPackageStatus(deps.environment, deps.piAgentDir),
+  // Installed, answered from the filesystem alone. No `--version` run: every acli subprocess
+  // is one an operator's audit of "what did it ask Jira" has to account for, and the sign-in
+  // row already runs the one command whose answer matters.
+  "acli-cli": (deps) => present(acliBin(), deps, "acli"),
+  "acli-auth": acliAuthStatus,
+  "coderabbit-auth": codeRabbitAuthStatus,
+  "voice-previews": async (deps) => voicePreviewsStatus(deps.flagEnabled ?? featureEnabled),
 };
 
 function reasonOf(error: unknown): string {
@@ -332,6 +578,55 @@ async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupPr
       status: { state: "unknown", why: `This check could not run: ${reasonOf(error)}.`, evidence: null },
     };
   }
+}
+
+function repositoryNoun(count: number): string {
+  return `${count} ${count === 1 ? "repository" : "repositories"}`;
+}
+
+/**
+ * Setup passes only once the index has found at least one checkout.
+ *
+ * A machine with every tool installed and nothing to work in cannot dispatch anything, so a
+ * zero count is a required gap rather than an empty list to shrug at. The reason names what
+ * the walk actually saw, because "nothing is indexed" and "four directories, none of them
+ * holding a checkout" are different repairs.
+ */
+export function indexedRepositoriesStatus(read: SetupRepositoryIndexRead): SetupStatus {
+  const looked = read.directories.map((row) =>
+    row.status === "ok" ? `${row.path} (${repositoryNoun(row.repoCount ?? 0)})` : `${row.path} (${row.status.replace(/-/g, " ")})`,
+  );
+  if (read.repoCount > 0) {
+    const holding = read.directories.filter((row) => row.status === "ok" && (row.repoCount ?? 0) > 0);
+    return {
+      state: "satisfied",
+      evidence: holding.length > 0
+        ? `${repositoryNoun(read.repoCount)} in ${holding.map((row) => row.path).join(", ")}`
+        : `${repositoryNoun(read.repoCount)} detected`,
+    };
+  }
+  if (read.directories.length === 0) {
+    return {
+      state: "needs-setup",
+      why: "No directories are indexed, so no repositories can be detected. Add the directory that holds your git checkouts.",
+      evidence: null,
+    };
+  }
+  return {
+    state: "needs-setup",
+    why: `${read.directories.length === 1 ? "The indexed directory holds no" : `None of the ${read.directories.length} indexed directories holds a`} git repository. Add the directory that holds your checkouts, or clone one into an indexed directory, then press Rescan now.`,
+    evidence: looked.join(", "),
+  };
+}
+
+async function indexedRepositoriesRow(deps: SetupDeps): Promise<SetupRowView> {
+  let status: SetupStatus;
+  try {
+    status = indexedRepositoriesStatus(await deps.repositoryIndex());
+  } catch (error) {
+    status = { state: "unknown", why: `The repository index could not be read: ${reasonOf(error)}.`, evidence: null };
+  }
+  return { ...INDEXED_REPOSITORIES_INFO, status };
 }
 
 function environmentRow(check: EnvironmentCheckView): SetupRowView | null {
@@ -359,6 +654,7 @@ export function defaultSetupDeps(): SetupDeps {
   return {
     environment,
     piAgentDir: expandPiAgentDir(process.env.PI_CODING_AGENT_DIR, environment.homeDir),
+    mcpTrust: mcpTrustStatus,
     runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
@@ -377,8 +673,14 @@ export function defaultSetupDeps(): SetupDeps {
     herdrServer: () => herdrServerProbe(),
     cmuxControl: () => cmuxControlProbe(),
     ghBin,
+    acliSourceSites: configuredAcliSites,
     resolveBinPath,
-    runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),
+    runCommand: async (bin, argv, managedEnv, timeoutMs) => {
+      if (!managedEnv) return run(bin, argv, { timeoutMs: timeoutMs ?? 5000 });
+      const env = { ...scrubCheckEnv(process.env, readToken()), ...managedEnv };
+      try { return await run(bin, argv, { env, timeoutMs: 7000, maxBuffer: 64 * 1024 }); }
+      finally { cleanupAgentSubprocessEnv(env); }
+    },
     installedPlugins: () => installedPluginsRead(claudePluginsDir(environment.homeDir)),
     skills: (): SetupSkillsRead => {
       const config = getSkillsConfig();
@@ -396,21 +698,60 @@ export function defaultSetupDeps(): SetupDeps {
     // Composed with the stored preference, so the Terminals rows and the launch menu report
     // the same raiser Focus will actually use.
     terminalTargets: () => terminalTargetViews(configuredTerminalTargetDeps),
+    repositoryIndex: async () => {
+      // Every Setup read carries this row, whichever family is on screen. The count comes from
+      // the shared scan cache, so reads walk the indexed directories at most once per cache
+      // window (the same one the dispatch picker uses) and a vanished last repository is
+      // noticed as soon as that window expires. Only a zero count pays for the per-directory
+      // read the failing row explains itself with. `fresh`, because a required check must not
+      // report the scan from before the window closed while a rescan runs behind it - the
+      // stale-while-revalidate answer is for the picker, not for readiness.
+      const repos = await listRepos({ fresh: true });
+      if (repos.length > 0) return { repoCount: repos.length, directories: [] };
+      const view = await repoIndexView();
+      if (view.repoCount === null) throw new Error(view.scanUnavailable ?? "the workspace scan is unavailable");
+      return {
+        repoCount: view.repoCount,
+        directories: view.directories.map(({ path, status, repoCount }) => ({ path, status, repoCount })),
+      };
+    },
     environmentChecks: environmentCheckViews,
     readBannerDismissal: getSetupBannerDismissal,
     writeBannerDismissal: setSetupBannerDismissal,
   };
 }
 
+/** Every flag Setup reads (`SETUP_FLAG_INPUTS`), resolved now, as a reader that does not change. */
+function flagsAsOfNow(flagOn: (id: FeatureFlagId) => boolean): (id: FeatureFlagId) => boolean {
+  const resolved = new Map(SETUP_FLAG_INPUTS.map((id) => [id, flagOn(id)] as const));
+  return (id) => resolved.get(id) ?? flagOn(id);
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
+  // The flags are read once, before anything is probed, and that one reading decides which
+  // families are listed, what the `voice-previews` probe reports and the stamp the reading
+  // carries. Read live at each of those, a switch made while the probes run could list no Voice
+  // rows under a stamp that says Voice is on, and the dashboard would never read it again.
+  const flagEnabled = flagsAsOfNow(deps.flagEnabled ?? featureEnabled);
+  const scoped: SetupDeps = { ...deps, flagEnabled };
   await deps.refreshPath?.();
-  const [probed, targets, environment] = await Promise.all([
-    Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
+  // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
+  // count toward any family. See `shared/conductor-integration.ts`.
+  // A family that follows a preview flag (Voice) is neither probed nor listed while it is off.
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
+    .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled));
+  const [probed, targets, environment, repositories, catalog] = await Promise.all([
+    // A fresh object per check: per-check readings shared between rows key on it.
+    Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
+    indexedRepositoriesRow(deps),
+    flagEnabled(ENTERPRISE_PACKAGES_FLAG)
+      ? readEnterprisePackages(deps.environment, join(stateDir(), "enterprise-packages.json"), deps.piAgentDir)
+      : undefined,
   ]);
-  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
+  const probeById = new Map(dependencyIds.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -421,11 +762,16 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
-    for (const id of SETUP_DEPENDENCY_IDS) {
+    // Reading order, with a follow-up step beneath its anchor; a hidden dependency was never
+    // probed and is skipped.
+    for (const id of SETUP_DEPENDENCY_DISPLAY_ORDER) {
       const info = SETUP_DEPENDENCY_INFO[id];
-      if (info.family === family) {
-        const probe = probeById.get(id)!;
+      const probe = probeById.get(id);
+      if (probe && info.family === family) {
+        const agent = DEPENDENCY_AGENT[id];
+        const recommendations = agent && catalog?.byHarness[agent];
         rows.push({
+          ...(recommendations && { recommendations }),
           rowId: { source: "dependency", id },
           label: info.label,
           family: info.family,
@@ -438,12 +784,15 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       }
     }
     if (family === "terminals") rows.push(derived);
+    if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
+  const readingFlags = setupReadingFlags(flagEnabled);
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    ...(catalog?.error && { packageCatalogError: catalog.error }),
     ...(deps.runtime ? { runtime: deps.runtime() } : {}),
     piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
     piExtensionInstallAvailable: (deps.canInstallPiExtension?.() ?? false) && environment.find((check) => check.id === "pi-extension")?.ready !== true,
@@ -451,5 +800,6 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
+    ...(readingFlags !== undefined ? { flagsKey: readingFlags } : {}),
   };
 }

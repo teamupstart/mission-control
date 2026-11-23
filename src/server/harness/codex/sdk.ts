@@ -1,3 +1,6 @@
+import { codexResidentCompactionLimit } from "./compaction.ts";
+import { CompactionCompletion } from "../compaction.ts";
+import type { ThreadCompactStartParams, ThreadCompactStartResponse } from "./app-server/protocol.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PaneOption,
@@ -8,7 +11,10 @@ import type {
 } from "@shared/types.ts";
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
+import { CodexSubagents } from "./subagents.ts";
+import { SubagentEmitter } from "../../sdk/subagent-emitter.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
@@ -16,11 +22,13 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkTurnFailure,
   SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
 import { AppServerClient } from "./app-server/client.ts";
+import { isProviderCapacityMessage } from "../../llm/provider-failure.ts";
 import type {
   AskForApproval,
   ApprovalsReviewer,
@@ -49,6 +57,7 @@ import type {
   ToolRequestUserInputParams,
   ToolRequestUserInputResponse,
   TurnCompletedNotification,
+  TurnError,
   TurnStartParams,
   TurnStartResponse,
   TurnSteerParams,
@@ -57,6 +66,13 @@ import type {
   UserInput,
 } from "./app-server/protocol.ts";
 import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
+import {
+  codexNativeResidentMcpArgs,
+  checkCodexNativeResidentMcp,
+  codexResidentMcpVerdict,
+  operatorRolloutPath,
+  prepareResidentCodexHome,
+} from "./resident-home.ts";
 
 // Codex, driven EMBEDDED - `codex app-server` JSON-RPC behind `SdkSpec` (C10).
 //
@@ -105,10 +121,18 @@ const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
  * configured value before adding this text below.
  */
 const MISSION_CONTROL_REVIEW_INSTRUCTION =
-  "Whenever the operator chooses among discrete options, call the Mission Control " +
-  "request_input MCP tool. Pass the choices through the tool's options field and wait for " +
-  "the structured response before continuing. Never end a turn by asking for a numbered " +
-  "or prose reply when the MCP tool is available.";
+  "Whenever you need a decision, a clarification or a choice from the operator, call the " +
+  "Mission Control request_input MCP tool. Pass discrete choices through the tool's options " +
+  "field. Its result either carries the operator's answer, or says the question is filed and the " +
+  "answer will arrive later as a message; then keep working on what does not depend on it, and if " +
+  "nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered " +
+  "or prose reply when the MCP tool is available. " +
+  DECISION_CONTEXT_RULE +
+  " If you are waiting on someone or " +
+  "something other than the operator, call the Mission Control report_blocker MCP tool " +
+  "instead; for a decision the operator can make, call request_input. Ask your question " +
+  "where its owner will see it first (for example Commonroom), then report the blocker " +
+  "with a link to that question, and end your turn.";
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what
@@ -329,6 +353,7 @@ interface Pending {
 
 /** What a launch was configured with, kept so `clearContext` can start an identical thread. */
 interface LaunchConfig {
+  residentCompactionTokenLimit?: number;
   cwd: string;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -348,7 +373,14 @@ class CodexSdkSession implements SdkSessionHandle {
    * what was asked for. Set once, during launch, before the handle is returned.
    */
   standingInstructionsMechanism?: StandingInstructionsMechanism;
+  /**
+   * Maps a rollout path Codex reports through a resident's overlay home back to the operator's
+   * home, where the file really is and outlives the overlay. Identity for every other launch.
+   */
+  rolloutPath: (path: string) => string = (path) => path;
   private readonly out = new EventStream();
+  private readonly subagents = new CodexSubagents();
+  private readonly subagentEvents = new SubagentEmitter((summary) => this.out.emit({ kind: "subagents", subagents: summary }));
   private readonly pending = new Map<string, Pending>();
   private readonly fileChanges = new Map<
     string,
@@ -389,6 +421,12 @@ class CodexSdkSession implements SdkSessionHandle {
   private lastUsage: SdkUsage | null = null;
   /** A short backstop when a final answer is not followed by either lifecycle frame. */
   private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A retryable provider failure an `error` notification announced for a turn, held until
+   * that turn closes. `turn/completed` carries the same error and wins; this is what still
+   * reports it when the turn closes through the idle-status or final-answer backstops.
+   */
+  private turnFailure: { turnId: string; failure: SdkTurnFailure } | null = null;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -411,6 +449,10 @@ class CodexSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  get residentCompactionTokenLimit(): number | undefined {
+    return this.config.residentCompactionTokenLimit;
+  }
+
   get recoveryProcessId(): number | null {
     return this.client.pid;
   }
@@ -428,21 +470,47 @@ class CodexSdkSession implements SdkSessionHandle {
    */
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     const threadId = this.requireThread();
+    const finished = this.subagents.finishedRuns();
     const input = turnInput(turn);
     const active = this.activeTurnId;
     if (active) {
       const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
       await this.client.request<TurnSteerResponse>("turn/steer", params);
+      this.foldSubagents(finished);
       return "steered";
     }
     await this.startTurn(threadId, input);
+    this.foldSubagents(finished);
     return "started";
   }
+
+  private foldSubagents(runs: ReadonlyMap<string, number>): void {
+    this.subagents.fold(runs);
+    this.subagentEvents.update(this.subagents.summary());
+  }
+
+  private readonly compaction = new CompactionCompletion();
+  private compactContext: { tokens: number; window: number | null } | null = null;
+  compact = async (_focus: string) => {
+    this.requireLive();
+    if (this.activeTurnId !== null) throw new Error("Cannot compact a busy session.");
+    const threadId = this.requireThread();
+    const completed = this.compaction.begin(() => this.interrupt());
+    this.compactContext = null;
+    // Not awaited: a start request that never answers must still let the stall bound reject
+    // the operation the caller is waiting on, rather than hang the caller before it gets it.
+    void this.client.request<ThreadCompactStartResponse>("thread/compact/start", {
+      threadId,
+    } satisfies ThreadCompactStartParams).catch((error: unknown) => this.compaction.fail(String(error)));
+    return completed;
+  };
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     const threadId = this.requireThread();
     if (this.activeTurnId) return null;
+    const finished = this.subagents.finishedRuns();
     await this.startTurn(threadId, turnInput(turn));
+    this.foldSubagents(finished);
     return "started";
   }
 
@@ -588,6 +656,8 @@ class CodexSdkSession implements SdkSessionHandle {
       sessionStartSource: "clear",
     } satisfies ThreadStartParams);
     this.retireThread(retiring);
+    this.subagents.clear();
+    this.subagentEvents.update(null);
     this.activeTurnId = null;
     this.lastUsage = null;
     this.bind(started, true);
@@ -602,8 +672,10 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   async stop(): Promise<void> {
+    this.compaction.fail("Session stopped during compaction.");
     if (this.stopped) return;
     this.stopped = true;
+    this.subagentEvents.dispose();
     try {
       await this.interrupt();
     } catch {
@@ -743,7 +815,7 @@ class CodexSdkSession implements SdkSessionHandle {
       // The rollout, reported rather than derived: `thread/start` hands back the exact path
       // it is about to write, which is what keeps `codexTranscript` and `codexUsage`
       // working on an embedded session with no arm of their own.
-      transcriptPath: thread.thread.path,
+      transcriptPath: thread.thread.path ? this.rolloutPath(thread.thread.path) : thread.thread.path,
       modelId: this.modelId,
       pid: this.client.pid,
       ...(cleared ? { cleared: true as const } : {}),
@@ -751,9 +823,26 @@ class CodexSdkSession implements SdkSessionHandle {
     this.publishThreadStatus(thread.thread.status);
   }
 
-  /** Turn one, queued as a real turn so `activeTurnId` is set before anything else runs. */
+  /**
+   * Turn one, queued as a real turn so `activeTurnId` is set before anything else runs.
+   *
+   * Through the same decision `send` makes, because a RESUME can bind a thread whose turn is
+   * still running (`bind`), and `turn/start` on a running thread is accepted and never runs
+   * (see `activeTurnId`) - a fallback seeded that way would be lost while launch reported
+   * success. Steering the live turn is acknowledged before this resolves, so what was seeded
+   * has reached the agent by the time launch returns. A fresh launch has no active turn and
+   * starts one, as it always did.
+   */
   async seed(prompt: string): Promise<void> {
-    await this.startTurn(this.requireThread(), [{ type: "text", text: prompt, text_elements: [] }]);
+    const threadId = this.requireThread();
+    const input: UserInput[] = [{ type: "text", text: prompt, text_elements: [] }];
+    const active = this.activeTurnId;
+    if (active) {
+      const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
+      await this.client.request<TurnSteerResponse>("turn/steer", params);
+      return;
+    }
+    await this.startTurn(threadId, input);
   }
 
   /**
@@ -880,6 +969,8 @@ class CodexSdkSession implements SdkSessionHandle {
     // attached to that root the first time it is asked about.
     this.learnThreadTree(method, params, threadId);
     if (this.isRetired(threadId)) return;
+    this.subagents.observe(method, params, (id) => id !== this.threadId && this.isOwnTree(id) && !this.isRetired(id), Date.now());
+    this.subagentEvents.update(this.subagents.summary());
     switch (method) {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
@@ -887,15 +978,24 @@ class CodexSdkSession implements SdkSessionHandle {
         if (this.activeTurnId !== turnId) {
           this.lastUsage = null;
           this.statusActiveTurnId = null;
+          this.turnFailure = null;
         }
         this.activeTurnId = turnId;
         this.out.emit({ kind: "state", state: "working", activity: null });
         return;
       }
-      case "turn/completed":
+      case "turn/completed": {
         if (!this.isCurrentThread(params)) return;
-        this.finishTurn((params as TurnCompletedNotification).turn.id);
+        const turn = (params as TurnCompletedNotification).turn;
+        // The turn's own status and final error are authoritative: only a FAILED turn can owe
+        // a retry, an interrupted one never does, and a final error that is not capacity wins
+        // over an earlier capacity notice. The held `error` frame fills in only when the
+        // completed turn carries no error at all.
+        let failure: SdkTurnFailure | null | undefined = null;
+        if (turn.status === "failed") failure = turn.error ? codexCapacityFailure(turn.error) : undefined;
+        this.finishTurn(turn.id, failure);
         return;
+      }
       case "thread/status/changed": {
         if (!this.isCurrentThread(params)) return;
         const status = (params as ThreadStatusChangedNotification).status;
@@ -917,6 +1017,11 @@ class CodexSdkSession implements SdkSessionHandle {
       case "item/started":
       case "item/completed": {
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
+        if (method === "item/completed" && item.type === "contextCompaction" && this.isCurrentThread(params)) {
+          this.compaction.observe(this.compactContext?.tokens ?? null, this.compactContext?.window ?? null);
+          // Every compaction, requested or the native backstop's: the history is a summary now.
+          this.out.emit({ kind: "compacted" });
+        }
         if (item.type === "fileChange") {
           if (method === "item/started") {
             this.fileChanges.set(item.id, { threadId, changes: item.changes });
@@ -949,7 +1054,9 @@ class CodexSdkSession implements SdkSessionHandle {
       }
       case "thread/tokenUsage/updated": {
         if (!this.isCurrentThread(params)) return;
-        const usage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage.last;
+        const tokenUsage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage;
+        const usage = tokenUsage.last;
+        this.compactContext = { tokens: usage.totalTokens, window: tokenUsage.modelContextWindow };
         this.lastUsage = {
           input: usage.inputTokens,
           output: usage.outputTokens,
@@ -977,6 +1084,10 @@ class CodexSdkSession implements SdkSessionHandle {
       case "error": {
         const err = params as ErrorNotification;
         const message = err.error?.message?.trim();
+        const failure = err.willRetry ? null : codexCapacityFailure(err.error);
+        if (failure && this.isCurrentThread(params) && err.turnId) {
+          this.turnFailure = { turnId: err.turnId, failure };
+        }
         if (message) {
           this.out.emit({ kind: "state", state: "working", activity: clip(message) });
         }
@@ -1113,15 +1224,22 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
-  private finishTurn(turnId: string | null): boolean {
+  private finishTurn(turnId: string | null, reported?: SdkTurnFailure | null): boolean {
     if (!turnId || this.activeTurnId !== turnId) return false;
+    // `undefined` means the closing frame said nothing about failure, so the `error`
+    // notification held for this turn decides; `null` means it said the turn did not fail.
+    const failure = reported !== undefined
+      ? reported
+      : (this.turnFailure?.turnId === turnId ? this.turnFailure.failure : null);
+    this.turnFailure = null;
     if (this.finalAnswerCompletion) {
       clearTimeout(this.finalAnswerCompletion);
       this.finalAnswerCompletion = null;
     }
     if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
-    this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    this.out.emit({ kind: "turn_done", usage: this.lastUsage, ...(failure ? { failure } : {}) });
+    this.compaction.finish();
     return true;
   }
 
@@ -1177,6 +1295,8 @@ class CodexSdkSession implements SdkSessionHandle {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
+      this.subagentEvents.dispose();
+      this.compaction.fail(reason);
       this.stopped = true;
       for (const [key, held] of this.pending) {
         this.forgetPending(key, held);
@@ -1233,6 +1353,24 @@ function pendingKind(method: string): Pending["kind"] | null {
   if (method === "item/commandExecution/requestApproval") return "commandExecution";
   if (method === "item/fileChange/requestApproval") return "fileChange";
   if (method === "item/tool/requestUserInput") return "userInput";
+  return null;
+}
+
+/**
+ * The capacity failure a Codex turn error describes, or null.
+ *
+ * `serverOverloaded` is the structured answer, and the one the 0.15x builds attach to
+ * "Selected model is at capacity. Please try a different model." The wording check covers a
+ * build that reports the same failure as `other` or with no info at all.
+ */
+export function codexCapacityFailure(error: TurnError | null | undefined): SdkTurnFailure | null {
+  if (!error) return null;
+  // Classify what Codex actually said. The stand-in sentence is only for the card, once the
+  // structured code has already established capacity; an empty message proves nothing.
+  const said = error.message?.trim() ?? "";
+  if (error.codexErrorInfo === "serverOverloaded" || (said && isProviderCapacityMessage(said))) {
+    return { kind: "capacity", message: said || "Selected model is at capacity." };
+  }
   return null;
 }
 
@@ -1420,7 +1558,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // registry would then find the db already pointed at the operator's real state dir.
       // `openDb` refuses that loudly (see `db-isolation.test.ts`), which is how this was
       // caught, but the fix is to not put it there.
-      const args = opts.mcp
+      const resident = opts.residentMcp ?? null;
+      const native = resident?.nativeSources === "all" ? resident : null;
+      const pinned = native ? null : resident;
+      const args = opts.mcp && !native
         ? (await import("../../mission-mcp.ts")).codexMissionMcpArgs(opts.mcp)
         : [];
       // The multi-repo write grant rides the SAME `-c` channel, from the same measured
@@ -1429,12 +1570,44 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // on the embedded runtime from being the one dispatch that silently cannot write to
       // the secondary worktrees its intent names.
       const multiRepo = capabilitiesFor("codex").multiRepoDispatch;
+      const writableDirs = [...opts.extraDirs, ...(opts.residentStateDir ? [opts.residentStateDir] : [])];
       const extraDirArgs =
-        opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
-          ? multiRepo.launchArgs(opts.extraDirs)
+        writableDirs.length > 0 && multiRepo?.kind === "flags"
+          ? multiRepo.launchArgs(writableDirs)
           : [];
-      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome);
+      const compactLimit = opts.residentCompaction
+        ? opts.residentCompaction.tokenLimit ?? codexResidentCompactionLimit(opts.model, opts.residentCompaction.threshold)
+        : undefined;
+      if (compactLimit !== undefined && (!Number.isSafeInteger(compactLimit) || compactLimit <= 0)) throw new Error("Invalid native resident compaction limit.");
+      const compactArgs = compactLimit === undefined ? [] : ["-c", `model_auto_compact_token_limit=${compactLimit}`];
+      // The resident cwd is its worktree root or private repository-free workspace. Bound
+      // project discovery there so an ancestor's .codex cannot merge in as a project.
+      // Workspace-local config still loads.
+      // Use process flags so config/read, thread/start and thread/resume share the boundary.
+      const residentArgs = resident ? ["-c", "project_root_markers=[]"] : [];
+      const overlay = pinned ? `${pinned.privateDir}/codex-home` : null;
+      // For the pinned set, check credential-free entries first, then mint immediately
+      // before the thread loads its servers.
+      const previewEntries = pinned?.preview() ?? [];
+      let overlayConfig: string | null = null;
+      if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
+      // Native mode keeps the operator's home so Codex can use its own configuration and
+      // login store. Flags name the credential paths at spawn. Tickets start aging after preflight.
+      const nativeStart = native?.prepareStart();
+      const nativeArgs = nativeStart ? codexNativeResidentMcpArgs(nativeStart.entries, opts.mcp) : [];
+      const transport = await deps.connect(
+        [...args, ...extraDirArgs, ...compactArgs, ...residentArgs, ...nativeArgs],
+        opts.cwd,
+        opts.stateHome,
+        {
+          ...(overlay ? { codexHome: overlay } : {}),
+          ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
+          traceContext: opts.traceContext ?? null,
+          workUnitId: opts.workUnitId ?? null,
+        },
+      );
       const config: LaunchConfig = {
+        residentCompactionTokenLimit: compactLimit,
         cwd: opts.cwd,
         model: opts.model,
         effort: opts.effort,
@@ -1442,11 +1615,28 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         developerInstructions: null,
       };
       let session: CodexSdkSession | null = null;
+      // Every server Codex reports starting is checked against the run's set: the direct
+      // observation of loading, behind the configuration check. One outside it ends the
+      // launch, or the session if the launch has already returned.
+      const allowed = pinned ? new Set([...pinned.names, opts.mcp?.serverName ?? ""]) : null;
+      let unexpectedServer: string | null = null;
+      let launched = false;
       const client = new AppServerClient(transport, {
         request: (method, id, params) => session?.onRequest(method, id, params),
-        notification: (method, params) => session?.onNotification(method, params),
+        notification: (method, params) => {
+          if (allowed && method === "mcpServer/startupStatus/updated") {
+            const name = (params as { name?: unknown } | undefined)?.name;
+            if (typeof name === "string" && !allowed.has(name) && unexpectedServer === null) {
+              unexpectedServer = name;
+              console.error(`[sdk] codex resident started the MCP server ${name}, which is not in its snapshot; stopping it`);
+              if (launched) void session?.stop().catch(() => {});
+            }
+          }
+          session?.onNotification(method, params);
+        },
       });
       session = new CodexSdkSession(client, config);
+      if (overlay) session.rolloutPath = (path) => operatorRolloutPath(path, overlay) ?? path;
       // Pumped BEFORE the handshake, because the handshake's own response arrives on it.
       const pump = session.pump();
       try {
@@ -1471,6 +1661,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // Whether the operator's standing instructions ended up riding turn one instead of
         // this channel. False for as long as the channel is still expected to work.
         let standingFellBackToPrompt = false;
+        // The same for Mission Control's decision routing: every decision a task asks goes
+        // through `request_input`, so an instruction this channel could not carry rides turn
+        // one instead of being dropped.
+        let routingFellBackToPrompt = false;
         if (opts.mcp || standing) {
           const wanted = [
             opts.mcp ? "Mission Control review routing" : null,
@@ -1488,14 +1682,14 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           // block out of turn one, so a bare warning here delivers the instructions NOWHERE.
           // The fallback is the same prompt prefix the two channel-less pairs use, composed
           // by the caller so the block still lands below the repository manifest and above
-          // the request. Mission Control's review routing has no such fallback and needs
-          // none: it names an MCP tool, so an unsent instruction only omits a suggestion.
+          // the request. Mission Control's decision routing takes the same fallback, leading
+          // turn one: a session that has `request_input` but was never told to ask its
+          // decisions there could ask them as prose, outside it.
           const unusable = (why: string, detail?: unknown): void => {
             const fallback = standing && opts.standingInstructionsPrompt;
-            const outcome = fallback
-              ? "standing instructions were delivered in turn one instead"
-              : `${wanted} was not added`;
+            const outcome = `${wanted} ${fallback || opts.mcp ? "was delivered in turn one instead" : "was not added"}`;
             if (fallback) standingFellBackToPrompt = true;
+            if (opts.mcp) routingFellBackToPrompt = true;
             if (detail === undefined) console.warn(`[sdk] codex ${why}; ${outcome}`);
             else console.warn(`[sdk] codex ${why}; ${outcome}:`, detail);
           };
@@ -1522,6 +1716,40 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // rule is still installed on this process or has to be repeated in turn one, and a
         // prefix does not govern later turns.
         if (standingFellBackToPrompt) session.markStandingInstructionsPrefixed();
+        const verifyNativeMcp = native ? async () => {
+          const layers = await client.request("config/read", { cwd: opts.cwd, includeLayers: true });
+          const verification = checkCodexNativeResidentMcp(layers, native.names, opts.mcp);
+          if (!verification.ok) throw new Error(`this resident's native MCP servers cannot start: ${verification.reason}`);
+          return verification.layerVersions;
+        } : null;
+        const nativeVersions = verifyNativeMcp ? await verifyNativeMcp() : null;
+        if (pinned && overlay && overlayConfig) {
+          // At most two reads: the second confirms the servers only another layer defines are
+          // now switched off. Anything else is refused before a thread exists to load it.
+          let disabled: string[] = [];
+          const verify = async (): Promise<ReturnType<typeof codexResidentMcpVerdict>> =>
+            codexResidentMcpVerdict(await client.request("config/read", { cwd: opts.cwd, includeLayers: true }), {
+              overlayConfig,
+              names: pinned.names,
+              disabled,
+              missionServer: opts.mcp?.serverName ?? "",
+            });
+          for (let attempt = 0; ; attempt++) {
+            const verdict = await verify();
+            if (verdict.kind === "exact") break;
+            if (verdict.kind === "refuse") throw new Error(`this resident's MCP servers cannot be pinned: ${verdict.reason}`);
+            if (attempt > 0) throw new Error("this resident's MCP servers cannot be pinned: Codex kept another layer's servers on");
+            disabled = verdict.names;
+            prepareResidentCodexHome({ overlay, entries: previewEntries, disabled });
+          }
+          // Now this start's credentials, and one last read of what the thread will load.
+          prepareResidentCodexHome({ overlay, entries: pinned.forStart(), disabled });
+          const final = await verify();
+          if (final.kind !== "exact") {
+            throw new Error(`this resident's MCP servers cannot be pinned: ${final.kind === "refuse" ? final.reason : "another layer changed during the start"}`);
+          }
+        }
+        nativeStart?.issue();
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,
@@ -1532,6 +1760,11 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           session.bind(
             await client.request<ThreadStartResponse>("thread/start", threadStartParams(config)),
           );
+        }
+        // Codex reads configuration again when it opens a thread. Check the registrations
+        // and layer versions once more before sending the resident's first turn.
+        if (verifyNativeMcp && (await verifyNativeMcp()) !== nativeVersions) {
+          throw new Error("Codex configuration changed during thread startup. Launch the resident again.");
         }
         // Turn one, awaited: `SdkSpec.launch` promises a session that is running what it
         // was asked to run, and a dispatch whose intent was never accepted has to FAIL
@@ -1545,16 +1778,26 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // whole of what a resume owes - the intent is already in the conversation being
         // reopened. `standingFellBackToPrompt` is only ever true when that string is
         // non-empty, so this never seeds a turn nobody composed.
-        if (standingFellBackToPrompt) {
-          await session.seed(opts.standingInstructionsPrompt);
-        } else if (opts.prompt) {
-          await session.seed(opts.prompt);
+        //
+        // The decision routing, when this channel could not carry it, FOLLOWS whichever turn one
+        // that is - never leads it, because a turn one can open with a skill invocation (a
+        // Pipeline Engineer's `$engineer ...`) that has to stay its first token. On a resume with
+        // nothing else to send it is turn one by itself, for the same reason the standing block is.
+        const turnOne = standingFellBackToPrompt ? opts.standingInstructionsPrompt : opts.prompt;
+        const seeded = [turnOne, routingFellBackToPrompt ? MISSION_CONTROL_REVIEW_INSTRUCTION : null]
+          .filter((part): part is string => !!part)
+          .join("\n\n");
+        if (seeded) await session.seed(seeded);
+        if (unexpectedServer) {
+          throw new Error(`this resident's Codex session started the MCP server ${unexpectedServer}, which is not in its snapshot`);
         }
+        launched = true;
       } catch (err) {
         // Nothing above this line is durable yet - no row, no card, no SSE frame - so the
         // only thing to unwind is the subprocess.
         await transport.close().catch(() => {});
         await pump.catch(() => {});
+        nativeStart?.revoke();
         throw err;
       }
       void pump.catch((err) => {

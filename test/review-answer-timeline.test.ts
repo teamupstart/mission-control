@@ -155,10 +155,36 @@ test("a multi-select keeps the order the agent listed, not the order clicked", (
   assert.match(formatResponse([decision], answers, "Answered:"), /→ biome, oxlint/);
 });
 
-test("free text rides along with the chosen options", () => {
+test("free text beside a chosen option reaches the agent as context for it", () => {
   const withOther: PlanDecision = { ...decision, allowOther: true };
   const answers: PlanDecisionAnswer[] = [{ decisionId: "q", selected: ["o1"], other: "  pinned  " }];
-  assert.match(formatResponse([withOther], answers, "Answered:"), /Other: pinned$/);
+  assert.equal(
+    formatResponse([withOther], answers, "Answered:"),
+    "Answered:\n\n• Which linter should this repo use?\n  → eslint\n  Context: pinned",
+  );
+});
+
+test("free text with nothing chosen is still an Other answer", () => {
+  const withOther: PlanDecision = { ...decision, allowOther: true };
+  const answers: PlanDecisionAnswer[] = [{ decisionId: "q", selected: [], other: "rome" }];
+  assert.match(formatResponse([withOther], answers, "Answered:"), /\n {2}Other: rome$/);
+});
+
+test("a note travels with the choice whether or not the decision allows Other", () => {
+  // The note box is drawn on every decision of a plan-decisions form, so a decision without
+  // `allowOther` must still carry it - gating it like Other would drop what the human typed.
+  const answers: PlanDecisionAnswer[] = [
+    { decisionId: "q", selected: ["o1"], other: null, note: "  keep the existing config  " },
+  ];
+  assert.equal(
+    formatResponse([decision], answers, "Plan decisions submitted:"),
+    "Plan decisions submitted:\n\n• Which linter should this repo use?\n  → eslint\n  Note: keep the existing config",
+  );
+});
+
+test("a note alone never answers a decision", () => {
+  const only = { decisionId: "q", selected: [], other: null, note: "anything" };
+  assert.equal(isAnswered(decision, only), false);
 });
 
 test("a decision answered by nothing at all says so", () => {
@@ -281,6 +307,18 @@ test("free text typed into Other is shown, tagged as not one of the options", ()
   );
   assert.match(html, /Other/, "the free text is labelled");
   assert.match(html, /oxlint, but pinned/);
+});
+
+test("a note beside the choice is replayed with its line breaks", () => {
+  const html = render(
+    review({
+      kind: "plan-decisions",
+      selections: [{ decisionId: "q", selected: ["o1"], other: null, note: "pin it\nand document why" }],
+    }),
+  );
+  assert.match(html, /review-answer-note/);
+  assert.match(html, />Note</, "the note is labelled");
+  assert.match(html, /pin it\nand document why/);
 });
 
 test("a question closed with nothing chosen says so rather than showing an empty block", () => {

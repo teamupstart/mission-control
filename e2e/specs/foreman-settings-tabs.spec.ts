@@ -200,6 +200,6 @@ test("Live repositories is a read-only count that links to the separate Trust ed
   await card.getByRole("button", { name: "Manage in Trust" }).click();
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/settings/trust");
   await expect(dashboard.getByRole("table", { name: "Repository trust grants" })).toBeVisible();
-  await expect(dashboard.getByPlaceholder("search repos or type a path…")).toBeVisible();
+  await expect(dashboard.getByRole("searchbox", { name: "Search repositories to add" })).toBeVisible();
 });
 const EVIDENCE = artifactsDir("foreman-settings-tabs");

@@ -378,7 +378,7 @@ test("the palette hoists a parked run into what is waiting on you", async ({
  * assertion follows it to the place a person actually ends up: `notify()` wires the toast's
  * `onclick` to the run's own hash route, and clicking it must land on the parked run.
  */
-test("a parked run that goes quiet raises a stuck toast that opens the run", async ({
+test("Cmd+Enter dismisses the away digest and its parked-run toast still opens the run", async ({
   dashboard,
   daemon,
 }) => {
@@ -487,6 +487,9 @@ test("a parked run that goes quiet raises a stuck toast that opens the run", asy
   // The deterministic rollup beneath the narrative, which counts the same stall.
   await expect(digest.locator(".away-digest-rollup")).toContainText("stuck");
   await shootPage(dashboard, "digest-names-the-parked-run");
+  await digest.getByRole("button", { name: "Got it" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(digest).toBeHidden();
 
   // Following the toast is the other half: it lands on the run the sentence names, which is
   // where that run's state and - for `waiting_for_session` - its resubmit control live.

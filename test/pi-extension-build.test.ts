@@ -150,10 +150,11 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
   } finally { clearInterval(poll); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("different process builds cannot interleave integration publication", { timeout: 20_000 }, async () => {
+test("different process builds cannot interleave integration publication", { timeout: 120_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-build-race-"));
   const output = join(dir, "integration", "extension.js");
   const release = join(dir, "release");
+  const startSecond = join(dir, "start-second-publication");
   await mkdir(join(dir, "integration"));
   await symlink(join(dir, "integration"), join(dir, "alias"), "dir");
   for (const tag of ["A", "B"]) {
@@ -164,33 +165,45 @@ test("different process builds cannot interleave integration publication", { tim
       await appendFile(join(source, file), `\nexport const buildRaceTag = ${JSON.stringify(tag)};\n`);
     }
   }
-  // Pause A after its directory swap; B must wait until A verifies the complete set.
+  // Compile B before putting A under the lock. Then wait for B to withdraw its first
+  // claim while A is still inside publication, without relying on build or poll speed.
   const program = `
     import { createRequire, syncBuiltinESMExports } from 'node:module';
     import fs from 'node:fs';
     import promises from 'node:fs/promises';
-    const [tag, output, release, builder] = process.argv.slice(1);
+    const [tag, output, release, startSecond, builder] = process.argv.slice(1);
     const require = createRequire(import.meta.url);
-    const writeFile = promises.writeFile;
-    promises.writeFile = async (...args) => {
-      await writeFile(...args);
-      if (String(args[0]).endsWith('/manifest.json')) console.log('compiled');
-    };
-    const published = to => {
-      if (!String(to).endsWith('/integration')) return;
-      fs.writeSync(1, 'publishing\\n');
-      if (tag === 'A') {
-        const deadline = Date.now() + 10000;
-        while (!fs.existsSync(release)) {
-          if (Date.now() > deadline) throw new Error('release timeout');
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-        }
+    const waitForSignal = (path) => {
+      const deadline = Date.now() + 60000;
+      const buffer = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(path)) {
+        if (Date.now() > deadline) throw new Error('missing signal: ' + path);
+        Atomics.wait(buffer, 0, 0, 10);
       }
     };
+    if (tag === 'B') {
+      const writeFile = promises.writeFile;
+      promises.writeFile = async (...args) => {
+        await writeFile(...args);
+        if (!String(args[0]).endsWith('/manifest.json')) return;
+        fs.writeSync(1, 'compiled\\n');
+        waitForSignal(startSecond);
+      };
+      const remove = fs.rmSync;
+      fs.rmSync = (path, ...args) => {
+        remove(path, ...args);
+        if (String(path).includes('/.integration-build.lock.d/') && String(path).endsWith('-' + process.pid + '.claim')) {
+          fs.writeSync(1, 'withdrew claim\\n');
+        }
+      };
+    }
     const addon = ${JSON.stringify(ensureNativeStateLockAddon())};
     const native = require(addon);
     require.cache[addon].exports = Object.create(native, { exchangePaths: { value: (from, to) => {
-      native.exchangePaths(from, to); published(to);
+      native.exchangePaths(from, to);
+      if (!String(to).endsWith('/integration')) return;
+      fs.writeSync(1, 'publishing\\n');
+      if (tag === 'A') waitForSignal(release);
     }}});
     syncBuiltinESMExports();
     const { buildPiExtension } = await import(builder);
@@ -198,7 +211,7 @@ test("different process builds cannot interleave integration publication", { tim
   `;
   const launch = (tag: string) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program,
-      tag, tag === "B" ? join(dir, "alias", "extension.js") : output, release,
+      tag, tag === "B" ? join(dir, "alias", "extension.js") : output, release, startSecond,
       new URL("../scripts/build-pi-extension.ts", import.meta.url).href], { cwd: join(dir, tag), stdio: ["ignore", "pipe", "pipe"] });
     const lines: string[] = [], outputLines = createInterface({ input: child.stdout });
     outputLines.on("line", line => lines.push(line));
@@ -206,10 +219,10 @@ test("different process builds cannot interleave integration publication", { tim
     const completed = once(child, "exit").then(([code]) => ({ code, errors }));
     return { child, lines, outputLines, completed };
   };
-  const first = launch("A");
-  let second: ReturnType<typeof launch> | undefined;
+  const second = launch("B");
+  let first: ReturnType<typeof launch> | undefined;
   const waitFor = async (run: ReturnType<typeof launch>, line: string) => {
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     while (!run.lines.includes(line)) {
       if (run.child.exitCode !== null || run.child.signalCode !== null) assert.fail(JSON.stringify(await run.completed));
       assert.ok(Date.now() < deadline, `child did not reach ${line}`);
@@ -217,10 +230,12 @@ test("different process builds cannot interleave integration publication", { tim
     }
   };
   try {
+    await waitFor(second, "compiled");
+    first = launch("A");
     await waitFor(first, "publishing");
     verifyPiIntegration(join(dir, "integration"));
-    second = launch("B"); await waitFor(second, "compiled");
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await writeFile(startSecond, "");
+    await waitFor(second, "withdrew claim");
     assert.equal(second.lines.includes("publishing"), false, "B cannot publish while A holds the output lock");
     await writeFile(release, "");
     for (const run of [first, second]) assert.deepEqual(await run.completed, { code: 0, errors: "" });
@@ -230,6 +245,7 @@ test("different process builds cannot interleave integration publication", { tim
     }
   } finally {
     await writeFile(release, "");
+    await writeFile(startSecond, "");
     for (const run of [first, second]) if (run) { run.child.kill(); await run.completed; run.outputLines.close(); }
     await rm(dir, { recursive: true, force: true });
   }

@@ -7,6 +7,7 @@ import { listProcessesSnapshot as actualProcessSnapshot } from "../../src/server
 import type { TerminalDeps } from "../../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
 import { ghosttyEmulator as nativeGhosttyEmulator } from "../../src/server/terminal/ghostty.ts";
+import { itermBoundaryEmulator } from "./iterm-boundary.ts";
 
 export { daemonOwnedPids } from "../../src/server/discovery/processes.ts";
 
@@ -64,12 +65,20 @@ export async function readProcCwds(): Promise<Map<number, string>> {
 
 /** Replace only terminal I/O. Keep Ghostty's real names, host correlation and capability nulls. */
 export function installTerminalBoundary(deps: TerminalDeps): void {
+  // The recording fake cmux (`CMUX_BIN`), kept usable beside the iTerm2 boundary so a spec
+  // can prove a launch aimed at iTerm2 never reached cmux, rather than cmux being refused.
+  const cmuxBin = deps.multiplexers.cmux.bin;
   for (const backend of [...Object.values(deps.multiplexers), ...Object.values(deps.emulators)]) {
     backend.bin = { env: null, candidates: [join(process.env.MISSION_HOME!, "missing-terminal")], dropEnv: [] };
   }
   if (process.env.MC_E2E_WEZTERM_BOUNDARY === "1") {
     deps.emulators.wezterm.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
   } else deps.emulators.ghostty = ghosttyEmulator();
+  // Opt-in, so every existing boundary spec keeps iTerm2 absent exactly as before.
+  if (process.env.MC_E2E_ITERM_BOUNDARY === "1") {
+    deps.emulators.iterm = itermBoundaryEmulator();
+    deps.multiplexers.cmux.bin = cmuxBin;
+  }
 }
 
 /** Pane writes build fresh adapters too, so every Ghostty factory call uses this boundary. */

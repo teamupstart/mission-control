@@ -2,7 +2,7 @@
 
 Status: Approved for phased implementation and scheduling.
 
-Source report: [Pi model catalog sourcing investigation](../../reports/pi-model-catalog-source/report.html)
+Source report: Pi model catalog sourcing investigation (`docs/reports/pi-model-catalog-source/report.html`, removed from the repository in #1213)
 
 ## Approved human decisions
 

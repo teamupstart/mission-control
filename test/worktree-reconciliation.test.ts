@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import {
@@ -8,6 +8,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -34,10 +35,12 @@ function harness(options: {
   occupancy?: Map<string, WorktreeOccupancy>;
   policy?: () => { enabled: boolean; maxSlots: number; setupArgv: readonly string[] | null };
   git?: WorktreeGit;
+  ownerReferenced?: WorktreeManagerDeps["ownerReferenced"];
 } = {}): WorktreeManager {
   const referenced = options.referenced ?? new Set<string>();
   const deps: Partial<WorktreeManagerDeps> = {
-    ownerReferenced: async (reference) => referenced.has(reference.leaseId),
+    ownerReferenced: options.ownerReferenced ?? (async (reference) => referenced.has(reference.leaseId)),
+    pause: async () => {},
     resolvePolicy: options.policy ?? (() => ({ enabled: true, maxSlots: 16, setupArgv: null })),
     occupancy: async (paths) =>
       new Map(
@@ -85,7 +88,7 @@ test("startup preserves a referenced active lease even when it is dirty and occu
   assert.equal(manager.store.slot(lease.slotId)?.currentHeadSha, repository.sha);
 });
 
-test("startup quarantines stale leases, interrupted provisioning, and unknown occupancy", async () => {
+test("startup quarantines stale leases and interrupted provisioning but defers unknown occupancy", async () => {
   const staleRepo = repo("mission-reconcile-stale-");
   const stale = harness();
   const staleLease = acquired(
@@ -132,8 +135,8 @@ test("startup quarantines stale leases, interrupted provisioning, and unknown oc
   );
   occupancy.set(unknownLease.path, { status: "unknown", reason: "lsof timed out" });
   await unknown.reconcile();
-  assert.equal(unknown.store.slot(unknownLease.slotId)?.state, "quarantined");
-  assert.match(unknown.store.slot(unknownLease.slotId)?.lastError ?? "", /lsof timed out/);
+  assert.equal(unknown.store.slot(unknownLease.slotId)?.state, "leased");
+  assert.match(unknown.store.pool(unknownLease.poolId)?.reconciliationError ?? "", /lsof timed out/);
 });
 
 test("startup completes only a returning intent whose reset result is positively proven", async () => {
@@ -359,4 +362,575 @@ test("maintenance planning refuses every unsafe class and identifies safe right-
   assert.match(bySlot.get(leases[5]!.slotId)?.reason ?? "", /cwd scan failed/);
   assert.match(bySlot.get(leases[6]!.slotId)?.reason ?? "", /leased/);
   assert.equal(plan.filter((candidate) => candidate.rightSize).length, 6);
+});
+
+/** What `run` reports for a child it killed at its timeout. */
+function timedOut(timeoutMs: number | undefined): RunResult {
+  return {
+    stdout: "",
+    stderr: "",
+    code: 1,
+    outcomeUnknown: true,
+    overflowed: false,
+    timedOut: true,
+    signal: "SIGTERM",
+    timeoutMs,
+  };
+}
+
+test("a Git read killed at its timeout on both attempts records both, never `exit 1`", async () => {
+  const repository = repo("mission-reconcile-git-timeout-");
+  const referenced = new Set<string>();
+  let failStatus = false;
+  const statusTimeouts: Array<number | undefined> = [];
+  const pauses: number[] = [];
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (failStatus && args.includes("status")) {
+        statusTimeouts.push(opts?.timeoutMs);
+        return timedOut(opts?.timeoutMs);
+      }
+      return run(bin, args, opts);
+    },
+    async (ms) => {
+      pauses.push(ms);
+    },
+  );
+  const manager = harness({ referenced, git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-git-timeout" },
+    }),
+  );
+  referenced.add(lease.leaseId);
+  failStatus = true;
+
+  await manager.reconcile();
+  assert.deepEqual(statusTimeouts, [15_000, 30_000], "the retry runs with double the timeout");
+  assert.deepEqual(pauses, [2_000], "2 s after the first failure");
+  const slot = manager.store.slot(lease.slotId)!;
+  // A slot whose Git state is still unknown after the retry is quarantined, as before.
+  assert.equal(slot.state, "quarantined");
+  assert.equal(slot.quarantineReason, "slot Git state is unknown");
+  assert.equal(slot.lastError, "git status timed out after 15 s, and after 30 s on retry");
+});
+
+test("a worktree listing that fails once and then succeeds changes nothing", async () => {
+  const repository = repo("mission-reconcile-list-retry-");
+  const referenced = new Set<string>();
+  let failNextList = false;
+  let lists = 0;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (args.includes("list")) {
+        lists++;
+        if (failNextList) {
+          failNextList = false;
+          return timedOut(opts?.timeoutMs);
+        }
+      }
+      return run(bin, args, opts);
+    },
+    async () => {},
+  );
+  const manager = harness({ referenced, git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-list-retry" },
+    }),
+  );
+  referenced.add(lease.leaseId);
+  const before = manager.store.slot(lease.slotId)!;
+  lists = 0;
+  failNextList = true;
+
+  await manager.reconcile();
+  assert.equal(lists, 2, "the failed listing was read once more");
+  const after = manager.store.slot(lease.slotId)!;
+  assert.equal(after.state, "leased");
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.lastError, before.lastError);
+  assert.equal(after.activeLeaseId, lease.leaseId);
+});
+
+test("an owner lookup that throws once is retried before it counts as unknown", async () => {
+  const repository = repo("mission-reconcile-owner-retry-");
+  let leaseId = "";
+  let throws = 1;
+  const pauses: number[] = [];
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 16, setupArgv: null }),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    ownerReferenced: async (reference) => {
+      if (reference.leaseId !== leaseId) return false;
+      if (throws-- > 0) throw new Error("database is locked");
+      return true;
+    },
+    pause: async (ms) => {
+      pauses.push(ms);
+    },
+  });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-owner-retry:0" },
+    }),
+  );
+  leaseId = lease.leaseId;
+
+  await manager.reconcile();
+  assert.deepEqual(pauses, [2_000]);
+  // The retry proved the owner still references the lease, so the slot keeps it.
+  const slot = manager.store.slot(lease.slotId)!;
+  assert.equal(slot.state, "leased");
+  assert.equal(slot.quarantineReason, null);
+  assert.equal(slot.activeLeaseId, lease.leaseId);
+});
+
+test("a Git read that exits with its own error is answered at once, without a retry", async () => {
+  const repository = repo("mission-reconcile-git-definite-");
+  let failStatus = false;
+  let statusReads = 0;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (failStatus && args.includes("status")) {
+        statusReads++;
+        return { stdout: "", stderr: "fatal: index file corrupt\n", code: 128, outcomeUnknown: false, overflowed: false };
+      }
+      return run(bin, args, opts);
+    },
+    async () => assert.fail("a Git that reported its own exit would say the same again"),
+  );
+  const manager = harness({ git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-git-definite" },
+    }),
+  );
+  failStatus = true;
+  const inspected = await git.inspect(lease.path);
+  assert.equal(statusReads, 1);
+  assert.deepEqual(inspected, { ok: false, reason: "git status failed: fatal: index file corrupt", outcomeUnknown: false });
+});
+
+
+test("reconciliation recovers a process-failure quarantine before safe prune", async () => {
+  const repository = repo("mission-reconcile-recovery-");
+  const occupancy = new Map<string, WorktreeOccupancy>();
+  const manager = harness({ occupancy });
+  const lease = acquired(await manager.acquire({
+    repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "recovery" },
+  }));
+  assert.equal((await manager.release(lease)).outcome, "released");
+  // A new manager below proves recovery reads only the durable row, never in-memory history.
+  manager.store.quarantine(lease.slotId, "observation", "slot process occupancy is unknown", "cwd listing omitted a ps-listed PID", Date.now());
+  occupancy.set(lease.path, { status: "unknown", reason: "cwd listing omitted a ps-listed PID" });
+  await manager.reconcile();
+  const before = manager.store.slot(lease.slotId)!;
+  assert.equal(before.state, "quarantined");
+  assert.equal((await manager.planMaintenance())[0]?.safe, false);
+
+  occupancy.delete(lease.path);
+  // A new manager proves that recovery does not depend on in-memory quarantine history.
+  const restarted = harness({ occupancy });
+  await restarted.reconcilePoolById(lease.poolId);
+  const after = restarted.store.slot(lease.slotId)!;
+  assert.equal(after.state, "available");
+  assert.equal(after.version, before.version + 1);
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.lastError, null);
+  assert.equal(after.lastReleasedLeaseId, lease.leaseId);
+  assert.equal(after.lastUsedAt, before.lastUsedAt);
+  assert.equal(gitIn(lease.path, "rev-parse", "HEAD"), before.currentHeadSha);
+  assert.equal((await restarted.planMaintenance())[0]?.safe, true);
+  assert.equal((await restarted.release(lease)).outcome, "alreadyReleased");
+  await restarted.reconcile();
+  assert.equal(restarted.store.slot(lease.slotId)?.version, after.version);
+});
+
+
+for (const blocker of [
+  "active lease", "partial active identity", "partial released identity", "referenced owner",
+  "unknown owner", "dirty", "unmerged", "unknown merge", "unknown default", "unknown Git",
+  "occupied", "unknown occupancy", "late occupancy", "missing path", "missing registration",
+  "locked registration", "foreign repository", "wrong path", "wrong pool", "wrong marker", "version race",
+] as const) {
+  test(`quarantine recovery protects ${blocker}`, async () => {
+    const repository = repo("mission-reconcile-protected-");
+    const refs = new Set<string>();
+    const occupancy = new Map<string, WorktreeOccupancy>();
+    const git = new NativeWorktreeGit();
+    let ownerUnknown = false;
+    const manager = harness({ referenced: refs, occupancy, git, ownerReferenced: async (reference) => {
+      if (ownerUnknown) throw new Error("owner unavailable");
+      return refs.has(reference.leaseId);
+    } });
+    const lease = acquired(await manager.acquire({
+      repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "protected" },
+    }));
+    if (blocker !== "active lease") assert.equal((await manager.release(lease)).outcome, "released");
+    const slot = manager.store.slot(lease.slotId)!;
+    manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+    const original = manager.store.slot(slot.id)!;
+    const occupied: WorktreeOccupancy = { status: "known", occupants: [{
+      pid: 99, ppid: 1, startRaw: "fixture", startMs: 1, command: "helper", cwd: lease.path, knownOwner: null,
+    }] };
+    switch (blocker) {
+      case "active lease": break;
+      case "partial active identity":
+        db.prepare("UPDATE worktree_slots SET active_owner_key = 'dangling' WHERE id = ?").run(slot.id); break;
+      case "partial released identity":
+        db.prepare("UPDATE worktree_slots SET last_released_owner_key = NULL WHERE id = ?").run(slot.id); break;
+      case "referenced owner": refs.add(lease.leaseId); break;
+      case "unknown owner":
+        ownerUnknown = true; break;
+      case "dirty": writeFileSync(`${lease.path}/keep.txt`, "unfinished\n"); break;
+      case "unmerged": gitIn(lease.path, "commit", "--allow-empty", "-qm", "unmerged work"); break;
+      case "unknown merge": git.mergedInto = async () => ({ ok: false, reason: "merge timed out", outcomeUnknown: true }); break;
+      case "unknown default": git.observedDefaultSha = async () => ({ ok: false, reason: "default unknown", outcomeUnknown: true }); break;
+      case "unknown Git": git.inspect = async () => { throw new Error("inspection unavailable"); }; break;
+      case "occupied": occupancy.set(lease.path, occupied); break;
+      case "unknown occupancy": occupancy.set(lease.path, { status: "unknown", reason: "scan unavailable" }); break;
+      case "late occupancy": {
+        const mergedInto = git.mergedInto.bind(git);
+        git.mergedInto = async (...args) => { occupancy.set(lease.path, occupied); return mergedInto(...args); };
+        break;
+      }
+      case "missing path": rmSync(lease.path, { recursive: true, force: true }); break;
+      case "missing registration": {
+        const list = git.list.bind(git);
+        git.list = async (identity) => {
+          const result = await list(identity);
+          return result.ok ? { ok: true, value: result.value.filter((entry) => entry.path !== lease.path) } : result;
+        };
+        break;
+      }
+      case "locked registration": gitIn(repository.clone, "worktree", "lock", lease.path); break;
+      case "foreign repository": {
+        const inspect = git.inspect.bind(git);
+        git.inspect = async (path) => {
+          const result = await inspect(path);
+          return result.ok ? { ok: true, value: { ...result.value, commonDirectory: "/foreign/.git" } } : result;
+        };
+        break;
+      }
+      case "wrong path": db.prepare("UPDATE worktree_slots SET path = ? WHERE id = ?").run(repository.clone, slot.id); break;
+      case "wrong pool": db.prepare("UPDATE worktree_pools SET git_common_dir = '/foreign/.git' WHERE id = ?").run(lease.poolId); break;
+      case "wrong marker": writeFileSync(`${manager.store.pool(lease.poolId)!.poolPath}/.mission-control-worktree-pool`, "{}"); break;
+      case "version race": {
+        const mergedInto = git.mergedInto.bind(git);
+        git.mergedInto = async (...args) => {
+          db.prepare("UPDATE worktree_slots SET version = version + 1 WHERE id = ?").run(slot.id);
+          return mergedInto(...args);
+        };
+        break;
+      }
+    }
+    await manager.reconcile();
+    const after = manager.store.slot(slot.id)!;
+    assert.equal(after.state, "quarantined");
+    assert.equal(after.quarantineReason, original.quarantineReason);
+    assert.equal(after.lastError, original.lastError);
+    if (blocker !== "version race") assert.equal(after.version, original.version);
+    assert.equal((await manager.planMaintenance()).find((entry) => entry.slotId === slot.id)?.safe, false);
+    if (blocker !== "missing path") assert.equal(existsSync(lease.path), true);
+  });
+}
+
+for (const change of ["HEAD", "dirty work", "unknown inspection", "thrown inspection", "repository", "path"] as const) {
+  test(`quarantine recovery rejects late ${change} changes after merge proof`, async () => {
+    const repository = repo("mission-reconcile-final-proof-");
+    const git = new NativeWorktreeGit();
+    const manager = harness({ git });
+    const lease = acquired(await manager.acquire({
+      repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "final-proof" },
+    }));
+    assert.equal((await manager.release(lease)).outcome, "released");
+    const slot = manager.store.slot(lease.slotId)!;
+    manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+    const quarantined = manager.store.slot(slot.id)!;
+    const mergedInto = git.mergedInto.bind(git);
+    git.mergedInto = async (...args) => {
+      const result = await mergedInto(...args);
+      assert.deepEqual(result, { ok: true, value: true }, "the original HEAD passes the merge proof");
+      switch (change) {
+        case "HEAD": gitIn(lease.path, "commit", "--allow-empty", "-qm", "late unmerged commit"); break;
+        case "dirty work": writeFileSync(`${lease.path}/late.txt`, "preserve this work\n"); break;
+        case "unknown inspection":
+          git.inspect = async () => ({ ok: false, reason: "final inspection timed out", outcomeUnknown: true }); break;
+        case "thrown inspection": git.inspect = async () => { throw new Error("final inspection unavailable"); }; break;
+        case "repository":
+        case "path": {
+          const inspect = git.inspect.bind(git);
+          git.inspect = async (path) => {
+            const observed = await inspect(path);
+            if (!observed.ok) return observed;
+            return { ok: true, value: { ...observed.value, ...(change === "repository"
+              ? { commonDirectory: "/foreign/.git" }
+              : { path: repository.clone }) } };
+          };
+          break;
+        }
+      }
+      return result;
+    };
+
+    await manager.reconcile();
+    const after = manager.store.slot(slot.id)!;
+    assert.equal(after.state, "quarantined");
+    assert.equal(after.version, quarantined.version);
+    assert.equal(after.quarantineReason, quarantined.quarantineReason);
+    assert.equal(after.lastError, quarantined.lastError);
+    assert.ok(manager.store.pool(lease.poolId)?.reconciliationError, "the final proof failure is reported");
+    assert.equal(existsSync(lease.path), true);
+    if (change === "HEAD") assert.notEqual(gitIn(lease.path, "rev-parse", "HEAD"), repository.sha);
+    if (change === "dirty work") assert.equal(existsSync(`${lease.path}/late.txt`), true);
+  });
+}
+
+test("quarantine recovery proves the inspected commit even when HEAD changes away and back", async () => {
+  const repository = repo("mission-reconcile-pinned-merge-");
+  const git = new NativeWorktreeGit();
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({
+    repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "pinned-merge" },
+  }));
+  assert.equal((await manager.release(lease)).outcome, "released");
+  gitIn(lease.path, "commit", "--allow-empty", "-qm", "unmerged commit A");
+  const unmerged = gitIn(lease.path, "rev-parse", "HEAD");
+  // Record A as the allocator's own HEAD so this reaches the merge proof rather than stopping
+  // at the moved-HEAD proof before it.
+  db.prepare("UPDATE worktree_slots SET current_head_sha = ? WHERE id = ?").run(unmerged, lease.slotId);
+  const slot = manager.store.slot(lease.slotId)!;
+  manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+  const mergedInto = git.mergedInto.bind(git);
+  git.mergedInto = async (...args) => {
+    // Inspection saw A. A concurrent checkout temporarily exposes merged B while the
+    // ancestry command runs, then puts A back before the final inspection can see it.
+    gitIn(lease.path, "checkout", "--detach", repository.sha);
+    try {
+      return await mergedInto(...args);
+    } finally {
+      gitIn(lease.path, "checkout", "--detach", unmerged);
+    }
+  };
+
+  await manager.reconcile();
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+  assert.match(manager.store.pool(lease.poolId)?.reconciliationError ?? "", /not merged/);
+  assert.equal(gitIn(lease.path, "rev-parse", "HEAD"), unmerged);
+});
+
+test("transient occupancy failures preserve free slots and live leases without authorizing acquisition", async () => {
+  const repository = repo("mission-reconcile-transient-");
+  const occupancy = new Map<string, WorktreeOccupancy>();
+  const referenced = new Set<string>();
+  const manager = harness({ occupancy, referenced });
+  const first = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "free" } }));
+  const live = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "live" } }));
+  referenced.add(live.leaseId);
+  assert.equal((await manager.release(first)).outcome, "released");
+  const versions = manager.store.slots().map((slot) => slot.version);
+  for (const lease of [first, live]) occupancy.set(lease.path, { status: "unknown", reason: "lsof timed out" });
+  await manager.reconcile();
+  assert.equal(manager.store.slot(first.slotId)?.state, "available");
+  assert.equal(manager.store.slot(live.slotId)?.state, "leased");
+  assert.match(manager.store.pool(first.poolId)?.reconciliationError ?? "", /lsof timed out/);
+  const refused = await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "next" } });
+  assert.equal(refused.outcome, "outcomeUnknown");
+  assert.deepEqual(manager.store.slots().map((slot) => slot.version), versions);
+  occupancy.clear();
+  await manager.reconcile();
+  const next = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "next" } }));
+  assert.equal(next.slotId, first.slotId);
+});
+
+
+test("quarantine, recovery and release log bounded detail for the exact pool and slot once per transition", async (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (message: string) => {
+    if (message.startsWith("[worktrees] {")) records.push(JSON.parse(message.slice("[worktrees] ".length)));
+  });
+  const repository = repo("mission-reconcile-logging-");
+  const git = new NativeWorktreeGit();
+  const inspect = git.inspect.bind(git);
+  const diagnostic = "inspection failed: " + "x".repeat(8192);
+  let failInspection = false;
+  t.mock.method(git, "inspect", async (path: string) => failInspection
+    ? { ok: false as const, reason: diagnostic, outcomeUnknown: true }
+    : inspect(path));
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "log" } }));
+  await manager.release(lease);
+  failInspection = true;
+  await manager.reconcile();
+  await manager.reconcile();
+  failInspection = false;
+  await manager.reconcile();
+  assert.deepEqual(records.map((record) => record.event), ["released", "quarantined", "quarantine_recovered"]);
+  assert.equal(records[0]?.reason, "return reset positively verified");
+  assert.equal(records[0]?.detail, null, "a successful release must not carry a stale diagnostic");
+  assert.equal(records[1]?.reason, "slot Git state is unknown");
+  assert.equal(records[1]?.detail, diagnostic.slice(0, 2048), "quarantine carries the bounded inspection failure");
+  assert.equal(Buffer.byteLength(String(records[1]?.detail), "utf8"), 2048);
+  assert.equal(records[2]?.reason, "all recovery safety checks passed");
+  assert.equal(records[2]?.detail, "slot Git state is unknown", "recovery names the hold it cleared, not the old failure tail");
+  for (const record of records) {
+    assert.equal(record.poolId, lease.poolId);
+    assert.equal(record.slotOrdinal, 1);
+    assert.equal(typeof record.reason, "string");
+  }
+});
+
+for (const confirmation of ["original", "same mismatch", "different mismatch", "failed", "thrown", "wrong path", "wrong repository"] as const) {
+  test(`available HEAD mismatch requires confirmation: ${confirmation}`, async (t) => {
+    const repository = repo("mission-reconcile-head-confirm-");
+    const git = new NativeWorktreeGit();
+    const manager = harness({ git });
+    const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "head-confirm" } }));
+    assert.equal((await manager.release(lease)).outcome, "released");
+    const before = manager.store.slot(lease.slotId)!;
+    // A real moved HEAD proves the persistent case; the other cases inject a bad read only.
+    if (confirmation === "same mismatch") gitIn(lease.path, "commit", "--allow-empty", "-qm", "outside allocator");
+    const moved = confirmation === "same mismatch" ? gitIn(lease.path, "rev-parse", "HEAD") : "a".repeat(40);
+    const inspect = git.inspect.bind(git);
+    let reads = 0;
+    t.mock.method(git, "inspect", async (path: string) => {
+      assert.equal(path, lease.path);
+      reads++;
+      const actual = await inspect(path);
+      assert.ok(actual.ok);
+      if (reads === 1) return { ok: true as const, value: { ...actual.value, head: moved } };
+      switch (confirmation) {
+        case "failed": return { ok: false as const, reason: "confirmation timed out", outcomeUnknown: true };
+        case "thrown": throw new Error("confirmation threw");
+        case "different mismatch": return { ok: true as const, value: { ...actual.value, head: "b".repeat(40) } };
+        case "wrong path": return { ok: true as const, value: { ...actual.value, head: moved, path: repository.clone } };
+        case "wrong repository": return { ok: true as const, value: { ...actual.value, head: moved, commonDirectory: "/other/repository" } };
+        default: return actual;
+      }
+    });
+    const records: Array<Record<string, unknown>> = [];
+    t.mock.method(console, "info", (line: unknown) => {
+      if (typeof line === "string" && line.startsWith("[worktrees] ")) records.push(JSON.parse(line.slice("[worktrees] ".length)));
+    });
+    await manager.reconcile();
+    assert.equal(reads, 2);
+    const after = manager.store.slot(lease.slotId)!;
+    assert.equal(after.state, "quarantined");
+    assert.equal(after.quarantineCategory, confirmation === "same mismatch" ? "state" : "observation");
+    assert.equal(after.currentHeadSha, before.currentHeadSha, "an uncertain read must not replace the recorded HEAD");
+    assert.ok(after.lastError?.includes(repository.sha));
+    assert.ok(after.lastError?.includes(moved));
+    const quarantine = records.find((record) => record.event === "quarantined");
+    assert.equal(quarantine?.detail, after.lastError);
+    if (confirmation === "original") assert.ok(after.lastError?.includes(`confirmed=${repository.sha}`));
+    if (confirmation === "failed") assert.match(after.lastError!, /confirmation timed out/);
+    if (confirmation === "thrown") assert.match(after.lastError!, /confirmation threw/);
+    t.mock.restoreAll();
+    await manager.reconcile();
+    assert.equal(manager.store.slot(lease.slotId)?.state, confirmation === "same mismatch" ? "quarantined" : "available");
+  });
+}
+
+/** A successful `status --porcelain=v2 --branch -z` whose HEAD header names `oid`. */
+const statusNaming = (oid: string): string => `# branch.oid ${oid}\0# branch.head (detached)\0`;
+
+for (const oid of ["", " ", "HEAD", "abc123", `${"a".repeat(40)}\n${"b".repeat(40)}`]) {
+  test(`inspection rejects malformed successful HEAD output ${JSON.stringify(oid)}`, async () => {
+    const repository = repo("mission-reconcile-head-invalid-");
+    let headReads = 0;
+    const git = new NativeWorktreeGit(async (bin, args, opts) => {
+      // HEAD is read by the inspection's one `status --branch`.
+      if (args.includes("status") && args.includes("--branch")) {
+        headReads++;
+        return { stdout: statusNaming(oid), stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+      }
+      return run(bin, args, opts);
+    }, async () => {});
+    const inspected = await git.inspect(repository.clone);
+    assert.equal(inspected.ok, false);
+    if (!inspected.ok) {
+      assert.equal(inspected.outcomeUnknown, true);
+      assert.match(inspected.reason, /HEAD.*full commit id/);
+    }
+    assert.equal(headReads, 2, "malformed observations receive the bounded read retry");
+  });
+}
+
+test("inspection is scoped to its checkout despite inherited Git repository selectors", async () => {
+  const repository = repo("mission-inspect-env-");
+  const other = repo("mission-inspect-env-other-");
+  gitIn(other.clone, "commit", "--allow-empty", "-qm", "different HEAD");
+  const otherSha = gitIn(other.clone, "rev-parse", "HEAD");
+  const inherited = { GIT_DIR: `${other.clone}/.git`, GIT_WORK_TREE: other.clone };
+  const previous = Object.fromEntries(Object.keys(inherited).map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, inherited);
+    // Demonstrate that -C alone can return a different repository's valid SHA.
+    const redirected = await run("git", ["-C", repository.clone, "rev-parse", "HEAD"], { env: { ...process.env } });
+    assert.equal(redirected.stdout.trim(), otherSha);
+    const inspected = await new NativeWorktreeGit().inspect(repository.clone);
+    assert.ok(inspected.ok);
+    assert.equal(inspected.value.head, repository.sha);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("malformed HEAD reads quarantine as observation and a later valid read recovers without reset", async () => {
+  const repository = repo("mission-reconcile-malformed-head-");
+  let malformedReads = 0;
+  let headReads = 0;
+  const git = new NativeWorktreeGit(async (bin, args, opts) => {
+    if (args.includes("status") && args.includes("--branch")) {
+      headReads++;
+      if (malformedReads-- > 0) return { stdout: statusNaming(""), stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+    }
+    return run(bin, args, opts);
+  }, async () => {});
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "malformed-head" } }));
+  assert.equal((await manager.release(lease)).outcome, "released");
+  headReads = 0;
+  await manager.reconcile();
+  assert.equal(headReads, 1, "a matching HEAD needs no confirmation read");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  malformedReads = 1;
+  headReads = 0;
+  await manager.reconcile();
+  assert.equal(headReads, 2, "a valid retry is accepted");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  malformedReads = 2;
+  await manager.reconcile();
+  const slot = manager.store.slot(lease.slotId)!;
+  assert.equal(slot.state, "quarantined");
+  assert.equal(slot.quarantineCategory, "observation");
+  assert.equal(slot.currentHeadSha, repository.sha);
+  assert.match(slot.lastError!, /HEAD.*full commit id.*again on retry/);
+  const reflog = gitIn(lease.path, "reflog", "HEAD");
+  await manager.reconcile();
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  assert.equal(gitIn(lease.path, "reflog", "HEAD"), reflog, "recovery does not reset the checkout");
 });

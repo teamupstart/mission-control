@@ -398,10 +398,13 @@ test.describe("line comments in the Files editor", () => {
     await openTheFile(page);
 
     const commentMode = page.getByRole("button", { name: "Comment mode" });
+    await expect(commentMode).toHaveAttribute("aria-disabled", "false");
     // The chord is claimed on the capture phase from outside the editor - a bare key never
     // reaches a window handler from `contentEditable`, which is why creating a comment is a
     // click on a line number and not a key.
-    await page.getByRole("listbox", { name: "Session files" }).click();
+    // Clicking the listbox center can select another file while it loads, resetting the
+    // mode after the key arrives. Focus the keyboard surface without changing selection.
+    await page.getByRole("listbox", { name: "Session files" }).focus();
     await page.keyboard.press("m");
     await expect(commentMode).toHaveAttribute("aria-pressed", "true");
     // The pane does not change shape when the mode comes on - the panel docks over the

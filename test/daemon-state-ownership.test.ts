@@ -139,6 +139,25 @@ async function waitForListening(daemon: RunningDaemon): Promise<void> {
   );
 }
 
+/**
+ * A daemon on a port nobody else holds, listening. `unusedPort` can only report a port that was
+ * free a moment ago, and a test file running beside this one can take it first - so a start that
+ * lost that race (`EADDRINUSE`, and only that) is tried again on a fresh port. Any other failure
+ * is this test's to report.
+ */
+async function startListeningDaemon(home: string): Promise<RunningDaemon> {
+  for (let attempt = 1; ; attempt++) {
+    const daemon = startDaemon(home, await unusedPort());
+    try {
+      await waitForListening(daemon);
+      return daemon;
+    } catch (error) {
+      if (attempt >= 3 || !daemon.output().includes("EADDRINUSE")) throw error;
+      await daemon.exit;
+    }
+  }
+}
+
 async function stopDaemon(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit");
@@ -232,10 +251,10 @@ test("ownership contention refuses startup before the state database is touched"
 });
 
 test("daemons with independent state homes can run concurrently", async () => {
-  const first = startDaemon(join(root, "independent-a"), await unusedPort());
-  const second = startDaemon(join(root, "independent-b"), await unusedPort());
-
-  await Promise.all([waitForListening(first), waitForListening(second)]);
+  const [first, second] = await Promise.all([
+    startListeningDaemon(join(root, "independent-a")),
+    startListeningDaemon(join(root, "independent-b")),
+  ]);
 
   await Promise.all([stopDaemon(first.child), stopDaemon(second.child)]);
 });

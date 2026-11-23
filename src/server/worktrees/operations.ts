@@ -1,3 +1,5 @@
+import { getTask, getTaskWorktreeRetention } from "../db.ts";
+import { isRetentionCandidate, taskResourceGeneration } from "../task-resource-generation.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts";
@@ -10,11 +12,14 @@ import {
   type WorktreeActionRequest,
   type WorktreeActionRisk,
   type WorktreeActionSubmitResult,
+  type WorktreeClaimVariableView,
   type WorktreeInventory,
   type WorktreeOperationView,
   type WorktreeOwnerView,
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
+  type WorktreeSlotDependenciesView,
+  isWorktreeOwnerKind,
 } from "@shared/worktrees.ts";
 import { run } from "../util/exec.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
@@ -22,6 +27,13 @@ import type {
   CheckGroupRecovery,
   CheckLeaseManager,
 } from "../workflows/check-lease.ts";
+import {
+  claimVariableNames,
+  claimVariablePresence,
+  decodeClaimFailure,
+  renderClaimArgv,
+  type RunningClaim,
+} from "./claim.ts";
 import { getWorktreesConfig, setWorktreesConfig } from "./config.ts";
 import {
   LegacyTreehouseService,
@@ -33,12 +45,15 @@ import {
   type WorktreeGit,
 } from "./git.ts";
 import {
+  maintenanceCandidates,
   WorktreeManager,
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
+import { depsCutOff, quarantineAutoRecoverable, type WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
+  describeWorktreeOccupants,
   type WorktreeOccupancy,
 } from "./occupancy.ts";
 
@@ -87,11 +102,26 @@ export interface WorktreeOperationsDeps {
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
   /** Wall-clock budget for measuring every path one preview shows, together. */
   diskMeasureBudgetMs: number;
+  /** Schedule that budget's deadline. Injectable so tests do not measure host contention. */
+  scheduleDiskMeasureDeadline: (delayMs: number, expire: () => void) => () => void;
+  /**
+   * Whether each claim variable name would reach a step, and from where: the daemon's
+   * environment, else the login-shell snapshot. Never a value.
+   */
+  claimVariablePresence: (names: readonly string[]) => Promise<WorktreeClaimVariableView[]>;
   /**
    * Operations listed at once - queued, running, and failed reports nobody has dismissed.
    * Further submissions are refused; nothing listed is ever dropped to make room.
    */
   maxOperations: number;
+  /**
+   * The slots Settings > Storage's idle-cache budget removes right now, judged from the
+   * observation a `trimIdle` preview is built from; null where nothing supplies it. A named slot
+   * the current budget no longer removes blocks the preview, and because Execute rebuilds the
+   * preview before removing anything, a budget saved after the dialog opened refuses the run
+   * there, on the daemon, whatever the browser has heard.
+   */
+  trimIdleSelection: ((status: NativePoolStatus[]) => ReadonlySet<string>) | null;
 }
 
 interface Observation {
@@ -105,6 +135,13 @@ interface Observation {
 interface HeldPreview {
   preview: WorktreeActionPreview;
   fingerprint: string;
+  /**
+   * The removal targets Git did not recognize when the operator was shown this preview. Only
+   * these may be deleted unverified: a target that was registered then, and loses its
+   * registration before its turn, is refused instead of riding on someone else's
+   * acknowledgement.
+   */
+  unverifiable: ReadonlySet<string>;
 }
 
 interface HeldOperation {
@@ -148,22 +185,55 @@ function taskIdentity(key: string): { id: string; position: number } | null {
   return { id: key.slice(0, split), position };
 }
 
+/** Only the pool's own proven path can be orphaned: anything else stays exactly as blocked. */
+function provenOrphan(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return pool.identityValid && pool.markerValid && slot.nativePath && slot.orphaned !== null;
+}
+
+/**
+ * A quarantined orphan whose owner still holds it. A failed Git read can quarantine a slot
+ * while its lease is live, and Return is how that owner lets go while the files are kept. A
+ * lease no domain owner references is stale, and only Destroy clears it; a `warm` lease ends
+ * with its seed.
+ */
+function orphanReturnable(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return provenOrphan(pool, slot) && slot.slot.state === "quarantined" &&
+    slot.slot.activeLeaseId !== null && slot.slot.activeOwnerKind !== null && slot.slot.activeOwnerKey !== null &&
+    slot.slot.activeOwnerKind !== "warm" && slot.ownerReferenced === true;
+}
+
+/** Only a positive domain lookup can detach an orphan from task/check cleanup. */
+function staleQuarantineLease(status: NativeSlotStatus): boolean {
+  return status.slot.state === "quarantined" && status.slot.activeLeaseId !== null &&
+    status.ownerReferenced === false;
+}
+
 function ownerView(
   status: NativeSlotStatus,
   task: WorktreeTaskOwner,
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
   const key = status.slot.activeOwnerKey;
-  if ((kind !== "task" && kind !== "check" && kind !== "manual") || !key) return null;
+  if (!isWorktreeOwnerKind(kind) || !key) return null;
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
-    return { kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}` };
+    const retainedTask = parsed ? getTask(parsed.id) : null;
+    const retention = retainedTask && isRetentionCandidate(retainedTask) ? getTaskWorktreeRetention(retainedTask.id) : null;
+    return {
+      kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}`,
+      ...(retainedTask && retention?.generation === taskResourceGeneration(retainedTask)
+        ? { cleanupDueAt: retention.cleanupDueAt } : {}),
+    };
   }
   return {
     kind,
     key,
-    label: kind === "check" ? `Check ${key}` : `Manual lease ${key.slice(0, 8)}`,
+    label: kind === "check"
+      ? `Check ${key}`
+      : kind === "warm"
+        ? "Seeding another slot's dependencies"
+        : `Manual lease ${key.slice(0, 8)}`,
   };
 }
 
@@ -211,6 +281,64 @@ function uniqRisks(risks: WorktreeActionRisk[]): WorktreeActionRisk[] {
   return [...unique.values()];
 }
 
+/**
+ * A slot's dependency state for Settings, from the durable row, the claim running in it right
+ * now (if any) and the pool claim's fingerprint at the last fetched default branch. Pure: the
+ * inventory never fetches and never runs a claim to answer this.
+ *
+ * Null when the pool has no claim configured, because then there is nothing to be current or
+ * stale against.
+ */
+export function slotDependencies(input: {
+  hasClaim: boolean;
+  slot: Pick<WorktreeSlotRow, "depsState" | "depsFingerprint" | "depsFingerprintSha" | "depsClaimedAt" | "depsLastError">;
+  running: RunningClaim | null;
+  defaultSha: string | null;
+  defaultFingerprint: string | null;
+}): WorktreeSlotDependenciesView | null {
+  if (!input.hasClaim) return null;
+  const { slot, running } = input;
+  const base = { fingerprintSha: slot.depsFingerprintSha, claimedAt: slot.depsClaimedAt };
+  if (running) {
+    return {
+      ...base,
+      state: "installing",
+      claimId: running.id,
+      startedAt: running.startedAt,
+      step: running.step
+        ? {
+            step: running.step.step,
+            stepCount: running.step.stepCount,
+            command: renderClaimArgv(running.step.argv),
+            startedAt: running.step.startedAt,
+          }
+        : null,
+    };
+  }
+  // A write-ahead with no claim running, `interrupted`, or a state a later build wrote: the
+  // slot's last claim or seed was cut off, and nothing about it can be trusted as current.
+  // Startup records a write-ahead as interrupted; the next claim starts cold either way.
+  if (depsCutOff(slot.depsState)) return { ...base, state: "interrupted" };
+  switch (slot.depsState) {
+    case null:
+      return { ...base, state: "never" };
+    case "current": {
+      // Judged only when both sides have a fingerprint and the default commit is known. A claim
+      // with no fingerprint paths runs on every lease, so it is never stale; an unknown default
+      // is not evidence of staleness.
+      if (slot.depsFingerprint === null || input.defaultFingerprint === null || input.defaultSha === null) {
+        return { ...base, state: "current", defaultSha: null };
+      }
+      return slot.depsFingerprint === input.defaultFingerprint
+        ? { ...base, state: "current", defaultSha: input.defaultSha }
+        : { ...base, state: "stale", defaultSha: input.defaultSha };
+    }
+    default:
+      // Decoded and bounded where the record is written; values were redacted before it was.
+      return { ...base, state: "failed", failure: decodeClaimFailure(slot.depsLastError ?? "") };
+  }
+}
+
 export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
@@ -233,7 +361,13 @@ export class WorktreeOperationsService {
       git: new NativeWorktreeGit(),
       occupancy: inspectWorktreeOccupancy,
       diskMeasureBudgetMs: DISK_MEASURE_BUDGET_MS,
+      scheduleDiskMeasureDeadline: (delayMs, expire) => {
+        const timer = setTimeout(expire, delayMs);
+        return () => clearTimeout(timer);
+      },
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
+      claimVariablePresence,
+      trimIdleSelection: null,
       ...deps,
     };
   }
@@ -298,22 +432,45 @@ export class WorktreeOperationsService {
     } catch (error) {
       throw new WorktreeOperationError(503, `legacy worktree inventory unavailable: ${compact(String(error))}`, "unavailable");
     }
+    const shown = native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories);
+    // One presence read for every pool together, so a login-shell probe is asked at most once.
+    const claimNames = [...new Set(shown.flatMap((pool) => claimVariableNames(pool.policy.claim)))].sort();
+    let presence = new Map<string, WorktreeClaimVariableView>();
+    if (claimNames.length > 0) {
+      try {
+        presence = new Map((await this.deps.claimVariablePresence(claimNames)).map((entry) => [entry.name, entry]));
+      } catch {
+        presence = new Map();
+      }
+    }
+    const running = new Map(this.manager.claims.list().map((claim) => [claim.slotId, claim]));
     const repositories: WorktreeRepositoryView[] = [];
-    for (const pool of native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories)) {
+    for (const pool of shown) {
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
         .map((entry) => {
           const owner = ownerView(entry, this.deps.tasks);
           const processes = entry.occupancy.status === "known"
-            ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: null }
+            ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: describeWorktreeOccupants(entry.occupancy.occupants) }
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy"> = [];
-          if (entry.slot.state === "leased") actions.push("return", "destroy");
-          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
+          // Git cannot speak for an orphaned slot, so `exact` never holds for one. Destroy is
+          // the one way out, and the preview names exactly what it cannot verify.
+          const orphaned = provenOrphan(pool, entry);
+          const actions: Array<"return" | "destroy" | "recover"> = [];
+          // A `warm` lease belongs to the seed copying from it, which returns it the moment the
+          // copy ends. Nothing an operator could do to it here would be safer than that.
+          if (entry.slot.state === "leased") {
+            if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
+          }
+          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && (exact || orphaned)) {
+            if (orphanReturnable(pool, entry)) actions.push("return");
             actions.push("destroy");
           }
+          // Recovery re-proves the slot through Git, which an orphaned slot can never pass.
+          if (entry.slot.state === "quarantined" && !orphaned && entry.slot.activeLeaseId === null &&
+            entry.slot.activeOwnerKind === null && entry.slot.activeOwnerKey === null) actions.push("recover");
           return {
             id: entry.slot.id,
             poolId: pool.pool.id,
@@ -338,8 +495,20 @@ export class WorktreeOperationsService {
             // measures only the fixed paths it is about to show.
             diskBytes: null,
             quarantineReason: compact(entry.slot.quarantineReason),
+            quarantinedAt: entry.slot.quarantinedAt,
+            quarantineRecoverable: entry.slot.state === "quarantined"
+              ? !orphaned && quarantineAutoRecoverable(entry.slot)
+              : null,
             diagnostic: compact(entry.slot.lastError),
+            orphaned,
             actions,
+            dependencies: slotDependencies({
+              hasClaim: Boolean(pool.policy.claim),
+              slot: entry.slot,
+              running: running.get(entry.slot.id) ?? null,
+              defaultSha: pool.observedDefaultSha,
+              defaultFingerprint: pool.defaultFingerprint,
+            }),
           };
         });
       const counts = {
@@ -359,7 +528,10 @@ export class WorktreeOperationsService {
           enabled: pool.policy.enabled,
           maxSlots: pool.policy.maxSlots,
           setupArgv: pool.policy.setupArgv ? [...pool.policy.setupArgv] : null,
+          claim: pool.policy.claim ?? null,
         },
+        claimVariables: claimVariableNames(pool.policy.claim).map((name) =>
+          presence.get(name) ?? { name, present: false, source: null }),
         counts,
         diskBytes: null,
         lastReconciledAt: pool.pool.lastReconciledAt,
@@ -443,7 +615,13 @@ export class WorktreeOperationsService {
     const token = this.deps.randomId();
     const preview = { ...built, token, expiresAt: this.deps.now() + TOKEN_TTL_MS };
     const fingerprint = previewFingerprint(built);
-    this.tokens.set(token, { preview, fingerprint });
+    const unregistered = new Set(this.nativeTargets(observed)
+      .filter((target) => this.orphanedTarget(target) && target.slot.orphaned === "unregistered")
+      .map((target) => target.slot.slot.id));
+    const unverifiable = new Set(this.removalTargets(preview)
+      .map((target) => target.id)
+      .filter((id) => unregistered.has(id)));
+    this.tokens.set(token, { preview, fingerprint, unverifiable });
     while (this.tokens.size > WORKTREE_INVENTORY_LIMITS.previewTokens) {
       this.tokens.delete(this.tokens.keys().next().value!);
     }
@@ -459,12 +637,12 @@ export class WorktreeOperationsService {
     const sizes: Array<number | null> = paths.map(() => null);
     if (paths.length === 0) return sizes;
     let expired = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelDeadline = (): void => {};
     const deadline = new Promise<"expired">((resolve) => {
-      timer = setTimeout(() => {
+      cancelDeadline = this.deps.scheduleDiskMeasureDeadline(this.deps.diskMeasureBudgetMs, () => {
         expired = true;
         resolve("expired");
-      }, this.deps.diskMeasureBudgetMs);
+      });
     });
     let next = 0;
     const worker = async (): Promise<void> => {
@@ -482,7 +660,7 @@ export class WorktreeOperationsService {
     try {
       await Promise.all(Array.from({ length: Math.min(DISK_MEASURE_CONCURRENCY, paths.length) }, worker));
     } finally {
-      clearTimeout(timer);
+      cancelDeadline();
     }
     return sizes;
   }
@@ -654,6 +832,8 @@ export class WorktreeOperationsService {
   private async appendNativeTarget(
     target: NativeTarget,
     action: "return" | "destroy",
+    /** This slot is in the fixed set Destroy removes, not only released through its owner. */
+    removes: boolean,
     observed: Observation,
     affected: WorktreeActionAffected[],
     risks: WorktreeActionRisk[],
@@ -661,7 +841,9 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     const { pool, slot } = target;
-    const owner = ownerView(slot, this.deps.tasks);
+    const staleLease = action === "destroy" && staleQuarantineLease(slot);
+    const owner = staleLease ? null : ownerView(slot, this.deps.tasks);
+    if (staleLease) consequences.push(`Clears the stale lease for slot ${slot.slot.ordinal}, which no domain owner references, before removing the slot.`);
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -678,17 +860,46 @@ export class WorktreeOperationsService {
         dirty: slot.dirty,
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
+        orphaned: slot.orphaned,
+        ownerReferenced: slot.ownerReferenced,
       }),
       diskBytes: null,
     });
-    if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
-    else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
-    if (slot.mergedIntoDefault === false) {
-      risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
-    } else if (slot.mergedIntoDefault === null) {
-      blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+    // Only the pool's own proven path can be orphaned: anything else stays exactly as blocked.
+    const orphaned = this.orphanedTarget(target) ? slot.orphaned : null;
+    if (orphaned) {
+      // Cleanliness and the default-branch relationship are Git's answers, and Git has none
+      // here. Waiting for them would block this slot forever. Only a slot Destroy removes is
+      // deleted, so only that one asks the operator to accept what cannot be checked; Return,
+      // and a sibling released through its task, keep both the files and the row.
+      if (removes) {
+        if (orphaned === "unregistered") {
+          risks.push(risk(
+            "unverifiable",
+            "Git no longer recognizes a target slot, so any uncommitted or unpushed work in it cannot be checked and will be deleted",
+            true,
+          ));
+          consequences.push(`Slot ${slot.slot.ordinal} is deleted from disk directly, because Git no longer recognizes it as a worktree.`);
+        } else {
+          consequences.push(`Slot ${slot.slot.ordinal} has nothing left on disk; only its record is removed.`);
+        }
+      } else {
+        consequences.push(orphaned === "unregistered"
+          ? `Slot ${slot.slot.ordinal} cannot be reset because Git no longer recognizes it; its lease is released and it stays quarantined with its files until it is destroyed.`
+          : `Slot ${slot.slot.ordinal} has nothing left on disk; its lease is released and its record stays quarantined until it is destroyed.`);
+      }
+    } else {
+      if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
+      else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
+      if (slot.mergedIntoDefault === false) {
+        risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
+      } else if (slot.mergedIntoDefault === null) {
+        blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+      }
     }
-    if (slot.occupancy.status === "unknown") {
+    if (orphaned === "absent") {
+      // Nothing is on disk, so there is nothing a process could be using.
+    } else if (slot.occupancy.status === "unknown") {
       risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
       blockers.push(slot.occupancy.reason);
     } else if (slot.occupancy.occupants.length > 0) {
@@ -702,14 +913,14 @@ export class WorktreeOperationsService {
       }
     }
     if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
-      slot.registered !== true || slot.repositoryMatches !== true) {
+      (!orphaned && (slot.registered !== true || slot.repositoryMatches !== true))) {
       blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
     }
     if (observed.pending.has(slot.slot.path)) {
       blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
     }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
-    if (action === "return" && slot.slot.state !== "leased") {
+    if (action === "return" && slot.slot.state !== "leased" && !orphanReturnable(pool, slot)) {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
     }
     if (action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
@@ -727,6 +938,8 @@ export class WorktreeOperationsService {
         const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
         if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
         consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
+      } else if (owner.kind === "warm") {
+        blockers.push(`A dependency seed holds slot ${slot.slot.ordinal} and returns it when its copy ends.`);
       } else {
         consequences.push("Returns the exact durable manual lease before any slot removal.");
       }
@@ -751,6 +964,22 @@ export class WorktreeOperationsService {
     const blockers: string[] = [];
     const consequences: string[] = [];
 
+    if (request.action === "recover") {
+      const proof = await this.manager.previewQuarantineRecovery(request.slotId);
+      if (!proof) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+      const { slot, checks } = proof;
+      if (observed.pending.has(slot.path)) blockers.push("A cleanup for this slot is already queued.");
+      for (const check of checks) {
+        if (check.status !== "passed") blockers.push(`${check.label}: ${check.detail}`);
+      }
+      affected.push({ provider: "mission", id: slot.id, path: slot.path, owner: null,
+        version: slot.version, safetyRevision: digest({ slot, checks }), diskBytes: null });
+      consequences.push("Returns this slot to warm capacity without resetting or removing files. Release history and installed dependencies are retained.");
+      return { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences),
+        recovery: { reason: slot.quarantineReason, category: slot.quarantineCategory,
+          quarantinedAt: slot.quarantinedAt, checks } };
+    }
+
     if (request.action === "legacyReturn") {
       const ref: LegacyOwnerRef = request.owner;
       const item = observed.legacy.find((candidate) => candidate.owners.some((owner) =>
@@ -770,7 +999,7 @@ export class WorktreeOperationsService {
           }
           const native = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
           for (const target of native) {
-            await this.appendNativeTarget(target, "return", observed, affected, risks, blockers, consequences);
+            await this.appendNativeTarget(target, "return", false, observed, affected, risks, blockers, consequences);
           }
           risks.push(risk("domain-owned", `${task.title} owns every affected task resource`, false));
           consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
@@ -794,6 +1023,10 @@ export class WorktreeOperationsService {
         consequences.push("Returns only the exact persisted Treehouse lease through its check owner.");
       }
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    }
+
+    if (request.action === "trimIdle") {
+      return this.buildTrimIdle(request, observed, affected, risks, blockers, consequences);
     }
 
     const poolId = request.action === "prune" || request.action === "reconcile"
@@ -872,6 +1105,68 @@ export class WorktreeOperationsService {
     return this.buildSlotTargets(request, observed, initialTargets, affected, risks, blockers, consequences);
   }
 
+  /**
+   * The idle slots Settings > Storage's budget chose, held to exactly the bar Safe prune holds
+   * a slot to (`maintenanceCandidates`): available, unreferenced by any task or check lease, clean,
+   * merged into the remote default, registered, and with no process in it. The set is fixed by
+   * the request rather than re-chosen from sizes, because Execute rebuilds this preview without
+   * measuring anything. A slot that no longer qualifies, or that the current idle-cache budget
+   * no longer removes (`trimIdleSelection`), blocks the preview instead of quietly leaving it,
+   * so what runs is always what the operator was shown and what the budget still asks for.
+   */
+  private buildTrimIdle(
+    request: Extract<WorktreeActionRequest, { action: "trimIdle" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Omit<WorktreeActionPreview, "token" | "expiresAt"> {
+    // Judged against the observation this preview was built from, not a second one, so every
+    // version, head and safety reason below describes the same moment.
+    const candidates = new Map(maintenanceCandidates(observed.native)
+      .map((candidate) => [candidate.slotId, candidate]));
+    const heads = new Map(observed.native.flatMap((pool) => pool.slots)
+      .map((entry) => [entry.slot.id, entry.observedHead]));
+    const selected = this.deps.trimIdleSelection?.(observed.native) ?? null;
+    for (const slotId of new Set(request.slotIds)) {
+      const candidate = candidates.get(slotId);
+      if (!candidate) {
+        blockers.push("A chosen slot no longer exists; measure and plan again.");
+        continue;
+      }
+      if (!candidate.safe) {
+        blockers.push(`${candidate.path}: ${candidate.reason}.`);
+        continue;
+      }
+      if (observed.pending.has(candidate.path)) {
+        blockers.push(`${candidate.path}: a cleanup is already queued for it.`);
+        continue;
+      }
+      if (selected && !selected.has(slotId)) {
+        blockers.push(`${candidate.path}: the current idle-cache budget no longer removes it; preview again from the current plan.`);
+        continue;
+      }
+      affected.push({
+        provider: "mission",
+        id: candidate.slotId,
+        path: candidate.path,
+        owner: null,
+        version: candidate.slotVersion,
+        safetyRevision: digest({ ...candidate, head: heads.get(candidate.slotId) ?? null }),
+        diskBytes: null,
+      });
+    }
+    consequences.push("Removes each idle slot whole, with git worktree remove. Ignored files inside a slot are never cleaned one by one.");
+    consequences.push("The next session in these repositories may start in a fresh slot and install its dependencies again.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+  }
+
+  /** Mirrors `appendNativeTarget`: only the pool's own proven path can be orphaned. */
+  private orphanedTarget({ pool, slot }: NativeTarget): boolean {
+    return provenOrphan(pool, slot);
+  }
+
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
   private async buildSlotTargets(
     request: Extract<WorktreeActionRequest, { action: "return" | "destroy" }>,
@@ -885,6 +1180,7 @@ export class WorktreeOperationsService {
     const targets = new Map(initialTargets.map((target) => [target.slot.slot.id, target]));
     const taskIds = new Set<string>();
     for (const target of initialTargets) {
+      if (request.action === "destroy" && staleQuarantineLease(target.slot)) continue;
       if (target.slot.slot.activeOwnerKind !== "task" || !target.slot.slot.activeOwnerKey) continue;
       const identity = taskIdentity(target.slot.slot.activeOwnerKey);
       if (identity) taskIds.add(identity.id);
@@ -898,7 +1194,8 @@ export class WorktreeOperationsService {
       const expanded = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
       for (const target of expanded) targets.set(target.slot.slot.id, target);
       for (const target of initialTargets.filter((candidate) =>
-        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`))) {
+        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`) &&
+        !(request.action === "destroy" && staleQuarantineLease(candidate.slot)))) {
         const identity = taskIdentity(target.slot.slot.activeOwnerKey!);
         const resource = identity
           ? task.resources.find((candidate) => candidate.position === identity.position)
@@ -909,10 +1206,14 @@ export class WorktreeOperationsService {
         }
       }
     }
+    // Only the requested set is removed. A sibling reached through its task is released, so
+    // it must never be described as deleted or ask for acknowledgement of a deletion.
+    const removing = new Set(initialTargets.map((target) => target.slot.slot.id));
     for (const target of targets.values()) {
       await this.appendNativeTarget(
         target,
         request.action,
+        request.action === "destroy" && removing.has(target.slot.slot.id),
         observed,
         affected,
         risks,
@@ -924,7 +1225,7 @@ export class WorktreeOperationsService {
       consequences.push(request.target.kind === "slot"
         ? "Removes this exact manager-owned Git worktree and its slot row after final revalidation."
         : "Removes only the fixed manager-owned slot set shown here after final revalidation.");
-    } else {
+    } else if ([...targets.values()].some((target) => !this.orphanedTarget(target))) {
       consequences.push("Resets the slot to the fetched remote default and retains it as warm capacity.");
     }
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
@@ -1107,7 +1408,7 @@ export class WorktreeOperationsService {
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet, removed),
+      () => this.dispatch(held.preview, acknowledgementSet, held.unverifiable, removed),
       true,
       this.deps.notifyChanged,
     );
@@ -1119,16 +1420,26 @@ export class WorktreeOperationsService {
   private async dispatch(
     preview: WorktreeActionPreview,
     acknowledgements: Set<WorktreeRiskKey>,
+    unverifiable: ReadonlySet<string>,
     removed: (target: WorktreeActionAffected) => void,
   ): Promise<void> {
     const request = preview.request;
+    if (request.action === "recover") {
+      const target = preview.affected[0]!;
+      try {
+        await this.manager.recoverQuarantineForOperator(target.id, target.version!);
+      } catch (error) {
+        throw new WorktreeOperationError(409, error instanceof Error ? error.message : String(error), "changed");
+      }
+      return;
+    }
     if (request.action === "reconcile") {
       if (!(await this.manager.reconcilePoolById(request.poolId))) {
         throw new WorktreeOperationError(409, "native pool disappeared before reconciliation", "changed");
       }
       return;
     }
-    if (request.action === "prune") {
+    if (request.action === "prune" || request.action === "trimIdle") {
       for (const target of preview.affected) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
@@ -1167,6 +1478,8 @@ export class WorktreeOperationsService {
         await this.reclaimTask(parsedTask.id);
       } else if (owner.kind === "check") {
         await this.recoverCheck(owner.key);
+      } else if (owner.kind === "warm") {
+        throw new WorktreeOperationError(409, "a dependency seed holds this slot and returns it when its copy ends", "changed");
       } else {
         const found = this.manager.lookupLease({ path: target.path, owner: { kind: "manual", key: owner.key } });
         if (found.state !== "active") throw new WorktreeOperationError(409, "manual lease changed after preview", "changed");
@@ -1184,8 +1497,11 @@ export class WorktreeOperationsService {
       for (const target of this.removalTargets(preview)) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
+          expectedVersion: target.owner ? undefined : target.version ?? undefined,
+          allowStaleLease: target.owner === null,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
+          allowUnverifiable: acknowledgements.has("unverifiable") && unverifiable.has(target.id),
         });
         this.assertRemoved(result);
         removed(target);
@@ -1200,7 +1516,7 @@ export class WorktreeOperationsService {
    */
   private removalTargets(preview: WorktreeActionPreview): WorktreeActionAffected[] {
     const request = preview.request;
-    if (request.action === "prune") return preview.affected;
+    if (request.action === "prune" || request.action === "trimIdle") return preview.affected;
     if (request.action !== "destroy") return [];
     return preview.affected.filter((target) => {
       if (target.provider !== "mission") return false;
@@ -1249,11 +1565,13 @@ export class WorktreeOperationsService {
 
   private successMessage(action: WorktreeActionRequest["action"]): string {
     switch (action) {
+      case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "return": return "Worktree returned to warm capacity.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
+      case "trimIdle": return "Idle slots over the cache budget removed.";
     }
   }
 }

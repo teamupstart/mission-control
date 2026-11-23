@@ -68,6 +68,14 @@ A new MCP **tool** carries two more obligations, and skipping either is silent. 
 
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
+Every collection a request can make Zod parse carries an upper bound: `.max()` on a `z.array`, `z.set` or `z.map`, and `boundedRecord` (`src/shared/zod-shapes.ts`) instead of a bare `z.record`, which has no `.max()`. Zod checks the bound before it parses an element, so an oversized request is one issue rather than one per element (GHSA-mrhx-c7xc-m3w5); a count checked in a refinement runs only after every entry has been parsed. This covers MCP tool input too. `test/request-collection-bounds.test.ts` walks every schema the route files parse and every MCP tool's listed input, and fails on an unbounded collection.
+
+The same rule applies to external replies and imported files: model output, terminal and GitHub responses, CodeRabbit records, native model catalogs, MCP settings, and backup JSON. Trimming a parsed reply is an output policy, not an intake limit. Loose model replies retain normal trimming within `LLM_REPLY_COLLECTION_MAX`; larger collections fail parsing before element validation. Recursive backup JSON bounds both arrays and records at every depth by `SETTINGS_BACKUP_LIMITS.entriesPerCatalog`. `test/external-collection-limits.test.ts` checks model-reply limits and recursive backup JSON.
+
+MCP tool input must render as JSON Schema: the MCP SDK renders it with `z.toJSONSchema`, which refuses `z.custom`, and one such field fails the whole `tools/list`. Use a representable schema (a pattern, an enum) instead.
+
+A config PATCH schema is `partialPatch(StoredSchema)`, never `StoredSchema.partial()`. Zod 4's `.optional()` fills an inner `.default()`, so a plain `.partial()` hands back every default the caller did not send, and the merged patch resets those settings. `partialPatch` keeps an absent key absent.
+
 ## Executable and child-process changes
 
 A new configurable subprocess integration is incomplete until all of these move together:
@@ -125,6 +133,38 @@ The daemon is the sole database writer. Foreman and MCP reach it through HTTP.
 
 ## Persisted identifiers
 
+Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never reused. The
+`feature-flags` settings backup domain id is also persisted and final; its surface is
+`settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
+
+The work unit id format and its four carrier names are final, because other services
+query them by exact value: the format `wu_` and a ULID, checked by
+`^wu_[0-9A-HJKMNP-TV-Z]{26}$` (Agent Platform's check); the environment variable
+`WORK_UNIT_ID`; the HTTP header `x-work-unit-id`; the MCP `params._meta` key `work_unit_id`;
+and the span attribute `work_unit_id`. They are spelled once, in `src/shared/work-unit.ts`,
+and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
+choose one. See [Work units](../work-units.md).
+
+What a session emits for its work unit follows its launch record (`session_launch_work_units`),
+never the `work-unit-id` flag. The flag is read in one place, `launchWorkUnitId`, once per
+launch, and that one value goes to the agent's environment and the record. Later readers use
+`launchWorkUnitFor(session)` or `sessionWorkUnitId(session, task)` from
+`src/server/work-unit.ts`. A new launch path computes the decision where it begins, hands it to
+the registry before the session's first event (`registerSdkSession`'s `launchWorkUnitId`, or
+`expectTerminalLaunchWorkUnit` with the launch's own state home before a terminal spawn, then
+`settleTerminalLaunchWorkUnit` with the launch's outcome), and applies it with `withWorkUnit` or
+`workUnitEnv`; it never sets `WORK_UNIT_ID` any other way. A terminal hand-over is never matched
+by checkout path: only the agent beneath that launch's wrapper may take it.
+
+Telemetry exports `work_unit_id` unhashed, the one exception to per-destination `scopedRef`
+hashing. The exception lives in one list, `UNSCOPED_REF_KEYS` in `src/shared/telemetry.ts`, and a
+span exports a listed ref only through its descriptor's `unscopedRefAttributes`. The catalog lint
+(`telemetryCatalogProblems`) refuses an unscoped ref that is not listed, a listed one hashed
+through `refAttributes`, and a span-bearing event with a `session_id` or `task_id` ref that does
+not export `work_unit_id`, so a new session or task event inherits the rule. Capture reads the
+id from the launch record (`launchWorkUnitFor`) or the launch's own decision, never from the flag
+or a task. It is never a metric dimension (`FORBIDDEN_METRIC_DIMENSIONS`).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -171,6 +211,19 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
+  transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
+  (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
+  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
+  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
+  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
+  `pending_turns` and is final. Stage, transport and
+  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
+  recorded with launches. A stored shaper whose stage or transport this build does not know is
+  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
+  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -296,6 +349,18 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   established is excluded from a human prompt trail rather than admitted to one. Append,
   never reorder - `human` is the only value whose text is retained at all, and even that is
   trimmed and clipped to `SCOUT_PROMPT_LIMITS.entryBytes` rather than kept byte-for-byte
+- Resident identifiers - the task kind `resident`, the launch-state vocabulary
+  (`RESIDENT_LAUNCH_STATES` in `src/shared/residents.ts`, written into
+  `resident_runs.launch_state`), the profile section keys (`RESIDENT_PROFILE_SECTIONS`, the JSON
+  keys every stored revision carries), the `resident-profiles` and `resident-mcp-servers`
+  settings-backup domains, the MCP server reference sources (`global`, `custom`), the secret
+  field kinds (`env:`, `header:`, `query:`), and an instruction proposal's vocabulary in
+  `src/shared/resident-instructions.ts`: its targets (`RESIDENT_INSTRUCTION_TARGETS`) and its
+  outcome statuses (`RESIDENT_INSTRUCTION_OUTCOME_STATUSES`), stored in
+  `resident_instruction_proposals`. Its answer is read through the `request_input` decision and
+  option ids (`REQUEST_INPUT_DECISION_ID`, `o<n>` in `src/shared/request-input.ts`), which every
+  answered `request_input` review row stores. Append, never rename or reorder. See
+  [Resident profiles](#resident-profiles)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and
@@ -721,7 +786,13 @@ through every rule here.
   non-empty `repo_root` reviews a secondary repository of the session's task, and its
   `session_cwd`/`session_repo_root` hold that repository's worktree and root - which is what
   scopes evidence capture, check execution, the capture root and the gate's adoption match
-  without any of them knowing why.
+  without any of them knowing why. Scoped evidence and coverage use `session_cwd`, never
+  the canonical repository identity in `repo_root`, for criterion recipients, reservations,
+  generation tracking, carry-forward and retirement. Filesystem realpath normalization does
+  not map a canonical Git checkout to a linked worktree. Automatic evidence preparation
+  validates conversation identity against the primary binding and a secondary checkout against
+  the owning task's current persisted repository assignment. A detached, released or reassigned
+  worktree cannot admit a repair merely because its old binding remains active.
 - **`activeBindingForNote` means the session's OWN binding** and must keep meaning it: the
   create conflict check, dispatch arming, the Foreman claim and reattach all ask that question.
   `activeBindingsForNote` sees the siblings.
@@ -801,15 +872,41 @@ A SessionAction is a durable side effect, not an evaluator:
   child already captured - is supplied on `SessionActionAdapterContext` by the manager, which is
   where git and SQLite live. An adapter that fetched its own facts could not be tested without arranging them on a
   real machine, and "we could not look" would stop being distinguishable from "the answer is
-  no". Null means unknown, and unknown always means wait.
+  no". Null means unknown, never proof of success; each adapter owns its retry and recovery policy.
 
 ### The `pull_request` adapter
 
-- Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
-  repository root and branch as the bound checkout, whose last observed remote head is the
-  exact commit the continuation captured. That commit's resolved Git tree must also equal the
-  `contentTreeOid` captured on the parent judged submission. `Session.prUrl` is a lookup hint and satisfies
-  nothing; neither does a branch name, nor a pull request merely existing.
+- A settled Pull Request turn may complete with `no_change` when daemon-read Git facts prove
+  a clean checkout (including staged and untracked files) whose HEAD is contained in the locally
+  observed default branch, and its tree matches the accepted content. Base selection follows the
+  review diff's policy; stacked work is conservatively compared against the default branch too.
+  The persisted expectation pins HEAD, tree, base oid and base ref;
+  continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
+  This completion releases the existing conversation hold without creating a PR, including for
+  actions already waiting when the daemon restarts.
+  A sealed no-change continuation also completes an Inspector-policy run at End when there
+  is no candidate PR for that repository. A candidate PR still enters the normal Inspector gate.
+  Missing accepted-tree proof for a clean checkout, unavailable local reads (including timeouts, moving HEAD, and
+  an unresolved base), and clean-checkout mismatches with accepted or captured content all
+  retry for one minute after a settled turn with no adopted PR before a recoverable
+  `expectation_unmet` block with a precise diagnostic. A checkout returned to the default branch
+  after publication gets the same adoption grace period.
+  The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
+  sweeps and restart; a recovered read or a new active turn resets it. The lifecycle observer
+  records even a short turn between sweeps without replacing the delivery anchor or first
+  pickup timestamp. Adoption can still complete the action during that window. Both completion and blocking re-offer
+  queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
+  An observation discards its Git reads if the action or session changed while it awaited them.
+  The adapter's shared `settledAt` remains the current observation; only Pull Request reads
+  `proofRetryStartedAt` for the persisted retry window.
+  A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
+  Known changed work, including commits on a detached HEAD, waits for PR adoption even when
+  the accepted content tree is missing. No timeout or agent assertion is treated as proof of publication.
+- New publication requires a durable adoption in Mission Control's ledger. Repository,
+  branch, head and content comparisons are advisory for a newly opened PR; differences are
+  recorded as warnings. Earlier open adoptions use the existing session/checkout checks.
+  `Session.prUrl` alone proves nothing. Earlier merged publication follows the stricter
+  content proof below.
 - It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
@@ -824,19 +921,41 @@ A SessionAction is a durable side effect, not an evaluator:
   expectation the immutable child can never satisfy, and the action waits forever while the
   head keeps moving.
 - Commit identity is not content identity. A packaging commit may differ from the reviewed
-  commit while preserving the accepted tree. A different published tree blocks with the
-  append-only `published_content_changed` code and must not reach End on the prior verdict.
-  Missing historical tree proof blocks as `capture_failed`; absence is never treated as
-  equivalence.
-- Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
-  including a provider that could not be reached: waiting is recoverable and a block is not.
+  commit while preserving the accepted publication tree. Historical merge satisfaction uses
+  that tree and refuses missing proof. If continuation capture discovers unpublished changes
+  or a different tree, `published_content_changed` exposes the existing resubmit recovery.
+- A historical merge can satisfy a later action only with a known matching repository,
+  branch and reviewed publication tree. The continuation persists `mergedContentTreeOid` and
+  rechecks that tree plus unpublished changes. Ordinary new-PR adoption keeps its advisory
+  comparison policy; historical publication never borrows that looser fallback.
+  A PR observed merging during the action wait retains the ordinary earlier-adoption path;
+  adoption time alone does not establish that its merge predates delivery.
+  Ledger reads require an explicit adoption-time/key cursor and use bounded pages. Git lookups run
+  sequentially per action so branch history cannot create an unbounded subprocess burst.
+  Every page remains eligible; a matching historical publication is never truncated away.
+  Successful immutable tree resolutions are cached by repository identity and commit in a
+  bounded manager cache. Unknown objects retry after a one-minute cooldown, held separately
+  until expiry so cache eviction cannot trigger immediate retries. Missing accepted trees
+  skip these lookups.
+  Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
+- Rolled-over task settlement requires the latest terminal run's confirmed action delivery
+  to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
+  receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
+  the Registry records the episode. The receipt includes the human Goal revision so an
+  operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
+  fail closed; retained text labels alone never establish ownership after restart.
+  Driver state events without a prompt hook do not roll an episode; an unchanged merged
+  episode retains the ordinary settlement path. Blocked runs still own recovery and keep
+  the task running until the run completes, fails, or is cancelled.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
-  tick the adapter needed to see it closed - and the one state that blocks becomes unreachable,
-  leaving a durable contradiction reported as an ordinary missing-PR wait for ever. Read through
-  `loadAdoptedInspectorPrsSince(deliveredAt)`, which keeps retired rows visible for exactly the
-  window this action has been waiting. Widening that bound is not free: the caller resolves a
-  repository identity per distinct root, and each one is a git subprocess.
+  tick the adapter needed to see its final state, leaving a completed publication reported
+  as an ordinary missing-PR wait. Read through
+  `loadAdoptedInspectorPrsSince(deliveredAt, branch, null)` for the first page, then pass the
+  preceding page's last row as the cursor. This keeps retired rows visible for exactly the
+  window this action has been waiting, plus older merged observations on its branch. The
+  caller resolves repository identity per distinct root and resolves merged content only
+  inside the matching repository and branch. Closed-unmerged history stays outside the window.
 - A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
   and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
   produced one somewhere else", which look identical from the ledger and are opposite problems.
@@ -1012,6 +1131,30 @@ wrong page with no error anywhere.
 `PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
 place the engine's control verbs go; filling it must not restructure the header around it.
 
+## Who may change a Goal's objective
+
+A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
+`Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
+from the first substantive instruction, and only while the Goal has no objective yet. After that,
+only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
+relationship. `steer` and `unclear` never change them, and no other writer does.
+`openingPrompt` is write-once.
+
+`POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
+paused Goal, and it CONFIRMS the objective rather than rewriting it. It resolves every pending
+revision as steering through `upsertSessionGoalWithSteeringNotes`, one row per revision with the
+rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
+`resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
+`source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
+`resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
+contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
+action, if one is ever wanted, is a separate route with its own review, not a body on this one.
+
+Steering rows always carry `relationship: "steer"` at or below the Goal's resolved revision. The
+refiner writes one through `upsertSessionGoalWithSteering` and the accept route writes several
+through the list writer; neither replaces the other.
+
 ## Prompted completion: one generation, one reason, one write
 
 A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that
@@ -1106,6 +1249,11 @@ Hook event vocabularies have one owner per harness. Launch-scoped Codex hooks an
 
 The two layouts are `console` and `board`. `App.tsx` owns session state; layouts arrange it.
 
+The optional `boardSidebarAllSessions` UI preference reuses `ConsoleView` for the Board's
+open detail, with a back control. Board still owns selection and dismissal; its overview and
+backlog remain unchanged. While that rail is open, vertical keyboard navigation uses the
+Console ordering across state groups. The setting is offered only with Board selected.
+
 A session appears in three components:
 
 - `layouts/ConsoleDetail.tsx`
@@ -1113,6 +1261,24 @@ A session appears in three components:
 - `layouts/RailRow.tsx`
 
 Add layout-visible props through `SessionViewProps`. Shared leaves belong in `session-bits.tsx`. A new session signal must cover detail chips, tile flags, and rail marks.
+
+Fleet membership for residents has one owner. `residentPlacement` (`src/web/lib/resident-placement.ts`)
+decides which residents are excluded from the fleet and which are visitor cards, from the
+`residentPlacement` UI preference, the drawer's open or pinned state and the open detail. App
+applies it in the `fleet` memo before `orderSessions`, so the Board columns, both rails, the arrow
+keys and the ⌘-numbers inherit it; no view branches on placement. An open resident is read
+through App's `detailSession` lookup (passed as `SessionViewProps.detailSession`) and is never
+added to a fleet list. The dock and the Residents drawer share one launch state,
+`src/web/residents/useResidentLaunches.ts`.
+
+Blocked placement has one owner too. `orderSessions` (`src/web/lib/fleet-order.ts`) takes idle
+and unconfirmed sessions with `hasBlocker` out of their tone groups into `FleetOrder.blocked`,
+before the pinned, held, repository and run partitions, and lays the result out as
+`FleetOrder.columns` for the `blockedPlacement` UI preference. App's `boardColumns`, the
+⌘-numbers, `BoardView` and `ConsoleView` (through `fleetRailSections`) all read those columns, and
+all three call sites pass the same stored placement. A new placement is an entry in
+`BLOCKED_PLACEMENTS` and a case in `fleetColumns`; it never adds a second ordering. A column id
+that is not a tone (`"blocked"`) is a `FleetColumnId`, never a `Tone`.
 
 Compose surfaces:
 
@@ -1129,9 +1295,16 @@ Human conversation composer submissions enter the durable pending-turn outbox. O
 
 Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
+Trust and Feature flags share the `settings-pane-*`, `settings-search`, and `settings-grant`
+CSS leaves. Keep Trust-specific states and layout in Trust; do not fork the shared rules.
+
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
+
+A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
+
+Backdrop clicks stop at the overlay, including when it is nested in a clickable tile. Modal overlays (`ariaModal`) move focus inside, contain Tab and Shift+Tab while topmost, and restore their connected opener on dismissal. Existing autofocus inside the panel is preserved. Use the shared behavior instead of adding a separate focus trap to a dialog.
 
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
@@ -1162,7 +1335,19 @@ Extend existing registries instead of adding parallel lists:
   its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
   does not add or remove navigation. A local visibility check is how a panel becomes
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
-  falls back to Display
+  falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
+  runtime probe for installed software. A feature flag must feed one shared availability gate
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
+  its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
+  stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already
@@ -1174,6 +1359,8 @@ Extend existing registries instead of adding parallel lists:
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
 - Pipeline providers: `PIPELINE_PROVIDER_INFO` / `PIPELINE_STEPS` (`src/shared/pipeline.ts`)
   and `PIPELINE_PROVIDERS` (`src/server/pipelines/index.ts`)
+- Resident profiles: `RESIDENT_PROFILE_SECTIONS`, `RESIDENT_EDITOR_SECTIONS` and
+  `RESIDENT_LAUNCH_CONTRIBUTORS`; see [Resident profiles](#resident-profiles)
 - Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` and `TASK_KIND_BEHAVIOR` (`src/shared/task.ts`) for how they are named, where they are available, who owns the launch, and whether backlog autopilot may act. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. `pipeline` is append-only and fail-closed: it is offered only in an enabled pipeline repository, launches through the provider-owned terminal path, and is never backlog-autopilot work. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate or behavior record over the vocabulary instead (`hasReviewableDiff`, `allowsBacklogAutopilot`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`
@@ -1187,6 +1374,145 @@ Exhaustive `Record<Id, Value>` registries are intentional compiler enforcement.
 - `detectPathTokens(text)` - the fallback for a caller that cannot ask, which is the ensemble scorecard rendering a rationale before any file union is fetched. It guesses from shape and therefore misses every extensionless name, dotfile, and spaced path.
 
 Do not reach for the shape matcher while holding a listing, and do not add a third: they already share the word-boundary and `:line[:column]` rules, and the copies that preceded them had drifted.
+
+## Resident profiles
+
+Residents are extended through three registries, each owned by Phase 1 of
+[the residents plan](../plans/persistent-agent-profiles/phased-plan.md). A later phase appends to
+them and never edits another phase's entry:
+
+- `RESIDENT_PROFILE_SECTIONS` (`src/shared/residents.ts`) - the named section schemas a profile
+  revision is made of. A new section is optional with defaults (`.default({})` when its fields all
+  default), so a revision saved before it parses unchanged. Section keys are persisted JSON keys.
+  An older build never drops what a newer one wrote: request bodies stay strictly validated, the
+  store carries every stored section or field the request does not know forward on edit
+  (`preserveUnknownResidentSettings`), and settings snapshots carry and restore each revision as
+  stored.
+- `RESIDENT_EDITOR_SECTIONS` (`src/web/residents/editor-sections.tsx`) - how each section is
+  edited on `#/residents`, keyed by the same section id. `blankResidentDraft` reads section
+  defaults from the schema registry, so a new section needs no edit there.
+- `RESIDENT_LAUNCH_CONTRIBUTORS` (`src/server/residents/launch.ts`) - what each section adds to an
+  SDK launch. Contributors read only the run: its pinned revision, persona snapshot and run
+  instructions. Widen `ResidentLaunchContribution` with an optional field; never branch on a
+  harness id.
+
+These rules hold across phases:
+
+1. **One launch path.** `ResidentManager.launch` behind `POST /api/residents/profiles/:id/launch`,
+   and `launchResident()` (`src/web/residents/launch.ts`) for every browser affordance. Only the
+   resident capability (`RESIDENT_LAUNCH_TASK_CREATE`) can create a `resident` task, and only with
+   the id its run reserved; `DispatchSchema`, MCP, schedules and task sources refuse the kind
+   (`taskKindCreator`).
+2. **A live run reads only its pinned revision**, through `ResidentStore.revision` on the daemon
+   and the run's `settings` in the browser. The current revision is for new launches.
+3. **The run is the durable identity.** `resident_runs` is written before its task, with the task
+   id reserved and the normalized launch input stored, so a replay - including two concurrent
+   requests with one `requestId` - is answered from the row alone. `launched` requires an
+   `sdk_sessions` row carrying the task id; the task existing is never evidence. Later phases add
+   columns with `addColumn` and an upgrade test.
+4. **Persona and instructions are standing instructions**, appended after repository standing
+   instructions by the composer at the dispatcher's one resident call site, recorded in
+   `session_standing_instructions` and replayed on resume.
+5. **Session control comes only from desktop Launch or Restart on new profile clicks.**
+   `launchResident()` arms it, the launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
+   applied and recorded in the four `control_*` columns of `resident_runs`. No later phase may
+   create a resident grant through any other path. Restart on new profile is a new launch:
+   its desktop click arms the same capability for the replacement request and displayed new
+   revision, and its route uses the same caller check and manager consumption. It never copies
+   the old run's grant. The rule is stated in
+   [security](../security.md#resident-launch-grants).
+
+6. **A run's MCP servers come only from its snapshot.** The launch resolves the effective set once
+   (`resolveResidentMcpSet` in `src/server/residents/mcp-launch.ts`), keyed by (source, name),
+   before any secret is bound, and writes it to `resident_run_mcp_servers` and
+   `resident_run_mcp_secrets`; `resident_runs.mcp_snapshot_at` marks it, so a run from before
+   snapshots keeps native MCP behaviour. The `mcp` contributor renders it into
+   `SdkLaunchOptions.residentMcp` beside Mission's unchanged `mcp` descriptor, at launch and on
+   every resume (`SdkSupervisor.registerResidentMcp`). A driver calls `forStart()` once per
+   process start, including its own relaunches, because launcher credentials are single-use. No
+   entry carries a secret value; a global server, or a custom server with a secret, is always a
+   launcher entry. A driver honours it only through the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection`
+   records, and a harness whose value is `null` cannot save or launch an MCP selection.
+   The one exception is a profile whose `mcp.nativeSources` is `all`, which is offered, saved and
+   launched only where `mcpSelection.allNativeSources` is set. Its snapshot holds only the
+   selected custom servers, `ResidentMcpLaunch.nativeSources` carries the choice from the run's
+   pinned revision, and the driver renders the snapshot beside everything the harness loads
+   natively; the post-start check then covers only Mission's server and that snapshot. Never let
+   `all` widen a pinned profile, and never give a harness `allNativeSources` without saying in
+   [security](../security.md#resident-mcp-secrets) what it gives up.
+   Secret values are never returned by a route, published, logged, backed up or placed in an
+   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
+   a recovery point is scrubbed of, and a new secret table joins that list. See
+   [security](../security.md#resident-mcp-secrets).
+7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`
+   document compiled in by `npm run residents`, plus its other settings in `BUILTIN_RESIDENTS`
+   (`src/server/residents/builtin-residents.ts`). Its id is `builtin:<slug>`, durable and
+   append-only. `reconcileBuiltinResidentProfiles` runs at daemon start before the Registry loads,
+   inserts a missing built-in, and gives a changed one a NEW revision, so rule 2 holds across
+   upgrades. Unlike built-in Personas, a built-in resident is stored, because a run joins
+   `resident_profile_revisions` for its pinned revision. The store refuses every edit and archive of
+   a `builtin:` id. It reserves a built-in's name for create and rename. It leaves built-ins out of
+   the live-profile bound, settings snapshots and restores. A built-in's `normalized_name` is a
+   sentinel, so an operator profile that already held the name keeps it, and both are listed.
+   Every surface that offers profiles as choices names a built-in through
+   `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
+
+8. **Only an operator's answer edits a profile or Persona from a resident's conversation.**
+   `propose_resident_instruction_changes` asks a `request_input` question, built by
+   `requestInputReview` exactly as the `request_input` tool builds one, and stores the proposal
+   beside that review; it writes nothing. `ResidentInstructionChanges.resolution` is the one path that applies one, and
+   only for a `human` answer, through `updateResidentProfile` and the Persona store's
+   compare-and-set against the revisions the proposal was made against, in the review's own
+   transaction. Foreman and `session:` actors are refused before the answer settles. Never add an
+   agent-facing route or tool that writes `resident_profile_revisions` or a Persona's guidance
+   directly; a live run still reads only its pinned revision (rule 2).
+
+Repo-less residents use the existing workspace section and resident creation capability.
+`tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
+keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
+obligation before directory creation and is cleared only after successful removal of the workspace
+and its empty run directory. Removal is asynchronous, serialized per run, and drained during
+daemon shutdown. Creation and cleanup use the native descriptor-relative filesystem operations:
+each component is opened without following symlinks, and recursive removal runs on a worker
+against held directory descriptors so an ancestor swap cannot redirect deletion.
+Removal restores owner access on an already-open directory after a permission-denied unlink
+and retries once. A directory that cannot be opened stays owed until its access is restored;
+cleanup never changes permissions through a pathname.
+Workspace ownership records the reserved run path, not a persistent device/inode identity.
+Files opens the ordinary directory currently at that path for each request and holds its
+descriptor throughout traversal. Replacing the root after it opens cannot redirect that listing;
+an ordinary directory moved into the reserved path before the request becomes its current
+contents. This does not grant the resident permission to move or read directories elsewhere.
+Cleanup also owns paths, not lifetime inode identities: traversal keeps its opened directory,
+but the final directory unlink acts on the current entry in its held parent. An empty ordinary
+replacement can be removed; a populated replacement makes that attempt fail and keeps cleanup
+owed. Cleanup does not search for a directory another process moved out of the owned tree.
+These operations prevent traversal through symlinks; they do not isolate Mission's state from
+another process running as the same OS user.
+Repository consumers use the shared predicate or `taskRepoRefs`, never infer
+a repository from cwd.
+
+The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and
+creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a
+profile is authoring state, and a launched resident reaches the Line as its task and session.
+
+The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
+with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
+session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority`, `loop` and `schedule`), not the whole
+revision: the profile instructions, Persona id, execution and workspace choices stay on the
+daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
+shows its own pinned section in the browser appends that section id to the list, in one line,
+and the summary carries it from then on. `ResidentManager` and `ResidentLoop` publish
+after their run writes, reading the row back (`publishRun`), so the collection is bounded by the
+residents running. `resident_run_upsert` and `resident_run_remove` are not `LINE_INPUT_EVENTS`
+either. The board's marker and pin read only that join:
+
+- Marker colors are `RESIDENT_MARKER_COLORS` ids, persisted in `board.colorId` and drawn through
+  the `--resident-<id>` tokens in `styles.css`. Append-only; an unknown id draws as the first color.
+- The pin is an argument to `orderSessions` (`pinnedResidentSessions`), the outermost partition
+  inside a tone group, ahead of free and held. App, `BoardView` and `ConsoleView` all pass it, so
+  the three orderings and the arrow keys agree.
 
 ## Electron and build surfaces
 
@@ -1212,7 +1538,56 @@ The `@shared` alias must agree across TypeScript, Vite, and esbuild. Never enabl
 
 `src/web/styles.css` is a single tokenized, sectioned stylesheet. Add rules to the matching section. When removing or renaming a class, search for its CSS in the same change.
 
+Chrome colours are supplied through tokens. Each token is declared on the leading `:root` block with its default value, and every rule below that block paints through `var(--...)` or a `color-mix()` of tokens. Tokens are named for roles, so distinct roles may share a default value (`--on-accent`, `--fg-strong` and `--highlight-ink` are all `#fff` today) and a skin can still separate them. That is what lets a skin repaint the app by overriding tokens. Apart from the exceptions below, a hex, `rgb()`, `hsl()`, named colour or system colour (`Canvas`, `CanvasText`) anywhere after `:root` fails `test/style-literals.test.ts`. That includes any letter case (`RGB(...)`), a CSS escape (`\72 ed`), and a colour inside a data URI's SVG, whether the URI sits in `url()` or bare in `image-set()`, is percent-encoded or base64, spells the colour with an XML character reference (`&#x72;ed`), or nests another data URI. A raster data URI is reported too, since its colours are baked into pixels no token reaches. Reuse a token when its role matches, otherwise add a role token named for what it does (`--on-accent`, `--danger-soft`), never for its hue, even if its default equals an existing token's. A translucent shade of an existing role is a `color-mix()` of that role's token with `transparent`, not a new token. A token carries a translucent value of its own only when the translucency is the role itself and there is no opaque role to derive it from. `--canvas-minimap-mask` is that case: it is React Flow's 60% veil over the part of the workflow canvas outside the viewport. The older `--shadow` token is another. The guard's exceptions are narrow and listed in the test's `ALLOWED` array, each with its reason. Two kinds exist today, and neither is chrome. The first is the white canvas behind operator-authored HTML (`.managed-plan-reader iframe`, `.html-preview` and `.artifact-preview`), which is written against a browser's white default and must not follow a skin. The second is `#000` in a `mask-image` gradient (`.conversation-header-preview .detail-tabs` and `.rm-occurrence-list`), where a mask reads only alpha and its colour never reaches the screen. An entry matches one selector, property and literal, and the test fails when an entry stops matching, so the list cannot outlive what it excuses. Separately, a colour word is not a colour in a property that holds only names (an animation, font, grid area, counter or transition, for example) or inside quoted text that is not a data URI. Do not add skin colours to the allowlist. React Flow's canvas colours are routed through `--canvas-*` tokens on `.workflow-canvas`, and its minimap colours its nodes by class rather than through `nodeColor`, whose inline `fill` no stylesheet can repaint.
+
 Harness colors come from `AGENT_IDENTITY` through `--agent-accent`; never name an agent in CSS.
+
+### Adding a skin
+
+A skin is CSS only, and it is added in four places:
+
+1. **Register it** by appending an entry to `SKINS` in `src/shared/skins.ts`: a kebab-case
+   `id`, `label`, one-line `description`, `colorScheme` (`dark` or `light`) and the six
+   `swatches` the picker's thumbnail draws. Ids are persisted in `app_config.ui.skin` and are
+   append-only: never rename, reorder or remove one. A stored id a build does not know reads
+   as Default, while a write of one is refused.
+2. **Write one file**, `src/web/skins/<id>.css`, containing `:root[data-skin="<id>"] { ... }`
+   and nothing that is not scoped under that selector. Restate `color-scheme` for a light
+   skin and at least `--bg`, `--bg-2`, `--panel`, `--panel-2`, `--border`, `--border-soft`,
+   `--fg`, `--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger`, `--exited`,
+   `--purple`, `--radius` and `--shadow`, plus every role token whose Default value would
+   paint wrong on your background (inks, text on solid fills, the failure family, the
+   canvas, the `--select-chevron` data URI). Add an `@import` for it to
+   `src/web/skins/index.css` in registry order. Default has no file: it is `:root`.
+3. **Pass `test/skins.test.ts`.** Against `--bg`, `--panel` and `--panel-2`, `--fg`, `--muted`,
+   `--dim`, `--working`, `--idle`, `--attention`, `--danger` and `--held` must clear 4.5:1 and
+   `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
+   thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
+   registered skin with no new case, so a skin may change colours, fonts and corners but
+   never padding, borders, font size or line height. A skin changes a face through
+   `--font-display` (headings, card titles, tile names) and `--font-label` (the Line's stage
+   names), never by restating a font rule.
+   Any rule beside the token block is decoration, and `test/skin-decoration.test.ts` holds
+   it to paint: backgrounds, `box-shadow`, `text-shadow`, `text-transform`, `color` and
+   `border-color`. Nothing that sizes a box, and no `filter`, `backdrop-filter`,
+   `transition` or animation. A glow restates the shadow it replaces, rings included.
+4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
+   assert its background and persistence. A skin that changes a face or adds decoration also
+   joins `DECORATED_SKINS` there, which holds the top bar, the Line and the Dispatch button to
+   Default's measured geometry.
+
+`src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
+document's `color-scheme`, and no component branches on the skin id. The daemon serves the
+dashboard document with the stored skin already on `<html>`, plus a `<meta name="mission-skin">`
+seed (`src/server/dashboard-document.ts`). The preference store takes that seed over its local
+cache, so a profile with no cache paints the stored skin from its first frame, and `lib/skin.ts`
+keeps the served attribute instead of replacing it. The desktop window's launch colour
+lives in `window-background.json` in the state home (`src/server/window-background.ts`), and the
+daemon is its only writer: `syncWindowBackground` records the stored skin's swatch on every skin
+write, after a settings restore and at startup, so a skin chosen in a browser still decides the
+next desktop launch. The shell's bridge handler only repaints the live window; it never persists,
+because a page that loaded before a change elsewhere would write a stale colour. `createWindow`
+and the shell's startup page both paint from the file.
 
 In Electron, the top bar is a drag region. New floating interactive layers need the desktop `no-drag` rule.
 
@@ -1265,3 +1640,23 @@ A prepared destination may move; uncertain or historical delivery attribution mu
 The Phase 1 lease stays the only credential-lifetime owner. Do not downgrade while any
 transfer is pending, and do not turn runtime transfer into a task-worktree return or a second
 session eviction path.
+
+
+## CodeRabbit follow-through state
+
+`inspector_prs.code_rabbit_state` is versioned, schema-validated JSON owned by the existing
+adoption row. Complete success, retained historical data, latest error, per-root generation and
+per-conversation/intent-episode receipt are distinct facts. Root edits and observed reopenings
+advance generations; head-only pushes and shrinking unresolved sets do not. Receipt outcomes
+`uncertain` and `delivered` are persisted vocabulary. A claim binds its id, exact root generations,
+observation id and head before transport; only positive refusal releases that exact claim.
+
+The record retains at most 2,000 root identities and 10,000 latest per-root owner/episode receipts.
+Reaching a bound holds work rather than discarding replay protection. A newer generation replaces
+only its matching receipt; delayed old results cannot clear it. Adoption-row deletion owns final
+cleanup. Neither session exit, toggle nor process restart clears receipts. Stored observations
+from an earlier daemon are history until the current process completes a provider read.
+
+The Shipping setting is the only source grant. Foreman consent and workflow ownership govern
+messaging; existing merge gates govern merge. Adding a CodeRabbit status must never synthesize
+an Inspector clean review or change those gates. A missing or invalid saved record is unknown.

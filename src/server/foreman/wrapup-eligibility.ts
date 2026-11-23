@@ -6,12 +6,13 @@ import type { TaskKind } from "@shared/types.ts";
  * These are policy reasons, not persisted ids. They stay structured so callers can log the
  * stable explanation while tests assert the decision without depending on prose.
  */
-type AutomaticChatWrapupBlock = { kind: "chat"; reason: string };
+/** A human-ended kind (chat, resident) with no explicit Workflow: completion is the human's. */
+type AutomaticHumanEndedWrapupBlock = { kind: "human_ended"; reason: string };
 
 type AutomaticScoutWrapupBlock = { kind: "scout"; reason: string };
 
 export type AutomaticWrapupBlock =
-  | AutomaticChatWrapupBlock
+  | AutomaticHumanEndedWrapupBlock
   | AutomaticScoutWrapupBlock
   | { kind: "review_artifact"; reason: string };
 
@@ -163,6 +164,8 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   plan: false,
   pipeline: false,
   chat: true,
+  // A resident ships nothing on its own; it is judged by the human who closes it.
+  resident: false,
 };
 
 /** Kinds whose ordinary completion stays with the human unless a Workflow was selected. */
@@ -174,6 +177,7 @@ const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
   plan: false,
   pipeline: false,
   chat: true,
+  resident: true,
 };
 
 /** A session with no linked task has no kind to exempt it, so it is classified as before. */
@@ -194,7 +198,10 @@ export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrap
     KIND_REQUIRES_EXPLICIT_WORKFLOW[input.taskKind] &&
     input.workflowId === null
   ) {
-    return { kind: "chat", reason: "the linked chat task has no explicit Workflow" };
+    return {
+      kind: "human_ended",
+      reason: `the linked ${input.taskKind} task has no explicit Workflow`,
+    };
   }
 
   if (input.skipScoutWrapup && input.taskKind === "scout") {

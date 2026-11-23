@@ -47,6 +47,22 @@ export function goalLine(text: string, max = GOAL_MAX_CHARS): string {
   return `${(space > max * 0.75 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
+/**
+ * The rationale a person's "Accept objective as is" writes, on the goal and on every steering
+ * note it records. A stable prefix ("Accepted by you:") so the drawer, tests and later phases
+ * can tell a human-confirmed contract from a classifier verdict.
+ */
+export const GOAL_ACCEPTED_RATIONALE =
+  "Accepted by you: the current objective is the completion contract.";
+
+/**
+ * The rationale prefix for an instruction the reconciler judged `unclear` while a newer one was
+ * already queued. It is kept as steering rather than dropped, because the next resolution
+ * replaces the only copy of its text.
+ */
+export const GOAL_KEPT_AS_STEERING_RATIONALE =
+  "Kept as steering: a newer instruction arrived before this one was clear.";
+
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
   const objective = goal?.objective?.trim() ?? "";
   if (

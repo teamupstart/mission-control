@@ -1,5 +1,13 @@
 # Managed plans
 
+These requirements apply when `html-plans` is explicitly invoked or the active workflow
+requires Mission Control-managed planning, including Mission Control plan tasks and
+`phased-plan`. Installing the skill or running a session in Mission Control does not make
+unrelated planning workflows managed. An explicitly selected repository-native workflow
+keeps its artifact locations, Git-tracked files, and approval and publication contracts
+unless it explicitly opts into managed plans. Missing Mission Control tools do not block
+that workflow; they still block managed planning, with no unmanaged Git fallback.
+
 Mission Control's daemon saves complete plan revisions. Settings > Skills > **Plan storage**
 defaults to repository mode, where Markdown in `docs/plans/<slug>/` is the source of truth.
 Local mode keeps the entire bundle beneath the repository-scoped Mission state store and
@@ -7,6 +15,25 @@ produces no checkout files. Generated HTML stays available
 locally for review and is omitted from Git by default. Settings > Skills > **Commit
 generated HTML plan files** opts new plans into publishing HTML alongside Markdown.
 The checkbox remains configurable when skill installation is off, but is disabled in local mode without losing its saved value.
+
+The Dispatch and backlog editor offer **Plan storage** for plan tasks in **Advanced**,
+between model selection and **After work**, below the task's
+[Persona](dispatch-and-backlog.md#a-persona-for-the-task). Advanced starts collapsed and retains the choice
+when collapsed again. The choices are: **Use global
+default** (showing its current value), **Local plan store**, or **Repository**. Creation
+resolves the choice once and pins it on the task. Reopening the editor shows that pin,
+not a live reference to Settings. Before planning starts, storage can be changed; selecting
+the global default again resolves it at save time. A reserved plan identity or saved artifacts
+lock storage, including after the task returns to the backlog. Legacy plan files discovered in the
+task's checkout diff also lock storage; unrelated repository plans do not. An unavailable task
+checkout blocks storage changes until its artifacts can be checked. Moving existing plans is not supported.
+Changing storage switches the built-in plan validation workflow to its matching local or
+repository variant. Converting a non-plan task selects the new storage's plan workflow unless
+the update explicitly supplies a workflow. Explicit None remains None; incompatible custom workflows are refused for local plans.
+
+The task API and `create_task` / `update_task` accept `planStorage: "local" | "repository" | null`.
+Null resolves the global default; omission on update preserves the pin. The field is only
+valid for plan tasks. Tool responses include the resolved `planPolicy`.
 
 Each plan pins that policy when created. Changing settings does not relocate active
 plans, reinterpret old revisions, delete tracked HTML, or migrate unmanaged plans.
@@ -197,6 +224,30 @@ The latest human resolution for that revision, writer episode and binding contro
 A later **Needs revision** answer or dismissal blocks publication until another approval;
 conflicting resolutions at the same timestamp also block. Renewed approval needs its own
 workflow validation when a workflow is bound.
+
+A final-bundle form that needs the operator's answer is filed rather than held in the call only
+when [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`) and
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) are both on, the
+agent's MCP child is new enough to accept a receipt, and the session can receive a message.
+Otherwise it waits in the call as before. A standing approval that covers the bundle with no other
+decision left is never filed: it still returns the approval as the tool result. With other
+decisions left, only those are asked, as their own form, which is filed under the same conditions.
+A filed form is bound to the revision at filing exactly as a blocking form is, and approval reads
+only the settled answer, so `publish_plan`, the workflow freeze and Local Plan Validation are
+unchanged. The receipt is not approval: the agent ends its turn, and the answer message names the
+plan and revision it approved or did not. A withdrawn or dismissed form never approves.
+
+The final-bundle form also offers **Approve all future bundles for this task** beside
+Submit. When the operator approves the bundle with it checked, the daemon records a standing
+approval for the task. Choosing **Needs revision** with it checked records nothing. Every later final-bundle request for that task is then approved at creation,
+without a prompt, and logged in the session's conversation as auto-approved rather than as the
+operator's answer. The agent's tool result says it was approved automatically. When a request
+also carries other open choices, the bundle is still auto-approved and logged, and only those
+remaining choices are asked, as their own review; the agent's answer to it begins by stating the
+bundle is already approved. Only the operator's own submitted answer
+can grant this: Foreman, a delegated session, a dismissal and a review without a managed plan
+task are refused. The publication gate accepts a standing approval exactly as it accepts a
+direct one, so workflow binding and validation rules are unchanged.
 
 New local plan tasks default to the appended **Local Plan Validation** workflow. Explicit
 None is allowed; explicit incompatible choices are refused. Compatible workflows have no

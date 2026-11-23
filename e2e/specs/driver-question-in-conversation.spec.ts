@@ -9,13 +9,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /**
  * The other channel a session asks its human through, and what it leaves behind.
  *
- * A session dispatched to a TERMINAL has Claude's built-in `AskUserQuestion` taken away and
- * asks through the MCP review channel instead (`ask-channel.ts`), which
- * `review-answers-in-conversation.spec.ts` covers end to end. A session on the SDK runtime -
- * every session in this suite, and the default a dispatch takes - keeps the built-in
- * deliberately: the ask arrives over `canUseTool` as a driver request, which IS the
- * dashboard's own control, so the MCP stand-in would be approximating something already
- * native.
+ * A dispatched Claude task never reaches this form: its `AskUserQuestion` is taken away and
+ * every decision goes through the MCP review channel (`ask-channel.ts`), on either runtime -
+ * which `sdk-task-asks-through-request-input.spec.ts` and `review-answers-in-conversation.spec.ts`
+ * cover end to end - and a launch that cannot carry that channel is refused. A Codex session on
+ * the Agent SDK runtime still raises its own `request_user_input`, which arrives as a driver
+ * request, so this file dispatches Codex and this is that form. Codex's tool has no
+ * multi-select, so both questions here take one answer.
  *
  * The two used to end differently, and only one of them ended well. Answering a driver
  * request resolved the callback the agent was blocked on and recorded nothing, and the
@@ -26,9 +26,10 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * record. This pins the missing half.
  *
  * Everything here is real except the model: a real dispatched SDK session, a real
- * `can_use_tool` control request raised by the fake CLI over the real vendored SDK, the real
- * form the dashboard draws for one, the real `POST /api/sessions/:id/submit-options` route,
- * and the conversation read back off the real SSE stream.
+ * `item/tool/requestUserInput` server request raised by the fake app-server over the real
+ * protocol client, the real form the dashboard draws for one, the real
+ * `POST /api/sessions/:id/submit-options` route, and the conversation read back off the real
+ * SSE stream.
  */
 
 const EVIDENCE = artifactsDir("driver-question-in-conversation");
@@ -52,7 +53,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
 }
 
 const TASK = "pick the toolchain";
-/** The prompt `fake-claude.mjs` answers by raising an `AskUserQuestion` and blocking. */
+/** The prompt `fake-codex.mjs` answers by raising a `request_user_input` and blocking. */
 const ASK_TURN = "ask me which linter to use";
 /** `--attention`, the gold a review answer wears. Asserted as a used colour, not a class. */
 const ATTENTION_GOLD = "rgb(246, 167, 51)";
@@ -66,6 +67,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // keystroke; without this the next fill lands on a covered control.
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
   await dialog
     .locator("select")
     .filter({ hasText: "finish without a Workflow" })
@@ -116,7 +118,7 @@ test("answering the agent's own question puts the whole form in the conversation
   // Deliberately NOT the first row of either question: a spec that picks the default
   // passes just as well against a form that ignores the click.
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
 
   // The form goes when the agent takes the answer - the card is no longer waiting on you.
@@ -169,7 +171,7 @@ test("a typed answer is recorded as typed, not as nothing chosen", async ({
   const { card, form } = await askAndWait(dashboard);
 
   await form.getByLabel("Custom answer for Which linter?").fill("oxlint, actually");
-  await form.getByRole("checkbox", { name: /types/ }).click();
+  await form.getByRole("radio", { name: /types/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 
@@ -208,7 +210,7 @@ test("a question re-presented after a first answer leaves both rounds in the log
   await expect(form).toBeVisible({ timeout: 15_000 });
 
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 
@@ -249,7 +251,7 @@ test("an unanswered question is not in the log as though it had been answered", 
   // And the same conversation gains the entry the moment it IS answered - which is what
   // makes the count above evidence of the filter rather than of a card that never renders.
   await form.getByRole("radio", { name: /biome/ }).click();
-  await form.getByRole("checkbox", { name: /types/ }).click();
+  await form.getByRole("radio", { name: /types/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(log.locator(".review-answer")).toHaveCount(1, { timeout: 15_000 });
 });

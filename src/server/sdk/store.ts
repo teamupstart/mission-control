@@ -1,5 +1,5 @@
-import { AGENT_TYPES, THINKING_LEVELS, PERMISSION_MODES } from "@shared/types.ts";
-import type { AgentType, PermissionMode, ThinkingLevel } from "@shared/types.ts";
+import { ADVISOR_CHOICES, AGENT_TYPES, THINKING_LEVELS, PERMISSION_MODES } from "@shared/types.ts";
+import type { AdvisorChoice, AgentType, PermissionMode, ThinkingLevel } from "@shared/types.ts";
 // The same helper the schedule store narrows its five persisted enums with, and for the
 // same doctrine: a stored value this build has never heard of reads as `null`, never as the
 // nearest thing we do know.
@@ -7,7 +7,11 @@ import { readPersistedEnum } from "@shared/schedules.ts";
 import { openDb } from "../db.ts";
 import { z } from "zod";
 
-const ProcessLifetime = z.object({ pid: z.number().int().positive(), startMs: z.number().positive().finite() });
+const ProcessLifetime = z.object({
+  pid: z.number().int().positive(), startMs: z.number().positive().finite(),
+  // Legacy rows remain usable for recovery, but cannot authorize updater signals.
+  darwinIdentity: z.string().min(1).optional(),
+});
 export type SdkProcessLifetime = z.infer<typeof ProcessLifetime>;
 
 /** Captured while the owned driver is observable, never inferred from its final status. */
@@ -54,6 +58,7 @@ export function recordSdkSessionProcess(id: string, lifetime: SdkProcessLifetime
  *    child, so a restart necessarily stops it, and a shutdown that recorded that as
  *    `exited` would make every clean restart indistinguishable from an agent that finished
  *    - reclaiming worktrees out from under work that was merely interrupted.
+ *  - `hibernated`: the operator stopped it to free its memory and will resume it by hand.
  */
 export const SDK_SESSION_STATUSES = [
   "starting",
@@ -61,6 +66,10 @@ export const SDK_SESSION_STATUSES = [
   "exited",
   "failed",
   "suspended",
+  // The operator hibernated its task: stopped on purpose, its conversation kept, and resumed
+  // only by the operator's Resume (`SdkSupervisor.wake`). Deliberately NOT live, so neither a
+  // restart nor a sweep relaunches it on its own.
+  "hibernated",
 ] as const;
 export type SdkSessionStatus = (typeof SDK_SESSION_STATUSES)[number];
 
@@ -82,6 +91,7 @@ const LIVE_STATUSES: readonly SdkSessionStatus[] = ["starting", "running", "susp
  * (a session nobody can see is one nobody can clean up) and reports `status: null`.
  */
 export interface SdkSessionRow {
+  residentCompactionTokenLimit?: number;
   id: string;
   agent: AgentType | null;
   agentSessionId: string | null;
@@ -89,6 +99,8 @@ export interface SdkSessionRow {
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
+  /** The task's advisor pin at launch, or null to inherit the operator's Claude settings. */
+  advisorModel: AdvisorChoice | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus | null;
   /**
@@ -116,6 +128,7 @@ export interface SdkSessionRow {
 
 /** What the supervisor writes when it launches (or relaunches) a session. */
 export interface SdkSessionWrite {
+  residentCompactionTokenLimit?: number;
   id: string;
   agent: AgentType;
   agentSessionId: string | null;
@@ -123,12 +136,15 @@ export interface SdkSessionWrite {
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
+  /** Omitted writes NULL: inherit. */
+  advisorModel?: AdvisorChoice | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus;
   turnInProgress: boolean;
 }
 
 interface Row {
+  resident_compaction_token_limit: number | null;
   id: string;
   agent: string;
   agent_session_id: string | null;
@@ -136,6 +152,7 @@ interface Row {
   task_id: string | null;
   model: string | null;
   effort: string | null;
+  advisor_model: string | null;
   permission_mode: string | null;
   status: string;
   turn_in_progress: number;
@@ -146,6 +163,8 @@ interface Row {
 
 function mapRow(r: Row): SdkSessionRow {
   return {
+    ...(r.resident_compaction_token_limit !== null && Number.isSafeInteger(r.resident_compaction_token_limit) && r.resident_compaction_token_limit > 0
+      ? { residentCompactionTokenLimit: r.resident_compaction_token_limit } : {}),
     id: r.id,
     agent: readPersistedEnum(AGENT_TYPES, r.agent),
     agentSessionId: r.agent_session_id,
@@ -153,6 +172,7 @@ function mapRow(r: Row): SdkSessionRow {
     taskId: r.task_id,
     model: r.model,
     effort: readPersistedEnum(THINKING_LEVELS, r.effort),
+    advisorModel: readPersistedEnum(ADVISOR_CHOICES, r.advisor_model),
     permissionMode: readPersistedEnum(PERMISSION_MODES, r.permission_mode),
     status: readPersistedEnum(SDK_SESSION_STATUSES, r.status),
     turnInProgress: r.turn_in_progress === 1,
@@ -183,19 +203,32 @@ export function sdkSessionIsLive(row: SdkSessionRow): boolean {
 export function listSdkSessions(): SdkSessionRow[] {
   return openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, turn_in_progress, display_name, created_at, updated_at
+      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
+              status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions ORDER BY created_at ASC`,
     )
     .all()
     .map((r) => mapRow(r as unknown as Row));
 }
 
+/**
+ * Every embedded session row that names this task, oldest first.
+ *
+ * The durable evidence that a task's session STARTED: `SdkSupervisor.start` writes the row
+ * only after the driver accepted turn one, so a row carrying the task id means the agent
+ * received its first turn, whatever became of the task afterwards.
+ */
+export function sdkSessionIdsForTask(taskId: string): string[] {
+  return (openDb()
+    .prepare(`SELECT id FROM sdk_sessions WHERE task_id = ? ORDER BY created_at ASC`)
+    .all(taskId) as Array<{ id: string }>).map((row) => row.id);
+}
+
 export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, turn_in_progress, display_name, created_at, updated_at
+      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
+              status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions WHERE id = ?`,
     )
     .get(id) as unknown as Row | undefined;
@@ -212,9 +245,9 @@ export function getSdkSession(id: string): SdkSessionRow | null {
 export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void {
   openDb()
     .prepare(
-      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort,
-                                 permission_mode, status, turn_in_progress, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model,
+                                 permission_mode, status, turn_in_progress, resident_compaction_token_limit, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          agent = excluded.agent,
          agent_session_id = excluded.agent_session_id,
@@ -222,9 +255,11 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
          task_id = excluded.task_id,
          model = excluded.model,
          effort = excluded.effort,
+         advisor_model = excluded.advisor_model,
          permission_mode = excluded.permission_mode,
          status = excluded.status,
          turn_in_progress = excluded.turn_in_progress,
+         resident_compaction_token_limit = COALESCE(excluded.resident_compaction_token_limit, sdk_sessions.resident_compaction_token_limit),
          recovery_process_json = NULL,
          updated_at = excluded.updated_at`,
     )
@@ -236,9 +271,11 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
       write.taskId,
       write.model,
       write.effort,
+      write.advisorModel ?? null,
       write.permissionMode,
       write.status,
       write.turnInProgress ? 1 : 0,
+      write.residentCompactionTokenLimit ?? null,
       now,
       now,
     );
@@ -260,6 +297,17 @@ export function recordSdkSessionBinding(
     .run(agentSessionId, modelId, "running" satisfies SdkSessionStatus, now, id);
 }
 
+/**
+ * Put back the conversation a hibernated row reopens. A woken driver that reported another one
+ * wrote it here through `recordSdkSessionBinding`; the task's saved conversation is the one Resume
+ * owes it, so a refused Resume restores it rather than leave the next one to reopen the wrong one.
+ */
+export function setSdkSessionConversation(id: string, agentSessionId: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`)
+    .run(agentSessionId, now, id);
+}
+
 export function setSdkSessionStatus(
   id: string,
   status: SdkSessionStatus,
@@ -268,6 +316,24 @@ export function setSdkSessionStatus(
   openDb()
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
+}
+
+/**
+ * Count one more restore that deferred this row, and return the new count.
+ *
+ * Kept apart from `upsertSdkSession` for the same reason the display name is: that write is
+ * the launch statement, and a relaunch must not reset or carry a count it knows nothing about.
+ */
+export function noteSdkSessionResumeDeferred(id: string, now = Date.now()): number {
+  const row = openDb()
+    .prepare(`UPDATE sdk_sessions SET resume_deferrals = resume_deferrals + 1, updated_at = ? WHERE id = ? RETURNING resume_deferrals`)
+    .get(now, id) as { resume_deferrals: number } | undefined;
+  return row?.resume_deferrals ?? 0;
+}
+
+/** A resume went through, so the count of deferrals before it starts over. */
+export function clearSdkSessionResumeDeferrals(id: string): void {
+  openDb().prepare(`UPDATE sdk_sessions SET resume_deferrals = 0 WHERE id = ? AND resume_deferrals <> 0`).run(id);
 }
 
 /**

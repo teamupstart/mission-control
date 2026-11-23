@@ -136,6 +136,8 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   assert.equal(captured.options.maxTurns, 1);
   assert.equal(captured.options.maxBudgetUsd, 2.5);
   assert.equal(captured.options.model, "claude-haiku-4-5");
+  // No effort asked for, so none is set and the provider default applies.
+  assert.equal("effort" in captured.options, false);
   assert.equal(captured.options.cwd, realpathSync(HEADLESS_CWD));
   assert.equal(captured.options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(captured.options.env.MISSION_HEADLESS, "1");
@@ -147,6 +149,15 @@ test("one fresh query has tools off, deterministic settings, and no context opti
       `${absent} was passed and the run is no longer a fresh persisted one-shot`,
     );
   }
+});
+
+test("a caller's effort reaches the SDK query as its effort option", async () => {
+  let captured!: CapturedQuery;
+  const fake = fakeDeps([SPEND_FRAME], (value) => {
+    captured = value;
+  });
+  await runClaudeSdkOneShot("review", { model: "claude-opus-5-5", effort: "max" }, fake.deps);
+  assert.equal(captured.options.effort, "max");
 });
 
 test("an empty image list keeps the exact text-only SDK prompt shape", async () => {

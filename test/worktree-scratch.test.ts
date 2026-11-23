@@ -161,7 +161,7 @@ test("failed or uncertain status and cleanup cannot reach worktree removal", asy
           ...problem,
         };
         return run(bin, args, options);
-      });
+      }, async () => {});
       const result = await git.remove(identity, path, false);
       assert.equal(result.ok, false);
       if (!result.ok) assert.match(result.reason, new RegExp(`git ${step}`));

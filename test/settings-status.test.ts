@@ -51,7 +51,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { settingsStatus } = await import("../src/server/settings-status.ts");
-const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 const { sweepOnce } = await import("../src/server/task-sources/sweeper.ts");
@@ -63,12 +63,14 @@ after(() => {
   if (previousConductorBin === undefined) delete process.env.MISSION_CONDUCTOR_BIN;
   else process.env.MISSION_CONDUCTOR_BIN = previousConductorBin;
 });
-// A fresh config store per test, so one test's armed YOLO does not read into the next. The
+const { enabled: initialInspectorEnabled, mode: initialInspectorMode } = getInspectorConfig();
+// Reset the config store per test and restore the setting seeded at installation. The
 // sweeper's in-memory health map is process-global and is NOT cleared here, so each source
 // carries a UNIQUE id and the compose reads only sources that are in the (cleared) config.
-beforeEach(() =>
-  openDb().exec("DELETE FROM app_config; DELETE FROM task_source_writeback"),
-);
+beforeEach(() => {
+  openDb().exec("DELETE FROM app_config; DELETE FROM task_source_writeback");
+  setInspectorConfig({ enabled: initialInspectorEnabled, mode: initialInspectorMode });
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
@@ -110,9 +112,9 @@ function ghSource(id: string): TaskSourceInstance {
   } as TaskSourceInstance;
 }
 
-const ALL_OFF: SettingsStatus = {
-  inspector: { enabled: false, mode: "dry-run" },
-  shipping: { autoMerge: false },
+const DEFAULT_STATUS: SettingsStatus = {
+  inspector: { enabled: true, mode: "live" },
+  shipping: { autoMerge: false, stacking: "stack", maxStackDepth: 3 },
   taskSources: { failing: 0 },
   // No engine at this test's configured binary path and nothing configured, which is what an
   // ordinary installation looks like and the state in which the Conductor rail row does not exist.
@@ -151,15 +153,15 @@ const ALL_OFF: SettingsStatus = {
   },
 };
 
-const LEGACY_ALL_OFF = {
-  ...ALL_OFF,
+const LEGACY_TELEMETRY_DEFAULT_STATUS = {
+  ...DEFAULT_STATUS,
   telemetry: {
     ...(() => {
-      const { organizationNotice, ...legacy } = ALL_OFF.telemetry!;
+      const { organizationNotice, ...legacy } = DEFAULT_STATUS.telemetry!;
       void organizationNotice;
       return legacy;
     })(),
-    profiles: ALL_OFF.telemetry!.profiles.map((profile) => {
+    profiles: DEFAULT_STATUS.telemetry!.profiles.map((profile) => {
       const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
       void waitingForNetwork;
       void waitingSince;
@@ -183,16 +185,16 @@ function telemetry(status: SettingsStatus): TelemetrySettingsSummary {
 // ---- compose ----
 
 test("the compose reads the Inspector and Shipping stores", () => {
-  assert.deepEqual(settingsStatus(), LEGACY_ALL_OFF);
-  setInspectorConfig({ enabled: true, mode: "live" });
+  assert.deepEqual(settingsStatus(), LEGACY_TELEMETRY_DEFAULT_STATUS);
+  setInspectorConfig({ enabled: false, mode: "dry-run" });
   setShippingConfig({ autoMerge: true });
-  assert.deepEqual(settingsStatus().inspector, { enabled: true, mode: "live" });
+  assert.deepEqual(settingsStatus().inspector, { enabled: false, mode: "dry-run" });
   assert.equal(settingsStatus().shipping.autoMerge, true);
 });
 
-test("an untouched installation preserves the legacy settings-status bytes", () => {
+test("an untouched installation preserves the legacy telemetry shape in settings status", () => {
   const frame = JSON.stringify({ type: "settings_status", status: settingsStatus() });
-  const legacyFrame = JSON.stringify({ type: "settings_status", status: LEGACY_ALL_OFF });
+  const legacyFrame = JSON.stringify({ type: "settings_status", status: LEGACY_TELEMETRY_DEFAULT_STATUS });
   assert.equal(frame, legacyFrame);
   assert.equal(frame.includes('"waitingForNetwork"'), false);
   assert.equal(frame.includes('"waitingSince"'), false);
@@ -267,11 +269,11 @@ test("the compose counts a source whose write-back queue is stuck", async () => 
 
 test("PUT /api/inspector/config pushes the new tuple", async () => {
   const { app, statuses } = setup();
-  const res = await put(app, "/api/inspector/config", { enabled: true, mode: "live" });
+  const res = await put(app, "/api/inspector/config", { enabled: false, mode: "dry-run" });
   assert.equal(res.status, 200);
   const last = statuses().at(-1);
   assert.ok(last, "a settings_status should have been emitted");
-  assert.deepEqual(last.status.inspector, { enabled: true, mode: "live" });
+  assert.deepEqual(last.status.inspector, { enabled: false, mode: "dry-run" });
 });
 
 test("PUT /api/shipping/config pushes the new tuple", async () => {
@@ -321,14 +323,22 @@ test("the suppression compares every field, so no change can be dropped in silen
   // Walked over the composed tuple rather than over a hand-written list, so a field added to
   // `SettingsStatus` is in this test the moment it exists.
   const registry = new Registry();
-  const base = ALL_OFF;
+  const base = DEFAULT_STATUS;
   const moved: Record<string, SettingsStatus> = {
     "inspector.enabled": { ...base, inspector: { ...base.inspector, enabled: !base.inspector.enabled } },
     "inspector.mode": {
       ...base,
       inspector: { ...base.inspector, mode: base.inspector.mode === "live" ? "dry-run" : "live" },
     },
-    "shipping.autoMerge": { ...base, shipping: { autoMerge: !base.shipping.autoMerge } },
+    "shipping.autoMerge": { ...base, shipping: { ...base.shipping, autoMerge: !base.shipping.autoMerge } },
+    "shipping.stacking": {
+      ...base,
+      shipping: { ...base.shipping, stacking: base.shipping.stacking === "stack" ? "merge" : "stack" },
+    },
+    "shipping.maxStackDepth": {
+      ...base,
+      shipping: { ...base.shipping, maxStackDepth: (base.shipping.maxStackDepth ?? 3) + 1 },
+    },
     "taskSources.failing": { ...base, taskSources: { failing: base.taskSources.failing + 1 } },
     "pipelines.present": { ...base, pipelines: { ...base.pipelines, present: !base.pipelines.present } },
     "pipelines.observing": {
@@ -352,7 +362,7 @@ test("the suppression compares every field, so no change can be dropped in silen
     "telemetry.enabled": { ...base, telemetry: { ...telemetry(base), enabled: !telemetry(base).enabled } },
     "telemetry.organizationNotice": {
       ...base,
-      telemetry: { ...telemetry(base), organizationNotice: { label: "Upstart" } },
+      telemetry: { ...telemetry(base), organizationNotice: { label: "your organization" } },
     },
     "telemetry.configRevision": {
       ...base,

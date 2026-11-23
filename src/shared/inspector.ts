@@ -2,6 +2,8 @@ import { repoAllowlisted } from "./allowlist.ts";
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorConfig } from "./protocol.ts";
+import type { CodeRabbitSummary } from "./code-rabbit.ts";
+import type { InspectorInspection, InspectorSummary } from "./types.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
 
@@ -12,6 +14,13 @@ export const INSPECTOR_LIMITS = {
   maxRounds: INSPECTOR_MAX_ROUNDS,
   maxCommentsPerRound: INSPECTOR_MAX_COMMENTS_PER_ROUND,
   maxFindingFingerprints: INSPECTOR_MAX_ROUNDS * INSPECTOR_MAX_COMMENTS_PER_ROUND,
+  /**
+   * Validation refusals GitHub may pin on one drafted finding before the planner stops
+   * offering it. Counted only when a refusal is attributed to that draft alone (see
+   * `classifyReviewRefusal` and the worker's isolation path), never for a rate limit,
+   * an auth failure, a server error or a moved head.
+   */
+  maxPostRefusals: 3,
 } as const;
 
 // "Would the Inspector actually act on this pull request?" - asked once, here.
@@ -42,7 +51,8 @@ export const INSPECTOR_LIMITS = {
  * operator's GitHub identity, in a repo they trusted, with the feature switched on.
  * Every other value names which switch is withholding that.
  */
-export type InspectorPosture = "live" | "off" | "dry-run" | "not-allowlisted";
+export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted"] as const;
+export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
 
 /**
  * Which posture the Inspector holds for this checkout.
@@ -160,5 +170,34 @@ export function resolveInspectorModel(
     // one that was dropped, so it is not the operator's choice to report.
     source: guarded.unsupported === null ? chosen.source : "default",
     unsupported: guarded.unsupported,
+  };
+}
+
+/**
+ * The Inspector chip facts for one ledger row: what a session card carries as `inspector`, and
+ * what Foreman's follow-through builds for a pull request it found by adoption instead.
+ *
+ * `mode` is read from the config, not the row, because changing it changes no row.
+ * `codeRabbit` is included only when the caller has one to give. A pull request's stack
+ * standing needs the registry, so the session card adds it after this.
+ */
+export function inspectorSummaryOf(
+  row: InspectorInspection,
+  inspectorConfig: Pick<InspectorConfig, "mode">,
+  codeRabbit?: CodeRabbitSummary,
+): InspectorSummary {
+  return {
+    ...(codeRabbit ? { codeRabbit } : {}),
+    prKey: row.key,
+    url: row.url,
+    mode: inspectorConfig.mode,
+    open: row.openFindings,
+    postedOpen: row.postedOpenFindings,
+    round: row.round,
+    lastReviewedAt: row.lastReviewedAt,
+    failed: row.lastError !== null,
+    reviewedHeadSha: row.headSha,
+    observedHeadSha: row.observedHeadSha,
+    cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
   };
 }

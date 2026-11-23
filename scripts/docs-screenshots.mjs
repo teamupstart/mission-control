@@ -194,28 +194,28 @@ const SCREENSHOTS = [
   {
     // Settings > Trust, with rows in it. An empty matrix is the true first-run state and says
     // only "no repositories yet", which teaches nothing about the thing the guide sends people
-    // here for: that adding a repository grants NOTHING, and each cell is one deliberate click.
-    // So the frame is staged through the panel's own add row and grant buttons, which is the
-    // same path a person takes and therefore cannot drift from it.
+    // here for: that an add grants Foreman, Workflows and GitHub Inspector, and YOLO merges is
+    // the one cell left for a deliberate click. So the frame is staged through the panel's own
+    // add pane, in one batch, which is the same path a person takes and cannot drift from it.
     name: "settings-trust",
     route: "#/settings/trust",
     ready: (page) => page.getByRole("table", { name: "Repository trust grants" }),
     prepare: async (page, context) => {
       for (const repo of context.repos) {
-        await page.getByPlaceholder("search repos or type a path").fill(repo);
-        await page.getByRole("button", { name: "Add", exact: true }).click();
-        await page.getByRole("button", { name: trustCell("Grant", "Foreman", repo) })
+        await page.getByRole("checkbox", { name: `Select ${repo}` }).check();
+      }
+      await page.getByRole("button", { name: /^Add \d+ repositor/ }).click();
+      for (const repo of context.repos) {
+        await page.getByRole("button", { name: trustCell("Revoke", "Foreman", repo) })
           .waitFor({ state: "visible" });
       }
-      // One repository trusted with the two local-blast-radius grants, one with none. The
-      // contrast is the lesson the guide sends people here for: a row can exist and still
-      // allow nothing, because adding is configuration and enabling is consent.
-      const [first] = context.repos;
-      for (const column of ["Foreman", "Workflows"]) {
-        await page.getByRole("button", { name: trustCell("Grant", column, first) }).click();
-        await page.getByRole("button", { name: trustCell("Revoke", column, first) })
-          .waitFor({ state: "visible" });
-      }
+      // One repository with its Workflows grant revoked by hand, so the frame shows that a
+      // default is one click to take back - and that the cells, not the add, are where each
+      // grant is decided.
+      const [, second] = context.repos;
+      await page.getByRole("button", { name: trustCell("Revoke", "Workflows", second) }).click();
+      await page.getByRole("button", { name: trustCell("Grant", "Workflows", second) })
+        .waitFor({ state: "visible" });
     },
   },
   {

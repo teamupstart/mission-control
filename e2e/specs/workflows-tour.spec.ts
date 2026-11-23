@@ -59,7 +59,14 @@ async function startFromPalette(page: Page): Promise<void> {
   await page.keyboard.press("Meta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Follow the review");
+  // Starting the tour asks the daemon for its demonstration run, and the answer changes the
+  // tour's runtime, which redraws the open stop's popover. A click on "Open Dispatch" that
+  // lands during that redraw reaches a button that is being replaced, and the tour stays on
+  // its first stop. Wait for the answer, so every click below is on the popover it settles on.
+  const seeded = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/tours/workflows/seed-run");
   await palette.getByRole("option", { name: /Start Follow the review tour, command/ }).click();
+  expect((await seeded).ok(), "the demonstration run was seeded").toBe(true);
 }
 
 async function dispatchSession(page: Page, daemon: DaemonHandle, brief: string): Promise<string> {
@@ -214,9 +221,11 @@ test("the palette starts the tour, and it walks the demonstration run even over 
 
   dialog = step(dashboard, "Personas judge the work");
   await expect(dialog).toContainText("Step 9 of 13");
-  const judgeStage = dashboard.locator(".wf-pipeline-slot").nth(1);
+  const judgeStage = dashboard.locator(".wf-pipeline-slot")
+    .filter({ has: dashboard.locator(".wf-pipeline-reviewer.is-persona") }).first();
   await expect(judgeStage).toContainText("Intent Conformance");
   await expect(judgeStage).toHaveCSS("outline-width", "2px");
+  await shoot(dashboard, "09-first-persona-stage");
   await dialog.getByRole("button", { name: "Next" }).click();
 
   // 10. The round scrubber, holding the seeded run's one round.
@@ -348,7 +357,8 @@ test("an empty machine seeds the demonstration run, once, and walks it whole", a
   await dialog.getByRole("button", { name: "Next" }).click();
 
   dialog = step(dashboard, "Personas judge the work");
-  const judgeStage = dashboard.locator(".wf-pipeline-slot").nth(1);
+  const judgeStage = dashboard.locator(".wf-pipeline-slot")
+    .filter({ has: dashboard.locator(".wf-pipeline-reviewer.is-persona") }).first();
   await expect(judgeStage).toContainText("Intent Conformance");
   await expect(judgeStage).toContainText("Passed");
   await dialog.getByRole("button", { name: "Next" }).click();

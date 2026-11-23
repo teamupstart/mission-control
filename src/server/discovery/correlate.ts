@@ -8,10 +8,16 @@ import type {
   MultiplexerId,
   MuxPane,
 } from "../terminal/types.ts";
-import { gitInfo } from "../util/git.ts";
+import { gitInfo, type GitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
 import { annotatePaneState } from "./pane-mode.ts";
 import { annotateCodexRollouts } from "./codex-rollouts.ts";
+import {
+  hasMissionLaunchAncestor,
+  missionLaunchAncestorHome,
+  missionLaunchMarkers,
+  type MissionLaunchMarkers,
+} from "../terminal/launch-process.ts";
 
 /** basename of a path, or "" for null/root - used for name fallbacks. */
 function basename(p: string | null): string {
@@ -43,6 +49,18 @@ export interface DiscoveredSession {
   terminals: TerminalHandle[];
   /** Agent process start time (epoch ms), 0 when unparseable. */
   startedAt: number;
+  /**
+   * The agent runs beneath one of Mission Control's own launch wrappers
+   * (`hasMissionLaunchAncestor`), read from the same process snapshot. Optional only so a
+   * hand-built sweep in a test need not state it; `correlate` always sets it.
+   */
+  missionLaunched?: boolean;
+  /**
+   * The private state home of the Mission Control launch the agent runs beneath
+   * (`missionLaunchAncestorHome`), or null. Names the launch exactly, so a launch's work unit
+   * hand-over (`terminal-launch-work-units.ts`) is taken only by the agent that launch started.
+   */
+  missionLaunchHome?: string | null;
   /** Exact passive identity evidence, when the agent process holds its rollout open. */
   agentSessionId?: string | null;
   transcriptPath?: string | null;
@@ -62,6 +80,34 @@ export interface DiscoveredSession {
    * capture to draw it from, which the registry leaves alone.
    */
   paneDialog?: PaneDialog | null;
+}
+
+/**
+ * What discovery knows about a session at the moment it decides whether to show it: after the
+ * synthetic id and cwd are resolved, before any git, pane, or rollout read.
+ */
+export interface DiscoveryCandidate {
+  syntheticId: string;
+  agent: AgentType;
+  cwd: string | null;
+  missionLaunched: boolean;
+}
+
+/**
+ * Whether a candidate belongs on the dashboard. Built once per sweep by
+ * `Registry.discoveryAdmission`; absent means admit everything. A session it refuses is simply
+ * not in the sweep, so the registry's unseen loop evicts any card it already had.
+ */
+export type DiscoveryAdmit = (candidate: DiscoveryCandidate) => boolean;
+
+/**
+ * One sweep's admission: the predicate, and the cwds of the candidates it refused, filled in
+ * as the sweep calls it. The poller hands `hiddenCwds` to that same sweep's
+ * `Registry.applyDiscovery`, so a set is never committed by a different sweep.
+ */
+export interface DiscoveryAdmission {
+  admit: DiscoveryAdmit | undefined;
+  hiddenCwds: ReadonlySet<string>;
 }
 
 export interface DiscoveryInput {
@@ -338,11 +384,18 @@ export function representativeAgentPids(procs: Proc[]): number[] {
  * `readProcCwds`); it takes precedence over the pane's reported path, which only
  * tracks where the pane's launcher was invoked. Absent an entry we fall back to
  * the pane path, preserving the old behavior.
+ *
+ * `readGit` is the per-session Git read, injectable so a test can observe which sessions
+ * reach it; admission must keep a hidden session from ever getting there.
  */
 export function correlate(
   input: DiscoveryInput,
   procCwds: Map<number, string> = new Map(),
+  admit?: DiscoveryAdmit,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+  readGit: (cwd: string | null) => GitInfo = gitInfo,
 ): DiscoveredSession[] {
+  const byPid = new Map(input.procs.map((proc) => [proc.pid, proc]));
   // Build representative processes before the exact multiplexer ancestry join.
   const groups = [...groupAgentsByTty(input.procs)];
   const roots = new Map<string, Proc>();
@@ -370,6 +423,11 @@ export function correlate(
     // The agent process's real cwd is authoritative; the pane path is a fallback.
     const realCwd = procCwds.get(root.pid) ?? null;
     const cwd = realCwd ?? primary?.pane.cwd ?? null;
+    const syntheticId = `proc:${tty}:${root.pid}:${root.startMs}`;
+    const missionLaunched = hasMissionLaunchAncestor(root.pid, byPid, markers);
+    // Admission precedes every per-session read below and in `discover`: a session that is
+    // not shown costs no `gitInfo`, no pane capture, and no rollout `lsof`.
+    if (admit && !admit({ syntheticId, agent, cwd, missionLaunched })) continue;
     const fallbackName = `${agent} ${root.pid}`;
     // The cwd basename is a backend's fallback, not the absence of one: a pane that offers
     // no name (an untitled tab) is still what named this session, so `nameSource` stays that
@@ -389,9 +447,9 @@ export function correlate(
       .filter((c) => c !== undefined)
       .map(handleOf);
 
-    const git = gitInfo(cwd);
+    const git = readGit(cwd);
     sessions.push({
-      syntheticId: `proc:${tty}:${root.pid}:${root.startMs}`,
+      syntheticId,
       agent,
       name,
       nameSource,
@@ -403,6 +461,8 @@ export function correlate(
       tty,
       terminals,
       startedAt: root.startMs,
+      missionLaunched,
+      missionLaunchHome: missionLaunched ? missionLaunchAncestorHome(root.pid, byPid, markers) : null,
     });
   }
 
@@ -410,17 +470,45 @@ export function correlate(
   return sessions;
 }
 
-/** Convenience: gather + correlate in one call and add passive session annotations. */
-export async function discover(): Promise<{
+/** The OS reads `discover` composes, injectable so a test can drive a sweep without a machine. */
+export interface DiscoverDeps {
+  gather: () => Promise<DiscoveryInput>;
+  readCwds: (pids: number[]) => Promise<Map<number, string>>;
+  annotateRollouts: (sessions: DiscoveredSession[]) => Promise<void>;
+  annotatePanes: (sessions: DiscoveredSession[]) => Promise<void>;
+  markers: () => MissionLaunchMarkers;
+  gitInfo: (cwd: string | null) => GitInfo;
+}
+
+export const defaultDiscoverDeps: DiscoverDeps = {
+  gather: gatherDiscoveryInput,
+  readCwds: readProcCwds,
+  annotateRollouts: annotateCodexRollouts,
+  annotatePanes: annotatePaneState,
+  markers: missionLaunchMarkers,
+  gitInfo,
+};
+
+/**
+ * Convenience: gather + correlate in one call and add passive session annotations.
+ *
+ * `admit` is applied inside `correlate`, so the annotations only ever see admitted sessions.
+ * The batched cwd read still covers every representative agent, because admission needs the
+ * cwd to recognize a pipeline worker.
+ */
+export async function discover(
+  admit?: DiscoveryAdmit,
+  deps: DiscoverDeps = defaultDiscoverDeps,
+): Promise<{
   sessions: DiscoveredSession[];
   terminals: TerminalEnumeration[];
 }> {
-  const input = await gatherDiscoveryInput();
-  const procCwds = await readProcCwds(representativeAgentPids(input.procs));
-  const sessions = correlate(input, procCwds);
+  const input = await deps.gather();
+  const procCwds = await deps.readCwds(representativeAgentPids(input.procs));
+  const sessions = correlate(input, procCwds, admit, deps.markers(), deps.gitInfo);
   await Promise.all([
-    annotateCodexRollouts(sessions),
-    annotatePaneState(sessions),
+    deps.annotateRollouts(sessions),
+    deps.annotatePanes(sessions),
   ]);
   return { sessions, terminals: input.terminals };
 }

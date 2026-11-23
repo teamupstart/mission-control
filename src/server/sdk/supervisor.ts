@@ -1,20 +1,28 @@
+import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
+import { launchWorkUnitId } from "../work-unit.ts";
+import type { PauseRelease } from "../pause/release.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
+import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   RestoringSession,
   SdkSendDisposition,
   Session,
+  Task,
   ThinkingLevel,
 } from "@shared/types.ts";
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
-import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
+import type { ResidentMcpLaunch, SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
 import {
   missionMcpDescriptor,
@@ -23,18 +31,29 @@ import {
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
 } from "../mission-mcp.ts";
-import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
+import { noteKeyFor, SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import {
+  CAPACITY_CONTINUATION_PROMPT,
+  capacityRetryActivity,
+  capacityRetryPlan,
+} from "./capacity-retry.ts";
 import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
+  confirmHumanEcho,
   confirmReservedInjection,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  rekeyHumanEchoes,
+  releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  type HumanEchoTicket,
 } from "../injections.ts";
-import { getStandingInstructions, getTask as getDurableTask, taskSessionClosureForSession } from "../db.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import { noteSessionRestoring, observeSessionRestore } from "../telemetry/index.ts";
+import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -43,12 +62,15 @@ import {
   getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
+  setSdkSessionConversation,
   recordSdkSessionProcess,
   sdkSessionIsLive,
   setSdkSessionEffort,
   setSdkSessionModel,
   setSdkSessionPermissionMode,
   setSdkSessionStatus,
+  noteSdkSessionResumeDeferred,
+  clearSdkSessionResumeDeferrals,
   setSdkSessionTurnInProgress,
   upsertSdkSession,
   type SdkSessionRow,
@@ -87,6 +109,13 @@ export const RESTART_CONTINUATION_PROMPT =
   "Continue that work from the current checkout and conversation. Inspect the current " +
   "state before acting, do not repeat completed work, and ask again for any approval or " +
   "input you still need.";
+
+/** Managed Pi SDK dispatch requires a healthy extension even for kinds with no MCP
+ * requirement, such as ship and bugfix. Keep that launch policy
+ * on restore and /new via the durable task association, without a second setting. */
+function requiresInstalledMissionTools(agent: AgentType, taskId: string | null): boolean {
+  return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
+}
 
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
@@ -144,6 +173,38 @@ function standingInstructionsForResume(noteKey: string): string {
  * harness's own session file, and the only thing that knows the two belong together is the
  * row this class keeps.
  */
+/**
+ * A resume that could not be confirmed safe NOW, for a reason that can clear by itself. Restore
+ * leaves such a row `suspended` for the next restore instead of failing it.
+ */
+class ResumeDeferred extends Error {}
+
+/**
+ * How many consecutive restores may defer a row before it is refused like any other failure.
+ * Enough to ride out a rebuild or a loaded boot; few enough that a bundle that never builds
+ * is reported within a handful of restarts rather than retried, unseen, for ever.
+ */
+export const MAX_RESUME_DEFERRALS = 3;
+
+/** What the supervisor needs of the daemon's `PauseManager`. */
+export interface SupervisorPause extends PauseRelease {
+  frozenRefusal(sessionId: string): string | null;
+}
+
+/** How often a capacity retry held by a frozen session looks again for the thaw. */
+const PAUSED_RETRY_RECHECK_MS = 15_000;
+
+/**
+ * A write refused because the operator's pause holds the session - its child stopped, or (for an
+ * agent with no process of its own, Pi) held without one. Its own type, so a caller that owns
+ * unfinished work - the capacity retry - can tell "wait for the resume" from a refusal that ends
+ * the work, from the refusal itself rather than by asking the pause again.
+ */
+class SessionFrozenError extends Error {}
+
+/** The refusal an automated turn meets on a paused session, held or frozen. */
+const SESSION_HELD = "this session is paused - its automated turns wait until it resumes";
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -161,12 +222,32 @@ export class SdkSupervisor {
   private stateHomes = new Map<string, string>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
-  /** Accepted launch-window prompts held until the driver reports their native Goal key. */
-  private pendingLaunchGoalPrompts = new Map<string, string[]>();
+  /**
+   * Accepted launch-window prompts held until the driver reports their native Goal key, each
+   * with its follow-up's expected-echo ticket (none for the launch prompt itself).
+   */
+  private pendingLaunchGoalPrompts = new Map<string, Array<{ prompt: string; ticket: HumanEchoTicket | null }>>();
   /** Native key for the original launch generation; absence means a clear discarded it. */
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
+  /** Consecutive capacity failures per session; any turn that ends without one clears it. */
+  private capacityAttempts = new Map<string, number>();
+  /**
+   * A capacity retry waiting for its backoff to elapse.
+   *
+   * While one is present the failed turn has NOT been reported complete: the card stays
+   * working, the durable row keeps `turn_in_progress` so a restart continues the work, and
+   * nothing waiting on the turn (a workflow review, Foreman's completion check) is released
+   * with half-done work. `token` lets a fired timer tell whether it is still the current one;
+   * `attempt` and `reason` let a control that set the retry aside and then failed re-arm it.
+   */
+  private capacityRetries = new Map<string, {
+    token: object;
+    timer: ReturnType<typeof setTimeout>;
+    attempt: number;
+    reason: string;
+  }>();
   /** Exact readable live rows captured once before HTTP starts serving. */
   private preparedRestoreRows: SdkSessionRow[] | null = null;
   /** One serial startup pass, retained so shutdown can join its ownership boundary. */
@@ -175,6 +256,27 @@ export class SdkSupervisor {
   private startOwnership = new Set<Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
+  /**
+   * Sessions whose task is being hibernated (`@shared/hibernation.ts`). Their driver's end is
+   * written `hibernated` rather than `exited`, which is the one thing that keeps the row
+   * resumable by `wake` and out of every automatic restore.
+   */
+  private hibernating = new Set<string>();
+  /** Hibernated sessions a `wake` is relaunching, so a second Resume cannot launch it twice. */
+  private waking = new Set<string>();
+  /**
+   * Woken drivers whose task has not been bound back to them yet. One that ends in that window,
+   * stopped by a Resume that refused it or exiting on its own, leaves its row `hibernated` as it
+   * was before the Resume, so the next Resume can still reopen the conversation. Cleared only by
+   * `wakeBound`, once the task is running on it.
+   */
+  private unboundWakes = new Set<string>();
+  /**
+   * The conversation each driver has itself reported binding since it was adopted - the
+   * driver's own word, never the id the adoption was handed - and who is waiting to hear it.
+   */
+  private reportedConversations = new Map<string, string>();
+  private conversationWaiters = new Map<string, Set<(conversation: string | null) => void>>();
   /**
    * Set once the daemon is going down, and read by the event pump.
    *
@@ -185,6 +287,13 @@ export class SdkSupervisor {
    * reclaim the worktree of work that was merely interrupted.
    */
   private shuttingDown = false;
+  /** A resident task's pinned MCP set, installed once `ResidentManager` exists. */
+  private residentMcp?: (task: Task) => ResidentMcpLaunch | null;
+
+  /** Install the resident MCP reader the resume path renders a resident's servers from. */
+  registerResidentMcp(read: (task: Task) => ResidentMcpLaunch | null): void {
+    this.residentMcp = read;
+  }
 
   constructor(
     private readonly registry: Registry,
@@ -192,6 +301,11 @@ export class SdkSupervisor {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       processSnapshot?: typeof listProcessesSnapshot;
+      /**
+       * The daemon's `PauseManager`: why a write must not reach a frozen child, and the thaw
+       * every stop starts with. Absent, nothing is ever frozen, so neither has anything to do.
+       */
+      pause?: SupervisorPause;
     } = {},
   ) {}
 
@@ -216,6 +330,24 @@ export class SdkSupervisor {
         continue;
       }
       if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
+      const launchTask = row.taskId ? getDurableTask(row.taskId) : null;
+      if (launchTask?.status === "hibernated" && launchTask.hibernation?.sessionId === row.id) {
+        // The daemon stopped between recording a hibernation and its driver ending, or between
+        // a Resume relaunching it and the task taking it back. The operator's last word was
+        // hibernate, so the row says so and waits for their Resume rather than coming back.
+        setSdkSessionStatus(row.id, "hibernated");
+        continue;
+      }
+      if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)
+        && !this.registry.outcomePrecedesSessionWork(launchTask, row.id)) {
+        // task_id is launch provenance, not current ownership. Reuse by another task
+        // wins over that history, as does a retained pointer or a newer work episode
+        // (Reset & clear cancels the old task while keeping the replacement agent).
+        // A detached cancellation with no owner must not launch or receive continuation.
+        setSdkSessionTurnInProgress(row.id, false);
+        this.registerAndEvict(row, "cancelled task no longer owns this session", "exited");
+        continue;
+      }
       const closure = taskSessionClosureForSession(row.id);
       const completedTask = closure ? getDurableTask(closure.taskId) : null;
       if (completedTask?.status === "done" && completedTask.sessionId === row.id) {
@@ -262,8 +394,16 @@ export class SdkSupervisor {
         // projection is not yet a usable session, and the two must not share one count.
         noteSessionRestoring(row.id, row.taskId);
         const restoreStartedAt = Date.now();
+        // The restore's one work unit decision, made here so the launch and the span that
+        // reports this attempt carry the same value whether or not the agent comes back. Inside
+        // the `try`: the owner lookup reads SQLite, and a throw there must reach this row's
+        // failure handling rather than abort every row after it. A decision that could not be
+        // made is reported as none, never guessed.
+        let workUnitId: string | null = null;
         try {
-          await this.resume(row);
+          workUnitId = this.restoreWorkUnitId(row);
+          await this.resume(row, null, workUnitId);
+          clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -279,10 +419,21 @@ export class SdkSupervisor {
             outcome: this.shuttingDown ? "interrupted" : "succeeded",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
         } catch (err) {
-          const why = err instanceof Error ? err.message : String(err);
-          console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          // Counted first, so the log and the eviction both say whether this was a deferral
+          // and, past the bound, how long it waited. NOT counted while shutting down: a daemon
+          // restarted again and again during boot - exactly when a handshake is slow or the
+          // bundle is mid-rebuild - would otherwise spend the whole bound without the bundle
+          // ever being checked in a calm restore. That row is simply left live, as shutdown
+          // leaves every row it does not finish.
+          const counted = err instanceof ResumeDeferred && !this.shuttingDown;
+          const deferrals = counted ? noteSdkSessionResumeDeferred(row.id) : 0;
+          const deferred = err instanceof ResumeDeferred && (this.shuttingDown || deferrals < MAX_RESUME_DEFERRALS);
+          const why = err instanceof ResumeDeferred && !deferred ? `${reason} (after ${deferrals} restores)` : reason;
+          if (!deferred) console.error(`[sdk] could not resume ${row.id}: ${why}`);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -294,8 +445,21 @@ export class SdkSupervisor {
             outcome: "failed",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
-          if (!this.shuttingDown) this.registerAndEvict(row, why);
+          if (deferred) {
+            // Not a verdict on this session: keep it live for the next restore, which is the
+            // same treatment a row shutdown interrupted gets, rather than lose the conversation.
+            setSdkSessionStatus(row.id, "suspended");
+            console.warn(
+              `[sdk] left ${row.id} suspended for the next restore (${counted ? `${deferrals} of ${MAX_RESUME_DEFERRALS}` : "shutting down, not counted"}): ${why}`,
+            );
+          } else if (!this.shuttingDown) {
+            // A deferral that has not cleared in `MAX_RESUME_DEFERRALS` restores is no longer
+            // transient. It takes the ordinary refusal from here: a card, an eviction that says
+            // why, and the task settled visibly - never a silent retry on every restart.
+            this.registerAndEvict(row, why);
+          }
         } finally {
           // Success has already emitted `session_upsert`; failure has already registered and
           // begun ordinary eviction. The browser suppresses overlap by id as a second guard.
@@ -339,8 +503,15 @@ export class SdkSupervisor {
     launchPresentation?: LaunchPresentationInput;
     model: string | null;
     effort: ThinkingLevel | null;
+    /**
+     * The task's advisor pin. Optional so every existing caller is unchanged; omitted or
+     * null inherits the operator's Claude settings, as every launch before it did.
+     */
+    advisorModel?: AdvisorChoice | null;
     permissionMode: PermissionMode | null;
     mcp: MissionMcpDescriptor | null;
+    /** A resident run's pinned MCP set; absent for every other launch. */
+    residentMcp?: ResidentMcpLaunch | null;
     /**
      * Secondary worktrees this session must be able to write to (multi-repo tasks).
      * Optional so every existing caller is unchanged; omitted means the ordinary
@@ -371,8 +542,16 @@ export class SdkSupervisor {
        * working launch and deliver the operator's rules nowhere.
        */
       fallbackPrompt: string;
+      /** What repository task skills this launch included or skipped; recorded with the snapshot. */
+      repoTaskSkills?: RepoTaskSkillRecord | null;
     };
     taskId: string | null;
+    /**
+     * The launch's one work unit decision (`launchWorkUnitId`, made by the caller where its
+     * launch began). The agent gets it as `WORK_UNIT_ID`, and it becomes the session's launch
+     * record once the driver has started. Omitted or null launches with none.
+     */
+    workUnitId?: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
     repoRoot?: string | null;
@@ -401,10 +580,15 @@ export class SdkSupervisor {
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
+        residentStateDir: await residentStateForTask(input.taskId),
+        residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
+        advisorModel: input.advisorModel,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
+        ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
+        residentMcp: input.residentMcp ?? null,
         extraDirs: input.extraDirs ?? [],
         standingInstructions: outOfBandStanding,
         // What to send instead if that channel turns out to be unusable. Composed by the
@@ -414,6 +598,11 @@ export class SdkSupervisor {
         // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
         standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
         resume: null,
+        // Decided here, before the card exists, because the agent reads it once at launch.
+        // `mission.session.started` is captured under the same derived ids when this id is
+        // first published, so the agent's spans join that span's trace.
+        traceContext: sessionTraceContext(id),
+        workUnitId: input.workUnitId ?? null,
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -441,6 +630,8 @@ export class SdkSupervisor {
           gitBranch: input.gitBranch ?? null,
           gitRoot: input.gitRoot ?? null,
           repoRoot: input.repoRoot ?? null,
+          // The driver has started, so this is what the agent carries.
+          launchWorkUnitId: input.workUnitId ?? null,
         },
         handle,
         stateHome,
@@ -450,6 +641,7 @@ export class SdkSupervisor {
           taskId: input.taskId,
           model: input.model,
           effort: input.effort,
+          advisorModel: input.advisorModel,
           // The driver accepted turn one before `adopt` can persist anything. Recording it
           // here closes the startup window before the detached event pump catches up.
           turnInProgress: input.prompt.length > 0,
@@ -470,12 +662,17 @@ export class SdkSupervisor {
     // channel would later tell an assignment the rule was still installed on the process
     // when it was only ever turn-one prose.
     try {
-      if (input.standingInstructions?.delivery.text) {
-        this.registry.recordStandingInstructions(started.id, {
-          ...input.standingInstructions.delivery,
-          mechanism:
-            handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
-        });
+      if (input.standingInstructions) {
+        this.registry.recordStandingInstructions(
+          started.id,
+          {
+            ...input.standingInstructions.delivery,
+            mechanism:
+              handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+          },
+          // A start is a launch: no record on the input means this launch had none.
+          input.standingInstructions.repoTaskSkills ?? null,
+        );
       }
       return started;
     } finally {
@@ -512,6 +709,7 @@ export class SdkSupervisor {
       taskId: string | null;
       model: string | null;
       effort: ThinkingLevel | null;
+      advisorModel?: AdvisorChoice | null;
       /** Carried on a RESUME, so the row keeps the identity it is being picked up from. */
       agentSessionId?: string | null;
       /** Carried on a resume; adopting a fresh handle must not forgive unfinished work. */
@@ -527,6 +725,8 @@ export class SdkSupervisor {
       void handle.stop().catch(() => {});
       throw new Error(refusal);
     }
+    // A new driver for this id has reported nothing yet, whatever an earlier one said.
+    this.reportedConversations.delete(registration.id);
     // BEFORE `registerSdkSession` and before the pump, and that ordering is the whole
     // reason this is here rather than at the dispatcher's call site. Registration is what
     // makes a session streamable, and the pump's first frames can carry turn one; a marker
@@ -562,12 +762,15 @@ export class SdkSupervisor {
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
+      advisorModel: durable.advisorModel,
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
       turnInProgress: durable.turnInProgress,
+      residentCompactionTokenLimit: handle.residentCompactionTokenLimit,
     });
     const session = this.registry.registerSdkSession({
       ...registration,
+      taskId: durable.taskId,
       configuredModel: durable.model,
       agentSessionId: durable.agentSessionId ?? null,
     });
@@ -578,7 +781,7 @@ export class SdkSupervisor {
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
     );
     if (input.acceptedInitialPrompt?.trim()) {
-      this.pendingLaunchGoalPrompts.set(registration.id, [input.acceptedInitialPrompt]);
+      this.pendingLaunchGoalPrompts.set(registration.id, [{ prompt: input.acceptedInitialPrompt, ticket: null }]);
       this.launchGoalNoteKeys.set(registration.id, null);
     }
     const pump = this.pump(registration.id, handle);
@@ -632,6 +835,12 @@ export class SdkSupervisor {
     beforeSend?: () => string | null,
     acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
+    // A woken driver has not yet shown it reopened the task's conversation (`unboundWakes`), so a
+    // turn now could land in a conversation Resume is about to refuse. Refused before anything
+    // is recorded, and accepted again the moment the task is bound to it.
+    if (this.unboundWakes.has(id)) {
+      return Promise.reject(new Error("its conversation is still being reopened. Send again once it has resumed"));
+    }
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
@@ -642,9 +851,27 @@ export class SdkSupervisor {
       setSdkSessionTurnInProgress(id, true);
       this.unfinishedTurns.set(id, unfinished + 1);
       this.acceptingTurns.add(id);
+      let humanEcho: HumanEchoTicket | null = null;
       try {
+        // A human follow-up has a second door: the agent's prompt hook reports the same text
+        // back, possibly before `handle.send` resolves. Registered here, inside the serialized
+        // boundary, so the work cycle it is stamped with is the one the driver sees. A
+        // follow-up sent in the launch window (`noteKey === id`) is registered too, under the
+        // key its echo will carry. The launch prompt itself never comes through here and keeps
+        // `isSeededLaunchEcho`.
+        const echoKey = acceptedGoal ? this.followUpEchoKey(id, acceptedGoal) : null;
+        if (acceptedGoal && echoKey !== null) {
+          humanEcho = expectHumanEcho(id, acceptedGoal.prompt, {
+            noteKey: echoKey,
+            cycle: this.registry.getSession(id)?.workCycle,
+          });
+        }
         const disposition = await handle.send(turn);
-        if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
+        // A delivered turn resumes the work, so a retry waiting on the same session would
+        // only repeat it. Cancelled only once the driver took the turn: a refused send must
+        // leave the retry in place, or nothing would ever finish the failed turn.
+        this.cancelCapacityRetry(id);
+        if (acceptedGoal) this.captureAcknowledgedGoal(id, acceptedGoal, humanEcho, disposition);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
           // for. Release this send's pessimistic reservation, while conservatively keeping
@@ -656,6 +883,8 @@ export class SdkSupervisor {
         }
         return disposition;
       } catch (err) {
+        // The driver rejected the turn, so no echo is coming for it either.
+        if (humanEcho) releaseHumanEcho(humanEcho);
         // The driver rejected the turn, so it will not produce a completion for the slot we
         // reserved. Retire exactly that slot; any older accepted turn remains recoverable.
         const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
@@ -681,6 +910,9 @@ export class SdkSupervisor {
     turn: SdkTurn,
     beforeSend?: () => string | null,
   ): Promise<"started" | null> {
+    // Not idle for this purpose until its task is bound (`holdsDelivery`): the caller keeps the
+    // row for the next idle transition, which the binding produces.
+    if (this.unboundWakes.has(id)) return Promise.resolve(null);
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
@@ -690,6 +922,7 @@ export class SdkSupervisor {
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.sendIfIdle(turn);
+        if (disposition === "started") this.cancelCapacityRetry(id);
         if (disposition === null) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
           this.unfinishedTurns.set(id, remaining);
@@ -704,6 +937,28 @@ export class SdkSupervisor {
       } finally {
         this.acceptingTurns.delete(id);
       }
+    });
+  }
+
+  /** Maintenance stays inside the same serialized driver boundary as human and loop input. */
+  compact(id: string, focus: string, beforeSend?: () => string | null): Promise<number> {
+    return this.serialize(id, async (handle) => {
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
+      if (blocked) throw new Error(blocked);
+      if (!handle.compact) throw new Error("This harness cannot compact between iterations.");
+      const result = await handle.compact(focus);
+      const current = this.registry.getSession(id);
+      const window = result.contextWindow ?? current?.meta?.contextWindow;
+      if (!current || !window || window <= 0) throw new Error("Compaction context window could not be measured.");
+      const pct = result.contextTokens / window * 100;
+      this.registry.applyRuntimeMeta(id, {
+        modelId: current.meta?.modelId ?? null, contextTokens: result.contextTokens, contextWindow: window,
+        contextPct: pct, longContext: window >= 1_000_000, thinkingLevel: current.meta?.thinkingLevel ?? null,
+        effortRevision: null,
+      }, "transcript");
+      // The driver stream is pumped independently. Give its queued turn_done to the Registry.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return pct;
     });
   }
 
@@ -799,7 +1054,21 @@ export class SdkSupervisor {
   clearContext(id: string): Promise<boolean> {
     return this.serialize(id, async (handle) => {
       if (!handle.clearContext) return false;
-      await handle.clearContext();
+      // A retry would continue the conversation being wiped, so it is set aside for the
+      // clear. The failed turn is NOT reported finished yet: a completion cannot be taken
+      // back, and a refused clear leaves that conversation live with its work unfinished.
+      const held = this.takeCapacityRetry(id);
+      const session = held ? this.registry.getSession(id) : undefined;
+      const oldConversation = session ? noteKeyFor(session) : undefined;
+      try {
+        await handle.clearContext();
+      } catch (err) {
+        if (held) this.rearmCapacityRetry(id, handle, held);
+        throw err;
+      }
+      // Recorded against the conversation the turn belonged to: the cleared binding may
+      // already have moved the card to its replacement.
+      if (held) this.settleCapacityRetry(id, oldConversation);
       return true;
     });
   }
@@ -854,8 +1123,19 @@ export class SdkSupervisor {
     const handle = this.handles.get(id);
     if (!handle) return null;
     const running = (this.unfinishedTurns.get(id) ?? 0) > 0;
-    await handle.interrupt();
-    return running ? "interrupted" : "idle";
+    // A waiting capacity retry IS the session's unfinished work, and the card says working
+    // because of it. Stopping it is what the operator asked for; the driver itself is idle,
+    // so the failed turn is reported finished here or nothing ever would.
+    const held = this.takeCapacityRetry(id);
+    try {
+      await handle.interrupt();
+    } catch (err) {
+      // Nothing was stopped, so the retry still owns the unfinished turn.
+      if (held) this.rearmCapacityRetry(id, handle, held);
+      throw err;
+    }
+    if (held) this.settleCapacityRetry(id);
+    return running || held ? "interrupted" : "idle";
   }
 
   /** Queue-preserving interruption for an outbox claim, serialized with other input. */
@@ -909,11 +1189,174 @@ export class SdkSupervisor {
    * the id to another process.
    */
   stop(id: string): Promise<void> {
+    // Every stop - Kill, task completion, handoff, dispatch cleanup - starts by thawing: a
+    // stopped child never answers the interrupt `handle.stop()` opens with, so a thaw that did
+    // not happen refuses the stop rather than waiting on a driver that cannot answer. Ending
+    // the session ends its pause too.
+    const stuck = this.deps.pause?.releaseNow(id) ?? null;
+    if (stuck) return Promise.reject(new Error(`this session is paused and could not be resumed first: ${stuck}`));
+    return this.drain(id);
+  }
+
+  /**
+   * The conversation this session's driver has reported binding since it was adopted, waiting
+   * up to `timeoutMs` for the report, or null when none came (or the driver ended first).
+   *
+   * Resume asks this before it binds a task to a woken driver: the id the relaunch was handed is
+   * only what was ASKED for, and a driver that opened something else must not inherit the task.
+   */
+  reportedConversation(id: string, timeoutMs: number): Promise<string | null> {
+    const known = this.reportedConversations.get(id);
+    if (known) return Promise.resolve(known);
+    if (!this.handles.has(id)) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const waiters = this.conversationWaiters.get(id) ?? new Set();
+      this.conversationWaiters.set(id, waiters);
+      const done = (conversation: string | null): void => {
+        clearTimeout(timer);
+        waiters.delete(done);
+        resolve(conversation);
+      };
+      const timer = setTimeout(() => done(null), timeoutMs);
+      timer.unref?.();
+      waiters.add(done);
+    });
+  }
+
+  private noteReportedConversation(id: string, conversation: string | null): void {
+    if (conversation) this.reportedConversations.set(id, conversation);
+    else this.reportedConversations.delete(id);
+    const waiters = this.conversationWaiters.get(id);
+    if (!waiters) return;
+    this.conversationWaiters.delete(id);
+    for (const waiter of [...waiters]) waiter(conversation);
+  }
+
+  /**
+   * Stop a session's driver because its task is being hibernated.
+   *
+   * The ordinary `stop` - thaw first, then drain until the harness has finished writing the
+   * conversation file - except that the row it leaves says `hibernated`, so no restore picks it
+   * back up and `wake` can reopen it under the same id. The caller records the task's
+   * hibernation BEFORE calling this; a stop that rejects leaves the driver running and the
+   * caller puts the task back.
+   */
+  async hibernate(id: string): Promise<void> {
+    if (!this.handles.has(id)) throw new Error("its agent is not running here");
+    this.hibernating.add(id);
+    try {
+      await this.stop(id);
+    } finally {
+      // After the pump has written the row, or after a rejected stop left the driver live.
+      this.hibernating.delete(id);
+    }
+  }
+
+  /** A woken session's task is bound to it: from here on its end is an ordinary one. */
+  wakeBound(id: string): void {
+    this.unboundWakes.delete(id);
+  }
+
+  /**
+   * Whether queued turns must wait: a woken driver has not yet shown it reopened its task's
+   * conversation. `PendingTurnManager` holds rows on this rather than having a send refused, so
+   * nothing is retried in a loop; the binding's `session_upsert` releases them.
+   */
+  holdsDelivery(id: string): boolean {
+    return this.unboundWakes.has(id);
+  }
+
+  /**
+   * Point a hibernated row back at `conversation`, the task's saved one. A woken driver reports
+   * the conversation it opened (`bound`), and that report is written to the row whether or not
+   * Resume accepts it, so one Resume refuses must not leave the next one reopening it.
+   */
+  keepConversation(id: string, conversation: string): void {
+    const row = getSdkSession(id);
+    if (row && row.agentSessionId !== conversation) setSdkSessionConversation(id, conversation);
+  }
+
+  /**
+   * Reopen a hibernated session: relaunch its driver under the SAME id with its conversation,
+   * exactly as a daemon restart does (`resume`), on the operator's Resume.
+   *
+   * Throws with the reason when the conversation could not be reopened, leaving the row
+   * `hibernated` so the operator can retry. On success the session is registered idle and the
+   * row is live again; binding it back to its task is the caller's.
+   */
+  async wake(id: string, conversation: string, ownerTaskId: string | null = null): Promise<Session> {
+    if (this.shuttingDown) throw new Error("Mission Control is shutting down");
+    if (this.handles.has(id)) throw new Error("its agent is already running");
+    if (this.waking.has(id)) throw new Error("it is already resuming");
+    // The stopped card lingers for a few seconds before it leaves (`Registry.beginEviction`),
+    // and one id is one card: relaunching under it now would be refused only after the driver
+    // had already started.
+    if (this.registry.getSession(id)) throw new Error("it is still shutting down. Try again in a few seconds");
+    const row = getSdkSession(id);
+    if (!row) throw new Error("its embedded session record is gone");
+    if (row.status !== "hibernated") {
+      throw new Error(`its embedded session is ${row.status ?? row.statusRaw}, not hibernated`);
+    }
+    // Asked here rather than left to the harness, whose refusal would not name the checkout.
+    if (!existsSync(row.cwd)) throw new Error(`its checkout ${row.cwd} no longer exists`);
+    // The task's saved conversation, never whatever an earlier refused wake left on the row.
+    this.keepConversation(id, conversation);
+    this.waking.add(id);
+    // Before the driver starts, so not even an immediate exit can write its row `exited`.
+    this.unboundWakes.add(id);
+    try {
+      // No continuation turn is owed: only an idle session is hibernated.
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false }, ownerTaskId);
+    } catch (error) {
+      // Adopted, then something after the adoption threw: the conversation IS open again and
+      // its pump owns it from here, so this is a resume, not a failure to report.
+      if (this.handles.has(id)) {
+        console.error(`[sdk] ${id} resumed, but a step after adoption failed:`, error);
+      } else {
+        // `adopt` may have written the row before refusing; nothing is running, so the
+        // conversation stays hibernated for the next attempt.
+        setSdkSessionStatus(id, "hibernated");
+        this.unboundWakes.delete(id);
+        throw error;
+      }
+    } finally {
+      this.waking.delete(id);
+    }
+    const session = this.registry.getSession(id);
+    if (!session) {
+      // Its driver may be running though no card holds it. It is stopped and drained before this
+      // fails, so no agent is left on the conversation with nothing to show or end it. Its end is
+      // written `hibernated` (`unboundWakes`), and so is the row here, whatever the stop did.
+      let stopFailure: string | null = null;
+      if (this.handles.has(id)) {
+        try {
+          await this.stop(id);
+        } catch (error) {
+          stopFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      setSdkSessionStatus(id, "hibernated");
+      throw new Error(stopFailure === null
+        ? "its agent started but did not register"
+        : `its agent started but did not register, and could not be stopped (${stopFailure}). It may still be running: Retry stops it first`);
+    }
+    return session;
+  }
+
+  /**
+   * The stop itself, without lifting the session's pause. Shutdown's path (`stopAll`): the
+   * daemon is going down, not the session, and `PauseManager.stop()` has already continued the
+   * driver's processes so it can drain while keeping the pause record, which the next daemon
+   * restores and freezes again. Lifting it here would forget the operator's pause on every
+   * restart.
+   */
+  private drain(id: string): Promise<void> {
     const existing = this.stopPromises.get(id);
     if (existing) return existing;
     const handle = this.handles.get(id);
     if (!handle) return Promise.resolve();
     this.stopping.add(id);
+    const heldRetry = this.takeCapacityRetry(id);
     const stopping = (async () => {
       await handle.stop();
       await this.pumps.get(id)?.catch(() => {});
@@ -928,10 +1371,23 @@ export class SdkSupervisor {
         this.stopPromises.delete(id);
         // A rejected stop left this same handle live. Make it reachable again; an
         // interactive join restores the card presentation in its own catch handler.
-        if (this.handles.get(id) === handle) this.stopping.delete(id);
+        if (this.handles.get(id) !== handle) return;
+        this.stopping.delete(id);
+        // Nothing settled the turn the retry was holding, so the live session needs it back.
+        if (heldRetry) this.rearmCapacityRetry(id, handle, heldRetry);
       },
     );
     return stopping;
+  }
+
+  /**
+   * The driver's own child process, for the pause freezer (`src/server/pause/freezer.ts`), or
+   * null when it has none. Pi's driver runs inside the daemon and reports `process.pid` as its
+   * recovery process; that is never a process anyone may stop, so it reads as none here.
+   */
+  driverProcessId(id: string): number | null {
+    const pid = this.handles.get(id)?.recoveryProcessId ?? null;
+    return pid !== null && Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid ? pid : null;
   }
 
   /**
@@ -957,14 +1413,14 @@ export class SdkSupervisor {
       ...(this.restorePromise ? [this.restorePromise] : []),
       ...this.startOwnership,
     ]);
-    const drained = Promise.allSettled(ids.map((id) => this.stop(id)));
+    const drained = Promise.allSettled(ids.map((id) => this.drain(id)));
     await Promise.race([Promise.allSettled([startupOwnership, drained]), sleep(timeoutMs)]);
     // Whatever did not drain in time is still OUR session and still resumable: the row has
     // to say so before the process goes, because after that nothing will.
     for (const id of ids) {
       if (!this.handles.has(id)) continue;
       try {
-        setSdkSessionStatus(id, "suspended");
+        setSdkSessionStatus(id, this.endsHibernated(id) ? "hibernated" : "suspended");
       } catch (err) {
         console.error(`[sdk] could not mark ${id} suspended:`, err);
       }
@@ -1040,8 +1496,50 @@ export class SdkSupervisor {
     }
   }
 
-  /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
-  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
+  /**
+   * The acknowledging door for a human turn: capture it unless the prompt hook already did.
+   *
+   * The entry is marked captured only once this door's capture returned a goal. A refused
+   * prompt or a failed write leaves it confirmed, so a later echo still records the turn.
+   */
+  private captureAcknowledgedGoal(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    humanEcho: HumanEchoTicket | null,
+    disposition: SdkSendDisposition,
+  ): void {
+    if (!humanEcho) {
+      this.captureGoalBestEffort(id, accepted);
+      return;
+    }
+    if (confirmHumanEcho(humanEcho, { queued: disposition === "steered" }).captured) return;
+    if (this.captureGoalBestEffort(id, accepted, humanEcho)) markHumanEchoCaptured(humanEcho);
+  }
+
+  /**
+   * The conversation key a follow-up's prompt-hook echo will carry, or null when nothing will
+   * record the follow-up.
+   *
+   * A launch-window follow-up names the session id, which no hook reports. Once the launch
+   * generation has bound, that is its native key. Before it, the entry waits under the
+   * session id and the bind re-keys it. A clear discarded the generation, so its follow-ups
+   * are never recorded and need no expectation.
+   */
+  private followUpEchoKey(id: string, accepted: AcceptedGoalPrompt): string | null {
+    if (accepted.noteKey !== id) return accepted.noteKey;
+    if (!this.launchGoalNoteKeys.has(id)) return null;
+    return this.launchGoalNoteKeys.get(id) ?? id;
+  }
+
+  /**
+   * Goal persistence cannot turn an acknowledged driver send into a retryable failure.
+   * Answers whether a goal was recorded now; a launch-window prompt held for the bind is not.
+   */
+  private captureGoalBestEffort(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    ticket: HumanEchoTicket | null = null,
+  ): boolean {
     try {
       if (accepted.noteKey === id) {
         // A direct injection can be acknowledged on either side of the first `bound` event.
@@ -1049,30 +1547,51 @@ export class SdkSupervisor {
         // native key rather than the now-stale synthetic key. A clear deletes that generation
         // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
         // leaking into the replacement conversation.
-        if (!this.launchGoalNoteKeys.has(id)) return;
+        if (!this.launchGoalNoteKeys.has(id)) return false;
         const launchNoteKey = this.launchGoalNoteKeys.get(id);
         if (launchNoteKey === null || launchNoteKey === undefined) {
           const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
-          pending.push(accepted.prompt);
+          pending.push({ prompt: accepted.prompt, ticket });
           this.pendingLaunchGoalPrompts.set(id, pending);
-        } else {
-          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+          return false;
         }
-        return;
+        return this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey) !== null;
       }
-      this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
+      return this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey) !== null;
     } catch (err) {
       console.error(
         `[sdk] could not capture accepted Goal prompt for ${id}:`,
         err instanceof Error ? err.message : String(err),
       );
+      return false;
     }
+  }
+
+  /**
+   * Why a write must not reach this session's driver because its child is frozen, or null. A
+   * stopped child never answers, so a write queued to it would hold this session's whole send
+   * chain until the thaw.
+   */
+  private pauseGate(id: string): string | null {
+    return this.deps.pause?.frozenRefusal(id) ?? null;
+  }
+
+  /**
+   * Whether the operator's pause holds this session at all, frozen or not. What an AUTOMATED turn
+   * asks - `pauseGate` only answers whether a process is stopped, and an agent with none to stop
+   * (Pi) is held without ever being frozen. The restart continuation does not ask this: it is how
+   * a restored driver comes back, and the pause freezes it again once it has.
+   */
+  private heldByPause(id: string): boolean {
+    return (this.registry.getSession(id)?.pause ?? null) !== null;
   }
 
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
     if (transferForSource(id)) return Promise.reject(new Error(TRANSFER_HOLD_REASON));
+    const frozen = this.pauseGate(id);
+    if (frozen) return Promise.reject(new SessionFrozenError(frozen));
     if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
@@ -1082,6 +1601,8 @@ export class SdkSupervisor {
       // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
       if (transferForSource(id)) throw new Error(TRANSFER_HOLD_REASON);
+      const frozenNow = this.pauseGate(id);
+      if (frozenNow) throw new SessionFrozenError(frozenNow);
       if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });
@@ -1093,14 +1614,38 @@ export class SdkSupervisor {
   }
 
   /**
+   * The work unit decision for relaunching `row`. A restore or a wake is a start, so it decides
+   * again, once. The process it replaces has ended, so what that one carried no longer
+   * describes anything. Decided from the task that OWNS the session now, not from `row.taskId`,
+   * which is launch provenance: an agent started with no work unit may since have been assigned
+   * another unit's task, and the restored agent runs that task, so it must carry that task's id.
+   * With no current owner, the launch task is what the session last worked for. A hibernation
+   * wake names its task (`ownerTaskId`): hibernating cleared the task's session pointer, so the
+   * lookup would otherwise fall back to the launch task.
+   */
+  private restoreWorkUnitId(row: SdkSessionRow, ownerTaskId: string | null = null): string | null {
+    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
+    // The registry first, then SQLite: the registry may already have dropped a finished task.
+    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
+    return launchWorkUnitId(owner);
+  }
+
+  /**
    * Relaunch one persisted session, continuing the SAME conversation.
    *
    * `resume` is the harness-native id the driver reported when it bound, which is what
    * makes this a continuation rather than a new session wearing an old card: the note,
    * queue, goal and work episode are all keyed on it, and a fresh id would strand every one
    * of them. A row that never got that far has nothing to continue and is refused here.
+   *
+   * `workUnitId` is that relaunch's decision. The restore loop makes it first, so the span
+   * reporting the attempt carries the same value; a wake lets this make it.
    */
-  private async resume(row: SdkSessionRow): Promise<void> {
+  private async resume(
+    row: SdkSessionRow,
+    ownerTaskId: string | null = null,
+    workUnitId: string | null = this.restoreWorkUnitId(row, ownerTaskId),
+  ): Promise<void> {
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
@@ -1162,6 +1707,34 @@ export class SdkSupervisor {
         );
       }
     }
+    // Every decision a resumed session asks goes through `request_input`, exactly as at
+    // dispatch (`withDecisionAskTool`): a harness that carries Mission tools through an MCP
+    // client resumes only with a registration whose bundle actually publishes it.
+    //
+    // Unlike a refused dispatch, a refused resume costs a conversation, so only a VERDICT is
+    // terminal: a bundle that answered the handshake without the tool. Everything short of
+    // that - no server resolved, a bundle not built (yet), a handshake that threw or never
+    // completed - says nothing about the bundle a rebuild or a calmer boot will find, so the
+    // row is DEFERRED: left `suspended` for the next restore rather than failed and evicted.
+    if (capabilitiesFor(row.agent).missionTools?.mechanism === "mcp-client") {
+      const ask = "this session asks its decisions through Mission Control's request_input tool, but";
+      if (!mcp) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new ResumeDeferred(`${ask} its MCP server could not be resolved for the resume - rebuild with: npm run build`);
+      }
+      let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
+      try {
+        published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(["request_input"], mcp);
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new ResumeDeferred(`${ask} its MCP server could not be checked: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!published.ok) {
+        cleanupDisposableAgentStateHome(stateHome);
+        if (published.cause === "missing-tools") throw new Error(`${ask} ${published.reason}`);
+        throw new ResumeDeferred(`${ask} ${published.reason}`);
+      }
+    }
     if (task?.kind === "pipeline") {
       try {
         this.registry.registerManagedPipelineCaller(
@@ -1180,6 +1753,9 @@ export class SdkSupervisor {
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
     let adopted = false;
+    // Held outside the `try` so a failure between launch and adoption can stop the driver it
+    // started: nothing else owns it, and a retried wake would start a second one.
+    let launched: SdkSessionHandle | null = null;
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
@@ -1187,10 +1763,19 @@ export class SdkSupervisor {
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
+        residentStateDir: await residentStateForTask(row.taskId),
+        residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
+        // From the row, not the task: the relaunch renders the flag layer the first launch
+        // did, even if somebody has since edited the task's pin.
+        advisorModel: row.advisorModel,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
+        ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
+        // A resident's MCP set comes from its run's snapshot, never from native configuration,
+        // so a restart resumes exactly the servers it launched with.
+        residentMcp: task ? this.residentMcp?.(task) ?? null : null,
         // Rebuilt from the task row rather than remembered on the session row, because the
         // task is where the repo set durably lives - and this grant can only be made at
         // launch, so a resumed multi-repo session that omitted it would come back able to
@@ -1222,7 +1807,12 @@ export class SdkSupervisor {
         // and nothing is repeated.
         standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
+        // The same session id derives the same parent, so the restored process continues the
+        // trace its first launch started rather than opening a second one.
+        traceContext: sessionTraceContext(row.id),
+        workUnitId,
       });
+      launched = handle;
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
       // existing ownership boundary instead of briefly adopting an actionable card.
@@ -1246,8 +1836,9 @@ export class SdkSupervisor {
           initialState: row.turnInProgress ? "starting" : "idle",
           permissionMode: row.permissionMode,
           gitBranch: task?.branch ?? null,
-          gitRoot: row.cwd,
-          repoRoot: task?.repoRoot ?? null,
+          gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
+          repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+          launchWorkUnitId: workUnitId,
         },
         handle,
         stateHome,
@@ -1255,6 +1846,7 @@ export class SdkSupervisor {
           taskId: row.taskId,
           model: row.model,
           effort: row.effort,
+          advisorModel: row.advisorModel,
           agentSessionId: row.agentSessionId,
           turnInProgress: row.turnInProgress,
           acceptedTurns: 0,
@@ -1274,6 +1866,15 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      // A driver that started but was never taken by `adopt` (its row or registration write
+      // threw) is stopped before its state home goes, as the shutdown branch does. The home goes
+      // even when the stop fails: nothing will ever adopt that driver, and nothing else removes
+      // a launch's private home, so keeping it would only strand it. A failed stop is logged.
+      if (!adopted && launched && this.handles.get(row.id) !== launched) {
+        await launched.stop().catch((stopError: unknown) => {
+          console.error(`[sdk] could not stop the unadopted driver for ${row.id}:`, stopError);
+        });
+      }
       if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
@@ -1299,7 +1900,18 @@ export class SdkSupervisor {
       // substitution the record exists to prevent, still reachable through its own path. The
       // reservation closes that window; the release below gives it back when the driver is
       // known to have taken nothing.
-      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      // A reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) recorded nothing: the continuation is not sent, and nothing
+      // is released, since a release would give back an earlier reservation of the same text.
+      try {
+        reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      } catch (err) {
+        console.error(
+          `[sdk] could not continue interrupted turn for ${row.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
@@ -1344,12 +1956,13 @@ export class SdkSupervisor {
       this.registry.registerSdkSession({
         id: row.id,
         agent: row.agent,
+        taskId: row.taskId,
         name: restoredName(row, task?.title ?? null),
         cwd: row.cwd,
         permissionMode: row.permissionMode,
         gitBranch: task?.branch ?? null,
-        gitRoot: row.cwd,
-        repoRoot: task?.repoRoot ?? null,
+        gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
+        repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
       });
       this.registry.applyDriverEvent(row.id, {
         kind: "exited",
@@ -1369,7 +1982,7 @@ export class SdkSupervisor {
       agent: row.agent,
       name: restoredName(row, task?.title ?? null),
       cwd: row.cwd,
-      repoRoot: task?.repoRoot ?? null,
+      repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
       taskId: row.taskId,
       taskTitle: task?.title ?? null,
       createdAt: row.createdAt,
@@ -1398,9 +2011,13 @@ export class SdkSupervisor {
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
       try {
         const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
-          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+        const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+        if (!snapshot.unknownReason && child && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          // Capture while this driver is owned. Fingerprinting a later lookup would
+          // bless a replacement PID; retaining raw argv could disclose credentials.
+          const darwinIdentity = process.platform === 'darwin'
+            ? darwinCheckIdentity(`${child.startRaw} ${child.command}`) : null;
+          recordSdkSessionProcess(id, { pid, startMs: child.startMs, ...(darwinIdentity ? {darwinIdentity} : {}) });
         }
       } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
     };
@@ -1425,18 +2042,34 @@ export class SdkSupervisor {
           }
           this.recordTurnInProgress(id, true);
         }
+        let retryPending: string | null = null;
+        let holdWorkCycle = false;
         if (evt.kind === "turn_done" && !this.shuttingDown) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
           this.unfinishedTurns.set(id, remaining);
-          this.recordTurnInProgress(id, remaining > 0);
+          // An accepted turn still waiting will run anyway and is the retry; only a session
+          // with nothing left to run needs one scheduled.
+          if (evt.failure?.kind === "capacity" && remaining === 0) {
+            retryPending = this.scheduleCapacityRetry(id, handle, evt.failure.message);
+          } else if (evt.failure?.kind === "capacity") {
+            // The queued turn is the retry, and the work is still unfinished until it ends.
+            holdWorkCycle = true;
+          } else if (!evt.failure) {
+            this.capacityAttempts.delete(id);
+          }
+          this.recordTurnInProgress(id, remaining > 0 || retryPending !== null);
           deferIdle = remaining > 0;
         }
+        // The driver is idle while a retry waits, but the work is not done. No current driver
+        // reports idle after a turn ends; this keeps one that does from releasing it early.
+        const heldIdle = evt.kind === "state" && evt.state === "idle" && this.capacityRetries.has(id);
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
-        if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        if (!this.shuttingDown) {
-          this.registry.applyDriverEvent(id, evt, { deferIdle });
+        if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus(id));
+        if (evt.kind === "bound") this.noteReportedConversation(id, evt.agentSessionId);
+        if (!this.shuttingDown && !heldIdle) {
+          this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending, holdWorkCycle });
           if (evt.kind === "bound") {
             // A clear replaces the conversation that accepted these launch-window prompts.
             // Never replay its objective under the replacement's native key.
@@ -1444,11 +2077,17 @@ export class SdkSupervisor {
             else if (this.launchGoalNoteKeys.get(id) === null) {
               this.launchGoalNoteKeys.set(id, evt.agentSessionId);
             }
+            // Launch-window follow-ups were expected under the session id; their echoes carry
+            // the native key from here on. A clear means nothing will record them.
+            rekeyHumanEchoes(id, id, evt.cleared ? null : evt.agentSessionId);
             const prompts = evt.cleared
               ? []
               : (this.pendingLaunchGoalPrompts.get(id) ?? []);
-            for (const prompt of prompts) {
-              this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+            for (const { prompt, ticket } of prompts) {
+              // The hook door may have reached a held follow-up first.
+              if (ticket && confirmHumanEcho(ticket).captured) continue;
+              const captured = this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+              if (captured && ticket) markHumanEchoCaptured(ticket);
             }
             this.pendingLaunchGoalPrompts.delete(id);
           }
@@ -1461,8 +2100,12 @@ export class SdkSupervisor {
     } finally {
       if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
       this.handles.delete(id);
+      // A driver that ended never reports, so nobody waits on it past this point.
+      this.noteReportedConversation(id, null);
       this.sends.delete(id);
       this.pumps.delete(id);
+      this.cancelCapacityRetry(id);
+      this.capacityAttempts.delete(id);
       this.unfinishedTurns.delete(id);
       this.acceptingTurns.delete(id);
       this.pendingLaunchGoalPrompts.delete(id);
@@ -1471,7 +2114,8 @@ export class SdkSupervisor {
       cleanupDisposableAgentStateHome(this.stateHomes.get(id));
       this.stateHomes.delete(id);
       try {
-        setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());
+        // A hibernating driver's conversation is on disk whatever its stream did on the way out.
+        setSdkSessionStatus(id, outcome === "failed" && !this.endsHibernated(id) ? "failed" : this.endStatus(id));
       } catch (err) {
         console.error(`[sdk] final status write for ${id} failed:`, err);
       }
@@ -1491,8 +2135,154 @@ export class SdkSupervisor {
     }
   }
 
+  /**
+   * Arrange the next capacity retry, and return the card's activity while it waits.
+   *
+   * Null when the attempts are spent: the turn is then reported complete like any other, so
+   * a model that stays down cannot hold a session busy for ever.
+   */
+  private scheduleCapacityRetry(id: string, handle: SdkSessionHandle, reason: string): string | null {
+    this.cancelCapacityRetry(id);
+    const attempt = (this.capacityAttempts.get(id) ?? 0) + 1;
+    const plan = capacityRetryPlan(attempt);
+    if (!plan) {
+      this.capacityAttempts.delete(id);
+      console.warn(`[sdk] ${id}: model still at capacity after ${attempt - 1} retries; giving up (${reason})`);
+      return null;
+    }
+    this.capacityAttempts.set(id, attempt);
+    const token = {};
+    const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), plan.delayMs);
+    timer.unref?.();
+    this.capacityRetries.set(id, { token, timer, attempt, reason });
+    console.warn(
+      `[sdk] ${id}: model at capacity (${reason}); retrying in ${plan.delayMs / 1000}s ` +
+        `(attempt ${plan.attempt} of ${plan.maxAttempts})`,
+    );
+    return capacityRetryActivity(plan);
+  }
+
+  /** Send the continuation, through the same idle-only boundary every automated turn uses. */
+  private async fireCapacityRetry(id: string, handle: SdkSessionHandle, token: object): Promise<void> {
+    const waiting = this.capacityRetries.get(id);
+    if (waiting?.token !== token) return;
+    if ((this.pauseGate(id) || this.heldByPause(id)) && this.handles.get(id) === handle && !this.shuttingDown) {
+      // Paused by the operator - frozen, or held where there is no process to freeze (Pi, whose
+      // driver runs inside the daemon and so never trips `pauseGate`). The retry is an automated
+      // turn and belongs to the turn the pause interrupted, so it waits rather than being sent or
+      // refused and the turn reported finished; it fires after resume.
+      const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), PAUSED_RETRY_RECHECK_MS);
+      timer.unref?.();
+      this.capacityRetries.set(id, { ...waiting, timer });
+      return;
+    }
+    this.capacityRetries.delete(id);
+    if (this.handles.get(id) !== handle || this.shuttingDown) return;
+    // Harness-authored, like the restart continuation: the agent's prompt echo must not be
+    // captured as the operator's Goal or read back to a workflow as their words.
+    // A reservation refused because its attribution could not be stored
+    // (`AutomatedAttributionError`) recorded nothing: the retry is not sent and is settled as one
+    // that could not be delivered, and nothing is released, since a release would give back an
+    // earlier reservation of the same text.
+    try {
+      reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    } catch (err) {
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
+    const busy = new Error("the driver was already running a turn");
+    try {
+      // Asked again at send time: the send waits its turn on the session's chain, and a pause can
+      // begin meanwhile. Thrown as the paused error, so the catch below re-arms the retry.
+      const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT }, () => {
+        if (this.heldByPause(id)) throw new SessionFrozenError(SESSION_HELD);
+        return null;
+      });
+      if (started !== "started") throw busy;
+    } catch (err) {
+      // Both ways in are positive evidence nothing was delivered: `sendWhenIdle` rejects only
+      // when its guard or the driver refused the turn, and null is the driver declining an
+      // idle-only turn because one was already running.
+      releaseInjection(id, CAPACITY_CONTINUATION_PROMPT);
+      // That already-running turn continues the work and its own completion settles the
+      // card, so there is nothing left to retry.
+      if (err === busy) return;
+      // Frozen while this send waited its turn on the session's chain: the turn the pause
+      // interrupted is not over, so the retry is put back at the same attempt to wait for the
+      // thaw, exactly as the check above would have, rather than the card being settled.
+      if (err instanceof SessionFrozenError && this.handles.get(id) === handle && !this.shuttingDown) {
+        if (!this.capacityRetries.has(id)) {
+          const next = {};
+          const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, next), PAUSED_RETRY_RECHECK_MS);
+          timer.unref?.();
+          this.capacityRetries.set(id, { token: next, timer, attempt: waiting.attempt, reason: waiting.reason });
+        }
+        return;
+      }
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
+    confirmReservedInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+  }
+
+  /** Drop a waiting retry, returning what a failed control needs to re-arm it. */
+  private takeCapacityRetry(id: string): { attempt: number; reason: string } | null {
+    const pending = this.capacityRetries.get(id);
+    if (!pending) return null;
+    clearTimeout(pending.timer);
+    this.capacityRetries.delete(id);
+    return { attempt: pending.attempt, reason: pending.reason };
+  }
+
+  /** Drop a waiting retry. True when there was one. */
+  private cancelCapacityRetry(id: string): boolean {
+    return this.takeCapacityRetry(id) !== null;
+  }
+
+  /**
+   * Put back a retry a control set aside before it failed, at the same attempt, with the
+   * wait starting over. Only for a retry nothing has settled: the card is still working.
+   */
+  private rearmCapacityRetry(
+    id: string,
+    handle: SdkSessionHandle,
+    held: { attempt: number; reason: string },
+  ): string | null {
+    if (this.handles.get(id) !== handle || this.shuttingDown) return null;
+    this.capacityAttempts.set(id, held.attempt - 1);
+    return this.scheduleCapacityRetry(id, handle, held.reason);
+  }
+
+
+  /**
+   * Report the turn a cancelled retry was holding open as finished after all, against
+   * `workCycleKey` when the conversation it belonged to may no longer be the card's.
+   */
+  private settleCapacityRetry(id: string, workCycleKey?: string): void {
+    this.capacityAttempts.delete(id);
+    const remaining = this.unfinishedTurns.get(id) ?? 0;
+    this.recordTurnInProgress(id, remaining > 0);
+    if (!this.shuttingDown && remaining === 0) {
+      this.registry.applyDriverEvent(id, { kind: "turn_done", usage: null }, { workCycleKey });
+    }
+  }
+
+  /** Hibernating, or woken and not yet bound: either way its conversation waits for a Resume. */
+  private endsHibernated(id: string): boolean {
+    return this.hibernating.has(id) || this.unboundWakes.has(id);
+  }
+
   /** What a driver ending means, which depends entirely on who ended it. */
-  private endStatus(): SdkSessionStatus {
+  private endStatus(id: string): SdkSessionStatus {
+    if (this.endsHibernated(id)) return "hibernated";
     return this.shuttingDown ? "suspended" : "exited";
   }
 }

@@ -5,6 +5,7 @@ import type { Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 
 import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
@@ -34,6 +35,8 @@ const MAX_REQUESTS = 512;
 const MAX_PARALLEL_SOCKETS = 8;
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+const MAX_SNAPSHOT_ENTRIES = 10_000;
+const MAX_FOREGROUND_PROCESSES = 512;
 
 /**
  * This client's own code for an answer about the wrong pane, distinct from every code the
@@ -70,9 +73,9 @@ const SnapshotSchema = z.object({
   snapshot: z.object({
     version: z.string(),
     protocol: z.number().int().nonnegative(),
-    workspaces: z.array(WorkspaceSchema),
-    tabs: z.array(TabSchema),
-    panes: z.array(HerdrPaneSchema),
+    workspaces: z.array(WorkspaceSchema).max(MAX_SNAPSHOT_ENTRIES),
+    tabs: z.array(TabSchema).max(MAX_SNAPSHOT_ENTRIES),
+    panes: z.array(HerdrPaneSchema).max(MAX_SNAPSHOT_ENTRIES),
   }),
 });
 
@@ -86,7 +89,7 @@ const ProcessInfoSchema = z.object({
       pid: z.number().int().nonnegative(),
       name: z.string(),
       cwd: NullableText,
-    })).optional(),
+    })).max(MAX_FOREGROUND_PROCESSES).optional(),
   }),
 });
 
@@ -159,7 +162,7 @@ const StatusSchema = z.object({
 
 const EnvelopeSchema = z.union([
   z.object({ id: Id, error: z.object({ code: z.string(), message: z.string() }) }),
-  z.object({ id: Id, result: z.record(z.unknown()) }),
+  z.object({ id: Id, result: boundedRecord(z.string(), z.unknown(), MAX_SNAPSHOT_ENTRIES) }),
 ]);
 
 export type HerdrPane = z.infer<typeof HerdrPaneSchema>;

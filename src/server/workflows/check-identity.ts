@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { locateExecutableSync } from "../executables/locator.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 
 // "This exact process, not a recycled pid" - the one question every signal a check sends has
 // to answer first.
@@ -158,16 +159,7 @@ function darwinIdentity(pid: number): string | null {
     // A non-zero exit means no such process, which is a null identity rather than an error.
     return null;
   }
-  const line = normalise(raw);
-  // `lstart` is five whitespace-separated tokens (`Fri Jul 31 15:15:37 2026`); a line with
-  // nothing after them is not a row we understand, and guessing at a half-read one is the
-  // exact thing this function must not do.
-  const tokens = line.split(" ");
-  if (tokens.length < 6) return null;
-  const start = tokens.slice(0, 5).join(" ");
-  const command = tokens.slice(5).join(" ");
-  if (!start || !command) return null;
-  return `${process.platform}${HALF}${start}${HALF}${condense(command)}`;
+  return darwinCheckIdentity(raw);
 }
 
 export interface CheckRuntimeSupport {

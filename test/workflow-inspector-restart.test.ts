@@ -161,7 +161,7 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     transcriptPath: null,
     env: { tmuxPane: "%61" },
     prUrl: url,
-    prCreated: false,
+    prCreated: true,
   });
 
   let captureHead = newHead;

@@ -601,6 +601,101 @@ test("a check row and its stage use deterministic status vocabulary", () => {
   assert.match(completed, /Press Enter to load this stage in the review worklist/);
 });
 
+test("a check infrastructure failure exposes its retained command output", () => {
+  const checkVersion: WorkflowVersion = {
+    ...version,
+    id: "check-version",
+    graph: {
+      nodes: [
+        { id: "check-session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "check-test", kind: "check", slot: "test", position: { x: 200, y: 0 } },
+        { id: "check-end", kind: "end", outcome: "Approved", position: { x: 400, y: 0 } },
+      ],
+      edges: [
+        {
+          id: "check-submit",
+          source: "check-session",
+          sourcePort: "submitted",
+          target: "check-test",
+          targetPort: "activate",
+        },
+        {
+          id: "check-pass",
+          source: "check-test",
+          sourcePort: "pass",
+          target: "check-end",
+          targetPort: "terminal",
+        },
+        {
+          id: "check-fail",
+          source: "check-test",
+          sourcePort: "fail",
+          target: "check-session",
+          targetPort: "return_for_changes",
+        },
+      ],
+    },
+  };
+  const base = runningDetail();
+  const current = submission("submission-timeout", 1, {
+    status: "failed",
+    completedAt: null,
+  });
+  const html = render({
+    ...base,
+    summary: {
+      ...base.summary,
+      workflowVersion: checkVersion.version,
+      status: "blocked",
+      phase: "infrastructure_error",
+      round: 1,
+      activePersonaNames: [],
+    },
+    version: checkVersion,
+    run: {
+      ...base.run,
+      workflowVersionId: checkVersion.id,
+      status: "blocked",
+      currentPhase: "infrastructure_error",
+      completedAt: null,
+    },
+    submissions: [current],
+    attempts: [attempt(
+      "attempt-timeout",
+      current.id,
+      "check-test",
+      snapshot("unused", "unused"),
+      {
+        state: "error",
+        persona: null,
+        runner: null,
+        model: null,
+        output: null,
+        error: "timed out after 60000ms",
+        commandArtifacts: [{
+          id: "artifact-stdout",
+          kind: "stdout",
+          retainedBytes: 28,
+          observedBytes: 28,
+          droppedBytes: 0,
+          sha256: "a".repeat(64),
+          captureState: "partial",
+          availability: "retained",
+          unavailableReason: null,
+        }],
+      },
+    )],
+    receipts: [],
+    deliveries: [],
+  } as WorkflowRunDetail);
+
+  assert.match(html, /Command failed to run/);
+  assert.match(html, /timed out after 60000ms/);
+  assert.match(html, /Retained command output/);
+  assert.match(html, /Load stdout/);
+  assert.match(html, /Capture ended before the attempt settled/);
+});
+
 test("every launched member and stage shows how long it ran, frozen once it settles", () => {
   const detail = runningDetail();
   const clocks = (html: string): string[] =>
@@ -3067,7 +3162,10 @@ const CHECK_NODE = "8a1f0b4e-1111-4000-8000-00000000000c";
  * these tests would be pinning the selection rule rather than the check vocabulary - which
  * `workflow-run-blocker-worklist.spec.ts` and the selection tests below already do.
  */
-function detailWithCheck(output: WorkflowJson): WorkflowRunDetail {
+function detailWithCheck(
+  output: WorkflowJson,
+  attemptOverrides: Partial<WorkflowNodeAttempt> = {},
+): WorkflowRunDetail {
   const detail = runningDetail();
   const latest = detail.submissions[detail.submissions.length - 1]!;
   return {
@@ -3085,6 +3183,7 @@ function detailWithCheck(output: WorkflowJson): WorkflowRunDetail {
           approvalDetails: { reason: "`npm test` passed.", evidence: [] },
           confidence: 1,
         },
+        ...attemptOverrides,
       }),
     ],
   } as WorkflowRunDetail;
@@ -3110,6 +3209,35 @@ test("a check attempt renders its slot, exit code and bounded output, not a Pers
   assert.doesNotMatch(html, /Missing persona/);
   assert.doesNotMatch(html, /cost unavailable/);
   assertNoGraphIds(html);
+});
+
+test("a check uses the attempt's current pruned descriptor over its frozen outcome", () => {
+  const retained = {
+    id: "artifact-current-state",
+    kind: "stdout" as const,
+    retainedBytes: 12,
+    observedBytes: 12,
+    droppedBytes: 0,
+    sha256: "a".repeat(64),
+    captureState: "complete" as const,
+    availability: "retained" as const,
+    unavailableReason: null,
+  };
+  const html = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 1,
+    output: "failed",
+    truncatedBytes: 0,
+    artifacts: [retained],
+    note: "`npm test` exited 1.",
+  }, {
+    commandArtifacts: [{ ...retained, availability: "pruned" }],
+  }));
+
+  assert.match(html, /stdout · 12 B · pruned/);
+  assert.doesNotMatch(html, /Load stdout/);
 });
 
 test("the three passing check statuses each say something different about why", () => {

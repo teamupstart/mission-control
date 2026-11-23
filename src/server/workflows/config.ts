@@ -57,8 +57,15 @@ function keepPreFieldCommandConsent(blob: unknown): unknown {
   return { ...(blob as Record<string, unknown>), checksEnabled: false };
 }
 
-export function resolveTaskWorkflowId(workflowId: string | null | undefined, kind: TaskKind = "ship", storage: "repository" | "local" = "repository"): string | null {
-  return workflowId === undefined ? taskDefaultWorkflowId(kind, getWorkflowPolicy().defaultWorkflowId, storage) : workflowId;
+/** A creator's explicit choice (a workflow or `null`) wins; an omitted one takes the kind's row. */
+export function resolveTaskWorkflowId(
+  workflowId: string | null | undefined,
+  kind: TaskKind = "ship",
+  storage: "repository" | "local" = "repository",
+): string | null {
+  return workflowId === undefined
+    ? taskDefaultWorkflowId(kind, getWorkflowPolicy().kindWorkflowDefaults, storage)
+    : workflowId;
 }
 
 /**
@@ -70,10 +77,17 @@ export function resolveTaskWorkflowId(workflowId: string | null | undefined, kin
  *
  * `checksEnabled` is the one field a full replace must not take from the schema, and
  * `keepStoredCommandConsent` explains why.
+ *
+ * The stored blob also carries `defaultWorkflowId`, the effective Ship row, so a build from
+ * before per-kind defaults keeps the operator's Ship default after a rollback. This build
+ * never reads it back: the stored read drops it whenever the map is present.
  */
 export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
   const next = WorkflowPolicySchema.parse(keepStoredCommandConsent(input));
-  setAppConfig(CONFIG_ENTRY, next);
+  setAppConfig(CONFIG_ENTRY, {
+    ...next,
+    defaultWorkflowId: taskDefaultWorkflowId("ship", next.kindWorkflowDefaults),
+  });
   return next;
 }
 
@@ -86,7 +100,7 @@ export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
  * `PUT /api/workflows/config` replaces the whole policy, and `WorkflowPolicySchema` fills an
  * omitted field with the shipped default - which is now `true`. Those two facts together
  * meant any write that left the field out armed Commands: a caller adjusting retention, an
- * older client that predates the field, a script setting `defaultWorkflowId`. On a legacy
+ * older client that predates the field, a script setting a kind's default workflow. On a legacy
  * install that already holds grants, an unrelated preference change would have switched on
  * branch-authored execution in every one of them, and it would have quietly undone the read
  * guard above on the first save.

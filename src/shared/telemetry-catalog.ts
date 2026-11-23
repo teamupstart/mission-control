@@ -22,9 +22,12 @@ import {
   AUDIENCE_OPERATOR,
   TELEMETRY_ACTOR_BASES,
   TELEMETRY_UNKNOWN_VALUE,
+  UNSCOPED_REF_KEYS,
+  isUnscopedRefKey,
   type TelemetryAudience,
   type TelemetryEnvelope,
 } from "./telemetry.ts";
+import { WORK_UNIT_SPAN_ATTRIBUTE } from "./work-unit.ts";
 // The shared registries, imported rather than restated. A telemetry schema that wrote out
 // "claude" | "codex" | "pi" would be a second source of truth for the harness list, and the
 // day a fourth one lands it would silently refuse every fact about it.
@@ -105,6 +108,9 @@ export const FORBIDDEN_METRIC_DIMENSIONS: readonly string[] = [
   "task_id",
   "trace_id",
   "url",
+  // One value per piece of work, forever. A span attribute, never a label: see
+  // `UNSCOPED_REF_KEYS` in `telemetry.ts`.
+  WORK_UNIT_SPAN_ATTRIBUTE,
   "worktree",
 ];
 
@@ -139,6 +145,13 @@ export interface TelemetrySpanDefinition {
   attributes: readonly string[];
   /** Ref keys promoted to span attributes, after destination-scoped translation. */
   refAttributes: readonly string[];
+  /**
+   * Ref keys promoted to span attributes AS THEY ARE, under their own name and identical in
+   * every lane. Only members of `UNSCOPED_REF_KEYS` may appear, never also in `refAttributes`,
+   * and the lint requires `work_unit_id` here on every span-bearing event that carries a
+   * session or a task. Omitted means none.
+   */
+  unscopedRefAttributes?: readonly string[];
   /**
    * Which values of which fact make this span an ERROR rather than a success.
    *
@@ -494,7 +507,7 @@ export const SESSION_STARTED_EVENT = defineEvent({
       repo_count: z.number().int().min(0).max(64),
     })
     .strict(),
-  refKeys: ["session_id", "task_id", "conversation_id"],
+  refKeys: ["session_id", "task_id", "conversation_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.start",
@@ -502,6 +515,7 @@ export const SESSION_STARTED_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["origin", "start_observation", "agent", "runtime", "task_kind"],
     refAttributes: ["session_id", "task_id", "conversation_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: null,
   },
 });
@@ -532,7 +546,7 @@ export const SESSION_RESTORE_EVENT = defineEvent({
       turn_in_progress: z.boolean(),
     })
     .strict(),
-  refKeys: ["session_id", "task_id"],
+  refKeys: ["session_id", "task_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.restore",
@@ -540,6 +554,7 @@ export const SESSION_RESTORE_EVENT = defineEvent({
     durationFactKey: "duration_ms",
     attributes: ["outcome", "agent", "turn_in_progress"],
     refAttributes: ["session_id", "task_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: { factKey: "outcome", values: ["failed", "interrupted"] },
   },
 });
@@ -592,7 +607,7 @@ export const DISPATCH_FINISHED_EVENT = defineEvent({
       duration_ms: z.number().int().min(0),
     })
     .strict(),
-  refKeys: ["session_id", "task_id"],
+  refKeys: ["session_id", "task_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.dispatch",
@@ -608,6 +623,7 @@ export const DISPATCH_FINISHED_EVENT = defineEvent({
       "resolution_source",
     ],
     refAttributes: ["session_id", "task_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: { factKey: "outcome", values: ["failed"] },
   },
 });
@@ -658,7 +674,7 @@ export const SESSION_SEGMENT_EVENT = defineEvent({
       effort_pending: z.boolean(),
     })
     .strict(),
-  refKeys: ["session_id", "task_id", "conversation_id", "segment_id"],
+  refKeys: ["session_id", "task_id", "conversation_id", "segment_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.segment",
@@ -666,6 +682,7 @@ export const SESSION_SEGMENT_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["agent", "runtime", "model_id", "effort", "quality", "meta_source", "reason"],
     refAttributes: ["session_id", "conversation_id", "segment_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: null,
   },
 });
@@ -698,7 +715,7 @@ export const EFFORT_SELECTED_EVENT = defineEvent({
       actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
     })
     .strict(),
-  refKeys: ["session_id", "operation_id", "conversation_id"],
+  refKeys: ["session_id", "operation_id", "conversation_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.effort.select",
@@ -706,6 +723,7 @@ export const EFFORT_SELECTED_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["requested_effort", "outcome", "applies", "agent", "runtime", "actor_basis"],
     refAttributes: ["session_id", "operation_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: { factKey: "outcome", values: ["refused"] },
   },
 });
@@ -735,7 +753,7 @@ export const SESSION_OPERATION_EVENT = defineEvent({
       actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
     })
     .strict(),
-  refKeys: ["session_id", "operation_id", "conversation_id", "segment_id"],
+  refKeys: ["session_id", "operation_id", "conversation_id", "segment_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.operation",
@@ -743,6 +761,7 @@ export const SESSION_OPERATION_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["operation", "outcome", "agent", "runtime", "actor_basis"],
     refAttributes: ["session_id", "operation_id", "conversation_id", "segment_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: { factKey: "outcome", values: ["refused"] },
   },
 });
@@ -780,7 +799,7 @@ export const TURN_FINISHED_EVENT = defineEvent({
       observation_bounded: z.boolean(),
     })
     .strict(),
-  refKeys: ["session_id", "task_id", "conversation_id", "segment_id"],
+  refKeys: ["session_id", "task_id", "conversation_id", "segment_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.turn",
@@ -788,6 +807,7 @@ export const TURN_FINISHED_EVENT = defineEvent({
     durationFactKey: "duration_ms",
     attributes: ["agent", "runtime", "effort", "quality", "outcome", "observation_bounded"],
     refAttributes: ["session_id", "conversation_id", "segment_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: null,
   },
 });
@@ -826,7 +846,7 @@ export const SESSION_ENDED_EVENT = defineEvent({
       observation_bounded: z.boolean(),
     })
     .strict(),
-  refKeys: ["session_id", "task_id", "conversation_id"],
+  refKeys: ["session_id", "task_id", "conversation_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.end",
@@ -841,6 +861,7 @@ export const SESSION_ENDED_EVENT = defineEvent({
       "observation_bounded",
     ],
     refAttributes: ["session_id", "task_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     // A session ending is not an error. Whether the WORK failed is a different fact, with a
     // different owner, and marking every ending red would make the trace view useless.
     errorWhen: null,
@@ -870,7 +891,7 @@ export const SESSION_KILL_REQUESTED_EVENT = defineEvent({
       actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
     })
     .strict(),
-  refKeys: ["session_id", "operation_id", "task_id"],
+  refKeys: ["session_id", "operation_id", "task_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.session.kill",
@@ -878,6 +899,7 @@ export const SESSION_KILL_REQUESTED_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["agent", "runtime", "outcome", "actor_basis"],
     refAttributes: ["session_id", "operation_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: { factKey: "outcome", values: ["refused"] },
   },
 });
@@ -957,7 +979,7 @@ export const TASK_OUTCOME_EVENT = defineEvent({
       observation_bounded: z.boolean(),
     })
     .strict(),
-  refKeys: ["task_id", "session_id"],
+  refKeys: ["task_id", "session_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.task.outcome",
@@ -971,6 +993,7 @@ export const TASK_OUTCOME_EVENT = defineEvent({
       "observation_bounded",
     ],
     refAttributes: ["task_id", "session_id"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     // Deliberately NOT an error for `failed`. A failed task with `completion_evidence:
     // missing` is an unknown, and colouring it red in Tempo would assert the very thing the
     // evidence field exists to withhold.
@@ -1022,7 +1045,7 @@ export const PR_OBSERVED_EVENT = defineEvent({
       age_ms: z.number().int().min(0),
     })
     .strict(),
-  refKeys: ["task_id", "repo_key", "pr_key", "session_id"],
+  refKeys: ["task_id", "repo_key", "pr_key", "session_id", WORK_UNIT_SPAN_ATTRIBUTE],
   ingress: null,
   span: {
     name: "mission.pr.observed",
@@ -1030,6 +1053,7 @@ export const PR_OBSERVED_EVENT = defineEvent({
     durationFactKey: null,
     attributes: ["fact", "task_kind", "repo_role", "delivery", "visibility"],
     refAttributes: ["task_id", "repo_key", "pr_key"],
+    unscopedRefAttributes: [WORK_UNIT_SPAN_ATTRIBUTE],
     errorWhen: null,
   },
 });
@@ -1408,26 +1432,43 @@ export const EFFORT_SELECTIONS_METRIC = defineMetric({
   }),
 });
 
+/**
+ * Entry attribution, independent of where the agent runs or how it was discovered.
+ * A declared human alone is not evidence of dashboard use. Terminal typing never reaches
+ * this event; missing app context stays unknown rather than implying terminal activity.
+ */
+function sessionInteractionSource(actor: TelemetryEnvelope["actor"]): "dashboard" | "automation" | "unknown" {
+  if (actor.kind === "human" && actor.origin === "dashboard" && actor.basis === "app_context") {
+    return "dashboard";
+  }
+  if (["owner", "app_context", "declared"].includes(actor.basis) &&
+    ["agent", "foreman", "workflow", "scheduler", "recovery", "system"].includes(actor.kind)) {
+    return "automation";
+  }
+  return "unknown";
+}
+
 export const SESSION_OPERATIONS_METRIC = defineMetric({
   name: "mission.session.operations",
-  description: "Conversation operations that reached a session, by kind, outcome and actor basis.",
+  description: "Conversation operations by kind, outcome, actor basis and interaction source; direct terminal input is unmeasured.",
   unit: "1",
   kind: "counter",
   valueType: "int",
   event: SESSION_OPERATION_EVENT.name,
   audience: AUDIENCE_ALL,
-  dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis"],
+  dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis", "interaction_source"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
   since: 1,
   owner: "src/shared/telemetry-catalog.ts",
-  contribution: (facts) => ({
+  contribution: (facts, envelope) => ({
     dimensions: {
       operation: dim(facts.operation),
       outcome: dim(facts.outcome),
       agent: dim(facts.agent),
       runtime: dim(facts.runtime),
       actor_basis: dim(facts.actor_basis),
+      interaction_source: sessionInteractionSource(envelope.actor),
     },
     value: 1,
   }),
@@ -1647,12 +1688,17 @@ export function promMetricName(metric: TelemetryMetricDefinition): string {
  * Every rule a catalog entry must satisfy, checked as one pass.
  *
  * Called by a focused test rather than at module load: a throwing import would take the whole
- * daemon down over a telemetry typo, which is precisely the trade P1 forbids.
+ * daemon down over a telemetry typo, which is precisely the trade P1 forbids. The registries are
+ * parameters only so that test can prove each rule refuses a defective entry; every other
+ * caller checks the shipped catalog.
  */
-export function telemetryCatalogProblems(): string[] {
+export function telemetryCatalogProblems(
+  events: Record<string, TelemetryEventDefinition> = TELEMETRY_EVENTS,
+  metrics: Record<string, TelemetryMetricDefinition> = TELEMETRY_METRICS,
+): string[] {
   const problems: string[] = [];
 
-  for (const [name, event] of Object.entries(TELEMETRY_EVENTS)) {
+  for (const [name, event] of Object.entries(events)) {
     if (name !== event.name) problems.push(`event key ${name} does not match name ${event.name}`);
     if (!event.name.startsWith("mission.")) {
       problems.push(`event ${event.name} is not namespaced under mission.`);
@@ -1665,9 +1711,9 @@ export function telemetryCatalogProblems(): string[] {
     }
     if (event.audience.length === 0) problems.push(`event ${event.name} has no audience`);
     // Strictness is the rule that stops an internal object being spread into an envelope, so
-    // it is checked rather than trusted. Zod records the mode on the def.
-    const def = (event.facts as unknown as { _def?: { unknownKeys?: string } })._def;
-    if (def?.unknownKeys !== "strict") {
+    // it is checked rather than trusted. Zod records `.strict()` as a `never` catchall.
+    const facts: z.ZodTypeAny = event.facts;
+    if (!(facts instanceof z.ZodObject) || facts._zod.def.catchall?._zod.def.type !== "never") {
       problems.push(`event ${event.name} facts schema is not strict`);
     }
     if (event.ingress === "browser") {
@@ -1703,16 +1749,44 @@ export function telemetryCatalogProblems(): string[] {
         if (!event.refKeys.includes(ref)) {
           problems.push(`event ${event.name} span ref ${ref} is not a declared ref key`);
         }
+        // A listed key promoted the ordinary way would be exported hashed, as
+        // `mission.ref.<key>`, which matches nothing in any other lane or service.
+        if (isUnscopedRefKey(ref)) {
+          problems.push(`event ${event.name} span ref ${ref} must be unscoped, never hashed`);
+        }
+      }
+      // The exception to hashing, held to its one list. An unscoped attribute is exported raw
+      // to every lane, so it is a privacy decision made in `UNSCOPED_REF_KEYS`, never here.
+      const unscoped = event.span.unscopedRefAttributes ?? [];
+      for (const ref of unscoped) {
+        if (!isUnscopedRefKey(ref)) {
+          problems.push(
+            `event ${event.name} exports ${ref} unhashed, but only ${UNSCOPED_REF_KEYS.join(", ")} may be`,
+          );
+        }
+        if (!event.refKeys.includes(ref)) {
+          problems.push(`event ${event.name} unscoped span ref ${ref} is not a declared ref key`);
+        }
+      }
+      // Every span of a session or a task carries its work unit, so one query on it finds the
+      // whole piece of work. Stated as a rule so a future event cannot be added without it.
+      if (
+        (event.refKeys.includes("session_id") || event.refKeys.includes("task_id")) &&
+        !unscoped.includes(WORK_UNIT_SPAN_ATTRIBUTE)
+      ) {
+        problems.push(
+          `event ${event.name} has a span and a session or task ref but does not export ${WORK_UNIT_SPAN_ATTRIBUTE}`,
+        );
       }
     }
   }
 
-  for (const [name, metric] of Object.entries(TELEMETRY_METRICS)) {
+  for (const [name, metric] of Object.entries(metrics)) {
     if (name !== metric.name) problems.push(`metric key ${name} does not match name ${metric.name}`);
     if (!metric.name.startsWith("mission.")) {
       problems.push(`metric ${metric.name} is not namespaced under mission.`);
     }
-    const event = TELEMETRY_EVENTS[metric.event];
+    const event = events[metric.event];
     if (!event) {
       problems.push(`metric ${metric.name} contributes from unknown event ${metric.event}`);
       continue;

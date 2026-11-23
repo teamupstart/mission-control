@@ -114,14 +114,23 @@ const summary = (patch: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary =>
 });
 
 test("all tours are registered once, and discovery derives one row each in a stable order", () => {
-  assert.deepEqual(Object.keys(TOUR_DEFINITIONS), ["see-work", "library", "workflows", "setup"]);
+  assert.deepEqual(
+    Object.keys(TOUR_DEFINITIONS),
+    ["see-work", "library", "workflows", "setup", "residents"],
+  );
   assert.deepEqual(
     TOUR_ENTRIES.map((entry) => entry.id),
-    ["see-work", "library", "workflows", "setup"],
+    ["see-work", "library", "workflows", "setup", "residents"],
   );
   assert.deepEqual(
     TOUR_ENTRIES.map((entry) => entry.title),
-    ["See the work", "Author what runs", "Follow the review", "Set up this machine"],
+    [
+      "See the work",
+      "Author what runs",
+      "Follow the review",
+      "Set up this machine",
+      "Meet your residents",
+    ],
   );
   assert.equal(new Set(TOUR_ENTRIES.map((entry) => entry.palette.rowId)).size, TOUR_ENTRIES.length);
   // The tour opens on the shelves index, and that route is what App preflights before it

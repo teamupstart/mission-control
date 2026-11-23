@@ -1,13 +1,21 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
 process.env.HARNESS_HOME = home;
+// A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
+// Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
+// before `npm run build`) the launch is refused. What it publishes is answered by
+// `MISSION_TEST_MCP_DEPS`.
+process.env.MISSION_MCP_SERVER = join(home, "mission-mcp-stand-in.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 // A binary that exists, so bin resolution cannot be what fails below. The dispatch under
 // test never reaches a spawn.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
@@ -56,13 +64,7 @@ test("a pinned base this repo does not have fails the task and provisions nothin
   // rather than a worktree, a terminal home and an agent that has to be torn down again.
   // Getting that ordering wrong is not visible in the happy path at all.
   const repo = join(home, "pinned-repo");
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
 
   const registry = new Registry();
   registry.upsertTask(mkTask({
@@ -87,14 +89,7 @@ test("a pinned base this repo does not have fails the task and provisions nothin
 
 test("cancellation before discovery retains the identity captured by terminal launch", async () => {
   const repo = join(home, "capture-before-discovery");
-  mkdirSync(repo);
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
-  const base = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const base = seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   const registry = new Registry();
   const id = "capture-before-discovery";
   registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: repo }));
@@ -107,7 +102,7 @@ test("cancellation before discovery retains the identity captured by terminal la
   }, {
     resolveRuntime: () => "terminal",
     resolveBases: async () => ({ primary: base, extras: [] }),
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async () => {
       registry.upsertTask({ ...registry.getTask(id)!, status: "cancelled" });
       return captured;

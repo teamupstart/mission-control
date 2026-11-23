@@ -6,7 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, markdownPropsEqual } from "../src/web/components/Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
 import { rehypeWorkspacePaths } from "../src/web/lib/rehypeWorkspacePaths.ts";
-import { LatestFileRequests } from "../src/web/lib/sessionFiles.ts";
+import {
+  LatestFileRequests,
+  shouldWarmWorkspacePaths,
+  WorkspacePathListings,
+} from "../src/web/lib/sessionFiles.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
 
 // What is at stake: an agent names a file the way it reads in a terminal - in backticks or
@@ -164,8 +168,72 @@ test("the shared Console and Board transcript receives the file store", () => {
 
 test("the panel asks for the listing and hands it to the renderer", () => {
   const panel = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
-  assert.match(panel, /useWorkspacePaths\(files, sessionId, Boolean\(session\.cwd && onOpenFile\)\)/);
+  assert.match(
+    panel,
+    /useWorkspacePaths\(\s*files,\s*sessionId,\s*Boolean\(session\.cwd && onOpenFile\),\s*working \? null : \(messages\.at\(-1\)\?\.id \?\? ""\),\s*presenting,?\s*\)/,
+  );
+  assert.match(panel, /const working = session\.state === "working";/);
+  assert.match(panel, /working \? unlistedArtifactTurn\(messages, files\?\.pathIndex\?\.\[sessionId\] \?\? null\) : null/);
   assert.match(panel, /<Markdown breaks onLinkClick=\{onOpenFile\} filePaths=\{filePaths\}>/);
+});
+
+test("a transcript re-lists its checkout when a turn lands, and not on every frame", () => {
+  // A listing taken only when the conversation mounted predates every file the agent writes
+  // while the operator watches, so the turn presenting a fresh mock-up or report rendered its
+  // path as dead text and drew no preview until something remounted the conversation.
+  const idle = (settledOn: string) => ({ sessionId: "s1", settledOn });
+  const working = { sessionId: "s1", settledOn: null };
+  assert.equal(shouldWarmWorkspacePaths(null, idle("m1")), true, "the first render lists");
+  assert.equal(
+    shouldWarmWorkspacePaths(null, working),
+    true,
+    "a transcript opened mid-turn still lists its history's paths",
+  );
+  assert.equal(shouldWarmWorkspacePaths(idle("m1"), working), false, "starting a turn wrote nothing yet");
+  assert.equal(shouldWarmWorkspacePaths(working, working), false, "a streaming turn's frames are free");
+  assert.equal(
+    shouldWarmWorkspacePaths(working, idle("m2")),
+    true,
+    "a finished turn lists again, after the files it names exist",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths(idle("m1"), idle("m2")),
+    true,
+    "a turn too quick to be seen working still lists when its message lands",
+  );
+  assert.equal(shouldWarmWorkspacePaths(idle("m2"), idle("m2")), false, "an idle re-render is free");
+  assert.equal(
+    shouldWarmWorkspacePaths(idle("m2"), { sessionId: "s2", settledOn: null }),
+    true,
+    "another session's transcript lists its own checkout, even mid-turn",
+  );
+});
+
+test("a turn still open re-lists once for a page it presents that the listing lacks", () => {
+  // A turn that presents its mock-ups and then blocks on request_input stays working for as
+  // long as the operator takes to decide - the whole time they need those mock-ups.
+  const working = (presenting: string | null) => ({ sessionId: "s1", settledOn: null, presenting });
+  assert.equal(shouldWarmWorkspacePaths(working(null), working("m3")), true, "the presenting turn lists");
+  assert.equal(
+    shouldWarmWorkspacePaths(working("m3"), working("m3"), new Set(["m3"])),
+    false,
+    "its later frames are free",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths(working(null), working("m3"), new Set(["m3"])),
+    false,
+    "a path it named but never wrote stays unlisted, and is not re-asked on every frame",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths(working("m3"), working("m5"), new Set(["m3"])),
+    true,
+    "a later turn presenting another page lists again",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths({ sessionId: "s1", settledOn: "m2" }, working(null)),
+    false,
+    "a turn that presents nothing still lists only when it lands",
+  );
 });
 
 test("the link probe and the path index share one request; the Files tab publishes into it", () => {
@@ -175,7 +243,8 @@ test("the link probe and the path index share one request; the Files tab publish
   // Shared: a written link's probe and the transcript's index come off one memoized
   // request, so neither can be answered from a listing the other has not seen.
   assert.match(store, /const probe = useCallback\([\s\S]*?listPaths\(sessionId\)/);
-  assert.match(store, /const warmPaths = useCallback\([\s\S]*?listPaths\(sessionId\)/);
+  assert.match(store, /const listPaths = useCallback\([\s\S]*?listings\.paths\(sessionId\)/);
+  assert.match(store, /const warmPaths = useCallback\([\s\S]*?listings\.warm\(sessionId, Boolean\(previous\)\)/);
   // Not shared: the Files tab lists for itself, because it needs the entry rows and the
   // request-ordering guard that go with rendering a list. Three fetch sites, and the two
   // that are not `listPaths` must publish, or the tab's newer listing never reaches the
@@ -195,8 +264,8 @@ test("reopening a conversation refreshes its path index without blanking or raci
   assert.match(warmBody, /const previous = pathIndexRef\.current\[sessionId\]/);
   assert.match(
     warmBody,
-    /if \(previous\) probeFiles\.current\.delete\(sessionId\)/,
-    "a reopened conversation must not reuse the resolved listing promise",
+    /listings\.warm\(sessionId, Boolean\(previous\)\)/,
+    "an existing index makes the ask list again (driven in the WorkspacePathListings tests)",
   );
   assert.doesNotMatch(
     warmBody,
@@ -231,24 +300,69 @@ test("a path warm that lands after the session was dropped does not resurrect it
   assert.equal(requests.isCurrent(key, inFlight), false);
   assert.equal(requests.isCurrent(key, reused), true);
 
-  // Both halves have to be wired or the guard above is inert. Sliced to the function
-  // body rather than matched across the file: `ensure` and `refresh` carry the same two
-  // calls, so a loose pattern passes while `warmPaths` itself has no guard at all.
+  // Both halves have to be wired or the guard above is inert: `warmPaths` writes nothing
+  // for an ask `WorkspacePathListings.warm` answered with null (driven below), and `drop`
+  // forgets the generations that ask booked.
   const store = readFileSync("src/web/lib/sessionFiles.ts", "utf8");
   const from = store.indexOf("const warmPaths = useCallback(");
   assert.ok(from > 0, "warmPaths still exists");
   const warmBody = store.slice(from, store.indexOf("\n  const ", from + 1));
-  assert.match(warmBody, /requests\.current\.begin\(key\)/, "warmPaths books a request");
-  assert.match(
-    warmBody,
-    /if \(!requests\.current\.isCurrent\(key, request\)\) return;/,
-    "and drops its own completion when that request is no longer current",
-  );
+  assert.match(warmBody, /if \(!paths\) return;/, "a superseded warm writes no index");
+  assert.match(store, /new WorkspacePathListings\([\s\S]*?requests\.current,\s*\)\)/, "on the store's own generations");
   assert.match(
     store,
     /const drop = useCallback\(\(sessionId: string\) => \{\s*requests\.current\.forgetSession\(sessionId\)/,
     "drop invalidates this session's in-flight requests",
   );
+});
+
+/** A listing the test resolves by hand, in whatever order the race needs. */
+function deferredLister() {
+  const calls: { sessionId: string; resolve: (paths: string[]) => void }[] = [];
+  const list = (sessionId: string) => new Promise<ReadonlySet<string>>((resolve) => {
+    calls.push({ sessionId, resolve: (paths) => resolve(new Set(paths)) });
+  });
+  return { calls, list };
+}
+
+test("a re-ask during the first listing takes a fresh one, and the older answer cannot land", async () => {
+  // The transcript mounts and lists; before that answer comes back, the agent writes a
+  // mock-up and presents it mid-turn. The first request predates the file, so the re-ask
+  // must not share it - and when the slow first answer finally arrives, it must not
+  // overwrite the fresh one.
+  const { calls, list } = deferredLister();
+  const listings = new WorkspacePathListings(list, new LatestFileRequests());
+  const mount = listings.warm("s1", false);
+  const presented = listings.warm("s1", false);
+  assert.equal(calls.length, 2, "the re-ask lists again rather than reusing the pending request");
+
+  const page = "docs/mockups/remind/snooze.html";
+  calls[1]!.resolve(["src/App.tsx", page]);
+  assert.deepEqual([...(await presented)!], ["src/App.tsx", page]);
+  calls[0]!.resolve(["src/App.tsx"]);
+  assert.equal(await mount, null, "the older listing completes later and is dropped");
+  // And a written link's probe reads the fresh answer too.
+  assert.equal((await listings.paths("s1")).has(page), true);
+});
+
+test("the first ask shares the probe's listing, and a dropped session's answer never lands", async () => {
+  const { calls, list } = deferredLister();
+  const requests = new LatestFileRequests();
+  const listings = new WorkspacePathListings(list, requests);
+  const probed = listings.paths("s1");
+  const mount = listings.warm("s1", false);
+  assert.equal(calls.length, 1, "the probe and the transcript's first ask are one request");
+  calls[0]!.resolve(["a.ts"]);
+  assert.deepEqual([...(await mount)!], ["a.ts"]);
+  assert.deepEqual([...(await probed)], ["a.ts"]);
+
+  // With an index standing, the next mount lists again rather than reusing the snapshot.
+  const reopened = listings.warm("s1", true);
+  assert.equal(calls.length, 2);
+  requests.forgetSession("s1");
+  listings.forget("s1");
+  calls[1]!.resolve(["a.ts", "b.ts"]);
+  assert.equal(await reopened, null, "a warm in flight when the session was dropped writes nothing");
 });
 
 test("a turn's markup survives the SSE frames arriving under it", () => {

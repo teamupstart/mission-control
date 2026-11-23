@@ -1,4 +1,7 @@
-import type { Session } from "@shared/types.ts";
+import { taskHasRepository } from "@shared/task.ts";
+import type { Session, SessionBlocker } from "@shared/types.ts";
+import { hasBlocker } from "@shared/session.ts";
+import { UI_CONFIG_DEFAULTS, type BlockedPlacement } from "@shared/protocol.ts";
 import {
   pipelineRunKey,
   pipelineRunKeyOf,
@@ -7,7 +10,9 @@ import {
 } from "@shared/pipeline.ts";
 import { pipelineSessionDisplay } from "./attention.ts";
 import { NO_HELD_SESSIONS } from "./held.ts";
+import { byAwaitingDue, NO_AWAITING_SESSIONS } from "./awaiting.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
+import type { Tone } from "./format.ts";
 
 /**
  * What kind of run a cluster's members share.
@@ -89,13 +94,90 @@ export interface FleetToneGroup extends ToneGroup {
    * Only the `idle` group ever sets it. See `orderSessions`.
    */
   heldFrom: number | null;
+  /**
+   * Where this group's sessions awaiting a background process are, or null when it has none.
+   *
+   * A span rather than a boundary because the partition sits in the middle: pinned residents
+   * first, then the awaiting sessions soonest-due first, then the free ones, then the held ones.
+   * Like `heldFrom`, only the `idle` group ever sets it, and an overdue wait is not in it.
+   *
+   * It is the section's span, so a pinned resident that is awaiting is NOT in it: the pin keeps
+   * it at the top. `awaitingCount` is the number to report.
+   */
+  awaiting: { startIndex: number; length: number } | null;
+  /**
+   * How many sessions in the group are inside a declared wait, pinned residents included: the
+   * pin decides where a card sits, not whether it is free to take work. Zero outside Idle.
+   */
+  awaitingCount: number;
+}
+
+/**
+ * The Idle head's split, for the Board column head and the console rail head alike: how many are
+ * awaiting (pinned residents included), how many are free whenever anything is awaiting or held,
+ * and how many are held when anything is. Free never counts an awaiting session, wherever its
+ * card sits. `free` null means the group is one kind of thing and the head draws one number.
+ */
+export function idleHeadCounts(group: FleetToneGroup): {
+  awaiting: number;
+  free: number | null;
+  held: number | null;
+} {
+  if (group.heldFrom === null) {
+    // Nothing held, but some awaiting: the total beside "N awaiting" would not say how many
+    // can take work, so the rest are counted as free, exactly as the Free rules below count them.
+    return group.awaitingCount > 0
+      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount, held: null }
+      : { awaiting: 0, free: null, held: null };
+  }
+  // Pinned and awaiting sessions all sit before `heldFrom`, never in the held partition.
+  return {
+    awaiting: group.awaitingCount,
+    free: group.heldFrom - group.awaitingCount,
+    held: group.sessions.length - group.heldFrom,
+  };
+}
+
+/** No pinned sessions: the default, which reproduces the order before pinning existed. */
+const NO_PINNED_SESSIONS: ReadonlySet<string> = new Set();
+
+/**
+ * Doubles as the id a column's width is saved under (`collapsedBoardColumns`), which is why
+ * `"blocked"` is a word and never a `Tone`: a blocker is session state beside the lifecycle,
+ * not a sixth lifecycle reading.
+ */
+export type FleetColumnId = Tone | "blocked";
+
+export const BLOCKED_LABEL = "blocked";
+
+/**
+ * `group` and `blocked` are the two things a column can hold, and `sessions` is both of them in
+ * the order they are drawn. The setting decides only which column `blocked` lands in and on
+ * which side of `group`, so every placement is the same two lists rearranged.
+ */
+export interface FleetColumn {
+  id: FleetColumnId;
+  label: string;
+  group: FleetToneGroup | null;
+  blocked: Session[];
+  /** What the arrow keys walk and the ⌘-numbers count: a lane follows the lane above it. */
+  sessions: Session[];
 }
 
 export interface FleetOrder {
-  /** The flat display order, every tone group concatenated in `TONE_GROUPS` order. */
   sessions: Session[];
-  /** Every tone group, empty ones included - `groupByTone`'s contract, unchanged. */
+  /**
+   * Every tone group, empty ones included - `groupByTone`'s contract - WITHOUT the sessions
+   * the blocked group took. A blocked idle session is in `blocked`, never also here.
+   */
   groups: FleetToneGroup[];
+  /**
+   * The blocked group: idle or unconfirmed sessions standing on a blocker, reply flagged
+   * first, then the oldest blocker first. Computed once whatever the placement.
+   */
+  blocked: Session[];
+  blockedPlacement: BlockedPlacement;
+  columns: FleetColumn[];
 }
 
 /**
@@ -171,9 +253,26 @@ export type FleetBlock =
  * are arguments rather than something read off the session precisely so every side passes the
  * same value - all three call sites read `byRepo` from the one `useUiConfig` store.
  *
- * `held` defaults to empty and `byRepo` to false, which together reproduce the pre-workflow,
- * pre-repository ordering exactly - so a caller that has neither (and every test that predates
- * them) is unaffected.
+ * PINNED RESIDENTS SORT FIRST IN EVERY COLUMN, ahead of free and held. `pinned` is the set of
+ * sessions whose resident run's pinned revision says "pin to top of column" - a join, like
+ * `held`, so it arrives as an argument (`pinnedResidentSessions`). It is the OUTERMOST
+ * partition, inside the tone group and outside everything else: a pinned resident is first
+ * in its column whatever its repository, and the tone rule still holds, so a pinned resident
+ * that needs you sits at the top of "needs you", not of its old column. A pinned session is
+ * never also held - pinned wins - because a resident has no Workflow to hold it.
+ *
+ * IDLE BLOCKED SESSIONS ARE ONE GROUP, drawn where `blockedPlacement` says
+ * (Settings → Display → Blocked sessions). An idle or unconfirmed session with a blocker
+ * (`hasBlocker`) leaves its tone group for `blocked`, ordered reply flagged first and then by
+ * the oldest blocker. The placement only decides which column holds that group and on which
+ * side of the column's own cards (`columns`), so the Board, both rails, the arrow keys and the
+ * ⌘-numbers read one order whichever placement is chosen. Like `held` and `byRepo` it is an
+ * argument, and all three call sites read it from the one `useUiConfig` store.
+ *
+ * `held` defaults to empty, `byRepo` to false and `pinned` to empty, which together reproduce
+ * the pre-workflow, pre-repository, pre-resident ordering exactly - so a caller that has none of
+ * them (and every test that predates them) is unaffected. A fleet with no blocker is likewise
+ * unaffected by `blockedPlacement`, which defaults to the shipped In Needs you.
  */
 export function orderSessions(
   sessions: readonly Session[],
@@ -181,6 +280,10 @@ export function orderSessions(
   byRepo = false,
   pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>,
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>,
+  pinned: ReadonlySet<string> = NO_PINNED_SESSIONS,
+  blockedPlacement: BlockedPlacement = UI_CONFIG_DEFAULTS.blockedPlacement,
+  /** Sessions inside a declared wait (`awaitingSessionIds`), drawn under Idle's Awaiting rule. */
+  awaiting: ReadonlySet<string> = NO_AWAITING_SESSIONS,
 ): FleetOrder {
   const display = (session: Session) => {
     const commissionId = session.task?.pipelineCommissionId;
@@ -196,9 +299,107 @@ export function orderSessions(
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline, (session) => display(session).tone)
-    .map((group) => clusterGroup(group, held, byRepo));
-  return { sessions: groups.flatMap((g) => g.sessions), groups };
+  // The blocked group is taken out BEFORE the tone groups are clustered, so it is out of the
+  // pinned, held, repository and run partitions alike: blocked wins over held (the held marker
+  // stays on the card), and no frame in Idle can straddle a card the Blocked group drew.
+  const blocked = baseline
+    .filter((s): s is BlockedSession => sitsOnBlocker(s, display(s).tone))
+    .sort(byBlockerUrgency);
+  const blockedIds = new Set(blocked.map((s) => s.id));
+  const rest = blockedIds.size > 0 ? baseline.filter((s) => !blockedIds.has(s.id)) : baseline;
+
+  const groups = groupByTone(rest, (session) => display(session).tone)
+    .map((group) => clusterGroup(group, held, byRepo, pinned, awaiting));
+  const columns = fleetColumns(groups, blocked, blockedPlacement);
+  return {
+    sessions: columns.flatMap((c) => c.sessions),
+    groups,
+    blocked,
+    blockedPlacement,
+    columns,
+  };
+}
+
+/**
+ * A blocked session that is asking you stays in Needs you, and one that is working stays in
+ * Working: asking and working both mean it is not sitting on its blocker right now. Both still
+ * carry the red flag their tile draws from `hasBlocker`. A gone session stays in Gone.
+ */
+function sitsOnBlocker(session: Session, tone: Tone): session is BlockedSession {
+  return hasBlocker(session) && (tone === "idle" || tone === "neutral");
+}
+
+/** A session `sitsOnBlocker` admitted: its blocker is present by that predicate's contract. */
+type BlockedSession = Session & { blocker: SessionBlocker };
+
+function byBlockerUrgency(a: BlockedSession, b: BlockedSession): number {
+  const flagged = Number(b.blocker.reply !== null) - Number(a.blocker.reply !== null);
+  return flagged
+    || a.blocker.startedAt - b.blocker.startedAt
+    || a.name.localeCompare(b.name)
+    || a.pid - b.pid;
+}
+
+/**
+ * In every placement `sessions` reads top to bottom, so the concatenation of all columns is the
+ * Console rail's order, which draws the same group in the same relative place.
+ */
+function fleetColumns(
+  groups: readonly FleetToneGroup[],
+  blocked: Session[],
+  placement: BlockedPlacement,
+): FleetColumn[] {
+  const host: Tone | null = placement === "needs-you" ? "attention" : placement === "idle" ? "idle" : null;
+  const columns: FleetColumn[] = [];
+  for (const group of groups) {
+    const here = group.tone === host ? blocked : [];
+    columns.push({
+      id: group.tone,
+      label: group.label,
+      group,
+      blocked: here,
+      sessions: here.length === 0
+        ? group.sessions
+        : placement === "idle" ? [...here, ...group.sessions] : [...group.sessions, ...here],
+    });
+    if (placement === "column" && group.tone === "attention") {
+      columns.push({ id: "blocked", label: BLOCKED_LABEL, group: null, blocked, sessions: blocked });
+    }
+  }
+  return columns;
+}
+
+/**
+ * The column a session is drawn in, for a session the fleet list may not hold - a filtered or
+ * resident detail - so the drill-in rail still knows which column to become.
+ */
+export function fleetColumnOf(
+  session: Session,
+  tone: Tone,
+  placement: BlockedPlacement,
+): FleetColumnId {
+  if (!sitsOnBlocker(session, tone)) return tone;
+  return placement === "column" ? "blocked" : placement === "needs-you" ? "attention" : "idle";
+}
+
+export type FleetRailSection =
+  | { kind: "tone"; group: FleetToneGroup }
+  | { kind: "blocked"; sessions: Session[] };
+
+/**
+ * One column's rail sections, top to bottom: the Blocked group sits after Needs you for the
+ * In Needs you and Own column placements and at the top of Idle for At the top of Idle - the
+ * same relative place the Board draws it, so the Console rail mirrors the Board and the
+ * drilled-in column morphs into the rail it already resembles. An empty Blocked group is left
+ * out; an empty tone group is kept, because whether to draw one is the view's decision.
+ */
+export function fleetRailSections(column: FleetColumn): FleetRailSection[] {
+  const blocked: FleetRailSection[] = column.blocked.length > 0
+    ? [{ kind: "blocked", sessions: column.blocked }]
+    : [];
+  if (column.group === null) return blocked;
+  const tone: FleetRailSection = { kind: "tone", group: column.group };
+  return column.id === "idle" ? [...blocked, tone] : [tone, ...blocked];
 }
 
 /**
@@ -238,6 +439,8 @@ function clusterGroup(
   group: ToneGroup,
   held: ReadonlySet<string>,
   byRepo: boolean,
+  pinned: ReadonlySet<string>,
+  awaiting: ReadonlySet<string>,
 ): FleetToneGroup {
   // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
   // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
@@ -247,19 +450,61 @@ function clusterGroup(
   //
   // The consequence is the same one the tone-boundary rule already has: such a run is drawn as
   // two frames, one per side, and its header's own rollup is what ties the halves together.
-  const partitions = group.tone === "idle" && group.sessions.some((s) => held.has(s.id))
+  //
+  // Pinned residents are split off first, for the same reason and in the same way: each side is
+  // clustered and repository-grouped on its own, so no frame straddles the pinned boundary.
+  //
+  // Sessions awaiting a background process are split off after the pinned ones, the same way
+  // and for the same reason, and sorted soonest-due first: the Awaiting rule reads as a queue
+  // of things coming back. Only Idle splits them; a wait anywhere else is drawn on its card.
+  // That queue is kept as it is, never grouped by repository or clustered by run (see below).
+  const pinnedPart = pinned.size > 0 ? group.sessions.filter((s) => pinned.has(s.id)) : [];
+  // Pinned residents inside a wait are their own partition, ahead of the other pinned ones, so
+  // the Free rule can start below them rather than drawing them as free (`fleetRows`). Split
+  // rather than sorted, so repository grouping inside the pinned side cannot reorder them.
+  const pinnedWaiting = group.tone === "idle" && awaiting.size > 0 ? pinnedPart.filter((s) => awaiting.has(s.id)) : [];
+  const pinnedRest = pinnedWaiting.length > 0 ? pinnedPart.filter((s) => !awaiting.has(s.id)) : pinnedPart;
+  const unpinnedAll = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinned.has(s.id)) : group.sessions;
+  const awaitingPart = group.tone === "idle" && awaiting.size > 0
+    ? unpinnedAll.filter((s) => awaiting.has(s.id)).sort(byAwaitingDue)
+    : [];
+  // A pinned resident inside a wait keeps its pinned place but still counts as awaiting.
+  const pinnedAwaiting = pinnedWaiting.length;
+  const rest = awaitingPart.length > 0 ? unpinnedAll.filter((s) => !awaiting.has(s.id)) : unpinnedAll;
+  const unpinned = group.tone === "idle" && rest.some((s) => held.has(s.id))
     ? [
-        group.sessions.filter((s) => !held.has(s.id)),
-        group.sessions.filter((s) => held.has(s.id)),
+        rest.filter((s) => !held.has(s.id)),
+        rest.filter((s) => held.has(s.id)),
       ]
-    : [group.sessions];
+    : [rest];
+  const leading = [
+    ...(pinnedWaiting.length > 0 ? [pinnedWaiting] : []),
+    ...(pinnedRest.length > 0 ? [pinnedRest] : []),
+  ];
+  const partitions = [
+    ...leading,
+    ...(awaitingPart.length > 0 ? [awaitingPart] : []),
+    ...unpinned,
+  ];
+  const awaitingPartition = awaitingPart.length > 0 ? leading.length : -1;
+  const heldPartition = unpinned.length > 1 ? partitions.length - 1 : -1;
 
   const sessions: Session[] = [];
   const clusters: FleetClusterSpan[] = [];
   const repos: FleetRepoSpan[] = [];
   let heldFrom: number | null = null;
+  let awaitingSpan: FleetToneGroup["awaiting"] = null;
   for (const [index, partition] of partitions.entries()) {
-    if (index === 1) heldFrom = sessions.length;
+    if (index === heldPartition) heldFrom = sessions.length;
+    if (index === awaitingPartition) {
+      awaitingSpan = { startIndex: sessions.length, length: partition.length };
+      // The Awaiting section is a deadline queue, so it keeps its soonest-due order even with
+      // repository grouping on: a repository span, or a run cluster, would pull one
+      // repository's later deadline ahead of another's sooner one. Each card names its own
+      // repository and run, so nothing is lost by not framing them here.
+      sessions.push(...partition);
+      continue;
+    }
     // Repositories partition INSIDE the free/held split and OUTSIDE the run clustering, which
     // is the only order the three can compose in. Outside the held split, a repository span
     // would straddle the boundary and swallow the section rule, exactly as a run cluster
@@ -282,7 +527,10 @@ function clusterGroup(
       sessions.push(...run.sessions);
     }
   }
-  return { ...group, sessions, clusters, repos, heldFrom };
+  return {
+    ...group, sessions, clusters, repos, heldFrom, awaiting: awaitingSpan,
+    awaitingCount: awaitingPart.length + pinnedAwaiting,
+  };
 }
 
 /**
@@ -312,7 +560,7 @@ function repoPartition(partition: readonly Session[], byRepo: boolean): RepoBuck
   const buckets = new Map<string, Session[]>();
   const unowned: Session[] = [];
   for (const session of partition) {
-    if (session.repoRoot === null) {
+    if (session.repoRoot === null || !taskHasRepository(session.task ?? {})) {
       unowned.push(session);
       continue;
     }
@@ -395,7 +643,7 @@ function clusterPartition(
 export function repoSessionTotals(order: FleetOrder): ReadonlyMap<string, number> {
   const totals = new Map<string, number>();
   for (const session of order.sessions) {
-    if (session.repoRoot === null) continue;
+    if (session.repoRoot === null || !taskHasRepository(session.task ?? {})) continue;
     totals.set(session.repoRoot, (totals.get(session.repoRoot) ?? 0) + 1);
   }
   return totals;
@@ -452,7 +700,7 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
  * where the next heading starts is a view that can draw the box around the wrong cards.
  */
 export type FleetRow =
-  | { kind: "section"; section: "free" | "held"; count: number }
+  | { kind: "section"; section: "free" | "held" | "awaiting"; count: number }
   | {
       kind: "repo";
       repoRoot: string;
@@ -491,7 +739,18 @@ export type FleetRow =
 export function fleetRows(group: FleetToneGroup): FleetRow[] {
   const blocks = fleetBlocks(group);
   const heldFrom = group.heldFrom;
-  if (heldFrom === null && group.repos.length === 0) return blocks;
+  const awaiting = group.awaiting;
+  // One kind of thing, drawn without rules: nothing held, nothing waiting (a pinned resident in a
+  // wait counts, though it has no span of its own) and no repository frames.
+  if (heldFrom === null && awaiting === null && group.awaitingCount === 0 && group.repos.length === 0) return blocks;
+  // The Awaiting rule sits on its span, and the free rule moves to where the span ends: the
+  // cards below an Awaiting section are the ones that are not waiting on anything, so they are
+  // labelled whether or not anything is held. With no awaiting span the free rule sits at the
+  // top, after any pinned residents in a wait, whenever something is held or such a resident is
+  // waiting, so the head's "N free" always has a rule over exactly those cards.
+  const awaitingEnd = awaiting ? awaiting.startIndex + awaiting.length : null;
+  const freeEnd = heldFrom ?? group.sessions.length;
+  const pinnedAwaiting = group.awaitingCount - (awaiting?.length ?? 0);
 
   const repoAt = new Map(group.repos.map((span) => [span.startIndex, span]));
   const rows: FleetRow[] = [];
@@ -503,13 +762,29 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
   let at = 0;
   const step = (block: FleetBlock): number => (block.kind === "session" ? 1 : block.sessions.length);
   while (at < blocks.length) {
-    if (heldFrom !== null) {
-      if (index === 0 && heldFrom > 0) {
-        rows.push({ kind: "section", section: "free", count: heldFrom });
-      }
-      if (index === heldFrom) {
-        rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
-      }
+    // Pinned residents that are free sit above the Awaiting rule, after any pinned residents in
+    // a wait: they get a Free rule of their own, so every free card sits under a Free rule and
+    // the rules' counts add up to the head's free count.
+    if (awaiting && index === pinnedAwaiting && awaiting.startIndex > pinnedAwaiting) {
+      rows.push({ kind: "section", section: "free", count: awaiting.startIndex - pinnedAwaiting });
+    }
+    if (awaiting && index === awaiting.startIndex) {
+      rows.push({ kind: "section", section: "awaiting", count: awaiting.length });
+    }
+    if (awaitingEnd !== null && index === awaitingEnd && freeEnd > awaitingEnd) {
+      rows.push({ kind: "section", section: "free", count: freeEnd - awaitingEnd });
+    }
+    // Pinned residents inside a wait lead the group as their own partition (`clusterGroup`) and
+    // are not free, so with no Awaiting span the Free rule starts after them and counts only what
+    // follows, up to the held split.
+    if (
+      awaitingEnd === null && index === pinnedAwaiting && (heldFrom !== null || pinnedAwaiting > 0)
+      && freeEnd > pinnedAwaiting
+    ) {
+      rows.push({ kind: "section", section: "free", count: freeEnd - pinnedAwaiting });
+    }
+    if (heldFrom !== null && index === heldFrom) {
+      rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
     }
     const span = repoAt.get(index);
     if (span) {

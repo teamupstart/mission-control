@@ -1,4 +1,6 @@
 import { transferHold } from "./session-transfers/store.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { readInventory } from "./terminal/inventory.ts";
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
@@ -50,6 +52,18 @@ import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
 
+/**
+ * Why nothing may be written into this pane right now: a terminal handoff holding it, or an
+ * operator pause that has stopped its agent. Bytes typed into a stopped pane would sit in the
+ * pty and land on the thaw, after every pickup check here had already timed out, so a stopped
+ * pane refuses like a held one. A pause still waiting for its turn to end does not: answering
+ * a menu is how that turn gets to end. Asked of `stopped`, not of the phase, because a freeze
+ * interrupted by a restart leaves stopped processes under a pending record.
+ */
+export function writeHold(session: Session): string | null {
+  return transferHold(session) ?? (session.pause?.stopped ? PAUSED_SESSION_REASON : null);
+}
+
 export interface ActionResult {
   ok: boolean;
   error?: string;
@@ -67,6 +81,12 @@ export interface ActionResult {
    * the post-paste Enter is refused with `paneBlocked` set and `pasted: true`.
    */
   paneBlocked?: boolean;
+  /**
+   * False when the write was refused before anything reached the pane (no handle, the pane
+   * lock held, a mode block, a write guard): positive evidence that nothing landed. Absent
+   * when a write was attempted, whatever came of it. `InjectResult` states it always.
+   */
+  pasted?: boolean;
 }
 
 /** Shared error when a session has no pane handle we can drive. */
@@ -342,12 +362,16 @@ async function writeText(
   assertBeforeWrite?: () => boolean,
   beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
-  if (!pane.write) return { ok: false, error: cannotType(pane) };
+  // Every refusal before the write says so (`pasted: false`); only the write itself can have
+  // landed text, whatever it reports.
+  if (!pane.write) return { ok: false, error: cannotType(pane), pasted: false };
   const blocked = await paneWriteBlock(pane);
-  if (blocked) return blocked;
-  if (assertBeforeWrite && !assertBeforeWrite()) return { ok: false, error: "the session changed before its effort could be updated" };
+  if (blocked) return { ...blocked, pasted: false };
+  if (assertBeforeWrite && !assertBeforeWrite()) {
+    return { ok: false, error: "the session changed before its effort could be updated", pasted: false };
+  }
   const refused = beforeWrite?.();
-  if (refused) return { ok: false, error: refused };
+  if (refused) return { ok: false, error: refused, pasted: false };
   return fromTerminal(await pane.write.text(text));
 }
 
@@ -384,8 +408,8 @@ export async function sendText(
 ): Promise<ActionResult> {
   return withPaneLock<ActionResult>(
     session,
-    () => ({ ok: false, error: PANE_BUSY }),
-    () => sendTextLocked(session, text, submit, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
+    () => ({ ok: false, error: PANE_BUSY, pasted: false }),
+    () => sendTextLocked(session, text, submit, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
     lockOwner,
   );
 }
@@ -767,7 +791,7 @@ async function sendTextLocked(
   beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const pane = deps.pane(session);
-  if (!pane) return { ok: false, error: NO_HANDLE };
+  if (!pane) return { ok: false, error: NO_HANDLE, pasted: false };
   const typed = await writeText(pane, text, undefined, beforeWrite);
   if (!typed.ok || !submit) return typed;
   // Re-probed rather than covered by the check above, exactly as the two `send-keys` calls
@@ -1074,7 +1098,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
+    () => injectPromptLocked(session, text, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
   );
 }
 
@@ -1531,10 +1555,18 @@ const MAX_ARROW_STEPS = 12;
 type Arrow = Extract<Key, "up" | "down" | "left" | "right">;
 
 /** Send one arrow key to a pane. Which bytes that is, is the backend's business. */
-async function injectArrow(session: Session, dir: Arrow, deps: PaneDeps): Promise<ActionResult> {
+async function injectArrow(
+  session: Session,
+  dir: Arrow,
+  deps: PaneDeps,
+  /** The caller's live guard, asked right before this keystroke (see `selectPaneOption`). */
+  beforeWrite?: PromptWriteGuard,
+): Promise<ActionResult> {
+  const held = writeHold(session);
+  if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
-  return sendKeys(pane, [dir]);
+  return sendKeys(pane, [dir], undefined, beforeWrite);
 }
 
 /** Wait for the menu's cursor to leave `from`, or null if it never does. */
@@ -1569,8 +1601,14 @@ export async function selectPaneOption(
   session: Session,
   target: OptionTarget,
   deps: PaneDeps = defaultPaneDeps,
+  /**
+   * Asked again immediately before the Enter, the one keystroke that answers. The `session`
+   * passed in is the caller's snapshot from before the captures and the cursor walk; a pause
+   * that froze the agent meanwhile is only visible to a caller that reads the live session.
+   */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
-  const held = transferHold(session);
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
@@ -1581,7 +1619,7 @@ export async function selectPaneOption(
   return withPaneLock<ActionResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => selectOptionLocked(session, target, deps),
+    () => selectOptionLocked(session, target, deps, beforeWrite),
   );
 }
 
@@ -1589,6 +1627,7 @@ async function selectOptionLocked(
   session: Session,
   target: OptionTarget,
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
@@ -1607,7 +1646,7 @@ async function selectOptionLocked(
   const row = dialog.options.find((o) => o.number === target.number)!;
   if (row.checked !== undefined) return { ok: false, error: IS_A_FORM };
 
-  const walked = await walkCursorTo(session, dialog, target.number, deps);
+  const walked = await walkCursorTo(session, dialog, target.number, deps, beforeWrite);
   if (!walked.ok) return walked;
 
   // Read once more rather than trusting the walk: this is the last look before the only
@@ -1616,7 +1655,7 @@ async function selectOptionLocked(
   if (!final || final.highlighted !== target.number || optionRowMiss(final, target)) {
     return { ok: false, error: "the menu changed before the selection could be confirmed" };
   }
-  return injectEnter(session, deps);
+  return injectEnter(session, deps, beforeWrite);
 }
 
 const IS_A_FORM =
@@ -1647,12 +1686,18 @@ async function walkCursorTo(
   from: PaneDialog,
   number: number,
   deps: PaneDeps,
+  /**
+   * Asked before EVERY arrow, not only before the final Enter: a session that freezes mid-walk
+   * would otherwise get cursor keys queued in its pty, which land on the resume and move the
+   * menu's selection after the operator chose.
+   */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<WalkResult> {
   let dialog = from;
   for (let i = 0; dialog.highlighted !== number; i++) {
     if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
     const dir = number > dialog.highlighted ? "down" : "up";
-    const sent = await injectArrow(session, dir, deps);
+    const sent = await injectArrow(session, dir, deps, beforeWrite);
     if (!sent.ok) return { ...sent, ok: false, error: sent.error ?? "could not send an arrow key" };
     const moved = await awaitCursorMove(session, dialog.highlighted, deps);
     // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
@@ -1730,15 +1775,17 @@ export async function submitPaneForm(
   session: Session,
   targets: FormTarget[],
   deps: PaneDeps = defaultPaneDeps,
+  /** Asked again before every Enter the form presses; see `selectPaneOption`. */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
-  const held = transferHold(session);
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   if (targets.length === 0) return { ok: false, error: "no rows to submit" };
   return withPaneLock<FormResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => submitFormLocked(session, targets, deps),
+    () => submitFormLocked(session, targets, deps, beforeWrite),
   );
 }
 
@@ -1746,6 +1793,7 @@ async function submitFormLocked(
   session: Session,
   targets: FormTarget[],
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
   let dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
@@ -1764,9 +1812,9 @@ async function submitFormLocked(
   for (const t of targets) {
     const row = dialog.options.find((o) => o.number === t.number)!;
     if (row.checked === t.checked) continue;
-    const walked = await walkCursorTo(session, dialog, t.number, deps);
+    const walked = await walkCursorTo(session, dialog, t.number, deps, beforeWrite);
     if (!walked.ok) return walked;
-    const sent = await injectEnter(session, deps);
+    const sent = await injectEnter(session, deps, beforeWrite);
     if (!sent.ok) return sent;
     // The box is the receipt. Without this the walk would type Enters into a form that
     // stopped responding and call the result a filled-in answer.
@@ -1779,11 +1827,11 @@ async function submitFormLocked(
   // on an ordinary row: on Claude's trailing "Type something" row it opens a text field
   // that EATS left/right, so a walk that happened to finish there would press `→` into an
   // input and sit on the same tab believing it had moved.
-  const parked = await walkCursorTo(session, dialog, dialog.options[0]!.number, deps);
+  const parked = await walkCursorTo(session, dialog, dialog.options[0]!.number, deps, beforeWrite);
   if (!parked.ok) return parked;
 
   const before = dialogIdentity(parked.dialog);
-  const stepped = await injectArrow(session, "right", deps);
+  const stepped = await injectArrow(session, "right", deps, beforeWrite);
   if (!stepped.ok) return stepped;
   const next = await awaitDialogChange(session, before, deps);
   if (!next) return { ok: false, error: "the agent did not move on from this question" };
@@ -1792,16 +1840,16 @@ async function submitFormLocked(
   // the next one from whichever surface they are on.
   const submit = readSubmitRow(session, next);
   if (!submit) return { ok: true, outcome: "next-question" };
-  if (readUnansweredWarning(session, await deps.capture(session))) return stepBackFromReview(session, next, deps);
+  if (readUnansweredWarning(session, await deps.capture(session))) return stepBackFromReview(session, next, deps, beforeWrite);
 
-  const onSubmit = await walkCursorTo(session, next, submit.number, deps);
+  const onSubmit = await walkCursorTo(session, next, submit.number, deps, beforeWrite);
   if (!onSubmit.ok) return onSubmit;
   const final = readPaneDialog(session, await deps.capture(session));
   const stillThere = final && readSubmitRow(session, final);
   if (!final || !stillThere || final.highlighted !== stillThere.number) {
     return { ok: false, error: "the review screen changed before the answers could be sent" };
   }
-  const done = await injectEnter(session, deps);
+  const done = await injectEnter(session, deps, beforeWrite);
   return done.ok ? { ok: true, outcome: "submitted" } : done;
 }
 
@@ -1835,8 +1883,9 @@ async function stepBackFromReview(
   session: Session,
   review: PaneDialog,
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
-  const back = await injectArrow(session, "left", deps);
+  const back = await injectArrow(session, "left", deps, beforeWrite);
   const returned = back.ok && (await awaitDialogChange(session, dialogIdentity(review), deps));
   return returned
     ? { ok: true, outcome: "unanswered" }
@@ -1885,12 +1934,12 @@ async function awaitDialogChange(
 const NO_MENU = "no option menu is on this session's screen";
 
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
-async function injectEnter(session: Session, deps: PaneDeps): Promise<ActionResult> {
-  const held = transferHold(session);
+async function injectEnter(session: Session, deps: PaneDeps, beforeWrite?: PromptWriteGuard): Promise<ActionResult> {
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
-  return sendKeys(pane, ["enter"]);
+  return sendKeys(pane, ["enter"], undefined, beforeWrite);
 }
 
 /** Explain an unreachable target, naming the flag that would put it in the cycle. */
@@ -2305,6 +2354,8 @@ const defaultKillDeps: KillDeps = { signal: signalProcess, terminals: defaultTer
  * surfaces an error when both fail. With no group, the signal result stands on its own.
  */
 export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
+  // A paused agent is thawed by the caller first (`requestSessionStop` / `stopSession`): a
+  // stopped process holds a SIGTERM until it is continued.
   const signalled = deps.signal(session.pid);
 
   const inside = muxHandle(session);
@@ -2422,6 +2473,7 @@ async function releaseBranch(root: string, branch: string | null, target: string
  * has to mean stop.
  */
 export async function resetWouldDestroyWork(session: Session): Promise<string | null> {
+  if (!taskHasRepository(session.task ?? {})) return "the session has no repository to reset";
   if (!session.cwd) return "the session has no working directory";
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return "it is not a git repository";
@@ -2458,6 +2510,7 @@ export async function resetWouldDestroyWork(session: Session): Promise<string | 
  * neither of them ends up anywhere else.
  */
 export async function branchReleasedByReset(session: Session): Promise<string | null> {
+  if (!taskHasRepository(session.task ?? {})) return null;
   if (!session.cwd) return null;
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return null;
@@ -2491,6 +2544,7 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
     // checkbox would promise a keystroke that could never be sent.
     canClear: Boolean(bindSession(session)?.write && harnessFor(session.agent).clearContext),
   };
+  if (!taskHasRepository(session.task ?? {})) return { ...base, error: "the session has no repository to reset" };
   if (!session.cwd) return { ...base, error: "session has no working directory" };
   // Anchor every git op at the worktree top, not the pane's (possibly nested)
   // cwd - `clean` is relative to its cwd, so from a subdir it would miss
@@ -2560,6 +2614,9 @@ export async function resetToOrigin(
   lockOwner?: PaneLockToken,
   driverClear?: DriverClear,
 ): Promise<ResetResult> {
+  if (!taskHasRepository(session.task ?? {})) {
+    return { ok: false, error: "the session has no repository to reset", root: null, cleared: false, detached: false };
+  }
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
   }
@@ -2708,6 +2765,9 @@ export async function resetToCommit(
   lockOwner?: PaneLockToken,
   driverClear?: DriverClear,
 ): Promise<ResetResult> {
+  if (!taskHasRepository(session.task ?? {})) {
+    return { ok: false, error: "the session has no repository to reset", root: null, cleared: false, detached: false };
+  }
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     return { ok: false, error: "a snapshot restore needs a full commit id", root: null, cleared: false, detached: false };
   }

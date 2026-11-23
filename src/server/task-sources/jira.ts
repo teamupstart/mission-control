@@ -25,6 +25,8 @@ import { defaultEnvironmentDeps } from "../environment/index.ts";
 import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
+import { acliAnnotate, acliPreflight, acliResolve, readAcli } from "./jira-acli.ts";
+import { repoRootGone } from "./repo-root.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -35,7 +37,9 @@ import type { RunResult } from "../util/exec.ts";
 // falls back to Jira's REST API with `JIRA_API_TOKEN` + `JIRA_EMAIL` read from the daemon's
 // own environment - the convention those same operators already have exported. A source can
 // instead explicitly select UpstartClaw, which runs the same JQL through the installed Jira
-// skill and its read-only Atlassian MCP search tool. Nothing is written to `app_config`, so
+// skill and its read-only Atlassian MCP search tool, or acli with its own OAuth login. Both
+// explicit methods keep their credential boundary and never fall back to the local ladder.
+// No credential is written to `app_config`, so
 // there is no token in this app's database to leak.
 //
 // The rule the whole file is arranged around: a credential that is missing, half-set or
@@ -87,7 +91,7 @@ const REST_SEARCH_PATH = "/rest/api/3/search/jql";
  * may exceed it - which is why `appendCapped` clips a page on the way in rather than letting
  * `nextPage` notice one page too late.
  */
-const MAX_SWEEP_ISSUES = 1000;
+export const MAX_SWEEP_ISSUES = 1000;
 
 /**
  * Most PAGE requests one sweep may spend, whatever page size is configured.
@@ -565,7 +569,7 @@ export function issuesFrom(
 }
 
 /** First non-empty line of some output, for a one-line "why". */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   return text.trim().split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
 }
 
@@ -604,7 +608,7 @@ function looksUnconfigured(text: string): boolean {
 const CLI_EMPTY = /no result found/i;
 
 /** What one `jira` run reported, as much of it as any of these decisions need. */
-type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
+type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown" | "missingCwd">;
 
 /**
  * What a failed `jira` run says about the CLI ITSELF, rather than about the request.
@@ -621,6 +625,7 @@ type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
  */
 export type CliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unconfigured"
   | "unauthenticated"
@@ -630,6 +635,8 @@ export type CliFault =
 export function cliFault(res: CliRun): CliFault {
   // The child DIED rather than answering. Whether it did its work first is unknowable.
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   const said = `${res.stderr}\n${res.stdout}`;
   // `run` reports a missing binary through the callback with Node's own message, so this
   // covers a `jira` that vanished between the PATH check and the spawn. Matched narrowly:
@@ -680,6 +687,8 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
       return `the jira CLI did not answer within ${Math.round(JIRA_TIMEOUT_MS / 1000)}s${
         why ? ` - ${why}` : ""
       } - it may be waiting for input, which a background sweep cannot give it`;
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
       return "the jira CLI could not be run - reinstall it (`brew install ankitpokhrel/jira-cli/jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback";
     case "unconfigured":
@@ -910,12 +919,14 @@ function cliCannotPage(cfg: JiraConfig): string {
  * Two fixes, because there are two bounds. A genuinely enormous filter needs narrowing; a
  * filter that merely outran a small page size needs a bigger page.
  */
-function tooBroad(cfg: JiraConfig): string {
+export function tooBroad(cfg: JiraConfig): string {
+  const bound = cfg.queryVia === "acli"
+    ? `${MAX_SWEEP_ISSUES} issues`
+    : `${MAX_SWEEP_ISSUES} issues or ${MAX_SWEEP_PAGES} requests, whichever comes first`;
   return (
-    `this filter is larger than one sweep can read (${MAX_SWEEP_ISSUES} issues or ` +
-    `${MAX_SWEEP_PAGES} requests, whichever comes first), so its tail can never be filed - ` +
+    `this filter is larger than one sweep can read (${bound}), so its tail can never be filed - ` +
     "narrow the JQL with a status, a project or a date bound" +
-    (cfg.limit < 50 ? ", or raise Issues per page" : "")
+    (cfg.queryVia !== "acli" && cfg.limit < 50 ? ", or raise Issues per page" : "")
   );
 }
 
@@ -999,18 +1010,26 @@ async function restSearch(
 async function readCli(
   cfg: JiraConfig,
   ctx: SweepContext,
-): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean }> {
-  if (ctx.signal.aborted) return { issues: [], error: "the sweep was abandoned", hasMore: false };
+): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean; repoGone: boolean }> {
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", hasMore: false, repoGone: false };
+  }
   // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is for the
-  // operators who have one - so nothing has to be passed through explicitly.
-  const page = pageFromCli(await run(jiraBin(), jiraIssueListArgs(cfg), { timeoutMs: JIRA_TIMEOUT_MS }));
-  if (page.error) return { issues: [], error: page.error, hasMore: false };
+  // operators who have one - so nothing has to be passed through explicitly. It starts in the
+  // source's checkout, as acli and gh do, so a checkout that has gone is named as one here rather
+  // than surfacing later as every candidate refused at ingest.
+  const res = await run(jiraBin(), jiraIssueListArgs(cfg), { cwd: ctx.repoRoot, timeoutMs: JIRA_TIMEOUT_MS });
+  const page = pageFromCli(res);
+  if (page.error) {
+    return { issues: [], error: page.error, hasMore: false, repoGone: res.missingCwd !== undefined };
+  }
   // The extra row is a probe, not a candidate: it answers the question and is then dropped, so a
   // sweep files exactly the page size it was configured for.
   return {
     issues: page.issues.slice(0, cfg.limit),
     error: null,
     hasMore: page.issues.length > cfg.limit,
+    repoGone: false,
   };
 }
 
@@ -1342,7 +1361,9 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
         advisory: targetProblem ?? cliCannotPage(cfg),
       };
     }
-    if (!restCred || ctx.signal.aborted) {
+    // A vanished checkout is not a CLI problem the REST rung can route around: REST would read
+    // Jira and every candidate would then be refused at ingest for the same missing repository.
+    if (viaCli.repoGone || !restCred || ctx.signal.aborted) {
       // The CLI failed and there is no second rung to try. A credential that exists but may not be
       // used for this host is worth saying alongside the CLI's own failure, since the operator
       // would otherwise reasonably assume the fallback was attempted.
@@ -1377,9 +1398,11 @@ async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
   if (site) return { items: [], error: site };
 
   const walk =
-    cfg.queryVia === "upstartclaw"
-      ? await readUpstartClaw(cfg, ctx, MAX_SWEEP_ISSUES)
-      : await ladder(cfg, ctx, sweepPages(cfg));
+    cfg.queryVia === "acli"
+      ? await readAcli(cfg, ctx, MAX_SWEEP_ISSUES)
+      : cfg.queryVia === "upstartclaw"
+        ? await readUpstartClaw(cfg, ctx, MAX_SWEEP_ISSUES)
+        : await ladder(cfg, ctx, sweepPages(cfg));
   return sweepResultFromWalk(walk, cfg, ctx);
 }
 
@@ -1404,6 +1427,8 @@ async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | n
   if (!cfg.jql.trim()) return NO_JQL;
   const site = siteProblem(cfg.site);
   if (site) return site;
+
+  if (cfg.queryVia === "acli") return acliPreflight(cfg, ctx);
 
   if (cfg.queryVia === "upstartclaw") {
     return (await readUpstartClaw({ ...cfg, limit: 1 }, ctx, 1)).error;
@@ -1477,7 +1502,7 @@ const RESOLVE_NEEDS_READ =
   "can reach instead. Set them, or turn this source's resolve switch off";
 
 /** What to say when a source resolves issues without naming where they should land. */
-const NO_TARGET_STATUS =
+export const NO_TARGET_STATUS =
   "this source resolves issues but names no target status - set it to the status a finished " +
   "issue should land in, e.g. Done";
 
@@ -1543,8 +1568,10 @@ export function commentBodyText(notice: WritebackNotice): string {
  * does NOT auto-link the way the older wiki-markup one did - a url posted as plain text
  * stays plain text, and the whole point of this comment is that somebody can click it.
  */
-export function commentBodyAdf(notice: WritebackNotice): unknown {
-  const url = notice.prUrl ?? "";
+export function commentBodyAdf(notice: WritebackNotice, options: { linkPrUrl?: boolean } = {}): unknown {
+  // Callers may retain an untrusted URL's words without making it a clickable link.
+  // The default preserves the existing local and UpstartClaw formatting contract.
+  const url = options.linkPrUrl === false ? "" : notice.prUrl ?? "";
   /**
    * Plain text as inline nodes, with every newline as a `hardBreak`.
    *
@@ -1742,19 +1769,19 @@ export function restWriteFailure(res: RestAnswer, cfg: JiraConfig): string {
 }
 
 /** A write-back that never left the process. `outcomeUnknown: false` is a fact, not a hope. */
-function writebackRefusal(error: string): WritebackResult {
+export function writebackRefusal(error: string): WritebackResult {
   return { error, outcomeUnknown: false, detail: null };
 }
 
 /** A write-back that landed, with the one line the panel shows for it. */
-function writebackDone(detail: string): WritebackResult {
+export function writebackDone(detail: string): WritebackResult {
   return { error: null, outcomeUnknown: false, detail };
 }
 
 /**
  * The hedge a write that MAY have landed carries. See `WritebackResult.outcomeUnknown`.
  */
-const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
+export const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
 
 /**
  * Read one failed REST write.
@@ -1909,7 +1936,7 @@ async function restIssueCall(
 }
 
 /** The checks both verbs make before anything leaves the process. */
-function writeTarget(
+export function writeTarget(
   cfg: JiraConfig,
   notice: WritebackNotice,
 ): { key: string } | { problem: string } {
@@ -1967,11 +1994,11 @@ async function postComment(
  * would retry a comment that has no idempotency of its own, so a machine that can never post
  * the link would accumulate one comment per attempt while still never posting it.
  *
- * `ctx` is not read, so it is not taken. Nothing cancels a write that has already left, and
- * the CLI rung reads its own configuration rather than the repo's - the two things a
- * `WritebackContext` could offer.
+ * The acli branch uses `ctx` for site checks and its subprocess cwd. Local writes retain
+ * their existing credential ladder and do not cancel a write that has already left.
  */
-async function annotate(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function annotate(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliAnnotate(cfg, notice, ctx);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);
@@ -2090,7 +2117,8 @@ async function restResolve(
  * token and already knows the site. It hands off to REST only when the CLI itself is
  * unusable, never when Jira refused the move: that request already arrived.
  */
-async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function resolve(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliResolve(cfg, notice, ctx);
   const wanted = cfg.resolveTransition.trim();
   // First, and without a subprocess or a round trip: a resolve with nowhere to go is a
   // misconfiguration, and no amount of asking Jira will discover what the operator meant.

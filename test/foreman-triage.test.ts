@@ -414,11 +414,13 @@ test("classifyDivergence: agree, over-eager, too-cautious, minor", () => {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
+    awaiting: null,
     id: "s1", agent: "claude", name: "sess", runtime: "terminal", foremanInvite: "dispatch", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, pid: 1, tty: null, permissionMode: null,
     terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], agentSessionId: null,
     transcriptPath: null, instrumented: true, stateConfirmed: true, hooksSeen: true, activity: "Approve?",
-    startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0,
+    startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, openQuestions: 0,
     task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null, meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null,
     queue: null, pendingTurns: [], orphanedQueue: null, pipeline: null, paneDialog: null,
     ...over,

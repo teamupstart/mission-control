@@ -373,11 +373,16 @@ test("the session chip shows what that session received, and does not change whe
   await dashboard.getByRole("button", { name: "← Fleet" }).click();
   await dispatch(dashboard, daemon.repo, "write a haiku about flexbox");
 
-  await dashboard
+  const sessionRow = dashboard
     .getByRole("navigation", { name: "Sessions" })
     .locator("button.rail-row")
-    .first()
-    .click();
+    .first();
+  // The fake's first turn moves this row from the working group to the idle group.
+  // That remount can land between pointerdown and pointerup, losing the selection.
+  // This case tests an immutable launch snapshot after delivery, so wait for that turn.
+  await expect(sessionRow.locator(".rail-state")).toHaveText("idle");
+  await sessionRow.click();
+  await expect(sessionRow).toHaveAttribute("aria-current", "true");
 
   const chip = dashboard.getByRole("button", { name: "See standing instructions" });
   await expect(chip).toBeVisible();

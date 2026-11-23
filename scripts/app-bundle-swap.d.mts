@@ -22,6 +22,8 @@ export const SYSTEM_APPS_DIR: string;
 export const ADMINISTRATOR_AUTHORIZATION_PROMPT: string;
 export const RESTORE_AUTHORIZATION_PROMPT: string;
 export const PRIVILEGED_SWAP_APPLESCRIPT: string;
+/** `cp` arguments for every verified app-bundle copy; `-p` defeats the installer's `umask 077`. */
+export const BUNDLE_COPY_ARGUMENTS: readonly string[];
 
 export function displacedBundlePid(suffix: string): number | null;
 export function bundleOwnerSpec(

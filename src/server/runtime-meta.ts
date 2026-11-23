@@ -33,6 +33,20 @@ export function readRuntimeEffortBaseline(session: Session): string | null | und
   }
 }
 
+/** One bounded native read, also used immediately before an autonomous resident wake. */
+export function refreshRuntimeMeta(registry: Registry, session: Session): void {
+  const spec = transcriptFor(session);
+  if (!spec) return;
+  const path = spec.locate(session);
+  if (!path) return;
+  const read = spec.passiveRead(path);
+  registry.applyRuntimeMeta(session.id, read.meta, spec.metaSource);
+  registry.applyPassiveActivity(session, read.activity);
+  registry.applyPassivePermissionMode(session.id, read.permissionMode ?? null, read.permissionModeRevision ?? null);
+  registry.applyPassiveUsage(session.id, read.usage ?? null);
+  registry.applyPassiveRateLimits(read.rateLimits ?? null);
+}
+
 export function startRuntimeMetaPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -41,24 +55,7 @@ export function startRuntimeMetaPoller(registry: Registry): () => void {
     if (stopped) return;
     try {
       const live = registry.liveSessions();
-      for (const s of live) {
-        const spec = transcriptFor(s);
-        if (!spec) continue;
-        const path = spec.locate(s);
-        if (!path) continue;
-        const read = spec.passiveRead(path);
-        // Both applies no-op on a null read, so a harness that answers only one axis
-        // (Codex: metadata, no turns) needs no branch here.
-        registry.applyRuntimeMeta(s.id, read.meta, spec.metaSource);
-        registry.applyPassiveActivity(s, read.activity);
-        registry.applyPassivePermissionMode(
-          s.id,
-          read.permissionMode ?? null,
-          read.permissionModeRevision ?? null,
-        );
-        registry.applyPassiveUsage(s.id, read.usage ?? null);
-        registry.applyPassiveRateLimits(read.rateLimits ?? null);
-      }
+      for (const s of live) refreshRuntimeMeta(registry, s);
       // Let each harness drop whatever it cached for sessions that have gone away.
       const liveIds = new Set(live.map((s) => s.id));
       for (const h of allHarnesses()) h.transcript?.retain?.(liveIds);

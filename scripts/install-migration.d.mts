@@ -10,6 +10,7 @@ export interface MigrationPlan {
 export interface MigrationRepair { id: string; status: 'complete' | 'pending'; message: string }
 export interface MigrationJournal {
   plan: MigrationPlan; owner: ProcessRecord; ownerRole: 'helper' | 'recovery'; stage: string; repairs: MigrationRepair[];
+  failure?: string;
   inventory: unknown; targetProcess: ProcessRecord | null;
   retainedSwap?: {path: string; pid: number; revision: string} | null;
 }
@@ -35,6 +36,7 @@ export function ownsMigrationTarget(plan: MigrationPlan): boolean;
 export function stageMigrationTarget(plan: MigrationPlan, options?: { policy?: MigrationPolicy; checkpoint?: (stage: string) => void }): void;
 export function validateMigrationTarget(plan: MigrationPlan): void;
 export function migrationReceipt(stateDirectory: string): InstallReceipt;
+export function withMigrationLockSync<T>(stateDirectory: string, action: (owner: ProcessRecord) => T, lock?: LockOperations): T;
 export function withMigrationLock<T>(stateDirectory: string, action: (owner: ProcessRecord) => Promise<T> | T, lock?: LockOperations): Promise<T>;
 export interface MigrationPorts {
   helperReady?(journal: MigrationJournal): void | Promise<void>;
@@ -51,3 +53,4 @@ export function claimInstallReceiptWriter(stateDirectory: string): () => void;
 export function keepSystemInstallation(plan: MigrationPlan): Promise<InstallReceipt>;
 
 export function prepareInPlaceInstall(args: {descriptor: import("./install-staged-app.mjs").StagedInstallDescriptor; stateDirectory: string}): MigrationPlan;
+export function migrationRollbackMessage(lead: string, cause: unknown, tail: string): string;

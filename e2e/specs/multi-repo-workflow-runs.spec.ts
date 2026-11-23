@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
 
@@ -61,6 +62,7 @@ interface SessionRow {
   agent: string;
   cwd: string;
   agentSessionId: string | null;
+  task?: { repoPrs: Array<{ prUrl: string | null }> };
 }
 
 interface RunRow {
@@ -292,11 +294,19 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   const task = await provisionedTask(daemon);
   createTaskBranches(task);
 
-  // One command, two pull requests: both repositories changed.
+  // One command, two pull requests: both repositories changed. Let the attached PR
+  // associate first to exercise independent poll completion, instead of assuming its
+  // arrival also means the primary PR has reached the task.
   await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
-  scriptPullRequests(daemon, task, { primary: true, second: true });
+  scriptPullRequests(daemon, task, { second: true });
   await attachedRepoPr(daemon, task.id, PR_SECOND);
   const bindingId = await bindReview(daemon, session.id);
+  scriptPullRequests(daemon, task, { primary: true, second: true });
+  await expect.poll(async () => {
+    const sessions = await api<SessionRow[]>(daemon, "/api/sessions");
+    return sessions.find((s) => s.id === session.id)?.task?.repoPrs.map((pr) => pr.prUrl).sort();
+  }, { timeout: 30_000, message: "both PRs must be durably associated before reviewing the changed set" })
+    .toEqual([PR_PRIMARY, PR_SECOND].sort());
   await api(daemon, `/api/workflow-bindings/${bindingId}/submit`, {
     requestId: "e2e-multi-repo-review",
   });
@@ -323,6 +333,43 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${secondRun.id}$`));
   await expect(dashboard.locator(".wf-run-repo")).toHaveText("second-repo");
   await shoot(dashboard, "attached-repo-run", dashboard.locator(".wf-run-head"));
+
+  // Seed the delivery boundary only: no real model or agent repair turn is sent.
+  // The daemon derives the current hold from these durable rows, not from a scripted API.
+  const primaryRun = runs.find((r) => r.id !== secondRun.id)!;
+  await expect.poll(() => withDaemonDb(daemon, db => db.prepare("SELECT status FROM workflow_runs WHERE id = ?").get(primaryRun.id)?.status))
+    .toBe("waiting_for_session");
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE workflow_bindings SET delivery_mode = 'live' WHERE id = ?").run(primaryRun.bindingId);
+    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_evidence_readiness', current_phase = 'evidence_readiness' WHERE id = ?").run(secondRun.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'delivered', kind = 'evidence_readiness' WHERE run_id = ?").run(secondRun.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'prepared' WHERE run_id = ?").run(primaryRun.id);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${primaryRun.id}`);
+  const header = dashboard.locator(".wf-run-head");
+  await expect(header).toContainText(`Queued behind second-repo (run ${secondRun.id})`);
+  await expect(header).toContainText("waiting for evidence readiness");
+  await expect(header).not.toContainText("nothing for it to have repaired");
+  await shoot(dashboard, "sibling-evidence-hold", header);
+  for (const [kind, phase, condition] of [
+    ["pr_handoff", "pr_handoff", "waiting for the session to prepare its pull request"],
+    ["inspector_feedback", "inspector_findings", "waiting for the session to address Inspector feedback"],
+  ]) {
+    withDaemonDb(daemon, db => {
+      db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = ? WHERE id = ?").run(phase, secondRun.id);
+      db.prepare("UPDATE workflow_deliveries SET kind = ? WHERE run_id = ?").run(kind, secondRun.id);
+    });
+    await dashboard.reload();
+    await expect(header).toContainText(`Queued behind second-repo (run ${secondRun.id})`);
+    await expect(header).toContainText(condition);
+    await expect(header).not.toContainText("waiting for its repair round");
+    await shoot(dashboard, `sibling-${kind}-hold`, header);
+  }
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE workflow_runs SET status = 'running', current_phase = 'persona' WHERE id = ?").run(secondRun.id);
+  });
+  await dashboard.reload();
+  await expect(header).not.toContainText("Queued behind second-repo");
 });
 
 test("a repo the task never changed gets no review at all", async ({ dashboard, daemon }) => {

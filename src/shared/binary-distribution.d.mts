@@ -14,6 +14,8 @@ export const BINARY_RECEIPT_SCHEMA: 2;
 export const BINARY_REPO: string;
 export const BINARY_BUNDLE_ID: string;
 export const MAX_BINARY_ASSET_BYTES: number;
+export const DMG_ROOT_EXTRAS: readonly string[];
+export function dmgRootProblem(entries: readonly string[], appBundleName: string): string | null;
 export function isBinaryDigest(value: unknown): boolean;
 export function validateBinaryManifest(value: unknown): string | null;
 export function validateBinaryBuildMetadata(value: unknown): string | null;

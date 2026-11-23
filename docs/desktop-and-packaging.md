@@ -15,6 +15,12 @@ plain files on disk. The Electron shell supervises the daemon and the HTTP-only 
 it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
 an independently started worker safe as a standby.
 
+Pi's SDK registers the public `@earendil-works/pi-ai/lazy-oauth` loaders before creating a
+runtime. This keeps OAuth providers inside the daemon bundle rather than resolving missing
+provider files beside `index.mjs`. The coding-agent and pi-ai versions are pinned together
+so they share one loader registry. Bundle smoke derives OpenAI Codex and Anthropic request
+auth using synthetic credentials with networking disabled.
+
 ## Startup while SDK sessions restore
 
 The shell immediately shows **Starting Mission Control** from a local page that does not
@@ -51,14 +57,24 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 The standard [Bash installer](../scripts/install.sh) downloads canonical, immutable stable or
 exact-SHA alpha assets. Native macOS tools verify the size, SHA-256, product identity,
 arm64 executable, pinned Developer ID team and notarization before any downloaded code runs.
-It mounts the DMG read-only, checks its roots and links, copies the complete app to a private
+It mounts the DMG read-only, checks its root entries against the shared DMG layout contract and its links, copies the complete app to a private
 directory, verifies it again and unmounts the image. Only then does its embedded Electron Node
 engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, npm, npx, Git,
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
-Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+Without `--ref`, the installer selects a release by readiness, never by GitHub's newest record.
+A release exists before its Signed distribution run uploads the ready manifest, and that run can
+fail, so stable selection inventories every release and installs the highest `vX.Y.Z` that
+carries an uploaded manifest, as the desktop updater does. When no stable release is ready, the
+plain command installs the newest alpha and says so; `--channel stable` refuses instead. The app
+keeps alpha updates off unless they are enabled, so it offers the first ready stable release.
+`--channel alpha` installs `main`'s head when its alpha is ready. A merged commit has no alpha
+until its run publishes, so otherwise the installer walks the head's own history and installs
+the newest ancestor with a ready alpha, naming the unpublished head and how far behind it is.
+An alpha outside that history is never substituted. `--ref vX.Y.Z` and `--ref FULL_SHA` pin
+exact bytes and never substitute another release; an unpublished pin is named with its
+recovery. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows
@@ -338,11 +354,33 @@ here twice over - it points every recipient at the destination that needs an adm
 password, and a disk image is opened on somebody else's Mac, where no fixed link can name their
 own Applications folder and nothing expands a literal `~`.
 
+The published DMG's root also carries the window background (`.background.tiff`), volume icon
+and `.DS_Store` electron-builder writes for that layout. The standalone installer refuses any
+other root entry, and its allow-list is rendered from `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs), the same list producer
+qualification enforces on the mounted image. Changing the `dmg:` layout therefore means
+updating that list, or the Signed distribution job refuses the image before publication.
+
 Dragging the app out of a disk image records no receipt, so that copy never updates itself. The
 Read Me says so, names both destinations in words, and gives `make install` as the way to get
 managed updates.
 
 ## Updates from the installed app
+
+Accepting an update requests orderly shutdown of the owned Foreman and daemon before the
+shell exits. Running workflow checks are interrupted with a shutdown reason; their process
+groups are reaped and their leases settle through the usual workflow cleanup. Checks still
+waiting to start cannot release their command after shutdown begins. A check's private owner
+pipe also tears down its group if the daemon dies before orderly cleanup can run; durable
+startup recovery reconciles the remaining lease record.
+
+The detached helper displays a macOS progress dialog while waiting for the old app and its
+background processes. If a bundle process remains, the dialog names its PID, executable,
+parent and owning work. **Hide** keeps progress hidden across message changes without cancelling the update. Once a blocker exits, transaction progress replaces its stale wait message. Reopening an in-place
+update while its helper is alive leaves the update alone and exits promptly; the helper opens
+the completed app. A dead helper still follows interrupted-update recovery. Rollback outcomes
+retain the original blocking reason, alongside confirmation that the previous app and receipt
+were preserved.
 
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
@@ -357,16 +395,25 @@ Electron-only preload capability: the plain browser dashboard has no update brid
 update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
-inventory. If a newer release is pending and every complete release is at or below the installed
-version, the pending release remains visible with **Check again**. An older complete release is
-offered only when it is still newer than the installed version.
+inventory. An older complete release is offered only when it is still newer than the installed
+version. A newer release is still publishing when it has no ready manifest yet or its assets are
+still uploading; an older complete offer then names it in its notes. If a newer release is still
+publishing and every complete release is at or below the installed version, the check reports up
+to date and names the release still being built and signed: in Settings, and in the notice an
+explicit **Check for Updates** opens. It is not an error, and the existing schedule (about six
+hours for stable updates, five minutes for alpha) offers the release once its binary is
+published. A newer release that is published and complete but cannot update this installation,
+such as one for the historical app layout, is not treated as in progress: automatic checks stay
+quiet, and an explicit check shows it with **Update Now** disabled and **Check again**.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-Missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
+On a manual check, an unsupported app layout, or missing assets for an alpha installation
+without source metadata, leave **Update Now** disabled with **Check again**; retry refreshes
+discovery. Automatic stable and alpha checks do not show
+an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
 
@@ -434,8 +481,18 @@ selected main commit. A release-news lookup failure does not block a main update
 main lookup failure never substitutes a stable release. After installing the current tip,
 checking again reports that it is up to date.
 
-The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete; otherwise the offer says pending or
-unavailable. Preparation and installation carry that SHA even if main advances while downloading. The
+The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete.
+Every merge to main starts a signed build, and the publisher retires the previous alpha only after
+its replacement is verified. While main's tip is still building (it has no release yet, no ready
+manifest, or assets still uploading), the check therefore looks for the
+newest complete `alpha-<full SHA>` that strictly follows the installed commit and strictly precedes
+the tip on main, and offers it; its notes say which build is still being signed. When no complete
+build is newer than the installation, the check reports up to date and names the build in
+progress instead of an error. That answer is given only after the installed commit is verified
+on main behind the tip. An installation without source metadata, an installed commit the
+canonical repository cannot place on main, and a tip published complete for an app layout this
+installation cannot take all keep the blocked offer with **Check again**. Preparation and installation carry
+the offered SHA even if main advances while downloading. The
 staged bundle and installed app must match it. The detached helper also compares source
 identity during rollback, so two alpha builds with the same version remain distinguishable.
 
@@ -465,6 +522,14 @@ includes modes, file bytes and internal framework symlinks; escaping links and o
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
 
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
+
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained
 app; a cleanup failure reports the remaining path without undoing the committed installation.
@@ -482,10 +547,61 @@ The app marks itself as quitting before the quit request, so the hide-on-close g
 normally. The helper checks competing launchers and waits for all bundle executables to exit
 before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
+Every quit, including the one an update requests, holds the app open while the daemon and
+Foreman drain, bounded by the shared 30-second quit deadline. The app sends a private shutdown
+message first. A failed send or utility timeout requests forced termination and waits for exit;
+if the overall deadline is reached, Electron reaps the remaining utilities. Workflow checks
+start draining before slower session shutdown. The detached helper then handles any verified
+survivors before replacing the bundle.
+
+The daemon's last shutdown step closes its HTTP server. Requests that never end on their own -
+the dashboard's `/events` stream, transcript streams, and MCP review long-polls - are ended at
+once: a stream finishes its body, and a long-poll answers as its timeout would, so the agent
+polls the next daemon. Any other request gets a five-second grace, and only one still open after
+that is cut. Without this, an open dashboard held every quit until the utility deadline
+force-killed the daemon. `daemon.log` records `shutdown finished in <ms>` after the database
+close and lock release, on every orderly exit.
+
+If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
+summary of the executable and check-supervisor marker. The helper never prints command lines
+or uses that fallback description as authority to signal a process. Rollback outcomes use the
+shared diagnostic redaction policy.
+
+Other migration kinds retain the startup notification and bounded fallback window when their
+helper is alive. In-place updates use the existing helper's progress dialog, as described below,
+so the transient app launch does not hold the old bundle open while displaying a notice.
+
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
-home. No helper opens SQLite or starts a second daemon.
+home. Every helper snapshot captures verified process ownership before quit, including legacy
+updates without a migration handoff. The legacy helper loads the runtime ownership record only
+after checking its parent and attempt directory, before acknowledging startup or waiting.
+The helper reads existing check leases through a read-only SQLite connection to identify
+blockers by check, attempt, run and session. It never runs database migrations, writes workflow
+state, releases leases, or starts a second daemon. The accepted desktop also supplies its
+descendant identities and Electron service names, revalidating the desktop identity after the
+process-table read. SDK recovery lifetimes retain a start-time and command digest captured by
+the owning supervisor, identifying session processes even after reparenting and including the
+session and task in diagnostics. Older records lacking that digest do not authorize signals.
+Orphaned native Electron services
+are recognized only for the same user's exact bundle helper executable, native service type,
+and app profile; merely running an arbitrary command from the bundle is insufficient.
+After a short drain, the helper terminates
+verified remaining owners, escalating stubborn processes without asking the user to kill them.
+Unverified processes are never signalled. If a process still prevents replacement, its ownership
+diagnostic is preserved in both the outcome and log. A failure before replacement reopens the
+untouched previous app without repeating the failed process wait during rollback.
+An incomplete process-table snapshot fails inspection; parsed rows alone cannot prove that the
+old bundle is clear when another process row is malformed.
+
+The shared bundle wait also opens blocker-specific progress for legacy updates without a
+migration handoff, and closes that wait's dialog on completion or failure. Transaction updates
+keep their existing progress dialog through the installation.
+
+Opening the app during an in-place update requests progress from the same helper, including
+after Hide, then promptly exits the transient launch. This request does not change the journal,
+start another helper, or reset a deadline. The helper opens the completed app automatically.
 
 Targets advertising `missionInstallTransaction` protocol 1 use the existing migration journal
 and startup gate for in-place installation. Journal protocol 2 adds this mode; protocol-1
@@ -528,8 +644,14 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
+attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,
@@ -565,8 +687,18 @@ The app checks launch ownership before handing off an update. The detached helpe
 under the existing helper lock before waiting for shutdown and immediately before installing.
 `scripts/mac-app-lifecycle.mjs` owns the same read-only macOS inspection for both processes:
 
-- Enumerate `launchctl list`, then inspect each job in `gui/<uid>` with `launchctl print`.
-  Inspect its program and argument block, including shell wrappers that execute this bundle's
+- Read every job in `gui/<uid>` from one `launchctl dumpstate`, which prints each job exactly as
+  `launchctl print` does and answers in well under a second where printing hundreds of jobs one
+  at a time took tens of seconds on a loaded Mac. The dump is used only when all of it is
+  accounted for: every unindented line is a launchd section header or a closing brace, no
+  header repeats, every service appears in the unbroken run directly after its own domain, every
+  domain that states a service count holds exactly that many, and the GUI domain's jobs are
+  exactly the labels it lists. A header-shaped line printed by a job argument's embedded newline
+  therefore interrupts the run and is refused, except after the run's last job, where a forged
+  domain header reads like the next domain. That one job is always read with its own
+  `launchctl print` instead of from the dump. Otherwise inspection falls back to enumerating
+  `launchctl list` and running `launchctl print` for each job.
+  Inspect each job's program and argument block, including shell wrappers that execute this bundle's
   `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
   inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
   Executable positions are inspected, so an app path passed as ordinary data to a fixed executable
@@ -599,6 +731,21 @@ under the existing helper lock before waiting for shutdown and immediately befor
   Foreground application. A label that merely resembles an application job is not sufficient.
 - Compare main executables with `lsappinfo list`. Electron helpers need not have their own
   Foreground registration. Any unregistered main instance blocks the update.
+- A main executable running as plain Node is not an instance. The MCP server and hooks that
+  Mission Control registers in `~/.claude.json` and `~/.claude/settings.json` run
+  `Contents/MacOS/Mission Control` with `ELECTRON_RUN_AS_NODE=1`, so a `claude` or `codex`
+  started in a terminal holds such a process. Only unregistered main processes are examined. Each
+  one's argv and environment are read from the kernel's own record (`KERN_PROCARGS2`) by the
+  `processArguments` export of the state-lock addon every app already ships. Per process that
+  costs two in-process `sysctl` calls (`KERN_ARGMAX` to size the buffer, then `KERN_PROCARGS2`),
+  plus a `kill(pid, 0)` only when the second call fails, and no child process. `ps -E` reads the
+  same record but joins its entries with unescaped spaces, so there a value such as
+  `NOTE=x ELECTRON_RUN_AS_NODE=1` is indistinguishable from the flag. The addon keeps every entry separate. A process is in Node
+  mode only when its first `ELECTRON_RUN_AS_NODE` entry is non-empty, matching how Electron itself
+  reads it with `getenv`. An argument naming the flag or a satellite script is not evidence, and
+  neither is another variable whose value contains it. A process LaunchServices lists in any role
+  stays an instance. A process whose record cannot be read is not treated as Node. The
+  environment is tested for that flag and discarded, never logged.
 
 A conflict names the job and the exact, quoted `launchctl bootout 'gui/<uid>/<label>'` command.
 Mission Control never removes the job itself. Inspection errors fail closed. A packaged start
@@ -608,7 +755,25 @@ This is diagnostic only: detecting an unmanaged start does not kill it. Parent P
 evidence, since ordinary LaunchServices launches also have launchd as their parent.
 
 After the parent exits, the helper waits up to two minutes for **all** processes whose executable
-is beneath the bundle, including orphan helpers and utility processes. After replacement it runs
+is beneath the bundle, including orphan helpers and utility processes. There is one exception: a
+Node-mode process that Mission Control does not own and whose first argument is one of this
+bundle's operator satellites. These are the scripts Mission Control registers in an operator's own
+agent configuration, listed once as `OPERATOR_SATELLITES` in `src/shared/owned-runtime.mjs`:
+`dist/mcp/server.mjs`, `dist/satellites/hook.mjs` and `dist/satellites/harness-statusline.mjs`.
+The integration installer resolves its paths from that list, and the daemon's MCP server path is
+tested against it. Such an MCP server
+can live as long as the operator's terminal session, and the updater has no authority to signal
+it. It also does not need to stop. Every swap renames bundles and never writes into one, so the
+process keeps the files it has open. Each satellite is a single bundle that imports only Node
+builtins, loads nothing beside itself and never opens the state database.
+`test/operator-satellites.test.ts` rebuilds each one from its `package.json` command and checks
+that. It also fails when the build emits a satellite the list neither includes nor names as
+daemon-launched, such as `dist/satellites/codex-hook.mjs`, which only dispatched sessions run. An
+operator satellite's next launch runs the new build. Any other
+Node-mode script, including an orphaned workflow check, is still waited on. A timeout names it as
+a script on Mission Control's bundled Node and names the program that started it, never as the
+app itself. Retry cleanup likewise neither refuses over nor signals a Node-mode main process.
+After replacement it runs
 `lsregister -f` using macOS's LaunchServices utility and waits up to 25 seconds for old bundle
 instances to disappear from `lsappinfo list`. It then rechecks launch conflicts and calls `open`
 on the exact bundle. It never directly executes the application binary or requests a new instance
@@ -726,10 +891,12 @@ published assets. The desktop consumer bounds release and asset pagination, excl
 prereleases from stable selection, and checks the accepted tag against the manifest commit.
 
 Tags created by the release workflow are pushed with the short-lived App installation token, so
-they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
-package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
-release build check; the dmg is not attached to the GitHub Release. The package job can also be run
-manually through `workflow_dispatch`.
+they start a new `ci.yml` run. That run executes the same Linux checks as a `main` push, plus a
+`gates` step that fails when the tag and package versions disagree. It builds no dmg. `ci.yml`'s
+`package` job builds an unsigned developer dmg and uploads it as an Actions artifact, but only
+when run manually through `workflow_dispatch`, on the same pinned macOS image as the signing
+producer. It never runs on a push: a job that ran only for tags once kept two stable releases
+from being signed (see [release verification](release-verification.md#tag-ci-cancelled-by-a-retired-runner-2026-11-06-utc)).
 
 The separate [signed distribution producer](release-verification.md) consumes successful
 canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,

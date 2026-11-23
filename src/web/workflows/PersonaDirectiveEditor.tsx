@@ -147,6 +147,7 @@ export function PersonaDirectiveEditor({
             </Tooltip>
             <Tooltip label="Apply this feedback to the Persona's future rounds in this run">
               <button
+                data-dialog-default
                 className="btn wf-persona-directive-save"
                 type="button"
                 disabled={pending || !valid || persistedFeedback === directive?.feedback}

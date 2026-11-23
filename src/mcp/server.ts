@@ -1,4 +1,18 @@
-import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import { resolve } from "node:path";
+import { McpCreateScheduleSchema, McpSchedulePreviewSchema } from "@shared/protocol.ts";
+import { ScheduleNextIterationSchema } from "@shared/residents.ts";
+import { requestInputReview } from "@shared/request-input.ts";
+import { MEANWHILE_MAX_CHARS } from "@shared/async-input.ts";
+import {
+  ProposeResidentInstructionChangesSchema,
+  residentInstructionOutcomeText,
+  type ResidentInstructionOutcome,
+} from "@shared/resident-instructions.ts";
+import { scheduleResidentIteration } from "./resident-pacing.ts";
+import {
+  DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SESSION_CONTROL_REQUEST_REASON_MAX, SessionControlReadSchema,
+  SessionControlRequestSchema, type SessionControlRequestResult,
+} from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -6,6 +20,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem, Task } from "@shared/types.ts";
+import {
+  SESSION_AWAITING_LIMITS, SESSION_AWAITING_WAKE_SOURCES, SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS,
+} from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -27,22 +44,31 @@ import {
   readClientToken,
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
-import { titleLine } from "@shared/title.ts";
+import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
+import { taskShapingRead, type TaskShapingRead } from "@shared/shaping.ts";
+import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
+import { REPORT_GUIDANCE, REPORT_ID_PATTERN, REPORT_LIMITS } from "@shared/reports.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
   type ProductIssueRequest,
 } from "@shared/product-issues.ts";
-import { reportProductFeedback, reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpWorkUnitChoiceSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpCancelTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
+import {
+  ConfigureWorkflowCommandSchema,
+  GetWorkflowRunSchema,
+  ListWorkflowRunsSchema,
+  ReadWorkflowCommandOutputMcpSchema,
+  WorkflowMcpActionSchema,
+} from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -94,19 +120,64 @@ async function createReview(
   body: string,
   decisions?: unknown,
   managedPlan?: unknown,
+  /** Offer "Remind me later": only `request_input`'s own asks, whose agent knows how to carry on. */
+  snoozable?: boolean,
 ): Promise<string> {
-  const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
+  return (await postReview({ kind, title, body, decisions, managedPlan, snoozable })).id;
+}
+
+/**
+ * How the daemon said a review waits (`async-input`): `call` means long-poll it as always;
+ * `message` means the agent hears the answer later as a message, and `receipt` is the tool result.
+ * A daemon from an older build says nothing, which is `call`.
+ */
+type CreatedReview = { id: string; wait: "call" } | { id: string; wait: "message"; receipt: string };
+
+/**
+ * The daemon refused the ask with a reason meant for the agent (409): the ten-question limit, or a
+ * `revises` that names no form this ask may revise. Nothing was filed, so the tool result is that
+ * reason, not a transport failure.
+ */
+class AskRefused extends Error {}
+
+async function postReview(input: {
+  kind: string;
+  title: string;
+  body: string;
+  decisions?: unknown;
+  managedPlan?: unknown;
+  snoozable?: boolean;
+  /** This child can hand back a receipt instead of long-polling. `request_input` and `request_plan_decisions` say so. */
+  asyncCapable?: boolean;
+  meanwhile?: string;
+  /** The filed plan form this one revises (`request_plan_decisions`). */
+  revises?: string;
+}): Promise<CreatedReview> {
+  const res = await http(input.managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
     cwd: process.cwd(),
-    kind,
-    title,
-    body,
-    decisions,
-    managedPlan,
+    kind: input.kind,
+    title: input.title,
+    body: input.body,
+    decisions: input.decisions,
+    managedPlan: input.managedPlan,
+    ...(input.snoozable ? { snoozable: true } : {}),
+    ...(input.asyncCapable ? { asyncCapable: true } : {}),
+    ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
+    ...(input.revises ? { revises: input.revises } : {}),
   });
+  if (res.status === 409) {
+    const text = await res.text();
+    let reason: unknown = null;
+    try { reason = (JSON.parse(text) as { error?: unknown }).error; } catch { /* not JSON: reported below */ }
+    throw typeof reason === "string" ? new AskRefused(reason) : new Error(`harness 409: ${text}`);
+  }
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { id: string }).id;
+  const created = (await res.json()) as { id: string; wait?: string; receipt?: unknown };
+  return created.wait === "message" && typeof created.receipt === "string"
+    ? { id: created.id, wait: "message", receipt: created.receipt }
+    : { id: created.id, wait: "call" };
 }
 
 /**
@@ -229,7 +300,13 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
   }
 }
 
-const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+// Server-level instructions reach every session this server is registered with, dispatched or
+// started by hand, on harnesses that read them. The task tools below repeat the same rule in
+// their own descriptions because tool descriptions reach every harness.
+const server = new McpServer(
+  { name: "mission-control", version: "0.1.0" },
+  { instructions: TASK_REFERENCE_RULE },
+);
 
 server.registerTool("list_workflow_runs", {
   description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
@@ -255,6 +332,51 @@ server.registerTool("get_workflow_run", {
   }
 });
 
+server.registerTool("read_workflow_command_output", {
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  inputSchema: ReadWorkflowCommandOutputMcpSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("configure_workflow_command", {
+  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot and pass the argv you found. This tool then has Mission Control raise a request_input card on your session - naming this run, the slot, the repository and the exact argv - and BLOCKS until the operator answers. Nothing is configured unless they choose Configure this Command. The machine-wide default is never changed. Executions in which the repository did not provide a different argv are returned to the run budget so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
+  inputSchema: ConfigureWorkflowCommandSchema,
+}, async (input, extra) => {
+  try {
+    const configure = () => http("/mcp/workflows/configure-command", "POST", input, true);
+    const first = await configure();
+    if (first.status !== 403) return textResult(await first.text(), !first.ok);
+    const refusal = await responseResult(first);
+    const card = (refusal.body as { code?: string; confirmationReviewId?: string; confirmation?: {
+      decision: { id: string };
+    } } | null);
+    if (card?.code !== "unconfirmed" || !card.confirmationReviewId || !card.confirmation) {
+      return textResult(JSON.stringify(refusal.body), true);
+    }
+    // The DAEMON raised this card on the session and recorded it on the run; this only waits
+    // for the operator's answer, on the same path request_input waits on.
+    const review = await waitForResolution(card.confirmationReviewId, extra);
+    const chose = review.selections?.find((answer) => answer.decisionId === card.confirmation!.decision.id)?.selected ?? [];
+    if (review.status !== "answered" || chose.length !== 1 || chose[0] !== "configure") {
+      const result = reviewToolResult(review);
+      return textResult(
+        `The operator did not confirm this Command, so nothing was configured. Their answer:\n${result.text}`,
+        false,
+      );
+    }
+    const second = await configure();
+    return textResult(await second.text(), !second.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
 server.registerTool("trigger_workflow_action", {
   description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
   inputSchema: WorkflowMcpActionSchema,
@@ -271,7 +393,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions; supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -283,7 +405,7 @@ server.registerTool(
   "control_session",
   {
     title: "Steer another session on the operator's behalf",
-    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort, permission mode, and blockers: flag_blocker_reply marks a likely answer without clearing the blocker or messaging the session, and clear_blocker clears it. Pass the blocker id from read_sessions as blockerId on both blocker actions so a replaced blocker is refused. complete does what the operator's Complete button does: it records the target's current task as done with your outcome (default \"completed\") and closes the target session; only use it once the target's work is verifiably finished. satisfyDependents releases tasks declared to wait on it without a merge, so set it only when that work is already in place on the default branch. A scout whose report is not archived is refused with the problems; confirmIncompleteScout closes it anyway, so retry with it only when losing that report is acceptable. clear_awaiting ends a session's declared wait on a background process; its awaiting id from read_sessions is required as awaitingId, so a wait declared since is refused, and prefer leaving an in-deadline wait alone, since the session resumes on its own. Never clear a blocker without evidence its resumeWhen condition is met; prefer flag_blocker_reply then message. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions other than by complete. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
     inputSchema: SessionControlRequestSchema.shape,
   },
   async (args) => {
@@ -292,21 +414,96 @@ server.registerTool(
   },
 );
 
+/**
+ * The caller's cancellation bounded by a deadline: aborts on whichever comes first. Hand-rolled
+ * rather than `AbortSignal.any`, which Node 18 before 18.17 lacks, and this server has run there.
+ */
+function untilCancelledOr(signal: AbortSignal, ms: number): AbortSignal {
+  const bounded = new AbortController();
+  const cancel = (): void => bounded.abort(signal.reason);
+  const timer = setTimeout(() => bounded.abort(new Error(`Mission Control did not answer within ${ms} ms`)), ms);
+  timer.unref?.();
+  bounded.signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }, { once: true });
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  return bounded.signal;
+}
+
+/**
+ * What the agent reads once its ask settles. `granted` records the operator's decision when it
+ * was made, not current authority: a later revoke or reset ends the grant without changing it.
+ */
+function sessionControlRequestText(result: SessionControlRequestResult): { text: string; isError: boolean } {
+  switch (result.status) {
+    case "granted":
+      return { isError: false, text: "Granted: the operator allowed this session to control other sessions. Use read_sessions " +
+        "to inspect other live sessions and control_session to act on them. This records the operator's decision, not " +
+        "current authority: the grant ends when the operator revokes it, when this conversation is reset or replaced, or " +
+        "when Mission Control restarts, and read_sessions and control_session then refuse." };
+    case "declined":
+      return { isError: false, text: "Declined: the operator chose not to let this session control other sessions. Do not " +
+        "ask again unless the operator tells you to. Carry on without it, and say what you could not do." };
+    case "expired":
+      return { isError: true, text: `Not granted: the request ended without a decision because ${result.detail ?? "it expired"}. ` +
+        "Nothing was granted." };
+    case "pending":
+      return { isError: true, text: "The request is still waiting on the operator." };
+  }
+}
+
 server.registerTool(
-  "share_plan",
+  "request_session_control",
   {
-    title: "Share a plan with the human",
-    description:
-      "Display a readable markdown plan in the Mission Control dashboard for the human to skim. Returns immediately without waiting.",
+    title: "Ask the operator to let this session control other sessions",
+    description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
+      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
+      "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
+      "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +
+      "already holds the grant, it returns at once. If declined, do not ask again unless the operator tells you to.",
     inputSchema: {
-      title: z.string().describe("Short title for the plan"),
-      plan: z.string().describe("The plan as GitHub-flavored markdown"),
+      reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX)
+        .describe("Why this session needs to control other sessions: which sessions, and what you will do. Shown to the operator verbatim."),
     },
   },
-  async ({ title, plan }) => {
+  async ({ reason }, extra) => {
+    const beat = heartbeat(extra);
     try {
-      await createReview("plan", title, plan);
-      return textResult("Plan shared to the Mission Control dashboard.");
+      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true, untilCancelledOr(extra.signal, 15_000));
+      if (raised.status === 404) {
+        return textResult("Not asked: session control requests are turned off in Mission Control (Settings > Feature " +
+          "flags). Nothing was shown to the operator. If you need this, ask them with request_input to turn on " +
+          "Control other sessions from this session's toolbar.", true);
+      }
+      if (!raised.ok) return textResult(`Not asked: ${await raised.text()}`, true);
+      let result = (await raised.json()) as SessionControlRequestResult;
+      // Best-effort: the session's status line says what it is waiting on.
+      if (result.status === "pending") {
+        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" },
+          false, untilCancelledOr(extra.signal, 5_000)).catch(() => {});
+      }
+      while (result.status === "pending") {
+        if (extra.signal.aborted) throw new Error("the client cancelled this request");
+        const res = await http(`/mcp/session-control/requests/${encodeURIComponent(result.id)}/wait`, "GET", undefined, true, extra.signal);
+        // The daemon no longer recognises this conversation as the one that asked.
+        if (res.status === 403) {
+          result = { id: result.id, status: "expired", detail: "this conversation changed before the operator answered" };
+          break;
+        }
+        // The preview was switched off between rounds; that withdrew the card as well.
+        if (res.status === 404 && ((await res.clone().json().catch(() => null)) as { feature?: string } | null)?.feature) {
+          result = { id: result.id, status: "expired", detail: "session control requests were turned off in Settings > Feature flags" };
+          break;
+        }
+        if (!res.ok) return textResult(`Could not wait on the request: ${await res.text()}`, true);
+        result = (await res.json()) as SessionControlRequestResult;
+        beat();
+      }
+      const answer = sessionControlRequestText(result);
+      return textResult(answer.text, answer.isError);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -320,8 +517,17 @@ server.registerTool(
     description:
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
       "human can resolve by selecting options and clicking Submit, or dismiss without an " +
-      "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
-      "their selections or an explicit dismissal so you can proceed appropriately. Use this " +
+      "answer when the decision set is stale. The result says which of two things happened. " +
+      "Either it carries their selections or an explicit dismissal, because this call waited " +
+      "for them; or it is a receipt saying the plan is filed and NOT answered. The form is a " +
+      "gate either way: on a receipt, do only read-only preparation, make no edits, commits, " +
+      "pushes or other outward action, do not file it again or poll, then say what is waiting " +
+      "and end your turn. The answer arrives later as a message in this conversation, restating " +
+      "the plan and each decision. A dismissal is not approval. The human " +
+      "may move any decision to chat instead of choosing; the result then names it and says " +
+      "how to discuss it, and you must not decide or re-ask it. When scope changes after you " +
+      "filed a plan, file the revised plan with revises set to the earlier form's review id: " +
+      "the operator then sees one card tagged as the revision. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
       "expressed as options.",
     inputSchema: {
@@ -338,14 +544,15 @@ server.registerTool(
                 z.object({
                   id: z.string().describe("Stable id, echoed back in the selection"),
                   label: z.string().describe("What the human reads on the control"),
-                  detail: z.string().optional().describe("Optional one-line elaboration"),
+                  detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
                   recommended: z
                     .boolean()
                     .optional()
                     .describe("Marks a suggested choice; does not preselect"),
                 }),
               )
-              .min(1),
+              .min(1)
+              .max(PLAN_DECISION_LIMITS.options),
             multiSelect: z
               .boolean()
               .optional()
@@ -356,17 +563,33 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.decisions)
         .default([])
         .describe("Open choices; empty is allowed for managed final-bundle approval"),
+      revises: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "The review id of your earlier filed plan form that this plan replaces, for example after " +
+          "the operator said the scope changed. Pass it whether or not you already withdrew that form: " +
+          "an open one is withdrawn for you. Only your own session's filed plan forms can be revised, " +
+          "each once; revise the latest. Omit it for a new plan.",
+        ),
     },
   },
-  async ({ title, plan, decisions, managedPlan }, extra) => {
+  async ({ title, plan, decisions, managedPlan, revises }, extra) => {
     try {
-      const id = await createReview("plan-decisions", title, plan, decisions, managedPlan);
-      const review = await waitForResolution(id, extra);
+      // `asyncCapable`: the daemon decides how this form waits (`filed-plan-decisions`). Told
+      // `message`, the plan is filed and the receipt is the whole result - nothing long-polls.
+      const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true, revises });
+      if (created.wait === "message") return textResult(created.receipt);
+      const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
+      if (err instanceof AskRefused) return textResult(err.message, true);
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
   },
@@ -401,6 +624,8 @@ server.registerTool(
 function taskConfiguration(task: Task) {
   return {
     id: task.id,
+    // Null for a resident run, and for an older task until it is next dispatched or assigned.
+    workUnitId: task.workUnitId ?? null,
     title: task.title,
     intent: task.intent,
     status: task.status,
@@ -410,11 +635,15 @@ function taskConfiguration(task: Task) {
     agent: task.agent,
     model: task.model,
     effort: task.effort,
+    advisorModel: task.advisorModel,
+    personaId: task.personaId,
     workflowId: task.workflowId,
+    planPolicy: task.planPolicy,
     enabled: task.enabled,
     priority: task.priority,
     labels: task.labels,
     dependencies: task.dependencies,
+    planInputs: task.planInputs,
   };
 }
 
@@ -427,14 +656,17 @@ server.registerTool(
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
-      "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
-      "model/effort follows launch-time defaults. Null workflowId opts out of an after-work workflow. " +
+      "labels, planStorage (plan tasks only), and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
+      "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
       "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
+      "authority later. A task created from a plan task's session joins that plan's work unit; any other gets its own " +
+      "unless workUnit is \"inherit\". Returns the new task id, its workUnitId, saved configuration, and canonical repository set. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       ...McpTaskConfigurationSchema.shape,
       title: z
@@ -483,6 +715,7 @@ server.registerTool(
         .boolean()
         .default(false)
         .describe("Make the session calling this tool a direct prerequisite of the new task"),
+      workUnit: McpWorkUnitChoiceSchema.optional(),
     },
   },
   async ({
@@ -493,6 +726,7 @@ server.registerTool(
     dependsOnTaskIds,
     dependsOnCurrentSession,
     planInputs, planPrerequisites,
+    workUnit,
     ...configuration
   }) => {
     try {
@@ -508,6 +742,8 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
+        // Every creation route accepts it, so it does not choose the route.
+        ...(workUnit !== undefined ? { workUnit } : {}),
         ...configuration,
       };
       const path = pinnedPlans || Object.keys(configuration).length > 0
@@ -557,6 +793,139 @@ server.registerTool(
   },
 );
 
+// Schedules use the existing daemon service, never local timers or direct database writes.
+const scheduleToolGuidance =
+  "Requires the Recurring missions through MCP preview flag (mcp-schedules). " +
+  "Use five-field cron and an explicit IANA time zone; runs must be at least an hour apart. " +
+  "A due run files a backlog task, not an immediate agent launch. Foreman's existing gates govern execution. " +
+  "Mission Control must be running; missed runs follow missedPolicy on wake or restart. ";
+
+async function scheduleRequest(path: string, method: string, body?: unknown) {
+  try {
+    const res = await http(path, method, body, false, AbortSignal.timeout(30_000));
+    if (res.status === 404 && !res.headers.get("content-type")?.includes("application/json")) {
+      return textResult("This daemon does not support recurring missions through MCP. Update or restart Mission Control; no schedule was created.", true);
+    }
+    if (!res.ok) return textResult(`Schedule request failed (${res.status}): ${await res.text()}`, true);
+    return textResult(JSON.stringify(await res.json(), null, 2));
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}. If creating a schedule, check list_schedules before retrying; the outcome may be unknown.`, true);
+  }
+}
+
+server.registerTool("create_schedule", {
+  title: "Create a recurring mission",
+  description: scheduleToolGuidance +
+    "Save a recurring task template with its name, cadence and task intent. Preview first with preview_schedule. " +
+    "Enabled by default; enabled:false saves paused. Defaults: skip active work, coalesce missed runs to the latest, " +
+    "manual completion, inherited kind agent and no after-work workflow. Choose auto-on-conclusion for runs " +
+    "Foreman may complete without a merged PR. Returns the durable schedule, canonical repository and nextRunAt. " +
+    "Use list_schedules to inspect saved missions and the Missions dashboard to edit, pause or archive them.",
+  inputSchema: McpCreateScheduleSchema,
+}, async (input) => scheduleRequest("/mcp/schedules", "POST", {
+  ...input, template: { ...input.template, repoRoot: resolve(input.template.repoRoot) },
+}));
+
+server.registerTool("preview_schedule", {
+  title: "Preview a recurring mission",
+  description: scheduleToolGuidance +
+    "Validate the exact unsaved definition and enumerate its next occurrences without writing a schedule or task. " +
+    "Returns UTC instants, offsets, DST shifts and collisions; optional standby simulation uses the same missed-run policy as execution.",
+  inputSchema: McpSchedulePreviewSchema,
+}, async (input) => scheduleRequest("/mcp/schedules/preview", "POST", {
+  ...input, template: { ...input.template, repoRoot: resolve(input.template.repoRoot) },
+}));
+
+server.registerTool("list_schedules", {
+  title: "List recurring missions",
+  description: "Read-only: list saved, non-archived recurring missions, including paused missions, task templates, " +
+    "schedule ids, nextRunAt and health. Requires the Recurring missions through MCP preview flag (mcp-schedules). " +
+    "Use this to check whether a mission already exists before creating one or retrying an uncertain create.",
+  inputSchema: {},
+}, async () => scheduleRequest("/mcp/schedules", "GET"));
+
+/** Saved task facts only: never resolve another session's private state. */
+function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
+  const { intent, ...configuration } = taskConfiguration(task);
+  return {
+    ...configuration,
+    ...(includeIntent ? { intent } : {}),
+    sessionId: task.sessionId,
+    outcomeUrl: task.outcomeUrl,
+    prUrl: task.prUrl,
+    repoPrs: task.repoPrs,
+    outcome: task.outcome,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    dispatchedAt: task.dispatchedAt,
+    completedAt: task.completedAt,
+    // What task shaping added to the launch this session received, as one line. Absent when
+    // nothing was added, or when the record describes an earlier launch's session.
+    ...withTaskShapingRead(task),
+  };
+}
+
+function withTaskShapingRead(task: McpTaskSnapshot): { shaping?: TaskShapingRead } {
+  const shaping = taskShapingRead(task, task.shapingAfterWork ?? null);
+  return shaping ? { shaping } : {};
+}
+
+server.registerTool(
+  "list_tasks",
+  {
+    title: "List saved tasks (read-only)",
+    description: "Read-only: list saved Mission Control tasks in any status, without launching, modifying or reordering anything. " +
+      "Uses the same daemon-token access as create_task and update_task; no Control other sessions opt-in is required. " +
+      "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
+      "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
+      "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs, " +
+      "and shaping {state, sessionId, summary, skills?, afterWork?} when task shaping added context to the launch that session received. " +
+      "Pass workUnitId to list the tasks of one work unit. " +
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
+      TASK_REFERENCE_RULE,
+    inputSchema: McpListTasksSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (query) => {
+    try {
+      const res = await http("/mcp/tasks/list", "POST", query);
+      if (!res.ok) return textResult(`Could not list tasks (${res.status}): ${await res.text()}`, true);
+      const page = await res.json() as { tasks: McpTaskSnapshot[]; nextCursor: string | null };
+      return textResult(JSON.stringify({
+        tasks: page.tasks.map((task) => taskReadResult(task, query.includeIntent)),
+        nextCursor: page.nextCursor,
+      }, null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "get_task",
+  {
+    title: "Read a saved task (read-only)",
+    description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
+      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary, skills?, afterWork?} " +
+      "when task shaping added context to the launch that session received. " +
+      "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
+      "Never launches, modifies or reorders work and does not read session-private state. " +
+      TASK_REFERENCE_RULE,
+    inputSchema: McpGetTaskSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/get", "POST", { taskId });
+      if (!res.ok) return textResult(`Could not get task (${res.status}): ${await res.text()}`, true);
+      return textResult(JSON.stringify(taskReadResult(await res.json() as McpTaskSnapshot, true), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 server.registerTool(
   "update_task",
   {
@@ -564,13 +933,20 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
-      "repository, and additionalRepositories. Null model/effort clears the override; changing " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, planInputs, " +
+      "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
+      "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +
+      "superseded originating prerequisites, preserving unrelated dependencies. Do not combine it with " +
+      "planInputs or dependencies. previewOnly validates without saving; inspect before and after, then " +
+      "repeat with previewOnly false to save. Never choose a newer revision automatically. Supports " +
+      "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
+      "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
       "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +
-      "a new title from the intent. Returns the saved task configuration without launching it.",
+      "a new title from the intent. Returns the saved task configuration without launching it. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       taskId: z.string().min(1).describe("Id of the backlog task to edit"),
       ...McpUpdateTaskSchema.shape,
@@ -582,10 +958,72 @@ server.registerTool(
       if (!res.ok) {
         return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
       }
-      const result = (await res.json()) as { task: Task };
-      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+      const result = (await res.json()) as { task: Task; before?: Task };
+      return textResult(JSON.stringify(result.before ? { before: taskConfiguration(result.before), after: taskConfiguration(result.task) } : taskConfiguration(result.task), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "dispatch_task",
+  {
+    title: "Dispatch a saved task",
+    description:
+      "Launch a saved Mission Control task by taskId, including work just scheduled with create_task. " +
+      "Uses the dashboard's dispatch rules: dependencies, workflow readiness, task kind, and " +
+      "launch preflights still apply. Disabled backlog work is refused unless overrideDisabled is true. " +
+      "The calling agent may set that override itself; disabled is an autopilot hold, not a human approval boundary. " +
+      "defaultModel fills only an unpinned task's model. Returns the task and its current status; " +
+      "dispatching means launch was accepted, not that the agent is running. Use get_task to check progress. " +
+      "Uses the same daemon-token access as create_task; no Control other sessions opt-in is required.",
+    inputSchema: {
+      taskId: z.string().trim().min(1).describe("Id of the saved task to launch"),
+      // Not the pause override: the operator's launch hold is not an agent's to lift, and the
+      // daemon ignores the claim from this route anyway.
+      ...DispatchBacklogTaskSchema.omit({ overridePauseHold: true }).shape,
+    },
+  },
+  async ({ taskId, ...options }) => {
+    try {
+      const res = await http(`/mcp/tasks/${encodeURIComponent(taskId)}/dispatch`, "POST", options);
+      if (!res.ok) {
+        return textResult(`Could not dispatch task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify(await res.json(), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "cancel_task",
+  {
+    title: "Cancel a task",
+    description:
+      "Cancel a Mission Control task by taskId, including a running task with no sessionId. " +
+      "Uses the dashboard's cancellation rules: stops agents launched for the task, preserves " +
+      "archives, and cleans up owned resources. Assigned tasks stop being tracked without " +
+      "killing the operator's existing session. Cleanup failures are returned and resources " +
+      "remain tracked for retry; use get_task to inspect the resulting status. " +
+      "Keeps the task record; use delete_task afterward to remove it. Uses the same daemon-token " +
+      "access as create_task and delete_task; no Control other sessions opt-in is required. " +
+      TASK_REFERENCE_RULE,
+    inputSchema: McpCancelTaskSchema,
+  },
+  async ({ taskId }) => {
+    const signal = AbortSignal.timeout(30_000);
+    try {
+      const res = await http("/mcp/tasks/cancel", "POST", { taskId }, false, signal);
+      if (!res.ok) {
+        return textResult(`Could not cancel task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify({ taskId, cancelled: true }));
+    } catch (err) {
+      const reason = signal.aborted ? "The cancellation request timed out." : `Could not reach Mission Control: ${String(err)}.`;
+      return textResult(`${reason} Cancellation outcome is unknown; the task may already have changed. Use get_task to inspect its status before retrying.`, true);
     }
   },
 );
@@ -596,9 +1034,10 @@ server.registerTool(
     title: "Delete a task",
     description:
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
-      "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
+      "running or dispatching tasks must be cancelled with cancel_task first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
-      "the task record remains and the error is returned. Returns the deleted task id.",
+      "the task record remains and the error is returned. Returns the deleted task id. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpDeleteTaskSchema,
   },
   async ({ taskId }) => {
@@ -621,7 +1060,9 @@ server.registerTool(
 // redirect prompt to name, with the agent choosing the SHAPE from the question rather than
 // choosing between two tools.
 //
-// The description says what the tool DOES and stops there. It deliberately does NOT claim
+// The description says what the tool DOES and what a decision asked through it carries
+// (`DECISION_CONTEXT_RULE`: the decision, its context, each option's tradeoff) - true for
+// every session that can call it. It deliberately does NOT claim
 // that nobody is reading your terminal, or that this is the only way to reach your human:
 // this one MCP server is shared by every session on the machine, including the ones a human
 // started themselves, which keep `AskUserQuestion` on purpose and whose terminal usually IS
@@ -634,25 +1075,51 @@ server.registerTool(
   {
     title: "Ask the human a question",
     description:
-      "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. Without `options`, they answer in free text or dismiss without an " +
-      "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. " +
+      "File a question for your human operator in the Mission Control dashboard. The result " +
+      "says which of two things happened. Either it carries their answer, selections, or an " +
+      "explicit dismissal, because this call waited for them; or it is a receipt saying the " +
+      "question is filed and NOT answered, in which case keep working on everything that does " +
+      "not depend on it, do not ask it again or poll, and expect the answer later as a message " +
+      "in this conversation. If you then run out of work, say what is waiting on the answer and " +
+      "end your turn; Mission Control wakes you with it. Pass `meanwhile` to tell the operator " +
+      "what you will do while the question is open. " +
+      "The operator can always type an answer. With `options`, they can also " +
+      "pick choices and add typed context. They may choose to chat about it, in which case the result tells you " +
+      "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
+      "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
+      "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
+      "ask the question again, and expect the answer later as a message in this conversation. " +
+      "If an earlier request_input call ended before the human answered (for example it timed " +
+      "out) and you ask the same decision again, say so in the question (for example \"The " +
+      "earlier request timed out.\") and offer exactly the same options. Mission Control " +
+      "withdraws the earlier card only when it recognizes the new ask as the same decision with " +
+      "the same options; otherwise both cards stay and the human may answer both. A different " +
+      "question, or different options, never withdraws an earlier one. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
-      "`options` only for open-ended asks.",
+      "`options` only for open-ended asks. " +
+      DECISION_CONTEXT_RULE,
     inputSchema: {
-      question: z.string().describe("The question to ask"),
+      question: z.string().describe("The decision or question itself, in one or two sentences"),
+      context: z
+        .string()
+        .max(DECISION_CONTEXT_MAX_CHARS)
+        .optional()
+        .describe(
+          "What the human needs to answer without your context: what is being decided, why it " +
+            "came up, what you found, and the tradeoffs. Shown beneath the question.",
+        ),
       options: z
         .array(
           z.object({
             label: z.string().describe("What the human reads on the control"),
-            detail: z.string().optional().describe("Optional one-line elaboration"),
+            detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
             recommended: z
               .boolean()
               .optional()
               .describe("Marks a suggested choice; does not preselect"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.options)
         .optional()
         .describe("Discrete choices. Omit entirely for a free-text answer."),
       multiSelect: z
@@ -662,45 +1129,136 @@ server.registerTool(
       allowOther: z
         .boolean()
         .optional()
-        .describe("Adds a free-text 'Other' field for an answer outside the options"),
+        .describe("Deprecated compatibility field. The text box is always available."),
+      meanwhile: z
+        .string()
+        .max(MEANWHILE_MAX_CHARS)
+        .optional()
+        .describe(
+          "One line, shown on the operator's card: what you will do while the question is open - " +
+            "the assumption you proceed on, or the work you hold back until the answer arrives.",
+        ),
     },
   },
-  async ({ question, options, multiSelect, allowOther }, extra) => {
+  async ({ question, context, options, multiSelect, meanwhile }, extra) => {
+    // Refused before any review exists: a card the human cannot answer would leave this call,
+    // and the session, waiting on something nobody can resolve. The daemon's schema enforces
+    // the same rule; checking here first lets the agent read why instead of a transport error.
+    const problem = inputQuestionProblem(question, options);
+    if (problem) {
+      return textResult(
+        `Not asked: ${problem}. Nothing was shown to the human and nothing is waiting on them. ` +
+          "Fix the question and call request_input again.",
+        true,
+      );
+    }
     try {
-      // Option ids are positional and generated here rather than asked of the agent. The
-      // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
-      // wire-level handle between the form and its submit - making the agent invent stable
-      // ids for something it never reads back would be ceremony with a chance of collision.
-      const decisions = options?.length
-        ? [
-            {
-              id: "q",
-              question,
-              options: options.map((o, i) => ({ ...o, id: `o${i}` })),
-              multiSelect,
-              allowOther,
-            },
-          ]
-        : undefined;
-      // The title is a HEADING and the body is the question itself, so a long or multi-line
-      // ask is readable rather than folded into a bold one-liner with its newlines collapsed.
-      // Sending the question as both (which this did) made them equal for every review the
-      // tool produced, and the modal's de-duplication then suppressed the readable paragraph
-      // in every case - including the ones it exists to protect. `titleLine` is the shared
-      // clipper (word boundary, ellipsis, `TITLE_MAX_CHARS`), so a heading here and a heading
-      // on a task card are cut the same way; a question already short enough comes back
-      // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
-      const id = await createReview("input", titleLine(question), question, decisions);
-      const review = await waitForResolution(id, extra);
+      // One construction for every `request_input` review (`@shared/request-input.ts`): a
+      // heading clipped from the question, the question followed by its context as the body
+      // (`inputReviewBody`), and positional option ids, which the human's answer never shows the
+      // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
+      // through the same builder.
+      const ask = requestInputReview({ question, context, options, multiSelect });
+      // `asyncCapable`: the daemon decides how this ask waits. Told `message`, the question is
+      // filed and the receipt is the whole result - nothing long-polls, so nothing can time out.
+      const created = await postReview({
+        kind: ask.kind, title: ask.title, body: ask.body, decisions: ask.decisions,
+        snoozable: true, asyncCapable: true, ...(meanwhile?.trim() ? { meanwhile } : {}),
+      });
+      if (created.wait === "message") return textResult(created.receipt);
+      const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
+    } catch (err) {
+      if (err instanceof AskRefused) return textResult(err.message, true);
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "list_open_questions",
+  {
+    title: "List your open questions",
+    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call, and your filed request_plan_decisions forms. Each entry names its kind. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
   },
 );
 
-// Both MCP entry points use the dashboard's report contract and daemon service.
+server.registerTool(
+  "withdraw_question",
+  {
+    title: "Withdraw your question",
+    description: "Withdraw one of your own open message-mode questions, or a filed request_plan_decisions form, that you no longer need, with a reason - for example because the operator told you the plan's scope changed. Requires async-input. Cannot withdraw another session's ask or one whose tool call waits for an answer. No answer message is sent.",
+    inputSchema: { id: z.string().min(1), reason: z.string().trim().min(1).max(2000) },
+  },
+  async ({ id, reason }) => {
+    try {
+      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// An agent's report for the operator to read (`inbox` flag). Non-blocking, like
+// `respond_to_file_comments`: the daemon stores it and the receipt is the whole result, so the
+// agent carries on. It is not a question and never waits on anyone.
+server.registerTool(
+  "post_report",
+  {
+    title: "Post a report for the operator to read",
+    description:
+      "Post a report to your human operator's Mission Control inbox, where it waits to be read. " +
+      REPORT_GUIDANCE + " " +
+      "Returns at once with the report's id; do not wait for a reply. To correct or update a report " +
+      "you posted earlier, pass its id as `replaces`: the new report takes the earlier one's place " +
+      "in the inbox. Reports posted without `replaces` stack.",
+    inputSchema: {
+      title: z.string().trim().min(1).max(REPORT_LIMITS.title)
+        .describe("One line: what the operator reads as the heading, e.g. 'Build failure diagnosed'"),
+      body: z.string().trim().min(1).max(REPORT_LIMITS.body)
+        .describe("Markdown: what you found or did, and what the operator should do with it"),
+      file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional()
+        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy."),
+      url: z.string().trim().url().max(REPORT_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("An http(s) link to go with the report, e.g. a pull request"),
+      replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional()
+        .describe("The id of one of your earlier reports, still unread, that this one replaces"),
+    },
+  },
+  async (input) => {
+    try {
+      const res = await http("/mcp/reports", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...input },
+        false, AbortSignal.timeout(30_000));
+      const body = (await res.json().catch(() => ({}))) as { receipt?: string; error?: string; feature?: string };
+      if (res.status === 404 && body.feature) {
+        return textResult("Not posted: agent reports are turned off in Mission Control (Settings > Feature flags > " +
+          "Reports and inbox upgrades). Nothing was shown to the operator. Say what you would have reported in " +
+          "your reply instead.", true);
+      }
+      if (!res.ok || !body.receipt) {
+        return textResult(`Not posted (${res.status}): ${body.error ?? "Mission Control refused the report"}`, true);
+      }
+      return textResult(body.receipt);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// The MCP entry point uses the dashboard's report contract and daemon service.
 const productIssueTransport = {
   requestId: randomUUID,
   preview: async (request: ProductIssueRequest) => responseResult(await http(
@@ -712,28 +1270,6 @@ const productIssueTransport = {
     { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
   )),
 };
-
-server.registerTool(
-  "report_product_feedback",
-  {
-    title: "Report product feedback",
-    description:
-      "Report product feedback about Mission Control as a public GitHub issue only after the user " +
-      "explicitly asks you to report it. Publishes automatically without a second dashboard approval " +
-      "and returns the issue URL. Choose the report type from the user's request. " +
-      "Include only public-safe details, never secrets, private repository content, or personal data. " +
-      "Optional attachmentUploadIds must be daemon-issued screenshot ids, never filesystem paths.",
-    inputSchema: ProductIssueDraftSchema.shape,
-  },
-  async (draft) => {
-    try {
-      const result = await reportProductFeedback(draft, PRODUCT_ISSUE_CLIENT, productIssueTransport);
-      return textResult(result.text, result.isError);
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
-  },
-);
 
 server.registerTool(
   "report_product_issue",
@@ -782,9 +1318,178 @@ server.registerTool(
   },
 );
 
+// The blocked session's own record. Validated here AND in `McpReportBlockerSchema`, the
+// project's rule for MCP arguments (see docs/agent-guides/change-contracts.md).
+const blockerLine = (max: number, what: string) =>
+  z.string().trim().min(1).max(max).refine((v) => !/[\r\n]/.test(v), { message: "must be one line" }).describe(what);
+
+server.registerTool(
+  "report_blocker",
+  {
+    title: "Report that this session is blocked",
+    description:
+      "Use only when you are waiting on someone or something other than the operator. For a " +
+      "decision the operator can make, call request_input instead. Ask your question where its " +
+      "owner will see it first (for example Commonroom), then report the blocker with a link " +
+      "to that question, and end your turn. Mission Control keeps the blocker across turns and " +
+      "restarts and holds automatic completion while it stands. Calling it again updates the " +
+      "blocker and keeps its start time.",
+    inputSchema: {
+      kind: z.enum(SESSION_BLOCKER_KINDS).describe(
+        "question: asked someone else, somewhere else; dependency: waiting on a PR, task or " +
+          "another team; service: a service, environment or credential is unavailable; other.",
+      ),
+      reason: blockerLine(SESSION_BLOCKER_LIMITS.reason, "One line: what you cannot do yet"),
+      waitingOn: blockerLine(SESSION_BLOCKER_LIMITS.waitingOn, "Who owns the answer, e.g. 'Dana (platform) in #data-platform'"),
+      resumeWhen: blockerLine(SESSION_BLOCKER_LIMITS.resumeWhen, "One line: the condition that unblocks you"),
+      referenceUrl: z.string().trim().url().max(SESSION_BLOCKER_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("http(s) link to the question, PR or status page"),
+      details: z.string().trim().max(SESSION_BLOCKER_LIMITS.details).optional()
+        .describe("Markdown for the operator to review: options considered, context"),
+    },
+  },
+  async (input) => {
+    try {
+      const res = await http("/mcp/blocker", "POST", { env: ENV, sessionId: SESSION_ID, ...input });
+      const body = (await res.json()) as { created?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this blocker (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(
+        `${body.created ? "Blocker recorded" : "Blocker updated"}. End your turn now. Mission Control will ` +
+          "not run automatic completion while it stands. When you are told to check again, check: if it " +
+          "is resolved, call clear_blocker and continue the work; otherwise call report_blocker again " +
+          "and end your turn.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "clear_blocker",
+  {
+    title: "Clear this session's blocker",
+    description:
+      "Call when what you reported with report_blocker is resolved, then continue the work. " +
+      "Clearing a session with no blocker does nothing.",
+    inputSchema: {
+      resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution, "One line: what resolved it").optional(),
+    },
+  },
+  async ({ resolution }) => {
+    try {
+      const res = await http("/mcp/blocker/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution });
+      const body = (await res.json()) as { cleared?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(body.cleared ? "Blocker cleared. Continue the work." : "There was no blocker to clear.");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// A session idle on purpose while a background process finishes. Validated here AND in
+// `McpReportAwaitingSchema`, the project's rule for MCP arguments.
+server.registerTool(
+  "report_awaiting",
+  {
+    title: "Declare that this session is waiting on a background process",
+    description:
+      "Use when you have handed work to a background process and have nothing to do until it finishes: " +
+      "CI checks on a pull request you pushed, a long build or test run you started in the background, a " +
+      "monitor watching a deploy, or a scheduled wakeup you set for yourself. You must expect to be woken " +
+      "by that process (a background command's completion notification, a monitor, or a wakeup) and intend " +
+      "to finish the work then. Mission Control shows the wait on your card and holds idle automation " +
+      "(completion nudges, stuck-session alerts) until expectedBy passes. The wait ends on its own " +
+      "when your next turn starts, so when you wake and the process is still running, call this again. " +
+      "Do NOT use it to wait on a person: for the operator call request_input, for anyone else call " +
+      "report_blocker. Refused while you have a request_input question pending or a blocker standing.",
+    inputSchema: {
+      what: blockerLine(SESSION_AWAITING_LIMITS.what, "One line: what you are waiting for, e.g. 'CI checks on PR #1612'"),
+      wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES).describe(
+        "How you will be woken. command: a background command's completion notification; monitor: a " +
+          "monitor or watcher you started; wakeup: a scheduled wakeup you set; other.",
+      ),
+      expectedBy: z.string().trim().datetime({ offset: true })
+        .describe(
+          "Required. When the process should be done, as an ISO 8601 date-time with a time zone, e.g. " +
+            "2026-11-20T15:40:00Z or 2026-11-20T10:40:00-05:00. It must be in the future and at most " +
+            `${SESSION_AWAITING_LIMITS.maxMinutes} minutes from now (read the time with ` +
+            "`date -u +%Y-%m-%dT%H:%M:%SZ` if you need it). Past it the card turns Overdue and the normal " +
+            "stuck-session handling applies again, so give a realistic bound, not a hopeful one.",
+        ),
+      referenceUrl: z.string().trim().url().max(SESSION_AWAITING_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("http(s) link to the pull request checks, run or deploy"),
+      details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).optional()
+        .describe("Markdown notes for the operator, e.g. the command you started"),
+    },
+  },
+  async (input) => {
+    try {
+      // The session's signed credential names the caller; the daemon refuses a body naming another.
+      const res = await http("/mcp/awaiting", "POST", { env: ENV, sessionId: SESSION_ID, ...input }, true);
+      const body = (await res.json().catch(() => ({}))) as { created?: boolean; error?: string; feature?: string };
+      if (res.status === 404 && body.feature) {
+        return textResult(
+          "Not recorded: declaring a wait is turned off in Mission Control (Settings > Feature flags). " +
+            "End your turn as you would have; you will still be woken by your background process.",
+          true,
+        );
+      }
+      if (!res.ok) {
+        return textResult(`Mission Control refused this wait (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(
+        `${body.created ? "Wait recorded" : "Wait updated"}. End your turn now. Mission Control holds idle ` +
+          `automation until the deadline, and the wait ends by itself when your next turn starts. If you wake ` +
+          "and the process is still running, call report_awaiting again before ending that turn. If the work " +
+          "turns out not to need the process after all, call clear_awaiting.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "clear_awaiting",
+  {
+    title: "End this session's declared wait",
+    description:
+      "Call when the wait you declared with report_awaiting no longer applies, for example you cancelled " +
+      "the background process. You do not need to call it after being woken: your next turn ends the wait " +
+      "by itself. Clearing a session with no wait does nothing.",
+    inputSchema: {
+      resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution, "One line: why the wait ended").optional(),
+    },
+  },
+  async ({ resolution }) => {
+    try {
+      const res = await http("/mcp/awaiting/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution }, true);
+      // A non-JSON reply (an empty body, an HTML error page) still reached Mission Control: report
+      // its real status rather than "could not reach".
+      const body = (await res.json().catch(() => ({}))) as { cleared?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(body.cleared ? "Wait cleared." : "There was no wait to clear.");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // Answer one line comment a human left on a file, in the thread it was written in.
 //
-// Non-blocking and `share_plan`-shaped: no `extra`, no long poll. The agent posts its answer
+// Non-blocking: no `extra`, no long poll. The agent posts its answer
 // and carries on with the work the comment asked for - waiting on a human here would stall the
 // very turn the comment exists to steer.
 server.registerTool(
@@ -1074,6 +1779,76 @@ server.registerTool("get_pull_request_policy", {
     return textResult(`Could not read pull request policy: ${String(error)}`, true);
   }
 });
+server.registerTool("schedule_next_iteration", {
+  description: "Set the next resident wake delay within your pinned profile bounds. During a turn the delay starts at completion. Returns a callId; replay that id after any unknown outcome to read the original receipt safely. A new callId is a new intent.",
+  inputSchema: ScheduleNextIterationSchema.extend({ callId: z.string().min(1).max(200).optional() }).shape,
+}, async (input) => {
+  const result = await scheduleResidentIteration(input, (body, signal) =>
+    http("/mcp/residents/schedule-next-iteration", "POST", body, true, signal));
+  return textResult(JSON.stringify(result), "code" in result);
+});
+// A resident reading and editing its own standing role. Neither tool names a session, run or
+// profile: the daemon attributes the signed session, as it does for schedule_next_iteration.
+server.registerTool("get_resident_instructions", {
+  title: "Read your resident standing instructions",
+  description:
+    "Residents only. Read the CURRENT text of your resident profile's instructions and of the " +
+    "Persona guidance it names, with their revisions and whether each can be edited. Copy passages " +
+    "from here, exactly, into propose_resident_instruction_changes. You keep running on the revision " +
+    "you launched with (runProfileRevision) until the operator chooses Restart on new profile.",
+  inputSchema: {},
+  annotations: { readOnlyHint: true },
+}, async () => {
+  try {
+    const res = await http("/mcp/residents/instructions", "GET", undefined, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+  }
+});
+server.registerTool("propose_resident_instruction_changes", {
+  title: "Propose changes to your resident standing instructions",
+  description:
+    "Residents only. Ask the operator, as a request_input question listing every change in full, " +
+    "which changes to your profile instructions (target profile) or your Persona's guidance " +
+    "(target persona) to apply, and BLOCK until they answer. They select the changes; Mission " +
+    "Control writes only those, as the next profile or Persona revision, and returns what was " +
+    "applied and any guidance they wrote. Do not ask the same thing with request_input yourself. " +
+    "Each change either replaces " +
+    "one passage (find, copied exactly from get_resident_instructions, occurring once) with " +
+    "replace, removes it (empty replace), or appends replace as a new passage (omit find). Put " +
+    "how this resident should work in the profile; use the Persona only for guidance every user " +
+    "of that Persona should follow. Never edit files or settings to make these changes yourself. " +
+    "If this call ends before they answer, their selection is still applied when they do.",
+  inputSchema: ProposeResidentInstructionChangesSchema.shape,
+}, async (input, extra) => {
+  try {
+    const res = await http("/mcp/residents/instructions/proposals", "POST", input, true);
+    if (!res.ok) {
+      return textResult(
+        `${await res.text()} (${res.status}). Nothing was shown to the operator and nothing changed.`,
+        true,
+      );
+    }
+    const { reviewId } = (await res.json()) as { reviewId: string };
+    await waitForResolution(reviewId, extra);
+    const read = await http(`/mcp/residents/instructions/proposals/${encodeURIComponent(reviewId)}`, "GET", undefined, true);
+    if (!read.ok) {
+      return textResult(
+        `The operator answered, but the outcome could not be read (${read.status}): ${await read.text()}. ` +
+          "Call get_resident_instructions to see the current text.",
+        true,
+      );
+    }
+    const outcome = (await read.json()) as ResidentInstructionOutcome;
+    return textResult(
+      residentInstructionOutcomeText(outcome),
+      outcome.status === "stale" || outcome.status === "refused" || outcome.status === "orphaned",
+    );
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+  }
+});
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",
   inputSchema: PlanContextInputSchema.shape, annotations: { readOnlyHint: true },
@@ -1088,7 +1863,7 @@ server.registerTool("publish_plan", {
 }, async (input) => managedPlanCall("publish", input));
 server.registerTool("read_plan", {
   description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
-  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+  inputSchema: ReadPlanInputSchema.shape, annotations: { readOnlyHint: true },
 }, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The
@@ -1281,13 +2056,20 @@ server.registerTool(
     title: "Submit a scout report",
     description:
       "When your scout report is written, submit it. Mission Control captures the report " +
-      "directory and the additional files you name into a durable local archive that outlives " +
-      "this session, its checkout and its task card. Any session may publish when instructed. " +
+      "files you explicitly select with files, even if Git ignores them, into a durable local archive that outlives " +
+      "this session, its checkout and its task card. Include reportPath in files; only selected files are copied. " +
+      "Omit files for legacy directory capture. Any session may publish when instructed. " +
       "Call once per report using a unique directory. Reusing the directory returns the existing " +
       "immutable report; use a new slug for a revision. Submission does not complete your task. The report must " +
       `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
       "external requests. Do not open a pull request for the report.",
     inputSchema: {
+      files: z.array(z.object({
+        repoSlot: z.string().describe("An issued repository slot, e.g. repo-01"),
+        path: z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+          .describe("Checkout-relative file path"),
+      })).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional()
+        .describe("Complete explicit selection, including reportPath and each evidence file. Accepts Git-ignored files. No automatic neighbors. Do not combine with supporting."),
       title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
         .describe("Optional display title for this report."),
       reportPath: z
@@ -1324,13 +2106,18 @@ server.registerTool(
         ),
     },
   },
-  async ({ title, reportPath, summary, tags, supporting }) => {
+  async ({ title, reportPath, summary, tags, supporting, files }) => {
     try {
       const health = await http("/api/health", "GET");
-      if (!health.ok || !daemonHealthSupports(await health.json(), DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
+      const healthBody: unknown = health.ok ? await health.json() : null;
+      if (!daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
         return textResult("The running Mission Control daemon does not support multiple scout reports. Update/restart the daemon before submitting; no report was sent.", true);
       }
+      if (files !== undefined && !daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.explicitScoutFiles)) {
+        return textResult("The running Mission Control daemon does not support explicit report files. Update/restart the daemon before submitting; no report was sent.", true);
+      }
       const res = await http("/mcp/scouts/submit", "POST", {
+        files,
         title,
         reportPath,
         summary,
@@ -1348,11 +2135,11 @@ server.registerTool(
         replayed?: boolean;
         archive?: { key?: string; artifactCount?: number; captureStatus?: string };
       };
-      const files = body.archive?.artifactCount ?? 0;
+      const fileCount = body.archive?.artifactCount ?? 0;
       return textResult(
         body.replayed
-          ? `Already submitted; the existing immutable archive of ${files} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
-          : `Submitted. This report and ${Math.max(0, files - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
+          ? `Already submitted; the existing immutable archive of ${fileCount} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
+          : `Submitted. This report and ${Math.max(0, fileCount - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

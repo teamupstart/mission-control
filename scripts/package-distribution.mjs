@@ -4,7 +4,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
-import { distributionMetadata, distributionNames, localDistributionAssets } from './distribution-contract.mjs';
+import { DISTRIBUTION_OUTPUT, distributionMetadata, distributionNames, localDistributionAssets } from './distribution-contract.mjs';
 import { readVersions } from './assert-release-version.mjs';
 import { inspectBundle } from './install-staged-app.mjs';
 import { verifyDistributionApp, verifyDistributionDmg, verifyDistributionArchives } from './verify-distribution.mjs';
@@ -46,7 +46,7 @@ export async function packageDistribution({repoRoot = process.cwd(), env = proce
   if (env.GITHUB_SHA && env.GITHUB_SHA !== commit) throw new Error('Workflow source commit mismatch');
   const metadata = distributionMetadata({channel: env.MISSION_DISTRIBUTION_CHANNEL,
     tag: env.MISSION_DISTRIBUTION_TAG, commit, versions: readVersions(repoRoot)});
-  const output = join(repoRoot, 'release/distribution');
+  const output = join(repoRoot, DISTRIBUTION_OUTPUT);
   // Retrying publication uses the retained bytes. Rebuilding signed/timestamped
   // archives is not a reproducible-byte retry and must never silently replace them.
   if (existsSync(output)) throw new Error('Distribution output already exists; publish its original bytes or use a fresh checkout');

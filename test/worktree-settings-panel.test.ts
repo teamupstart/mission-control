@@ -21,7 +21,8 @@ const overCapacityPool: WorktreeRepositoryView = {
   root: "/repo/mission-control",
   commonDirectory: "/repo/mission-control/.git",
   poolPath: "/state/worktrees/pool-1",
-  policy: { enabled: true, maxSlots: 16, setupArgv: ["npm", "install"] },
+  policy: { enabled: true, maxSlots: 16, setupArgv: ["npm", "install"], claim: null },
+  claimVariables: [],
   counts: { total: 18, leased: 17, available: 0, quarantined: 1, overCapacity: 2 },
   diskBytes: 4096,
   lastReconciledAt: 1,
@@ -43,7 +44,11 @@ const overCapacityPool: WorktreeRepositoryView = {
     processes: { state: "known", count: 1, reason: null },
     diskBytes: 4096,
     quarantineReason: null,
+    quarantinedAt: null,
+    quarantineRecoverable: null,
     diagnostic: null,
+    orphaned: false,
+    dependencies: null,
     actions: ["return", "destroy"],
   }],
 };
@@ -55,7 +60,8 @@ const roomToGrowPool: WorktreeRepositoryView = {
   root: "/repo/line-drawers",
   commonDirectory: "/repo/line-drawers/.git",
   poolPath: "/state/worktrees/pool-2",
-  policy: { enabled: true, maxSlots: 16, setupArgv: null },
+  policy: { enabled: true, maxSlots: 16, setupArgv: null, claim: null },
+  claimVariables: [],
   counts: { total: 12, leased: 8, available: 4, quarantined: 0, overCapacity: 0 },
   diskBytes: 8192,
   lastReconciledAt: 1,
@@ -65,7 +71,7 @@ const roomToGrowPool: WorktreeRepositoryView = {
 };
 
 const inventory: WorktreeInventory = {
-  config: { enabled: true, maxSlots: 16, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
+  config: { taskRetentionDays: 30, enabled: true, maxSlots: 16, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
   observedAt: 1,
   revision: "a".repeat(64),
   repositories: [overCapacityPool, roomToGrowPool],

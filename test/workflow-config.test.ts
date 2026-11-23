@@ -8,6 +8,7 @@ import { repoAllowlisted } from "../src/shared/allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG, DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
+import { taskDefaultWorkflowId } from "../src/shared/task.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
@@ -20,7 +21,8 @@ const { getAppConfig, setAppConfig } = await import("../src/server/db.ts");
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
 test("workflow live consent defaults ON with an empty allowlist, which authorises nothing", () => {
-  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
+  assert.deepEqual(DEFAULT_WORKFLOW_CONFIG.kindWorkflowDefaults, {});
+  assert.equal(taskDefaultWorkflowId("ship", DEFAULT_WORKFLOW_CONFIG.kindWorkflowDefaults), NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
 
   // The pair that makes the flipped default safe, asserted together rather than separately:
@@ -56,20 +58,95 @@ test("an operator who explicitly turned live delivery off keeps it off across th
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
 
-test("the dispatch Workflow default is durable and explicit none clears it", () => {
+test("per-kind dispatch defaults are durable, explicit None sticks, and unset follows the built-in", () => {
   const selected = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: "workflow-review",
+    kindWorkflowDefaults: { ship: "workflow-review", bugfix: "workflow-bugs", scout: null },
   });
-  assert.equal(selected.defaultWorkflowId, "workflow-review");
-  assert.equal(getWorkflowPolicy().defaultWorkflowId, "workflow-review");
-  const cleared = setWorkflowPolicy({
-    liveEnabled: false,
-    repoAllowlist: [],
-    defaultWorkflowId: null,
-  });
-  assert.equal(cleared.defaultWorkflowId, null);
+  assert.deepEqual(selected.kindWorkflowDefaults, { ship: "workflow-review", bugfix: "workflow-bugs", scout: null });
+  const stored = getWorkflowPolicy().kindWorkflowDefaults;
+  assert.equal(taskDefaultWorkflowId("ship", stored), "workflow-review");
+  assert.equal(taskDefaultWorkflowId("bugfix", stored), "workflow-bugs");
+  assert.equal(taskDefaultWorkflowId("scout", stored), null);
+  assert.equal(taskDefaultWorkflowId("plan", stored), PLAN_VALIDATION_WORKFLOW_ID, "an unset row follows the built-in");
+  assert.equal(taskDefaultWorkflowId("chat", stored), null);
+  assert.equal(taskDefaultWorkflowId("pipeline", { ship: "workflow-review" }), null, "pipeline never inherits a row");
+  const cleared = setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: {} });
+  assert.deepEqual(cleared.kindWorkflowDefaults, {});
+});
+
+test("a stored legacy defaultWorkflowId migrates into the Ship row on read", () => {
+  const read = (blob: Record<string, unknown>) => {
+    setAppConfig(APP_CONFIG_ENTRIES.workflows, { repoAllowlist: ["/repo"], checksEnabled: true, ...blob });
+    return getWorkflowPolicy();
+  };
+  // Indistinguishable from "never touched", and behaves the same, so it reads as the built-in.
+  assert.deepEqual(read({ defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID }).kindWorkflowDefaults, {});
+  assert.deepEqual(read({ defaultWorkflowId: "workflow-mine" }).kindWorkflowDefaults, { ship: "workflow-mine" });
+  assert.deepEqual(read({ kindWorkflowDefaults: { ship: null } }).kindWorkflowDefaults, { ship: null });
+  assert.deepEqual(
+    read({ defaultWorkflowId: "workflow-old", kindWorkflowDefaults: { plan: "workflow-plan" } }).kindWorkflowDefaults,
+    { plan: "workflow-plan" },
+    "a blob that already has the map keeps it",
+  );
+  const migrated = read({ defaultWorkflowId: "workflow-mine" });
+  assert.deepEqual(migrated.repoAllowlist, ["/repo"], "the rest of the policy survives the migration");
+  assert.equal("defaultWorkflowId" in migrated, false);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
+});
+
+test("a save mirrors the effective Ship row as defaultWorkflowId for a rolled-back build", () => {
+  const stored = (rows: Record<string, string | null>) => {
+    setWorkflowPolicy({ repoAllowlist: [], kindWorkflowDefaults: rows });
+    return getAppConfig(APP_CONFIG_ENTRIES.workflows) as Record<string, unknown>;
+  };
+  assert.equal(stored({}).defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID, "an untouched row mirrors the built-in");
+  assert.equal(stored({ ship: null }).defaultWorkflowId, null, "an explicit None stays None");
+  const blob = stored({ ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal(blob.defaultWorkflowId, "workflow-mine");
+  assert.deepEqual(blob.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  // This build reads the map and drops the mirror, so the other rows survive the round trip.
+  const read = getWorkflowPolicy();
+  assert.deepEqual(read.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal("defaultWorkflowId" in read, false);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
+});
+
+test("a settings backup from before per-kind defaults restores its Ship choice", async () => {
+  const { parseSettingPayload } = await import("../src/server/settings-backups/config-registry.ts");
+  const legacy = {
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+    defaultWorkflowId: "workflow-mine",
+    retention: DEFAULT_WORKFLOW_POLICY.retention,
+    checksEnabled: true,
+    skipPassedJudges: true,
+  };
+  const payload = parseSettingPayload(APP_CONFIG_ENTRIES.workflows, legacy) as Record<string, unknown>;
+  assert.deepEqual(payload.kindWorkflowDefaults, { ship: "workflow-mine" });
+  assert.equal("defaultWorkflowId" in payload, false, "the legacy field is never written back");
+  assert.throws(
+    () => parseSettingPayload(APP_CONFIG_ENTRIES.workflows, { ...legacy, somethingElse: 1 }),
+    /unexpected setting fields/,
+    "only the named legacy field is tolerated",
+  );
+});
+
+test("a write that still names defaultWorkflowId sets the Ship row rather than being dropped", () => {
+  const rows = (body: Record<string, unknown>) =>
+    WorkflowConfigSchema.parse({ repoAllowlist: [], ...body }).kindWorkflowDefaults;
+  assert.deepEqual(rows({ defaultWorkflowId: "workflow-review" }), { ship: "workflow-review" });
+  assert.deepEqual(rows({ defaultWorkflowId: null }), { ship: null }, "null is an explicit None");
+  assert.deepEqual(rows({ defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID }), {}, "the built-in reads as unset");
+  assert.deepEqual(
+    rows({ defaultWorkflowId: "workflow-review", kindWorkflowDefaults: { ship: "workflow-old", plan: "workflow-plan" } }),
+    { ship: "workflow-review", plan: "workflow-plan" },
+    "the alias names Ship and every other row stands",
+  );
+  const parsed = WorkflowConfigSchema.parse({ repoAllowlist: [], defaultWorkflowId: "workflow-review" });
+  assert.equal("defaultWorkflowId" in parsed, false, "only the map is written");
+  assert.equal(WorkflowConfigSchema.safeParse({ repoAllowlist: [], defaultWorkflowId: 42 }).success, false);
 });
 
 test("task creation owns Workflow inheritance and preserves explicit opt-outs", async () => {
@@ -79,7 +156,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: "workflow-review",
+    kindWorkflowDefaults: { ship: "workflow-review", scout: "workflow-scout" },
   });
   const input = {
     repoRoot: "/repo",
@@ -97,6 +174,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
     assert.equal(tasks.create({ ...input, kind, workflowId: "workflow-custom" }).workflowId, "workflow-custom");
   }
   assert.equal(tasks.create({ ...input, workflowId: null }).workflowId, null);
+  assert.equal(tasks.create({ ...input, kind: "scout" }).workflowId, "workflow-scout", "a scout follows its own row");
   const scheduledOptions = {
     id: "scheduled-workflow-default",
     schedule: {
@@ -109,7 +187,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: null,
+    kindWorkflowDefaults: { ship: null },
   });
   assert.equal(
     tasks.create(input, scheduledOptions).workflowId,
@@ -269,7 +347,7 @@ test("a write that never mentions Commands cannot switch them on", () => {
   // every one of them by an operator changing retention, and the read guard undone on the
   // first save.
   //
-  // The write is a real one, not a no-op: `defaultWorkflowId` moves, so a fix that simply
+  // The write is a real one, not a no-op: the Ship row moves, so a fix that simply
   // refused to persist anything would fail here too.
   setAppConfig(APP_CONFIG_ENTRIES.workflows, {
     liveEnabled: true,
@@ -280,11 +358,11 @@ test("a write that never mentions Commands cannot switch them on", () => {
   const saved = setWorkflowPolicy({
     liveEnabled: true,
     repoAllowlist: ["/repo"],
-    defaultWorkflowId: "some-workflow",
+    kindWorkflowDefaults: { ship: "some-workflow" },
   } as never);
 
   assert.equal(saved.checksEnabled, false, "an unrelated write must not arm Commands");
-  assert.equal(saved.defaultWorkflowId, "some-workflow", "the rest of the write still lands");
+  assert.equal(saved.kindWorkflowDefaults.ship, "some-workflow", "the rest of the write still lands");
   assert.equal(getWorkflowPolicy().checksEnabled, false, "and it stayed off on the next read");
 
   // An operator who says so explicitly is still obeyed, in both directions - the guard keys

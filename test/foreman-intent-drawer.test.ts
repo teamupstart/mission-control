@@ -36,6 +36,7 @@ function render(intent: SessionGoal | null, session = mkSession()): string {
       open: true,
       onClose: () => undefined,
       onWithdraw: () => undefined,
+      onAcceptObjective: async () => null,
     }),
   );
 }
@@ -60,6 +61,45 @@ test("the Foreman drawer makes an unresolved instruction visibly pause wrap-up",
 test("the Foreman drawer has a useful pre-objective state", () => {
   const html = render(null);
   assert.match(html, /Waiting for the session&#x27;s first substantive instruction/);
+  assert.match(html, /The next instruction\s+becomes the objective\./);
+  assert.doesNotMatch(html, /Accept objective as is/, "no contract, nothing to accept");
+});
+
+test("a goal row with no objective keeps the empty state and offers no accept", () => {
+  const html = render(goal({
+    objective: null,
+    text: null,
+    relationship: "unclear",
+    promptRevision: 2,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [{ revision: 2, prompt: null }],
+  }));
+  assert.match(html, /The next instruction\s+becomes the objective\./);
+  assert.doesNotMatch(html, /fd-intent-accept/);
+});
+
+test("a paused intent with an objective offers Accept objective as is", () => {
+  for (const [state, intent] of [
+    ["resolving", goal({ promptRevision: 5, resolvedPromptRevision: 4, relationship: null })],
+    ["unclear", goal({ relationship: "unclear", rationale: "Could be a new requirement." })],
+  ] as const) {
+    const html = render(intent);
+    assert.match(html, /<button[^>]*class="fd-intent-accept"[^>]*>Accept objective as is<\/button>/, state);
+    assert.match(
+      html,
+      /Record the pending instructions as steering and let Foreman judge completion against this objective/,
+      `${state} tooltip`,
+    );
+    // Inside the reading, beside the state it ends.
+    assert.match(html, /fd-intent-reading[\s\S]*fd-intent-accept/, state);
+  }
+  assert.match(render(goal({ relationship: "unclear" })), /needs more context/);
+});
+
+test("a settled intent offers no accept", () => {
+  for (const relationship of ["initial", "steer", "amend", "replace"] as const) {
+    assert.doesNotMatch(render(goal({ relationship })), /Accept objective as is/, relationship);
+  }
 });
 
 /**

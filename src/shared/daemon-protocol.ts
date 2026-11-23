@@ -7,11 +7,26 @@ export const DAEMON_PROTOCOL_CAPABILITIES = {
   criterionMappedWorkflowEvidence: "criterion-mapped-workflow-evidence-v1",
   daemonExecutableEnvironment: "daemon-executable-environment-v1",
   multipleScoutReports: "multiple-scout-reports-v1",
+  explicitScoutFiles: "explicit-scout-files-v1",
   workflowCoverageMutations: "workflow-coverage-mutations-v1",
+  /**
+   * Headless mode's `/dispatch/*` routes. Unlike the others, `GET /api/health` lists it only
+   * while the `headless-mode` flag is on (`advertisedDaemonCapabilities`).
+   */
+  homeDispatch: "home-dispatch-v1",
 } as const;
 
 export type DaemonProtocolCapability =
   (typeof DAEMON_PROTOCOL_CAPABILITIES)[keyof typeof DAEMON_PROTOCOL_CAPABILITIES];
+
+/** The capabilities `GET /api/health` lists, given the flags that gate some of them. */
+export function advertisedDaemonCapabilities(
+  flags: { headlessMode: boolean },
+): DaemonProtocolCapability[] {
+  return Object.values(DAEMON_PROTOCOL_CAPABILITIES).filter(
+    (capability) => capability !== DAEMON_PROTOCOL_CAPABILITIES.homeDispatch || flags.headlessMode,
+  );
+}
 
 export type DaemonCompatibility = "compatible" | "incompatible" | "unreachable";
 

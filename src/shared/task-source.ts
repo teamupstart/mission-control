@@ -1,17 +1,19 @@
 import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import {
   AGENT_TYPES,
   TASK_KINDS,
   type AgentType,
   type TaskKind,
   type TaskPriority,
+  type TaskSourceItemState,
 } from "./types.ts";
 import {
   MAX_LABELS,
-  TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
 } from "./task.ts";
 
 // A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
@@ -100,6 +102,30 @@ export interface TaskCandidate {
   agent?: AgentType;
   priority?: TaskPriority | null;
   labels?: string[];
+  /**
+   * The items that block this one upstream, when the kind can say (`canRelate`).
+   *
+   * Ingest turns each into a dependency edge: a task edge when the item is already one of
+   * our tasks, a `source` edge otherwise. A kind whose `canRelate` is false never sets it,
+   * and ingest ignores it for such a kind even if it did.
+   */
+  blockedBy?: TaskSourceRef[];
+  /**
+   * The item this one is a sub-issue of, for display. Never an edge: a parent is the
+   * larger piece of work this one belongs to, not a prerequisite of it.
+   */
+  parent?: TaskSourceRef;
+  /**
+   * The item's state, when the kind can say. `readLinked` reports it for `canRelate`
+   * kinds, which is how the sweep learns that a blocking item closed and how.
+   */
+  state?: TaskSourceItemState;
+  /**
+   * Set when this read could not ask for `blockedBy`, `parent` and `state` (an older gh,
+   * say), so their absence says nothing. Keep-updated then leaves the task's dependencies
+   * and parent as they are, instead of reading the absence as "no blockers upstream".
+   */
+  relationsUnknown?: true;
 }
 
 /** The outcome of one sweep. */
@@ -164,6 +190,13 @@ export interface PushResult {
    * `wasRefused`, which is the same rule for the same reason.
    */
   outcomeUnknown: boolean;
+  /**
+   * The blocking links the implementation confirms the new item carries, possibly none. Set
+   * only on a clean create by a `canRelate` kind; absent when it cannot vouch for them. Push
+   * records exactly these as the task's `dependencies` sync baseline, so an absent list leaves
+   * that group with no baseline rather than claiming links nobody checked.
+   */
+  blockedBy?: TaskSourceRef[];
 }
 
 /**
@@ -349,13 +382,23 @@ export interface TaskSourceKindInfo<C = unknown> {
    */
   canResolve: boolean;
   /**
+   * This kind reports blocking links between its items.
+   *
+   * True means two promises, both read through the registry (`canRelateTo`): a sweep
+   * candidate carries `blockedBy` (and `parent`, for display), and `readLinked` reports
+   * each item's `state` - open, completed or not planned - which is how the sweep
+   * re-checks the external items `source` dependency edges wait on. Ingest ignores
+   * `blockedBy` from a kind that says false, so the flag, not the payload, decides.
+   */
+  canRelate: boolean;
+  /**
    * Validates and defaults this kind's config blob. The panel renders from it too.
    *
    * Input is `unknown`, not `C`: what is parsed is whatever the `app_config` blob holds,
    * which is a value an older build wrote and every field of which the schema may since
    * have made optional. A schema that only accepted its own output could not read it.
    */
-  configSchema: z.ZodType<C, z.ZodTypeDef, unknown>;
+  configSchema: z.ZodType<C, unknown>;
 }
 
 /**
@@ -462,7 +505,7 @@ export const GithubIssuesConfigSchema = z
     unassignedOnly: z.boolean().default(false),
     milestone: z.string().max(200).nullable().default(null),
     /** GitHub label -> task priority, e.g. {"P0": "blocker", "P1": "high"}. */
-    priorityFrom: z.record(z.string(), z.enum(TASK_PRIORITIES)).default({}),
+    priorityFrom: boundedRecord(z.string(), z.enum(TASK_PRIORITIES), 100).default({}),
     /** Copy the issue's GitHub labels onto the task. */
     copyLabels: z.boolean().default(true),
     limit: z.number().int().min(1).max(200).default(50),
@@ -505,8 +548,8 @@ export const DEFAULT_JIRA_SITE = "upstartnetwork.atlassian.net";
  *
  * No credential lives here, and that is the design rather than an omission. The local method
  * reads the operator's own `jira` CLI first and falls back to `JIRA_API_TOKEN` + `JIRA_EMAIL`.
- * The UpstartClaw method uses the operator's completed Claude plugin setup. Neither stores a
- * token or opens a second OAuth flow in Mission Control.
+ * The UpstartClaw method uses the operator's completed Claude plugin setup. The acli method
+ * uses Atlassian CLI's own OAuth login. None stores a token or opens an OAuth flow here.
  */
 export const JiraConfigSchema = z.object({
   /** The Jira Cloud host, e.g. `your-org.atlassian.net`. A URL is accepted and reduced. */
@@ -521,8 +564,8 @@ export const JiraConfigSchema = z.object({
    * indistinguishable from a filter with no matching issues.
    */
   jql: z.string().max(1000).default(""),
-  /** Which credential boundary executes the JQL. Existing sources retain their local path. */
-  queryVia: z.enum(["local", "upstartclaw"]).default("local"),
+  /** Local Jira credentials, acli OAuth, or UpstartClaw. Existing sources retain local. */
+  queryVia: z.enum(["local", "upstartclaw", "acli"]).default("local"),
   /** How many issues one sweep asks Jira for. */
   limit: z.number().int().min(1).max(200).default(50),
   /**
@@ -582,13 +625,15 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // everything else here - so the write-back direction adds no token and no new secret.
     canAnnotate: true,
     canResolve: true,
+    // `gh --json blockedBy,parent` on the sweep, and `state,stateReason` on the linked read.
+    canRelate: true,
     configSchema: GithubIssuesConfigSchema,
   },
   jira: {
     kind: "jira",
     label: "Jira",
     blurb:
-      "Files the issues a JQL filter matches as backlog tasks, through local Jira credentials or UpstartClaw.",
+      "Files the issues a JQL filter matches as backlog tasks, through local Jira credentials, Atlassian CLI (acli), or UpstartClaw.",
     preflightOk: "Looks good - Jira answered, and this JQL filter runs.",
     // Inbound only, and that is a decision rather than a gap: creating a Jira issue means
     // a project key, an issue type and whatever fields that project marks required, which
@@ -604,6 +649,9 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // verbs exist: `test/task-source-contract.test.ts` refuses to compile past a kind that
     // advertises either one without implementing it.
     canResolve: true,
+    // Jira's issue links are typed per site ("blocks", "is blocked by", or whatever a
+    // project renamed them to), so reading them is a mapping of its own. Not yet.
+    canRelate: false,
     configSchema: JiraConfigSchema,
   },
 };
@@ -620,6 +668,14 @@ export const DEFAULT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 export const DEFAULT_MAX_PER_SWEEP = 25;
 export const MAX_PER_SWEEP_CEILING = 200;
 
+/**
+ * Whether two refs name the same item, field by field. Not `JSON.stringify`: key order and an
+ * absent versus null `url` must not read as a change. Null or undefined equals only itself.
+ */
+export function sameSourceRef(a: TaskSourceRef | null | undefined, b: TaskSourceRef | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.sourceId === b.sourceId && a.externalId === b.externalId && (a.url ?? null) === (b.url ?? null);
+}
 /** Clamp a stored interval into the range the sweeper will actually honour. */
 export function clampSweepInterval(ms: number): number {
   return Math.min(MAX_SWEEP_INTERVAL_MS, Math.max(MIN_SWEEP_INTERVAL_MS, Math.round(ms)));
@@ -629,7 +685,7 @@ export function clampSweepInterval(ms: number): number {
 export const TaskSourceDefaultsSchema = z.object({
   kind: z
     .enum(TASK_KINDS)
-    .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+    .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
     .default("ship"),
   /**
    * `null` inherits the kind's agent from Settings -> Models, resolved as each swept row is
@@ -675,7 +731,7 @@ const TaskSourceInstanceBase = z.object({
     .transform(clampSweepInterval),
   /** Refresh imported backlog content; never changes scheduling or writes upstream. */
   keepUpdated: z.boolean().default(false),
-  defaults: TaskSourceDefaultsSchema.default({}),
+  defaults: TaskSourceDefaultsSchema.prefault({}),
   maxPerSweep: z.number().int().min(1).max(MAX_PER_SWEEP_CEILING).default(DEFAULT_MAX_PER_SWEEP),
   /**
    * Whether this source may write back onto the items it swept, and how far.
@@ -684,7 +740,7 @@ const TaskSourceInstanceBase = z.object({
    * three `false`s on read and needs no migration - the same way every other field here
    * arrived.
    */
-  writeback: TaskSourceWritebackSchema.default({}),
+  writeback: TaskSourceWritebackSchema.prefault({}),
   /** Kind-specific, validated below by that kind's own `configSchema`. */
   config: z.unknown().default({}),
 });

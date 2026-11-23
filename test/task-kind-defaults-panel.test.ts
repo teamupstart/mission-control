@@ -9,6 +9,7 @@ import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO } from "../src/shared/task.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import { TASK_KINDS } from "../src/shared/types.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integration.ts";
 import type { ResolveHarnessModelCatalog } from "../src/web/model-catalog.tsx";
 
 // The Task kinds grid, as MARKUP. What is at stake is not whether the values round-trip -
@@ -85,13 +86,24 @@ test("every kind this app launches gets a row, and pipeline does not", () => {
   const missing = TASK_KINDS.filter(
     (kind) => !(HARNESS_LAUNCHED_TASK_KINDS as readonly string[]).includes(kind),
   );
-  assert.deepEqual(missing, ["pipeline"], "the guard below is about pipeline");
+  // `resident` is not harness-launched either: its profile names the harness, model and effort.
+  assert.deepEqual(missing, ["pipeline", "resident"], "the guards below are about pipeline and resident");
+  assert.equal(
+    html.includes(`aria-label="Agent for ${TASK_KIND_INFO.resident.label} tasks"`),
+    false,
+    "a resident's profile owns its launch, so a per-kind default row could never reach it",
+  );
   assert.equal(
     html.includes(`aria-label="Agent for ${TASK_KIND_INFO.pipeline.label} tasks"`),
     false,
     "Conductor owns a pipeline task's downstream launch, so a row here could never reach it",
   );
-  assert.match(html, /Conductor owns their downstream agent, model and effort/);
+  // The hint names Conductor only while the ai-conductor integration is offered.
+  if (CONDUCTOR_INTEGRATION_ENABLED) {
+    assert.match(html, /Conductor owns their downstream agent, model and effort/);
+  } else {
+    assert.doesNotMatch(html, /Conductor/);
+  }
 });
 
 test("the panel states which half is read at launch and which is written at creation", () => {

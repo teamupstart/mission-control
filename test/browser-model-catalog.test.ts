@@ -10,6 +10,7 @@ import type { ModelChoiceSpec } from "../src/shared/model-choice.ts";
 import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
   emptyTaskKindDefaults,
+  emptyHarnessAdvisorDefaults,
   type HarnessModelCatalogChoice,
   type HarnessModelCatalogs,
   type HarnessesConfig,
@@ -352,6 +353,7 @@ test("settings and headless model fields consume the same live Pi snapshot", () 
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
     terminalBackend: { claude: null, codex: null, pi: null },
     kindDefaults: emptyTaskKindDefaults(),
+    advisor: emptyHarnessAdvisorDefaults(),
   };
   const spec: ModelChoiceSpec = {
     envVar: "MISSION_EXAMPLE_MODEL",
@@ -425,6 +427,7 @@ test("dispatch summaries resolve labels from the same browser catalog", () => {
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
     terminalBackend: { claude: null, codex: null, pi: null },
     kindDefaults: emptyTaskKindDefaults(),
+    advisor: emptyHarnessAdvisorDefaults(),
   };
 
   assert.equal(

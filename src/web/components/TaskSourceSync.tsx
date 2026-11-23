@@ -9,6 +9,8 @@ function Content({ value, review }: { value: SourceContent; review: SourceSyncRe
     {review.conflicts.includes("brief") && <><strong>{value.title}</strong><pre>{value.intent}</pre></>}
     {review.conflicts.includes("priority") && <p>Priority: {value.priority ?? "none"}</p>}
     {review.conflicts.includes("labels") && <p>Labels: {value.labels.join(", ") || "none"}</p>}
+    {review.conflicts.includes("dependencies") && <p>Blocked by: {value.blockedBy?.length
+      ? value.blockedBy.map((blocker) => blocker.externalId).join(", ") : "none"}</p>}
   </>;
 }
 

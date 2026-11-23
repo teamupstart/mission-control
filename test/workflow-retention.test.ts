@@ -109,6 +109,27 @@ function insertTextArtifact(submissionId: string, id: string, content: string): 
   }]);
 }
 
+function insertCommandArtifact(runId: string, submissionId: string, attemptId: string): void {
+  db.prepare(
+    `INSERT INTO workflow_node_attempts
+       (id, submission_id, node_id, attempt, state, input_fingerprint, created_at, updated_at)
+     VALUES (?, ?, 'check', 1, 'completed', 'fp', 1, 1)`,
+  ).run(attemptId, submissionId);
+  db.prepare(
+    `INSERT INTO workflow_command_artifact_reservations
+       (attempt_id, run_id, reserved_bytes, retained_bytes, state, created_at, updated_at)
+     VALUES (?, ?, 100, 7, 'finalized', 1, 1)`,
+  ).run(attemptId, runId);
+  db.prepare(
+    `INSERT INTO workflow_command_artifacts
+       (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes,
+        dropped_bytes, sha256, capture_state, availability, unavailable_reason,
+        storage_key, created_at, finalized_at, pruned_at)
+     VALUES (?, ?, ?, ?, 'stdout', 7, 7, 0, ?, 'complete', 'retained', NULL,
+             ?, 1, 1, NULL)`,
+  ).run(`artifact-${attemptId}`, runId, submissionId, attemptId, "a".repeat(64), `${attemptId}.log`);
+}
+
 function seedReusableCatalog(): void {
   store.insertPersona({
     id: "persona",
@@ -199,6 +220,7 @@ test("retention config defaults old blobs and rejects unsafe ranges", () => {
 test("stage one prunes only eligible terminal evidence and records a sentinel first", () => {
   insertRun("compact", "completed", 1);
   insertSubmission("submission-compact", "compact");
+  insertCommandArtifact("compact", "submission-compact", "attempt-compact");
   const focusedLog = "TAP version 13\nok 13 - focused regression\n";
   insertTextArtifact("submission-compact", "artifact-compact", focusedLog);
   db.prepare(
@@ -223,6 +245,18 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   insertRun("failed", "failed", 1);
   insertRun("blocked", "blocked", null);
   insertRun("active", "running", null);
+  insertSubmission("submission-active", "active");
+  insertCommandArtifact("active", "submission-active", "attempt-active");
+
+  assert.deepEqual(
+    store.listAttemptsForRun("compact")[0]?.commandArtifacts?.map((artifact) => ({
+      kind: artifact.kind,
+      availability: artifact.availability,
+      retainedBytes: artifact.retainedBytes,
+    })),
+    [{ kind: "stdout", availability: "retained", retainedBytes: 7 }],
+    "run detail must expose attempt-owned retained output descriptors",
+  );
 
   const result = store.runRetention({
     rawEvidenceBefore: 10,
@@ -246,6 +280,15 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   assert.equal(retention.textArtifactBytes, Buffer.byteLength(focusedLog));
   assert.equal(store.listSubmissionTextArtifacts("submission-compact")[0]?.content, "");
   assert.equal(store.listSubmissionTextArtifacts("submission-compact")[0]?.availability, "pruned");
+  assert.equal(
+    (db.prepare(`SELECT availability FROM workflow_command_artifacts WHERE attempt_id = ?`)
+      .get("attempt-compact") as { availability: string }).availability,
+    "pruned",
+  );
+  assert.equal(
+    store.listAttemptsForRun("compact")[0]?.commandArtifacts?.[0]?.availability,
+    "pruned",
+  );
   assert.equal(compacted.primaryGoal.rawPrompt, "Keep this goal");
   assert.equal(compacted.evidence.headSha, context.evidence.headSha);
   assert.equal(store.getDelivery("delivery")?.payload, "");
@@ -256,6 +299,11 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   assert.equal((store.getSubmission("submission-uncertain")!.context as typeof context).evidence.diff, "secret diff body");
   assert.equal(store.getDelivery("uncertain-delivery")?.payload, "must remain exact");
   assert.equal(store.getRun("failed")?.evidencePrunedAt ?? null, null);
+  assert.equal(
+    (db.prepare(`SELECT availability FROM workflow_command_artifacts WHERE attempt_id = ?`)
+      .get("attempt-active") as { availability: string }).availability,
+    "retained",
+  );
   const repeated = store.runRetention({
     rawEvidenceBefore: 10,
     completedRunsBefore: 0,
@@ -331,6 +379,8 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
 test("stage two isolates a malformed run and deletes later eligible families", () => {
   insertRun("delete-corrupt", "completed", 1);
   insertRun("delete-next", "completed", 2);
+  insertSubmission("submission-delete-next", "delete-next");
+  insertCommandArtifact("delete-next", "submission-delete-next", "attempt-delete-next");
   insertRun("delete-kept", "completed", 3);
   db.prepare(
     `UPDATE workflow_runs SET gate_state_json = '{' WHERE id = 'delete-corrupt'`,
@@ -349,6 +399,12 @@ test("stage two isolates a malformed run and deletes later eligible families", (
     db.prepare(`SELECT 1 FROM workflow_runs WHERE id = 'delete-corrupt'`).get(),
   );
   assert.equal(store.getRun("delete-next"), null);
+  assert.equal(db.prepare(
+    `SELECT 1 FROM workflow_command_artifacts WHERE run_id = 'delete-next'`,
+  ).get(), undefined);
+  assert.equal(db.prepare(
+    `SELECT 1 FROM workflow_command_artifact_reservations WHERE run_id = 'delete-next'`,
+  ).get(), undefined);
   assert.ok(store.getRun("delete-kept"));
 });
 

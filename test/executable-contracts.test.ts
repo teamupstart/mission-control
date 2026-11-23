@@ -116,11 +116,23 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
   ],
+  "src/server/residents/mcp-catalog.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the locator, listing MCP auth status read-only in a neutral directory" },
+  ],
+  "src/server/residents/mcp-launcher.ts": [
+    { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "the operator's MCP server command, from the run's daemon-private snapshot, started by the scoped launcher with its own secrets" },
+  ],
   "src/server/terminal/resume-guard.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
   ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
+  ],
+  "src/server/shaping/transports/command.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "an operator-configured command shaper, resolved through the locator and spawned without a shell in its own process group, killed at its timeout" },
+  ],
+  "src/server/shaping/transports/group-stdio.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "a stdio MCP shaper's server, resolved through the locator by the mcp transport and spawned without a shell in its own process group, stopped with its group when the run ends" },
   ],
   "src/server/standards.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git standards reader" },
@@ -139,6 +151,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
+  ],
+  "src/server/worktrees/claim.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "operator-authored dependency claim step, resolved through the locator and streamed into a bounded tail in its own process group" },
+  ],
+  "src/server/worktrees/seed.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "seeding's copy-on-write clone through the pinned /bin/cp, whose -c (macOS) must be the platform's own; never a PATH search" },
   ],
 };
 
@@ -370,4 +388,12 @@ test("every direct child-process call matches one structured executable boundary
       return boundarySignature(file, boundary);
     }));
   assert.deepEqual(observed.sort(), declared.sort());
+});
+
+test("Atlassian CLI has its own append-only identity and OAuth binary override", () => {
+  assert.equal(EXECUTABLE_IDS[26], "acli");
+  assert.deepEqual(
+    [EXECUTABLE_SPECS.acli.id, EXECUTABLE_SPECS.acli.label, EXECUTABLE_SPECS.acli.command, EXECUTABLE_SPECS.acli.overrideEnv],
+    ["acli", "Atlassian CLI", "acli", "ACLI_BIN"],
+  );
 });

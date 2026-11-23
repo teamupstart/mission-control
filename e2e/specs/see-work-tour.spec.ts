@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -223,6 +224,14 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   await expect(dialog).toContainText("Scout");
   await expect(dialog).toContainText("Plan");
   await expect(dialog).toContainText("Ship");
+  // The Pipeline entry is authored but follows the ai-conductor switch, like the kind itself.
+  if (CONDUCTOR_INTEGRATION_ENABLED) await expect(dialog).toContainText("Pipeline");
+  else await expect(dialog).not.toContainText("Pipeline");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("conductor-hidden");
+    mkdirSync(evidence, { recursive: true });
+    await dashboard.screenshot({ path: join(evidence, "07-tour-choose-the-kind.png"), animations: "disabled" });
+  }
   await expectTourButtonsCentered(dialog);
   const coachmarkBox = await dialog.boundingBox();
   const viewport = dashboard.viewportSize();
@@ -239,6 +248,10 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   // start a pass, because the pass state behind it was never wired for this form.
   await expect(dispatchDialog.getByRole("switch", { name: "Guided" })).toHaveCount(0);
   await expect(dispatchDialog.getByRole("radio", { name: "Ensemble" })).toHaveCount(0);
+  // The tour's dispatcher sends only the repository, so a Grill me first choice would do nothing.
+  // The control is a toggle chip, a button, and so is what is looked for.
+  await expect(dispatchDialog.getByRole("button", { name: "Grill me first", exact: true }))
+    .toHaveCount(0);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("dispatch-modes");
     mkdirSync(evidence, { recursive: true });

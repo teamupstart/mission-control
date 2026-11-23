@@ -47,17 +47,19 @@ every egress guard the read path applies applies here unchanged.
 Product reports are public GitHub issues, not private support messages. The agent tool is defined
 for use only after the user explicitly requests a report, shows the daemon-derived public content in an
 `input` review, and calls the mutation route only after a human selects **Submit public issue**.
-Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
+Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
+nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control through a capability claimed once as the authorization module loads and retained only in
-that module's closure, outside the React hot-refresh boundary. The owned control requires a
-trusted native click before it uses the capability with the current preview's request id and
-draft identity. Synthetic clicks, implicit form submits,
+publicly** press or Cmd+Enter / Ctrl+Enter. The context-isolated Electron preload captures the
+trusted input event through a capability claimed once as the authorization module loads and
+retained only in that module's closure, outside the React hot-refresh boundary. The dialog requires a
+trusted native input event before it uses the capability with the current preview's request id and
+draft identity. Synthetic clicks and key events, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
-dashboard web contents, with the preload requiring a trusted click still in dispatch.
+dashboard web contents, with the preload requiring a trusted click or non-repeating,
+non-composing Cmd+Enter / Ctrl+Enter still in dispatch.
 A held press remains valid even if Chromium's transient user activation expires before release;
 synthetic clicks and calls after dispatch ends remain refused. It shows no
 second dialog. The daemon then asks
@@ -66,7 +68,7 @@ port. An authorization is short-lived and single-use, so another loopback proces
 call the confirmation route but cannot produce the private reply that mints a grant.
 
 The daemon keeps preview and mutation separate internally. Previewing never returns a publish
-token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+token. After the shell authorizes the Report action, the daemon mints a grant pinned to one report
 opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
 labels, source, environment and body at submission prevents a configuration change between
 preview and publication from sending content the form did not show. The request id and submission
@@ -77,9 +79,9 @@ has no private utility-process channel, so preflight reports that the report mus
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
 The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_feedback` previews and publishes automatically through MCP. It
-does not request a second dashboard approval. The compatibility tool `report_product_issue`
-still waits for a human-submitted `input` review. Neither preview mints a dashboard grant.
+user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+review before it publishes. There is no MCP path that publishes without that review. The preview
+does not mint a dashboard grant.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside
@@ -136,16 +138,30 @@ there is no signing and no trust badge.
 What that does not cover is the content itself. Mission Control does not encrypt the scout
 library, an archive can hold whatever the investigation touched, and a synchronised folder
 takes its contents wherever it goes. Deletion is explicit and local.
+## MCP task reads
 
+The read-only backlog MCP tools `list_tasks` and `get_task` use the same daemon-token
+boundary as task creation and editing. They read saved task configuration and durable pull
+request references, including completed tasks. They do not expose session transcripts or
+private session state and do not require the session-control grant below.
+
+Task cancellation (`cancel_task`, `POST /mcp/tasks/cancel`) uses the same daemon-token boundary
+as task creation, dispatch and deletion, without a **Control other sessions** grant. See
+[task cancellation](tasks-and-scheduling.md) for cleanup and assigned-session behavior.
 
 ## Delegated session control
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the
 current daemon run. Its identity includes the process, native conversation id, working
-directory, work episode and task. Neither dispatch defaults nor a session-control tool can
-create a grant. Resetting or replacing that identity revokes it.
+directory, work episode and task. Exactly three things create a grant, and each is a trusted
+click in the desktop dashboard: the session's own control menu, **Accept** on the session's own
+ask for control (see [Session control requests](#session-control-requests)), and the **Launch**
+click for a resident profile whose pinned revision turns **Control other sessions** on (see
+[Resident launch grants](#resident-launch-grants)). Dispatch defaults, a launch from any other
+surface and session-control tools cannot create one; a tool can only ask. Resetting or
+replacing that identity revokes it.
 
-The MCP read/action endpoints require both the machine token and the existing signed
+The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
 machine token alone cannot select a controller. The daemon checks the current grant and
 live credential binding on every request, then translates a closed set of typed operations
@@ -157,6 +173,9 @@ routes retain their human/Foreman grammar. Delegated single-option selections re
 request id returned by the target read, so an identical option on a replacement prompt does
 not accept a stale answer. Message routes likewise reject a caller-supplied `origin: "session"`;
 only the verified internal request receives the delegated message label.
+The delegated `complete` action resolves the task from the target's live session, never from a
+caller-supplied id, and calls the dashboard's task completion and session stop routes in that
+order. It carries the completion confirmations only when the controller sets them explicitly.
 Changing the grant requires a trusted click on the desktop dashboard's session-control menu. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process
@@ -167,6 +186,76 @@ the shared machine token and signed agent credentials cannot create a grant.
 The standalone browser dashboard cannot change this setting. A desktop app that adopted
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
+
+### Session control requests
+
+Behind the `session-control-requests` preview flag, `request_session_control` lets a session ask
+for its own grant. Asking and accepting are separate authorities:
+
+- **The ask.** `POST /mcp/session-control/requests` requires the machine token and the signed
+  Registry session credential, so the asker is always the verified caller and never a body id.
+  It records one pending ask per session, bound to the same identity the grant binds, and draws
+  it on that session. It grants nothing, and a long-poll route answers only the session that
+  asked.
+- **Why it is not a review.** A review settles through `POST /api/reviews/:id/resolve`, which any
+  loopback caller can reach with a body-asserted `by: "human"`, and which Foreman and a session
+  holding the grant (`control_session` `resolve_review`) also use. An ask settled there would let
+  one agent grant itself or another agent authority, so an ask has no review, no review id and
+  no action in `control_session`.
+- **The accept.** The card's **Accept** arms the private trusted click exactly as the menu does,
+  for that session and `enabled: true`, and sends the existing grant with the ask's id as
+  `controlRequestId`. The grant route refuses an ask the session no longer holds before it
+  consumes the click, and checks it again after, so a stale card cannot grant a conversation
+  that never asked. Every refusal above applies unchanged. The ask settles `granted` only by
+  observing the grant, whichever surface applied it.
+- **The decline.** Declining only removes an ask, so like a revoke it needs no click, but it
+  still refuses tool, agent-credential and agent-actor callers.
+
+An ask expires when its conversation changes, its session ends, the daemon restarts or the
+flag turns off. The limit stated below applies to it unchanged.
+
+### Resident launch grants
+
+A resident profile's **Control other sessions** setting is off by default and grants nothing on
+its own. It lets the operator's **Launch** or **Restart on new profile** click in the desktop
+app give a resident run the grant above. Restart authorizes the replacement launch, never
+copies the old run's grant.
+
+- **The click.** Inside the click, before the launch request is sent, the dashboard arms a
+  single-use authorization bound to that launch's request id, the profile id and the profile
+  revision. It uses the same private preload capability and trusted-click check as the session
+  menu, through its own channel registered with `serveDashboardClick`. It expires after 15
+  seconds and is cleared when the daemon is replaced.
+- **The consumption.** The resident launch and profile-restart routes ask the shell for it through
+  `ResidentManager.launch`, over the private
+  utility-process channel. It asks once, for the request that reserved the run, when the run's
+  pinned revision turns control on, and for the revision the run pinned. A request carrying the
+  machine token, a signed agent credential, an agent actor header or a non-loopback origin never
+  consumes a click. A replay is answered from the run row and asks for nothing.
+  The ordinary launch route rejects the reserved `resident-restart:` request-id namespace before
+  reserving a run or consuming a click, so it cannot claim a pending restart authorization.
+- **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
+  then applies the existing Registry grant to the run's session once that session has a full
+  identity bound to the run's task, and records the conversation, working directory and work
+  episode it applied to before it writes the grant's audit event. If the grant cannot be
+  applied, or its identity cannot be recorded, the live grant is taken back and the run's record
+  is cleared, so the launch reports that it started without control. A launch that answers
+  before the session has a full identity reports the grant as not granted yet; if the daemon
+  restarts before it is applied, the consumed click is cleared and the run stays ungranted.
+- **After a restart.** This is the one grant that survives a daemon restart, and only for the
+  same conversation. After SDK restore it is applied again only when all four recorded fields are
+  set and the restored session's conversation, working directory, work episode and task all
+  match them. The process id is the only part of the identity a restart changes, and the only
+  part not compared. A clear, a new conversation, a changed working directory, a replacement work
+  episode or a launch on a new profile revision needs a new click. A grant that no longer matches
+  is forgotten, and runs from before these records existed stay ungranted.
+- **Revocation.** Turning control off from the session's menu revokes the grant and clears the
+  record, so a restart cannot restore it.
+
+A launch from the standalone browser, from a desktop app that adopted a standalone daemon, or
+from any caller other than that click starts without control. Dispatch says so before a launch
+from the standalone browser, the Residents dock and the Console band say so after any launch, and
+the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
 are available without the grant; cross-session access requires **Control other sessions** on
@@ -182,3 +271,458 @@ which already has access to other local dashboard actions and operator-owned fil
 private click boundary specifically prevents local HTTP from self-granting this capability;
 it does not protect against OS-level UI automation or a compromised desktop process. Revocation
 refuses new requests; it does not undo an action already accepted by a runtime.
+
+## Resident instruction changes
+
+A resident reads untrusted text as part of its work, so it cannot change its own standing role
+on its own say-so. `propose_resident_instruction_changes` only asks a `request_input` question; it
+writes nothing.
+The daemon stores the proposal beside that review and applies exactly the changes an answer
+selects, and only when the answer's actor is `human`. Foreman and a session acting through
+**Control other sessions** are refused before the answer settles, so a resident with session
+control cannot approve another resident's proposal, or its own through another session. The
+caller is the signed session that asked, never a profile or Persona id in the request.
+
+Like every review, the answer arrives on the dashboard's loopback route. That is the same
+single-user local trust boundary described above: it keeps Mission Control's own agents and
+delegated sessions from approving a change, not arbitrary shell code running as the operator.
+
+## Agent reports
+
+An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
+session; it never names another session. Taking a report out of **to read** is the operator's:
+`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply` and
+`POST /api/reports/:id/follow-up` refuse the machine token, a signed agent credential, and a
+request attributed to an agent or to Foreman. That is the same single-user local trust boundary
+that review answers rely on. It keeps Mission Control's own agents, Foreman and delegated sessions
+from marking a report read, from sending a message in the operator's name, and from filing and
+dispatching a follow-up task; it does not verify that a header-less loopback
+request came from the dashboard, so shell code running as the operator can still call these
+routes. An attached document is accepted only from inside the posting session's checkout, using
+the same containment rules as the Files viewer.
+
+## Resident MCP secrets
+
+A custom MCP server's secret values - environment variables and headers marked **Secret**, and
+every URL query value - are write-only. They are accepted on a save and never returned: every
+dashboard route answers with the field's name and whether it is set. They are kept apart from the
+definition, which lives in `app_config` (`residents.mcpServers`) and travels with settings
+snapshots, in the `resident_mcp_secrets` table, which no dashboard route, SSE frame, settings
+snapshot or log reads.
+
+The one exception is the scoped launcher's redemption route, `POST /api/residents/mcp/redeem`
+(below). It answers only a holder of a valid single-use ticket, and only with that ticket's one
+server's definition and values, read from the run's snapshot rather than from this table.
+
+A global server's configuration does not say which of its parts are credentials, so all of it is
+treated as private: the catalog the dashboard sees carries only its name, transport, command
+basename or URL origin, and the names of its environment variables and headers.
+
+At launch a run copies its servers' definitions and values once, into `resident_run_mcp_servers`
+and `resident_run_mcp_secrets`. Both are daemon-private like the secrets table, read again only by
+that run's starts, and removed when the run ends.
+
+**No secret on a command line, in a configuration file or in the agent's environment.** Each
+harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
+written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
+environment is inherited by every shell and tool it runs. So a usable global server (except the Claude
+Code remote server described after this list), and a custom server with any secret, is rendered
+as an entry for Mission's scoped launcher, whose arguments name only
+the run, the server's name and a credential file:
+
+- For each process start the daemon writes one credential file per launcher entry in the run's
+  private directory: owner-only, created exclusively, holding a single-use ticket bound to that
+  run, that server and that start, which expires 30 seconds later. The daemon removes any file left
+  unredeemed once its ticket expires, and every such file at startup.
+- Native Codex launch flags name each start's credential path. The daemon issues those tickets
+  after the app-server handshake and configuration checks, immediately before opening the thread.
+- The launcher reads its file, removes it, and redeems the ticket over the loopback API
+  (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
+  presentation, whatever the outcome. The answer is that one server's definition and values.
+- A stdio server is started with its values in its own environment only. For an HTTP server the
+  launcher is a stdio bridge that adds the headers and query values to every request itself,
+  an SSE server's message endpoint included, only to the configured origin: a redirect within it is
+  followed, one to another origin is refused. The bridge verifies the server's certificate against
+  Node's own roots, any `NODE_EXTRA_CA_CERTS` it inherited, and the operating system's certificate
+  store, so a server reached through a TLS-inspecting proxy whose root the machine already trusts
+  connects even though the operator's shell configuration never reaches the daemon. Verification
+  is never turned off.
+- Secret headers and query values travel only over `https`, or over plain `http` to this machine's
+  loopback. A custom server that would send them elsewhere in the clear is refused at save, a
+  global one is unavailable to residents, and the launcher refuses either before any request.
+- A missing, spent or expired ticket, or a run that has ended, starts nothing.
+
+One kind of global server is handed to the harness itself instead: a Claude Code remote (`http`
+or `sse`) server with no header and no URL query, user name, password or fragment, whose URL is
+`https` or plain `http` to this machine's loopback and whose path has no segment shaped like a key
+(`credentialShapedPath`). A login is a credential, so one on plain `http` to another host stays on
+the launcher, which presents none; a fragment, which the launcher drops, can carry a token, so a
+URL with one is never copied as written; and a key-shaped path means the URL itself is the
+credential, so that server keeps its URL private behind the launcher too. It holds no value to
+protect, and it may be one Claude Code signs in to with OAuth, a login only Claude Code's own
+transport can present. Claude Code keys that stored login by the server's name and a hash of its
+type, URL and headers as configured, so the entry carries exactly those, with an empty header
+table. The trade-off is that this server's URL, and only its URL, appears in the agent's
+launch-scoped MCP configuration (`--mcp-config`) instead of staying private to the launcher. The
+login itself never passes through Mission Control: Claude Code reads it from its own credential
+store. On a pinned set, `strictMcpConfig` pins it exactly as for every other server.
+
+Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
+`env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
+the agent itself inherits, so a global server that uses one is not available to residents: its
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or a Codex
+server whose OAuth login Codex holds in pinned mode. A Claude Code server behind an OAuth login is handed to
+Claude Code itself, as above; when Claude Code has no usable login for it, the start is refused,
+naming it. A custom server's argument in a credential
+form is refused when it is saved; detection is a guard rather than a proof, which is why the
+editor says arguments are stored and backed up as written.
+
+**All native sources puts native servers and connectors outside that boundary.** A Claude Code
+profile on [all native sources](residents.md#all-native-sources) launches without
+`strictMcpConfig` and without `disableClaudeAiConnectors`, which the operator confirms in the
+editor and Dispatch's summary states as `MCP: all native sources (not pinned)`. Mission Control's
+own server and the profile's selected custom servers keep the boundary: the custom servers are
+still snapshotted and still reach their own processes only through the scoped launcher, as above.
+Everything else - Claude Code's user, local, project and plugin servers and the account's
+claude.ai connectors - Claude Code loads itself, at every start, from its own
+configuration and with its own stored logins, so each carries its full account-level access into
+an autonomous, looping run. Mission Control holds no copy of those definitions, does not decide
+which of their values reach the agent, and does not refuse a start when one of them fails or
+needs a login.
+
+For Codex, the same opt-in launches app-server on the normal Codex home, so Codex loads native
+MCP definitions and presents any OAuth logins it holds. Mission Control's server and custom
+servers are added through session flags. Before starting a thread, Mission Control refuses a
+custom name collision in the active layers or an external field that would alter its own
+registration. The native source permissions and connections are owned by Codex.
+
+**A value belongs to its connection.** An edit that changes a custom server's command, arguments,
+URL, or a plain environment variable or header refuses to keep a secret left blank, naming each
+one to enter again, so a value never reaches a destination it was not entered for.
+
+**Backups.** Settings snapshots carry custom server definitions without their values. Restoring
+one keeps a value only when it was set before the snapshot was taken and the restore leaves its
+server's connection unchanged; every other value is cleared in the same transaction, so a later
+value is never passed off as the snapshot's and no value reaches a connection it was not entered
+for. A full-database recovery point is scrubbed of both secret tables before it is published, and every
+global server's definition in a run snapshot is redacted in place, with the freed pages
+overwritten. A restored database shows those secrets as not set, and a restored run whose snapshot
+lost a secret or a definition refuses to start that server rather than start it without it.
+
+This boundary is what the agent is handed - its environment, arguments, configuration and
+transcript - and it was measured on real Claude Code and Codex installations
+(`scripts/probe-resident-mcp.ts`). The date, harness versions, result and retained output, and
+what that measurement does not cover, are in
+[resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
+Control does not claim an operating-system sandbox against a process running as the same user as
+the daemon, which could read an owner-only file before the launcher does.
+
+## Task shaping
+
+[Task shaping](task-shaping.md) is a preview behind the `task-shaping` flag, and with it off
+nothing below runs. Only the operator adds a shaper, through the loopback API, and a registered
+shaper is stored switched off.
+
+**A `command` shaper runs as you.** It is the same trust as an operator-authored Workflow
+command, and Mission Control adds no operating-system sandbox. What it does control: argv is
+spawned without a shell, a gatherer runs in the repository's checkout and a selector in an empty
+directory of its own, stdout is capped at 256 KiB, and the timeout kills the whole process
+group.
+
+The child's environment is built in two steps (`shaperCommandEnv`):
+
+1. **The inherited environment.** It starts from the daemon's own environment, with the
+   daemon's executable search path as `PATH`. Removed from it are:
+   - Mission Control's API token and token-file variables, its scout credential and session
+     locator variables, and its state directory under all three names (`MISSION_HOME`,
+     `FLEET_HOME`, `HARNESS_HOME`);
+   - terminal pane identities, and `make`'s recursion variables;
+   - every variable whose name looks like a credential, meaning a name segment such as
+     `token`, `secret`, `password`, `credential` or `key`;
+   - any variable whose value carries the daemon's token.
+
+   Every other variable is passed through unchanged, such as `HOME`, `LANG`, `TMPDIR` and proxy
+   settings.
+2. **The named variables.** Each variable the shaper names in `env` is then added from the
+   daemon's environment, credential-shaped or not, which is how a shaper receives an API token.
+   Three kinds are never added, even by name: Mission Control's own token, credential and
+   state-directory variables, an empty value, and a value that carries the daemon's token.
+
+Before any reason is recorded from what the shaper wrote, every value in the environment the
+child was spawned with, inherited or named, is replaced with `[redacted]`. That covers a
+failure's stderr and the reasons drawn from a reply on stdout: an `error` it states, its
+degraded `notes`, and a validation failure, whose path can hold a key the shaper chose. A reported `version` is redacted too, as an identifier: a named value or a long one goes,
+while a short inherited value such as `0` stays, so `v1.4.0` survives. Each
+is redacted whole and only then cut to its recorded length, so a cut cannot split a value
+into a fragment the redactor no longer recognises. A value is replaced anywhere it appears when it is
+four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
+every "C" in the message. A value of a variable the operator named in `env` is a credential it
+chose to pass, so it is replaced anywhere whatever its length, inside a word included. Overlapping or adjacent matches, including two values that overlap,
+are replaced as one span, so no part of either survives. Each value is found with a
+Knuth-Morris-Pratt scan and its matches are marked in a difference array, so the work is linear
+in the text and the value however many copies overlap, and a reply at the 256 KiB cap cannot
+stall the daemon.
+
+A value the operator named in `env` is also removed from the reply's own content before the
+engine reads it: every occurrence in an entry's path, title or body, the summary, a fact's value,
+the notes, the version and an error becomes `[NAME redacted]`. Keys the result schema defines are
+never changed. An entry whose id, or a fact whose name, contains the value is dropped with a
+note rather than renamed, so redaction never merges two of them. Every value is found on the
+original text before anything is replaced, so two named values that overlap are removed over
+their combined span and no fragment of either survives. A field the result schema bounds, such
+as an entry's title or the version, is cut back to its bound when the marker makes it longer, so
+a reply that was valid stays valid. The shaper's record is marked
+`redacted`, its reason names what was dropped, and its outcome does not change. An inherited
+value that carries a credential although nobody named it, a URL with userinfo such as an
+authenticated `HTTPS_PROXY`, is treated as named: the whole URL, its `user:password` part and the
+password are removed from diagnostics and content alike, under the variable's name. Inherited values are not rewritten in content, which
+legitimately holds paths and ordinary words.
+
+stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
+whole and a non-ASCII value still matches exactly when it is redacted. It is kept with a margin
+as long as the longest spelling the scrub can decode of any value it received: an inherited
+value's own length, and 216 characters for each character of a named value: six for a JSON
+`\u` escape, multiplied at each of the three levels of nested JSON text the scrub decodes. The
+margin is capped at 1,048,576 characters; a stderr cut while its margin is held at
+the cap is not quoted at all, as one is not when a named value has inner whitespace. Once the
+front is cut, the margin is dropped in the original text's positions,
+with every spelling of each named value already found there: a value cut at the front, as
+written or escaped, falls inside it, and a spelling that runs across it is removed whole, so
+neither leaves a fragment in a reason. Every kind of match, an inherited value, a named value as
+written and any spelling of one, is found on the original text in one pass, and overlapping
+matches merge before anything is replaced: removing an inherited value never breaks up a
+spelling of a named value that runs across it.
+
+When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
+started outside its process group cannot keep them open after the group is killed. It also
+kills what is left of the shaper's own process group, even after a successful reply, so a
+helper the shaper started in its group cannot outlive the call. That happens as soon as the
+shaper exits, so a helper holding its pipes cannot turn a complete reply into a timeout; a
+bounded drain then answers with what was read. The drain ends before the call's own deadline,
+so a reply that arrived on time is returned on time. A
+selector's scratch directory is removed in the background after the call has answered, never
+before it. A large tree left behind costs disk work, not the dry run's latency or the event
+loop's. A removal that fails is logged through the call's redactor, because a path in the tree
+is named by the shaper. Removal never changes a permission and never follows a symlink. A directory the
+shaper locked is left behind and logged, because a path in the tree could be swapped for a
+link between a read and a `chmod`. A cleanup a transport registers after its call was
+abandoned runs as soon as it is registered, so a late resource is still released.
+
+**Pass command credentials through `env`.** Credential detection in a shaper definition is
+best-effort. It recognises the forms below and refuses them, but a literal secret in a form it
+cannot recognise, such as a bare positional argument with no known token shape, is stored as
+written and copied into settings snapshots. A command's credential belongs in a variable named
+in `env`, which is passed from the daemon's environment and never stored.
+
+A header that looks like it carries a credential must hold its secret
+as a reference. That is `authorization`, `proxy-authorization` or `cookie`, or any name that
+contains `token`, `secret`, `key`, `password`, `auth` or `credential`, compared without case,
+such as `x-api-key` or `X-Monkey`, as well as a name with a segment such as `session`. The rule
+goes by name, so a credential under an innocent-looking name is not caught. When the value is
+not empty it is `{env:NAME}` references only, so a caller reference beside one is refused too. Only `Authorization` and `Proxy-Authorization` may put a scheme
+before them, and only `Bearer`, `Basic`, `Token` or `Digest`, as in `Bearer {env:ACME_TOKEN}`.
+An API-key header such as `x-api-key` takes references alone. Any other leading word, a lone
+word with or without whitespace after it, or a key prefix such as `sk-live {env:X}`, is
+literal secret text and is refused. So is a value that names only a caller reference. A transport
+URL, an `http` shaper's or an `mcp` server's, may not carry a user name, a password or any query
+string. An argument may not hand over a credential
+as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
+credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
+`--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
+field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
+any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), judged over every
+occurrence of a repeated key rather than only the last one `JSON.parse` keeps, a cookie (`-b`, `--cookie`), any of
+these as a curl short option grouped after switches, read the way curl reads it (`-sH "Authorization: …"`,
+`-svuname:pass`, `-bname=value`), a curl long option's next argument even when it starts with a
+dash (`--user -name:pass`), curl's key passphrase (`--pass`, `--proxy-pass`) and certificate
+password (`--cert file:password`, `-E file:password`), or
+a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
+query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
+`env` instead.
+Any argument, a positional one included, that holds a well-known credential's shape is refused as
+well: a GitHub, AWS, Slack, Google, GitLab, npm, Anthropic or OpenAI token, a JWT, or a private
+key header. The shapes live in `src/shared/secret-shapes.ts`, which the Inspector's outbound
+scrubber reads too. A bare value that matches no known shape cannot be told apart from
+configuration, such as a repository name, so it stays the operator's to name in `env`.
+Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
+definition that breaks these rules is
+refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
+settings snapshot, hold the reference and never the value. The stored config's own schema
+also empties any literal credential it finds in an entry, including one this build cannot
+run: a header value, a transport URL's userinfo and query string, or a credential argument. Every read, settings restore and backup capture goes through that schema, so an
+entry handed over another way, such as a foreign snapshot, still cannot carry a literal
+credential in those fields into the daemon or into a snapshot. That guarantee covers those
+fields only: an unsupported entry keeps every other field exactly as written, unread, so a
+foreign snapshot can still carry secret text in a field this build does not know, and it is
+kept in the stored config and in later snapshots. Like the shape check above, this is best
+effort, not a scan of everything an entry holds. A stored entry may nest at most 32 levels deep, checked
+without recursion before anything recursive reads it, so a crafted entry is a validation
+error that takes the unreadable-config path rather than a stack overflow. An entry it emptied anything in is marked
+`credentialsRemoved` and is unsupported. When that mark would take an entry past the 16 KiB
+entry limit, only its id, label, stage and transport type are kept, so the config still parses
+and saves. It never runs, dry-runs or switches on with its
+changed arguments or headers, until the operator registers a valid replacement for its id,
+which is stored off. An argument is judged by its name, split at the first `=`, so a value
+with line breaks in it is recognised as well.
+
+**What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
+harness, runtime and after-work workflow, the attached repositories' names, roles, branches and
+base commits, the declared caller identity, and the facts and summary a gatherer produced. Local
+worktree paths go only to local shapers (`command`, `builtin`, and an `mcp` server started as a
+local process). A remote shaper never receives a local path. When the launch has a trace
+context or the shaping run a work unit id, every shaper also receives those.
+
+**What comes back is untrusted.** A shaper's text is validated against one result shape, capped
+per entry, per shaper and in total, and placed in its own labelled section, which states that it
+cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
+or returns something else is recorded as an outcome, never an error reply.
+
+Every dispatch calls the enabled shapers after its worktrees are provisioned and before the
+worker starts, and the section is appended to the worker's first prompt after the kind
+contract. Nothing a shaper does can stop the launch: a shaper that fails, times out or answers
+something else is recorded as `degraded` and the worker starts without its text, and the
+section is cut to what the delivery path can carry, so it never makes a launch that works today
+fail. What each session received is recorded on the task and shown only for that session.
+
+**A routed skill is a name, never text.** A router supplies only a skill name and a reason id,
+both held to strict character sets, and Mission Control writes every word around them. A name
+from Mission Control's catalog is checked before it is announced, and a catalog skill the
+operator switched off never is. Any other name is announced as given and marked not verified,
+because a skill installed some other way is not inventoried. A router can therefore point the
+worker at any skill installed for its harness; the record and the viewer show each routed skill
+and who routed it, up to 32 a launch. A distinct skill routed past that limit is left out of the
+record and is never announced, so nothing reaches turn one that the record does not show. The after-work prompt Mission Control sends is its own text, delivered only
+when the session is idle, once per launch, and recorded as daemon-written, never as the
+operator's words. A name or reason id that holds a resolved credential value is dropped, never
+rewritten.
+
+**The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
+the state home can run at the next dispatch without a click, so anything that can write that
+folder can add one, worker agents included. The ownership checks, what Mission Control shows
+and records, and the full trust statement are in
+[the shaper folder](task-shaping.md#the-shaper-folder).
+
+**Remote shapers.** An `mcp` shaper reached over streamable HTTP and an `http` shaper send the
+request off the machine, so they follow the egress rule resident MCP servers follow, through
+the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
+
+- **HTTPS only, except plain HTTP to loopback.** It is decided from the configured URL before
+  anything is sent, whether or not the shaper has a credential header. A plain `http` URL to
+  any other host gets no request at all and answers `unavailable`. A credential header may
+  therefore travel over plain HTTP only to `localhost`, `127.0.0.0/8` or `::1`, where the
+  request never leaves the machine.
+- **Redirects stay on the origin.** They are followed by hand, at most five, with the headers
+  reattached on each hop. A redirect to another origin is refused before any request reaches
+  it, so no other host ever receives the headers. A redirect that would resend a shaping
+  request as a GET without its body (a 301, 302 or 303) is refused rather than followed. There
+  is no cookie jar: a cookie a server sets is never kept or sent back.
+- **Bounded replies.** An `http` body is read to at most 256 KiB, and every MCP message, over
+  stdio or streamable HTTP, is capped at 256 KiB while it is received. Reading stops at the byte
+  that passes the cap, the request is aborted or the server closed, and the call is `failed` at
+  once. Nothing over the cap is parsed. A successful event stream is counted per event, every
+  byte on the wire including both bytes of each CRLF, up to and including the blank line that
+  ends it; any other response, an error labelled as an event stream included, is counted as a
+  whole body, because the client reads it whole. A request whose own response stream ends
+  before its reply fails that call at once and leaves the shared connection, and its other
+  calls, alone, unless the stream carried a non-empty event id: the server may close such a
+  stream before replying, as MCP allows, and the client resumes it from that id, at most twice
+  and within the call's own budget. A resumed stream is watched for that call too: one that ends
+  with neither the reply nor a new event id to resume from, a resume the server answers 405, and
+  the client giving up its attempts each fail the call at once rather than at its deadline. A
+  stream resumed for the handshake's `initialize` is watched the same way, and failing it fails
+  the handshake at once. A
+  call's own requests, its `tools/call` and any resumed stream for it, are aborted when the call
+  settles, so one that timed out releases its stream at once and the others on the connection
+  go on. A
+  shared connection's handshake is bounded by the longest
+  step, not by whichever call opened it, and each call waits on it only for its own budget.
+- **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
+  `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is
+  this machine's loopback over http. A cross-site page can send a `text/plain` POST with no
+  preflight and the real loopback `Host`, which is all the daemon-wide guard checks, so without
+  this it could start a dry run, and with it a remote shaper call carrying your credentials,
+  with a prompt of its choosing.
+- **Secrets are references, resolved at call time.** A header's `{env:NAME}` is read from the
+  daemon's environment when the call is made, held only in that call's memory, and never
+  logged, stored or returned. It never resolves Mission Control's own token, credentials or
+  state directory, or a value that carries the daemon's token. A reference that resolves to
+  nothing sends no request. Every value resolved into a header, `{env:NAME}` and `{caller.*}`
+  alike, is replaced with `[NAME redacted]` (or `[caller.user redacted]` and so on) in whatever
+  comes back, data and failure reasons alike, before the engine sees it, and the shaper is
+  marked `redacted`. So no resolved header value reaches a dry-run reply, a recorded reason or
+  the daemon's log. Every value is matched anywhere it appears, whatever its length, a caller
+  value as much as a credential. That over-redacts on purpose: for a shaper whose headers send
+  `{caller.agent}` as `pi`, "pipeline" in its reply becomes `[caller.agent redacted]peline`, an
+  entry or fact whose id or name holds `pi` is dropped with a note, and the shaper is marked
+  `redacted` though no credential was involved. A shaper that does not send a caller reference
+  is not affected by it. When a variable's name itself contains a resolved value, the marker and
+  notes are neutral, so naming it cannot repeat the credential. Each value is also matched in the
+  form the server received, with leading and trailing spaces and tabs trimmed as a header is
+  sent, and in its JSON-escaped form inside a reply's text. Text quoted into a failure reason is
+  scrubbed as written, again with every JSON escape decoded, and again after whitespace is
+  collapsed, so a `\u0061` spelling or a spacing variant of a value cannot survive, and the
+  engine scrubs a shaper's notes and errors before and after collapsing them the same way. A
+  value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
+  for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
+  whitespace and would turn that spelling back into the value. Overlapping spellings, such as the
+  two `ab  ab` in `ab  ab  ab` for `ab ab`, are each found and removed together. They are found
+  by collapsing every run of whitespace to one space, with each position mapped back to the text
+  as written, and searching that for the value's words in linear time, so a value of many
+  repeated words cannot make a reply under the cap stall the daemon. A value spelled with any JSON
+  escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
+  is replaced. That holds up to three levels of JSON text nested inside JSON strings, such as a
+  serialized diagnostic inside a serialized log line, where a value is escaped once per level,
+  in a successful reply as much as in a failure reason. The depth is bounded because each level
+  costs a pass over the text and a crafted chain of escapes can peel only a few characters per
+  level, so a value escaped four or more levels deep is not found.
+- **One spelling per header.** A shaper that configures one header name twice in different
+  letter case, such as `Authorization` and `authorization`, is not called: which value is sent
+  would depend on their order, and two shapers sharing a connection could send each other's
+  credential.
+- **Trace context and work unit id.** The launch's `traceparent`, `tracestate` and the run's
+  `x-work-unit-id` are the only Mission Control values a remote shaper receives besides the
+  request and its own configured headers. A configured header of one of those names is
+  removed first, so a shaper's config cannot impersonate the launch's own.
+
+An `mcp` server started on this machine runs as you, like a `command` shaper: its command is
+resolved through the executable locator, or inside its own folder for a discovered shaper,
+spawned without a shell in an empty working directory of its own, with the same scrubbed
+environment plus only the variables its `env` names, and a value named there is removed from
+its replies and diagnostics. The SDK would add its own defaults (`HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER`) beneath that environment, so each one the scrubbed environment left out
+is passed as unset and the server receives exactly what the diagnostics are redacted against.
+Its stderr is kept and scrubbed exactly as a `command` shaper's is, with the same escape-wide
+margin, so a value cut at the front leaves no fragment in a reason. It is one
+process per shaping run, closed when the run ends, or at once after a message over the cap. A
+run that ends while its command is still being located starts no server, and a call already
+cancelled when it is made opens no connection at all, stdio or streamable HTTP, so no server is
+started and no resolved header is sent. The server runs in a process
+group of its own, as a `command` shaper does, with the SDK's message framing but not its
+process handling: closing the connection ends its stdin, then signals the whole group with
+SIGTERM and then SIGKILL, and a server that exits on its own has what is left of its group
+killed too, so a helper the server started does not outlive the run. The server's exit is seen
+when it happens, not when its pipes close: a helper that inherited them could hold them open,
+so after the exit its pipes get the same 500 ms drain a `command` shaper's do, and then the
+connection fails with what the server wrote and the group is stopped. The group is killed in
+that one place and only once, so a later close never signals a group id the system may since
+have given to an unrelated process. A server that stops reading its stdin while it keeps
+running loses the connection at the first write that fails, and the call answers at once. A helper that leaves the
+group on purpose is out of reach, as it is for a `command` shaper.
+
+**The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
+in the daemon and reads the paths its options list, nothing else. Containment and size are
+checked on the file it opened, not on a path looked up beforehand: the open does not follow a
+final link, and it is non-blocking, so it does not wait for a writer on a named pipe, or on a
+device whose driver honours non-blocking opens. The opened file must be a regular file of at
+most 4 MiB with the same device and inode as the link-free real path inside the worktree, and
+the read stops at its cap. These checks run once the open has returned, so they do not bound
+how long an open on a hung network filesystem takes.
+This proves no file outside the worktree is read while the worktree's directories are not being
+rearranged during the read. A process running as the operator that swaps a directory on the
+path in a tight race can still get an outside file read, and that process could read the file
+itself. Every `repository-files` filesystem call in the daemon goes through one of two gates,
+one call at a time each, one for lookups and reads and one for closes, so a hung network mount
+can hold at most two of Node's shared file-I/O threads and never keeps another run's file open.
+The gatherer also holds at most one open file at a time, daemon-wide, released only once its
+close finishes, so a stalled close cannot make descriptors pile up.
+[The guide](task-shaping.md#the-built-in-gatherer) states every rule.

@@ -8,6 +8,19 @@ import type { Registry } from "./registry.ts";
 import { nextQueueSeq } from "./db.ts";
 
 /**
+ * Work-item states that move an item forward on the session's behalf. While the item's note
+ * key stands on a session blocker these are refused here, at the one boundary both queue state
+ * routes share, as a backstop to the worker's own hold: a Foreman worker
+ * from before blockers existed can outlive a daemon restart and would otherwise verify or send
+ * an item for a session that is waiting on someone else. Cancelling, escalating and
+ * re-queueing stay open, so a human, the exit path and the orphan sweep can still tidy it.
+ */
+const BLOCKER_HELD_ITEM_STATES: ReadonlySet<WorkItem["state"]> = new Set<WorkItem["state"]>([
+  "sending", "awaiting_pickup", "in_progress", "verifying", "verified",
+]);
+const BLOCKER_HELD_ERROR = "the session is blocked on someone else; its queue is held until the blocker is cleared";
+
+/**
  * Owns the session work-queue lifecycle: the batch of work you load up for one
  * agent to do next, one item at a time, in the order you authored. The registry
  * is the single store; this is the policy layer routes call into - the queue
@@ -225,6 +238,9 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    if (patch.state && BLOCKER_HELD_ITEM_STATES.has(patch.state) && this.registry.hasBlockerForKey(item.noteKey)) {
+      return { ok: false, error: BLOCKER_HELD_ERROR };
+    }
     const state = patch.state ?? item.state;
     const draftChanged = patch.proposedPayload !== undefined && patch.proposedPayload !== item.proposedPayload;
     const next: WorkItem = {
@@ -321,6 +337,8 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    // Not held: this stamp records a delivery that already left (only `setState`, which is
+    // held, can put an item into `sending`), and refusing it would strand the item there.
     const acknowledged = item.deliveryRuntime === "sdk";
     // The worker calls this only after delivery resolves. SDK delivery is an acceptance
     // acknowledgement, even when the whole turn completed before this HTTP write arrived.
@@ -394,7 +412,31 @@ export class QueueManager {
   }
 
   setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {
-    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now);
+    // Every writer of an answer comes through here: Foreman's automatic wrap-up once its
+    // instruction landed, the Ship it? card, and a skipped wrap-up's marker. What an answer
+    // durably owes commits with it, so a daemon that stops right after cannot lose it.
+    const recorders = answer !== null ? [...this.wrapupRecorders] : [];
+    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now,
+      recorders.length > 0 ? () => { for (const record of recorders) record(key); } : undefined);
+    if (answer !== null) for (const listener of this.wrapupListeners) listener(key);
+  }
+
+  private readonly wrapupListeners = new Set<(key: string) => void>();
+  private readonly wrapupRecorders = new Set<(key: string) => void>();
+
+  /**
+   * A database write to make in the same transaction as each recorded wrap-up answer. It must not
+   * publish or start a transaction of its own; it may throw, which rolls the answer back with it.
+   */
+  onWrapupAnswerRecorded(recorder: (key: string) => void): () => void {
+    this.wrapupRecorders.add(recorder);
+    return () => this.wrapupRecorders.delete(recorder);
+  }
+
+  /** Told each time a wrap-up answer is recorded for a conversation key. A listener must not throw. */
+  onWrapupAnswered(listener: (key: string) => void): () => void {
+    this.wrapupListeners.add(listener);
+    return () => this.wrapupListeners.delete(listener);
   }
 
   /**

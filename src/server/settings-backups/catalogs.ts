@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import {
+  CodeRabbitCommandSchema,
   PersonaGuidanceSchema,
   PersonaProvenanceSchema,
   PublishedWorkflowGraphSchema,
@@ -20,8 +21,16 @@ import {
   SettingsBackupCountsSchema,
 } from "@shared/settings-backups.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
-import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
+import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { boundedRecord } from "@shared/zod-shapes.ts";
+import { RESIDENT_LIMITS, ResidentProfileRevisionSchema } from "@shared/residents.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
+import {
+  listBackupResidentProfiles,
+  normalizeResidentName,
+  storedResidentSettings,
+} from "../residents/store.ts";
 
 const id = z.string().min(1).max(200);
 const name = z.string().min(1).max(200);
@@ -41,6 +50,9 @@ export const SettingsBackupPersonaSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable(),
   model: model.nullable(),
+  // Defaulted, not required: a backup written before Persona effort existed has no key, and
+  // it restores as what that Persona ran at - the provider default.
+  effort: z.enum(THINKING_LEVELS).nullable().default(null),
   revision: z.number().int().positive(),
   archivedAt,
   createdAt: timestamp,
@@ -67,12 +79,18 @@ export const SettingsBackupSessionActionSchema = z.object({
 export const SettingsBackupWorkflowCommandSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   defaultCommand: WorkflowCommandArgvSchema.nullable(),
-  overrides: z.array(WorkflowCommandOverrideSchema),
+  overrides: z.array(WorkflowCommandOverrideSchema).max(WORKFLOW_LIMITS.commandOverrides),
   maxRuns: z.number().int().positive(),
+  timeoutMs: z.number().int().nullable().default(null),
+  onUnavailable: z.enum(["skip", "block"]).default("skip"),
+  onBudgetExhausted: z.enum(["skip", "block"]).default("skip"),
   revision: z.number().int().positive(),
   createdAt: timestamp,
   updatedAt: timestamp,
-}).strict();
+}).strict().refine((value) => value.slot !== "coderabbit" || value.defaultCommand === null
+  || CodeRabbitCommandSchema.safeParse(value.defaultCommand).success, {
+  path: ["defaultCommand"], message: "Invalid default CodeRabbit command",
+});
 
 export const SettingsBackupWorkflowDefinitionSchema = z.object({
   id,
@@ -105,7 +123,31 @@ export const SettingsBackupWorkflowVersionSchema = z.object({
   publishedAt: timestamp,
 }).strict();
 
+/**
+ * One resident profile with its CURRENT revision. Earlier revisions stay on this machine:
+ * they are what live runs pinned, and a restore writes a new revision rather than replaying
+ * history.
+ */
+export const SettingsBackupResidentProfileSchema = z.object({
+  id,
+  name,
+  normalizedName,
+  revision: z.number().int().positive(),
+  archivedAt,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  // The revision as stored, validated against this build's schema but NOT reduced to it: a
+  // section or field a newer build wrote travels through the snapshot unchanged.
+  settings: boundedRecord(z.string(), z.unknown(), SETTINGS_BACKUP_LIMITS.entriesPerCatalog).superRefine((value, ctx) => {
+    const parsed = ResidentProfileRevisionSchema.safeParse(value);
+    if (!parsed.success) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error.issues[0]?.message ?? "invalid resident settings" });
+    }
+  }),
+}).strict();
+
 export type SettingsBackupPersona = z.infer<typeof SettingsBackupPersonaSchema>;
+export type SettingsBackupResidentProfile = z.infer<typeof SettingsBackupResidentProfileSchema>;
 export type SettingsBackupSessionAction = z.infer<typeof SettingsBackupSessionActionSchema>;
 export type SettingsBackupWorkflowCommand = z.infer<typeof SettingsBackupWorkflowCommandSchema>;
 export type SettingsBackupWorkflowDefinition = z.infer<typeof SettingsBackupWorkflowDefinitionSchema>;
@@ -116,6 +158,7 @@ const SettingsBackupSessionActionsSchema = catalog(SettingsBackupSessionActionSc
 const SettingsBackupWorkflowCommandsSchema = catalog(SettingsBackupWorkflowCommandSchema);
 const SettingsBackupWorkflowDefinitionsSchema = catalog(SettingsBackupWorkflowDefinitionSchema);
 const SettingsBackupWorkflowVersionsSchema = catalog(SettingsBackupWorkflowVersionSchema);
+const SettingsBackupResidentProfilesSchema = catalog(SettingsBackupResidentProfileSchema);
 
 export interface SettingsCatalogBackupEntry {
   domain: SettingsBackupDomainId;
@@ -128,6 +171,12 @@ interface CatalogDescriptor {
   version: 1;
   schema: z.ZodTypeAny;
   capture(store: WorkflowStore): unknown;
+  /**
+   * Added after the first published snapshot format. A snapshot written before it carries no
+   * such domain, and that absence means "this snapshot does not describe it": validation
+   * accepts it and restore leaves the catalog untouched. Every later catalog sets this.
+   */
+  optional?: true;
 }
 
 export const SETTINGS_BACKUP_CATALOGS = [
@@ -173,7 +222,33 @@ export const SETTINGS_BACKUP_CATALOGS = [
         || left.version - right.version
         || left.id.localeCompare(right.id)),
   },
+  {
+    domain: "resident-profiles",
+    version: 1,
+    schema: SettingsBackupResidentProfilesSchema,
+    optional: true,
+    // Resident profiles live in their own tables on the same connection, so the capture reads
+    // them directly rather than through the Library store it is handed. Bounded: every live
+    // profile, then the most recently archived (see the store function and docs/residents.md).
+    capture: () => listBackupResidentProfiles(RESIDENT_LIMITS.archivedInSnapshot).map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      normalizedName: normalizeResidentName(profile.name),
+      revision: profile.revision,
+      archivedAt: profile.archivedAt,
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+      settings: storedResidentSettings(profile.id, profile.revision) ?? profile.settings,
+    })),
+  },
 ] as const satisfies readonly CatalogDescriptor[];
+
+/** Whether a snapshot may omit this catalog domain. */
+export function settingsCatalogIsOptional(domain: SettingsBackupDomainId): boolean {
+  const descriptor: CatalogDescriptor | undefined =
+    SETTINGS_BACKUP_CATALOGS.find((candidate) => candidate.domain === domain);
+  return descriptor?.optional === true;
+}
 
 export function parseSettingsCatalogPayload(
   domain: SettingsBackupDomainId,
@@ -199,11 +274,14 @@ export function settingsCatalogCounts(entries: readonly SettingsCatalogBackupEnt
     const payload = entries.find((entry) => entry.domain === domain)?.payload;
     return Array.isArray(payload) ? payload.length : 0;
   };
+  const present = (domain: SettingsBackupDomainId): boolean =>
+    entries.some((entry) => entry.domain === domain);
   return {
     personas: count("personas"),
     sessionActions: count("session-actions"),
     workflowCommands: count("workflow-commands"),
     workflowDefinitions: count("workflow-definitions"),
     workflowVersions: count("workflow-versions"),
+    ...(present("resident-profiles") ? { residentProfiles: count("resident-profiles") } : {}),
   };
 }

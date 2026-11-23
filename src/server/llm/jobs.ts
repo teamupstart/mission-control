@@ -4,7 +4,7 @@ import type { LlmConfig } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { getLlmConfig, llmJobModel, llmJobRunner } from "./config.ts";
 import { llmRunner } from "./index.ts";
-import { runStructured } from "./structured.ts";
+import { runStructured, type ModelReplyMiss } from "./structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "./structured.ts";
 
 // How the daemon's own background work asks a model something.
@@ -123,18 +123,18 @@ function jobExecution(job: LlmJobId, cfg: LlmConfig): JobExecution {
  * different runner or a different model than the first attempt - which would make a
  * two-attempt failure impossible to read in the log.
  */
-export async function runJobStructured<S extends ZodTypeAny>(
+export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   job: LlmJobId,
   prompt: string,
-  extract: (raw: string) => TypeOf<S> | null,
+  extract: (raw: string) => T | ModelReplyMiss | null,
   label: string,
   opts: StructuredJobRunOptions = {},
-): Promise<StructuredResult<TypeOf<S>> & { execution: JobExecution }> {
+): Promise<StructuredResult<T> & { execution: JobExecution }> {
   const cfg = getLlmConfig();
   const execution = jobExecution(job, cfg);
   opts.onExecution?.(execution);
   const runner = llmRunner(execution.runner);
-  const result = await runStructured<S>(
+  const result = await runStructured<S, T>(
     (p) =>
       runner.run(p, { model: execution.model, timeoutMs: opts.timeoutMs, schema: opts.schema }),
     prompt,

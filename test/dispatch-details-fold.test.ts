@@ -106,8 +106,8 @@ test("an after-work Workflow can be saved while Foreman is off but not dispatche
       }],
     })),
   );
-  const save = html.match(/<button class="btn btn-ghost"[^>]*>Save<\/button>/)?.[0];
-  const dispatch = html.match(/<button class="btn btn-primary"[^>]*>Dispatch now<\/button>/)?.[0];
+  const save = html.match(/<button\b[^>]*\bclass="btn btn-ghost"[^>]*>Save<\/button>/)?.[0];
+  const dispatch = html.match(/<button\b[^>]*\bclass="btn btn-primary"[^>]*>Dispatch now<\/button>/)?.[0];
   assert.ok(save);
   assert.doesNotMatch(save, /disabled/);
   assert.ok(dispatch);

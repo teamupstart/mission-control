@@ -30,12 +30,12 @@ import { tmpdir } from "node:os";
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -79,6 +79,22 @@ const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
   : null;
 const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
 const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
+/**
+ * Expires the login the way it went wrong for a long-running resident: the synthetic
+ * "Not logged in" frame arrives and NO `result` follows. The process then stays alive and
+ * ignores its input closing, exactly as the wedged CLI did, so only a signal from the SDK's
+ * own close can end it.
+ */
+const WEDGE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH_WEDGED";
+let authenticationWedged = false;
+/**
+ * Ends its turn the way Claude Code does once its own 529 retries are spent: an assistant
+ * API-error frame tagged `server_error`, then an error `result`. Only the prompt itself fails;
+ * Mission Control's continuation that follows is answered normally.
+ */
+const CAPACITY_TURN = "E2E_CLAUDE_AT_CAPACITY";
+const CAPACITY_ERROR =
+  "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
 let authenticationExpired = false;
 
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
@@ -133,6 +149,8 @@ const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2
  * real ordering without slowing every dispatch in the suite.
  */
 const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
+/** Opt-in: `/compact` turns stay open until interrupted. See the branch that reads it. */
+const STALL_COMPACT = process.env.MC_E2E_CLAUDE_STALL_COMPACT === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
@@ -228,6 +246,13 @@ function failThenHoldCount(prompt) {
  */
 const ASK_TURN = "ask me which linter to use";
 /**
+ * The prompt this CLI answers by asking PERMISSION for a tool call and blocking on it - the
+ * menu every session can still be parked on, whatever its ask channel. A dispatched task has
+ * `AskUserQuestion` taken away (`ask-channel.ts`), so `ASK_TURN` reaches the native form only
+ * on a launch with no Mission MCP; a permission ask reaches the driver on every launch.
+ */
+const PERMISSION_TURN = "ask permission to run the suite";
+/**
  * The prompt that makes this CLI leave deterministic tool activity in its transcript:
  * one assistant turn carrying prose AND a tool call, then a tool-only turn, then the
  * ordinary echoed reply. That pair of shapes is the whole surface the Observed
@@ -247,6 +272,113 @@ const TOOL_TURN = "E2E_OBSERVED_TOOLS";
  * is a fold that never had to decide anything.
  */
 const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
+/**
+ * The prompt that leaves three calls to Claude's server-side advisor in the transcript, in
+ * the record shape a real Claude Code 2.1.317 turn writes (captured, sanitized, in
+ * `test/fixtures/claude-advisor/transcript.jsonl`): each content block is its own assistant
+ * record, every record of the turn carries a top-level `advisorModel`, and each call is a
+ * `server_tool_use` named `advisor` followed by an `advisor_tool_result`.
+ *
+ * The three results are the three shapes a reader has to tell apart: advice with words
+ * (`advisor_result`), the encrypted result the capture actually returned
+ * (`advisor_redacted_result`), and an error (`advisor_tool_result_error`). Phase 2 of the
+ * advisor plan relies on this output; extend it, do not change it.
+ */
+const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+/**
+ * The prompt that launches three BACKGROUND sub-agents and ends its turn with them still
+ * running, in the frame shapes Claude Code's SDK stream uses: an `Agent` tool_use in the
+ * transcript, `background_tasks_changed` (the live set), `task_started` and `task_progress`
+ * per agent, then the turn's `result`. About a second later the third agent finishes
+ * (`task_updated`, `task_notification`, and a level without it).
+ *
+ * Alongside them, everything that must NOT count: a foreground agent that starts and ends
+ * inside the turn, an ambient housekeeping agent, and a background shell. After the result a
+ * sub-agent's own assistant frame arrives, which must not re-arm the idle parent. Matched by
+ * `includes` so a dispatch can carry it in its task text. Later phases rely on this output;
+ * extend it, do not change it.
+ */
+const BACKGROUND_AGENTS_TURN = "E2E_BACKGROUND_AGENTS";
+const BACKGROUND_AGENTS = [
+  { id: "bg-agent-1", type: "Explore", description: "Map every offset-pagination call site", tools: 18, tokens: 41_000, last: "Grep" },
+  { id: "bg-agent-2", type: "general-purpose", description: "Convert billing report queries", tools: 6, tokens: 12_000, last: "Edit" },
+  { id: "bg-agent-3", type: "Explore", description: "Find contract tests for /ledger", tools: 9, tokens: 22_000, last: "Read" },
+];
+const BACKGROUND_AGENTS_FINISH_MS = 1_000;
+/**
+ * The same three agents and the same frames as `BACKGROUND_AGENTS_TURN`, with the launch
+ * written to the transcript the way the real CLI writes it: one record per content block, so
+ * the prose is a record of its own and each `Agent` call is a tool-only record. Those fold
+ * into one tool row behind a leading `Read`, which is exactly where a launch's own turn id
+ * stops having an element of its own. A long prose turn follows, so the launch sits above
+ * the fold of any conversation pane and "Jump to launch" has somewhere to scroll. Distinct
+ * by its prefix, so neither sentinel contains the other.
+ */
+const SPLIT_BACKGROUND_AGENTS_TURN = "E2E_SPLIT_BACKGROUND_AGENTS";
+/**
+ * Background agents launched further back than the conversation first loads. The launch is
+ * followed by about 600 KB of later turns - past the daemon's 512 KB, 80-turn opening read -
+ * so "Jump to launch" has to page older turns in before it can land. Three agents, one per
+ * way a search can go: the first names its launching call (`tool_use_id`); the second's start
+ * frame does not, so it is found by its own id, which the launch's tool result records against
+ * its `Agent` call; the third was never launched by any call in this transcript, so its search
+ * reaches the start and says so.
+ * Distinct by its prefix, so no other sentinel contains it.
+ */
+const DISTANT_BACKGROUND_AGENTS_TURN = "E2E_DISTANT_BACKGROUND_AGENTS";
+const DISTANT_AGENTS = [
+  { id: "distant-agent-1", type: "Explore", description: "Trace the distant ledger writes", launched: true, named: true },
+  { id: "distant-agent-2", type: "general-purpose", description: "Rewrite the distant export job", launched: true, named: false },
+  { id: "distant-agent-3", type: "Explore", description: "Audit an orphaned migration", launched: false, named: false },
+];
+const DISTANT_FILLER_TURNS = 100;
+/**
+ * The same agents and frames as `DISTANT_BACKGROUND_AGENTS_TURN`, with twice the later turns
+ * (about 1.2 MB), so the launch sits two older pages back rather than one. Distinct by its
+ * prefix, so neither sentinel contains the other.
+ */
+const DEEP_BACKGROUND_AGENTS_TURN = "E2E_DEEP_BACKGROUND_AGENTS";
+const DEEP_FILLER_TURNS = 200;
+const DISTANT_FILLER = `Later work, long enough to push the launch out of the opening window. ${"ledger ".repeat(850)}`;
+/**
+ * Three agents with the same description and type, none named by a call id on its start frame.
+ * Two were launched by their own `Agent` calls, written as separate tool rows, and each call's
+ * tool result names the agent it launched, as the real CLI writes it. The third was launched by
+ * no call in this transcript. About a second after the turn the newer launched agent finishes,
+ * so the operator's next turn folds it out of the tray while its call stays in the transcript:
+ * the third, still running, must not be handed that call. Distinct by its prefix.
+ */
+const FOLDED_TWIN_BACKGROUND_AGENTS_TURN = "E2E_FOLDED_TWIN_BACKGROUND_AGENTS";
+const FOLDED_TWINS = [
+  { id: "folded-twin-older", type: "Explore", description: "Sweep the ledger for offsets", launched: true },
+  { id: "folded-twin-newer", type: "Explore", description: "Sweep the ledger for offsets", launched: true },
+  { id: "folded-twin-orphan", type: "Explore", description: "Sweep the ledger for offsets", launched: false },
+];
+/**
+ * One background agent whose start frame names no launching call, launched while someone is
+ * watching: the `Agent` call is written at once and its async-launch result - the record naming
+ * the agent - about 4 s later, well past the daemon's 900 ms stream poll, so an open
+ * conversation receives the two in separate appends, and a click in between finds no launch
+ * recorded yet. Distinct by its prefix.
+ */
+const LIVE_BACKGROUND_AGENTS_TURN = "E2E_LIVE_BACKGROUND_AGENTS";
+const LIVE_AGENT = { id: "live-agent-1", type: "Explore", description: "Watch the ledger stream" };
+const LIVE_RESULT_DELAY_MS = 4_000;
+const SPLIT_LAUNCH_FILLER = Array.from(
+  { length: 60 },
+  (_, i) => `Step ${i + 1}: while the background agents work, keep reading the ledger module.`,
+).join("\n");
+/**
+ * Five background agents, all left running: more than the board draws before folding the
+ * rest behind "+N more". The same frame shapes as `BACKGROUND_AGENTS_TURN`, with no extras
+ * and nothing finishing. Distinct by its prefix, so neither sentinel contains the other.
+ */
+const MANY_BACKGROUND_AGENTS_TURN = "E2E_MANY_BACKGROUND_AGENTS";
+const MANY_BACKGROUND_AGENTS = Array.from({ length: 5 }, (_, i) => ({
+  id: `many-agent-${i + 1}`, type: "Explore", description: `Survey area ${i + 1}`, tools: i + 1, tokens: 1_000, last: "Read",
+}));
+const ADVISOR_MODEL = "claude-opus-5-5";
+const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (process.env.MC_E2E_RESUME_TOOLS === "1" && RESUME_ID && !process.argv.includes("--output-format")) {
@@ -336,12 +468,19 @@ if (recordDir) {
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
         missionHome: process.env.MISSION_HOME ?? null,
+        residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
         fleetHome: process.env.FLEET_HOME ?? null,
         harnessHome: process.env.HARNESS_HOME ?? null,
         resolvedMissionState,
         stateProbe,
         hasMissionApiToken: Boolean(process.env.MISSION_API_TOKEN),
         missionApiTokenFile: process.env.MISSION_API_TOKEN_FILE ?? null,
+        // The advisor's Off switch, so a spec can prove a pin reached the environment and an
+        // Inherit launch left it alone.
+        disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
+        // The work unit the launch carried, so a spec can prove it reached the agent - and
+        // that nothing reached it from the daemon or the pane when the launch carried none.
+        workUnitId: process.env.WORK_UNIT_ID ?? null,
       },
       null,
       2,
@@ -531,7 +670,49 @@ function foremanUsageFailure(prompt) {
   return prompt.includes('You are the BACKLOG PLANNER') && prompt.includes('E2E_FOREMAN_USAGE_LIMIT');
 }
 
+/**
+ * A marked backlog planner reply that names tasks by ID in its prose, as a model ignoring
+ * the prompt's title rule would. The first listed task is the foundation; every other one
+ * waits for it. The real `sanitizePlan` then decides what the board shows.
+ */
+function backlogPlannerCitingIds(prompt) {
+  if (!prompt.includes("You are the BACKLOG PLANNER") || !prompt.includes("E2E_PLANNER_CITES_TASK_IDS")) {
+    return null;
+  }
+  const ids = [...prompt.matchAll(/^### id: (.+)$/gm)].map((match) => match[1].trim());
+  const [foundation, ...rest] = ids;
+  // Any other task id the prompt carries - one a task's intent mentions without declaring it
+  // a dependency - is cited too, the way a model repeating what it read would.
+  const mentioned = [...new Set(prompt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? [])]
+    .filter((id) => !ids.includes(id));
+  return JSON.stringify({
+    tasks: [
+      { id: foundation, dependsOn: [], reason: `Unblocks ${rest.join(", ")}.` },
+      ...rest.map((id) => ({ id, dependsOn: [foundation], reason: `Waits for ${foundation} to land.` })),
+    ],
+    note: `${foundation} goes first; ${rest.join(", ")} build on it.`
+      + (mentioned.length > 0 ? ` See ${mentioned.join(", ")}.` : ""),
+  });
+}
+
 function headlessAnswer(prompt) {
+  const planner = backlogPlannerCitingIds(prompt);
+  if (planner !== null) return planner;
+  // Foreman's completion verifier, for a session whose objective carries the marker. Without
+  // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
+  // to start a bound Workflow puts this marker in the dispatched request.
+  if (
+    prompt.startsWith("You are Foreman, verifying one unit of work")
+    && prompt.includes("E2E_VERIFY_COMPLETE")
+  ) {
+    return JSON.stringify({
+      complete: true,
+      summary: "The requested change is present in the diff",
+      gaps: [],
+      resolved: [],
+      confidence: 0.95,
+    });
+  }
   if (
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
     && prompt.includes("Compact workflow intent without rewriting it.")
@@ -546,10 +727,18 @@ function headlessAnswer(prompt) {
       acceptanceCriteria: [criterion],
       canonicalCriteria: [{
         text: criterion,
+        ...(criterion === "Pull request opened documenting the verified implementation" ? { fulfilledByAction: "pull_request" } : {}),
         material: true,
         suggestedProofClass: "visual",
       }],
     });
+  }
+  if (prompt.includes("Classify publication timing for existing frozen workflow criteria.")) {
+    const input = untrustedJsonInput(prompt, "workflow-criterion-fulfillment");
+    return JSON.stringify({ classifications: input.criteria.map((criterion) => ({
+      criterionId: criterion.criterionId,
+      fulfilledByAction: criterion.text === "Legacy pull request opened documenting the verified implementation" ? "pull_request" : null,
+    })) });
   }
   if (prompt.includes("Reconcile author coverage claims to stable workflow criteria without rewriting either.")) {
     const input = untrustedJsonInput(prompt, "workflow-criterion-reconciliation");
@@ -678,6 +867,13 @@ function headlessAnswer(prompt) {
       return JSON.stringify({ relationship: "steer", objective: "Ship the steering context feature",
         goal: "Ship the steering context feature", focus: objective,
         reason: "The human deferred a step while its harness is broken" });
+    }
+    // A pick between offered options, misread as an amendment whose objective does not keep
+    // the current one as its prefix: the shape that used to latch a session's goal for good.
+    if (objective.includes("E2E_AMEND_SHRINK")) {
+      return JSON.stringify({ relationship: "amend", objective: "Implement option B only",
+        goal: "Implement option B only", focus: "Implement option B",
+        reason: "The human picked option B" });
     }
     return JSON.stringify({
       relationship: "initial",
@@ -814,7 +1010,7 @@ const resumedRecordCount = resumedTranscript
   ? readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean).length
   : 0;
 let turn = resumedRecordCount;
-function appendTurn(role, content) {
+function appendTurn(role, content, record = {}) {
   turn += 1;
   const runtime = role === "assistant"
     ? {
@@ -842,6 +1038,7 @@ function appendTurn(role, content) {
       // Top level, beside the record's own type - not inside `message`, where the model and
       // usage live. That is where the real CLI puts it, and where the daemon reads it.
       ...(role === "assistant" ? { effort } : {}),
+      ...record,
       message: { role, content, ...runtime },
     })}\n`,
   );
@@ -892,6 +1089,70 @@ function replyTo(prompt) {
   const publish = /^Publish (\S+) as a Claude artifact\./.exec(prompt);
   if (publish) return publishReply(publish[1]);
   return `Mock reply to: ${prompt}`;
+}
+
+/**
+ * Opt-in test fixture for #1441. Model the reported CLI double suppression using an actual
+ * plugin manifest/MCP configuration and a connector with the same URL. This does not test
+ * upstream Claude Code's implementation; the surviving plugin is probed over real loopback MCP.
+ */
+function duplicatePluginState() {
+  const fixturePath = recordDir && join(recordDir, "duplicate-plugin-fixture.json");
+  if (!fixturePath || !existsSync(fixturePath)) return null;
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  const manifest = JSON.parse(readFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
+  const config = JSON.parse(readFileSync(join(fixture.pluginRoot, ".mcp.json"), "utf8"));
+  const plugins = Object.entries(config.mcpServers).map(([name, server]) => ({
+    name: `plugin:${manifest.name}:${name}`, url: server.url,
+  }));
+  const raw = argvValue("--settings") ?? "{}";
+  const flags = raw.trimStart().startsWith("{") ? JSON.parse(raw) : {};
+  const strict = process.argv.includes("--strict-mcp-config");
+  const connectors = strict || flags.disableClaudeAiConnectors === true
+    || flags.env?.ENABLE_CLAUDEAI_MCP_SERVERS === "false" ? [] : [fixture.connector];
+  const duplicates = new Set(connectors.filter((connector) => plugins.some((plugin) => plugin.url === connector.url)).map((connector) => connector.url));
+  return {
+    duplicateConfigured: plugins.some((plugin) => plugin.url === fixture.connector.url),
+    plugins: strict ? [] : plugins.filter((plugin) => !duplicates.has(plugin.url)),
+    connectors: connectors.filter((connector) => !duplicates.has(connector.url)),
+  };
+}
+
+async function probeDuplicatePlugin() {
+  const state = duplicatePluginState();
+  const tools = [];
+  const results = [];
+  for (const plugin of state.plugins) {
+    const endpoint = new URL(plugin.url);
+    if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") throw new Error("plugin fixture must use loopback HTTP");
+    let sequence = 0;
+    const rpc = async (method, params, notification = false) => {
+      const response = await fetch(endpoint, {
+        method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26" },
+        body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id: ++sequence }), method, params }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error(`plugin MCP ${method}: HTTP ${response.status}`);
+      if (notification) return;
+      const message = await response.json();
+      if (message.error) throw new Error(JSON.stringify(message.error));
+      return message.result;
+    };
+    await rpc("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "duplicate-plugin-fixture", version: "1" } });
+    await rpc("notifications/initialized", {}, true);
+    const listed = await rpc("tools/list", {});
+    for (const tool of listed.tools) {
+      tools.push(`${plugin.name}/${tool.name}`);
+      const called = await rpc("tools/call", { name: tool.name, arguments: {} });
+      if (called.isError) throw new Error("plugin tool returned an error");
+      results.push(...called.content.filter((part) => part.type === "text").map((part) => part.text));
+    }
+  }
+  const proof = { duplicateConfigured: state.duplicateConfigured, connectors: state.connectors.map((server) => server.name), plugins: state.plugins.map((server) => server.name), tools, results };
+  const dir = join(recordDir, "plugin-probes");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${SESSION_ID}.json`), JSON.stringify(proof));
+  return `Duplicate MCP fixture (simulated Claude deduplication):\nConnectors: ${proof.connectors.join(", ") || "none"}\nPlugin tools: ${tools.join(", ") || "none"}\n${results.join("\n")}`;
 }
 
 /**
@@ -1112,6 +1373,111 @@ const ASK_INPUT = {
 /** Control requests this CLI has sent UP and is waiting on, by request id. */
 const asked = new Map();
 
+/**
+ * The tools this launch removed, as the real CLI reads them: `--disallowedTools a,b`. A
+ * removed `AskUserQuestion` is never raised, so a spec cannot reach the native form on a
+ * launch that took it away.
+ */
+const DISALLOWED_TOOLS = (argvValue("--disallowedTools") ?? "")
+  .split(/[,\s]+/)
+  .filter(Boolean);
+/** What the SDK appended to the system prompt, delivered on `initialize`. */
+let appendedSystemPrompt = "";
+const REQUEST_INPUT_TOOL = "mcp__mission-control__request_input";
+
+/**
+ * `ASK_TURN` on a launch without `AskUserQuestion`: what a model does with what it was told.
+ * Pointed at `request_input`, it asks there and blocks until the human answers. Told
+ * nothing, it asks in prose and ends its turn (arm B in `ask-channel.ts`).
+ */
+function askWithoutBuiltin(prompt) {
+  if (!appendedSystemPrompt.includes(REQUEST_INPUT_TOOL)) {
+    answer([prompt]);
+    return;
+  }
+  const [first] = ASK_INPUT.questions;
+  const args = {
+    question: first.question,
+    options: first.options.map((o) => ({ label: o.label, detail: o.description })),
+  };
+  appendTurn("assistant", [
+    { type: "tool_use", id: `ask-${++turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
+/**
+ * `MOCKUPS_THEN_ASK_TURN`: what the mockups skill asks of an agent, followed by the decision
+ * those mock-ups exist to inform, in the order the real session that motivated it produced:
+ *
+ *  1. a generator script run through `Bash` writes the pages into the git-ignored
+ *     `docs/mockups/` - no `Write` tool call, so nothing names the files before they exist;
+ *  2. ONE assistant record presents them - three `Mockup:` lines, then Markdown links to the
+ *     rest - and in that same record calls `request_input`, which blocks the turn.
+ *
+ * The turn stays open (the card stays `working`) until the human answers, which is exactly
+ * the window in which they need the mock-ups previewed and linked.
+ */
+const MOCKUPS_THEN_ASK_TURN = "present the remind-later mock-ups, then ask which to build";
+const MOCKUP_DIR = "docs/mockups/request-input-remind-later";
+const MOCKUP_PAGES = ["snooze-chip", "deferred-strip", "reminder-toast", "inline-menu", "card-footer"];
+
+/**
+ * The generator a real session wrote into its scratchpad: a standalone Node script that
+ * writes the self-ignoring `docs/mockups/` and every page, relative to the directory it runs
+ * in. It never touches the fake's own state, so the files exist only because the shell ran it.
+ */
+function mockupGeneratorSource() {
+  return `import { mkdirSync, writeFileSync } from "node:fs";
+const names = ${JSON.stringify(MOCKUP_PAGES)};
+mkdirSync(${JSON.stringify(MOCKUP_DIR)}, { recursive: true });
+writeFileSync("docs/mockups/.gitignore", "*\\n");
+names.forEach((name, index) => {
+  writeFileSync(\`${MOCKUP_DIR}/\${name}.html\`, [
+    "<!doctype html>",
+    '<html lang="en"><head><meta charset="utf-8"><title>Remind me later</title>',
+    '<link rel="stylesheet" href="../../../src/web/styles.css"></head>',
+    \`<body><h1>Remind me later, option \${index + 1}</h1><p>\${name}</p></body></html>\`,
+  ].join("\\n"));
+});
+`;
+}
+
+function presentMockupsThenAsk() {
+  const pages = MOCKUP_PAGES.map((name) => `${MOCKUP_DIR}/${name}.html`);
+  // Outside the checkout, like a session scratchpad, so the script itself is never listed.
+  const script = join(mkdtempSync(join(tmpdir(), "e2e-mockup-generator-")), "generate-mockups.mjs");
+  writeFileSync(script, mockupGeneratorSource());
+  const command = `node ${JSON.stringify(script)}`;
+  appendTurn("assistant", [
+    { type: "text", text: "Generating the mock-ups." },
+    { type: "tool_use", id: `mockups-${turn}`, name: "Bash", input: { command } },
+  ]);
+  // What the Bash tool does with that command: a shell in the session's working directory.
+  // Synchronous, as the tool call is, so the pages exist before the turn presents them.
+  execFileSync("bash", ["-c", command], { cwd: process.cwd(), stdio: "ignore" });
+  const presented = pages.slice(0, 3).map((page) => `Mockup: ${page}`).join("\n");
+  const linked = pages.slice(3).map((page, index) => `- [Alternative ${index + 1}](${page})`).join("\n");
+  const args = {
+    question: "Which remind-later treatment should I build?",
+    context: `The three leading options are ${pages.slice(0, 3).join(", ")}.`,
+    options: MOCKUP_PAGES.slice(0, 3).map((label) => ({ label, detail: `Build ${label}` })),
+  };
+  appendTurn("assistant", [
+    { type: "text", text: `Here are the remind-later mock-ups.\n\n${presented}\n\nThe other pages:\n\n${linked}` },
+    { type: "tool_use", id: `ask-${turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
 function ask(prompt) {
   const requestId = `ask-${++turn}`;
   asked.set(requestId, prompt);
@@ -1122,6 +1488,28 @@ function ask(prompt) {
     type: "control_request",
     request_id: requestId,
     request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: ASK_INPUT },
+  });
+}
+
+/** `PERMISSION_TURN`: a `Bash` call the CLI wants approved before it runs. */
+const PERMISSION_INPUT = { command: "npm test", description: "Run the test suite" };
+
+function askPermission(prompt) {
+  const requestId = `ask-${++turn}`;
+  asked.set(requestId, prompt);
+  appendTurn("assistant", [
+    { type: "tool_use", id: requestId, name: "Bash", input: PERMISSION_INPUT },
+  ]);
+  emit({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: PERMISSION_INPUT,
+      title: "Claude wants to run npm test",
+      permission_suggestions: [],
+    },
   });
 }
 
@@ -1138,14 +1526,17 @@ function answerAsked(requestId, response) {
   const prompt = asked.get(requestId);
   if (prompt === undefined) return;
   asked.delete(requestId);
-  const picked = response?.updatedInput?.answers ?? {};
+  const picked = response?.updatedInput?.answers;
   appendTurn("user", [
     {
       type: "tool_result",
       tool_use_id: requestId,
-      content: `Your questions have been answered: ${Object.entries(picked)
-        .map(([question, answer]) => `"${question}"="${answer}"`)
-        .join(", ")}.`,
+      // A question carries answers; an approved permission ask carries only the tool's run.
+      content: picked
+        ? `Your questions have been answered: ${Object.entries(picked)
+            .map(([question, answer]) => `"${question}"="${answer}"`)
+            .join(", ")}.`
+        : "ok - 0 failures",
     },
   ]);
   answer([prompt]);
@@ -1202,10 +1593,10 @@ function turnUsage() {
  * One `result` however many prompts the turn took in, because that is the vendor's shape:
  * `result` means the CLI stopped, not that one message was retired.
  */
-function answer(prompts) {
+function answer(prompts, record = {}) {
   for (const prompt of prompts) {
     const text = replyTo(prompt);
-    appendTurn("assistant", [{ type: "text", text }]);
+    appendTurn("assistant", [{ type: "text", text }], record);
     emit({
       type: "assistant",
       session_id: SESSION_ID,
@@ -1213,6 +1604,25 @@ function answer(prompts) {
     });
   }
   emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+}
+
+function answerCapacityFailure() {
+  appendTurn("assistant", [{ type: "text", text: CAPACITY_ERROR }]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: CAPACITY_ERROR }] },
+  });
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    result: CAPACITY_ERROR,
+    session_id: SESSION_ID,
+    ...turnUsage(),
+  });
 }
 
 /** Emit the structured failure and visible transcript text produced by an expired login. */
@@ -1225,6 +1635,7 @@ function answerAuthenticationFailure() {
     error: "authentication_failed",
     message: { role: "assistant", content: [{ type: "text", text }] },
   });
+  if (authenticationWedged) return;
   emit({
     type: "result",
     subtype: "error_during_execution",
@@ -1235,14 +1646,448 @@ function answerAuthenticationFailure() {
   });
 }
 
+/** The `MANY_BACKGROUND_AGENTS_TURN` script: launch five, end the turn, leave them running. */
+function runManyBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [
+    { type: "text", text: "Launching many background agents" },
+    ...MANY_BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching many background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: MANY_BACKGROUND_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of MANY_BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: `toolu_${agent.id}`,
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/**
+ * The user record Claude Code answers a backgrounded `Agent` call with: a tool result whose
+ * text names the agent (`agentId: ...`) and the structured `toolUseResult` beside it, in the
+ * shape the real CLI writes. The agent id is the task id its SDK stream reports.
+ */
+function appendAsyncLaunched(agent) {
+  appendTurn("user", [{
+    type: "tool_result",
+    tool_use_id: `toolu_${agent.id}`,
+    content: [{
+      type: "text",
+      text: `Async agent launched successfully.\nagentId: ${agent.id} (internal ID - do not mention to user.)\nThe agent is working in the background. You will be notified automatically when it completes.`,
+    }],
+  }], { toolUseResult: { isAsync: true, status: "async_launched", agentId: agent.id, description: agent.description } });
+}
+
+/** The `LIVE_BACKGROUND_AGENTS_TURN` script: the call now, the result naming its agent later. */
+function runLiveBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const agent = LIVE_AGENT;
+  appendTurn("assistant", [{ type: "text", text: "Launching a live background agent" }]);
+  appendTurn("assistant", [{
+    type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+    input: { description: agent.description, prompt: agent.id, subagent_type: agent.type, run_in_background: true },
+  }]);
+  appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching a live background agent" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: [{ task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description }],
+  });
+  system("task_started", {
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    is_backgrounded: true, spawn_depth: 1,
+  });
+  answer([prompt]);
+  setTimeout(() => appendAsyncLaunched(agent), LIVE_RESULT_DELAY_MS);
+}
+
+/** The `FOLDED_TWIN_BACKGROUND_AGENTS_TURN` script: launch, finish the newer launched one. */
+function runFoldedTwinBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const level = (agents) => system("background_tasks_changed", {
+    tasks: agents.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  appendTurn("assistant", [{ type: "text", text: "Launching folded twin agents" }]);
+  for (const agent of FOLDED_TWINS.filter((a) => a.launched)) {
+    appendTurn("assistant", [{
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { description: agent.description, prompt: agent.id, subagent_type: agent.type, run_in_background: true },
+    }]);
+    appendAsyncLaunched(agent);
+    // Prose between the launches, so each call is a tool row of its own.
+    appendTurn("assistant", [{ type: "text", text: `Launched ${agent.id}.` }]);
+  }
+  appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching folded twin agents" }] },
+  });
+  level(FOLDED_TWINS);
+  for (const agent of FOLDED_TWINS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1,
+    });
+  }
+  answer([prompt]);
+  setTimeout(() => {
+    const newer = FOLDED_TWINS[1];
+    system("task_notification", { task_id: newer.id, status: "completed", output_file: "", summary: "swept" });
+    level(FOLDED_TWINS.filter((a) => a !== newer));
+  }, BACKGROUND_AGENTS_FINISH_MS);
+}
+
+/** The `DISTANT_BACKGROUND_AGENTS_TURN` script: launch, bury the launch, leave them running. */
+function runDistantBackgroundAgents(prompt, fillerTurns = DISTANT_FILLER_TURNS) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [{ type: "text", text: "Launching distant background agents" }]);
+  for (const agent of DISTANT_AGENTS.filter((a) => a.launched)) {
+    appendTurn("assistant", [{
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { description: agent.description, prompt: agent.description, subagent_type: agent.type, run_in_background: true },
+    }]);
+    appendAsyncLaunched(agent);
+  }
+  for (let i = 0; i < fillerTurns; i += 1) {
+    appendTurn("assistant", [{ type: "text", text: `${i + 1}. ${DISTANT_FILLER}` }]);
+  }
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching distant background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: DISTANT_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of DISTANT_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, ...(agent.named ? { tool_use_id: `toolu_${agent.id}` } : {}),
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: "Read",
+      usage: { total_tokens: 1_000, tool_uses: 3, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/**
+ * The `BACKGROUND_AGENTS_TURN` script. See that constant for what it proves. `split` writes
+ * the launch as `SPLIT_BACKGROUND_AGENTS_TURN` describes; the frames are identical.
+ */
+function runBackgroundAgents(prompt, { split = false } = {}) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const toolUse = (agent) => `toolu_${agent.id}`;
+  const levelEntry = (agent) => ({
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+  });
+  const shell = { task_id: "bg-shell-1", task_type: "local_bash", description: "npm run watch" };
+  const ambient = { ...levelEntry({ id: "bg-ambient-1", type: "general-purpose", description: "Housekeeping" }), ambient: true };
+
+  const launches = BACKGROUND_AGENTS.map((agent) => ({
+    type: "tool_use",
+    id: toolUse(agent),
+    name: "Agent",
+    input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+  }));
+  if (split) {
+    appendTurn("assistant", [{ type: "text", text: "Launching background agents" }]);
+    appendTurn("assistant", [{ type: "tool_use", id: "toolu_split_read", name: "Read", input: { file_path: "src/ledger.ts" } }]);
+    for (const launch of launches) appendTurn("assistant", [launch]);
+    appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  } else {
+    appendTurn("assistant", [{ type: "text", text: "Launching background agents" }, ...launches]);
+  }
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching background agents" }] },
+  });
+
+  // A foreground agent: it blocks the turn, so it never counts.
+  system("task_started", {
+    task_id: "fg-agent-1", task_type: "local_agent", subagent_type: "Plan", description: "Foreground planning",
+    is_backgrounded: false, tool_use_id: "toolu_fg-agent-1",
+  });
+  system("task_notification", { task_id: "fg-agent-1", status: "completed", output_file: "", summary: "planned" });
+
+  // The live set joins before each task_started, as the real CLI orders it.
+  system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.map(levelEntry), shell, ambient] });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: toolUse(agent),
+    });
+  }
+  system("task_started", { task_id: shell.task_id, task_type: "local_bash", description: shell.description, is_backgrounded: true });
+  system("task_started", { ...ambient, is_backgrounded: true, skip_transcript: true });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 5_000 },
+    });
+  }
+  answer([prompt]);
+
+  // A background agent keeps talking after the parent's turn ended.
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: toolUse(BACKGROUND_AGENTS[0]),
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_inner_grep", name: "Grep", input: { pattern: "offset" } }] },
+  });
+
+  setTimeout(() => {
+    const done = BACKGROUND_AGENTS[2];
+    system("task_updated", { task_id: done.id, patch: { status: "completed", end_time: Date.now() } });
+    system("task_notification", {
+      task_id: done.id, tool_use_id: toolUse(done), status: "completed", output_file: "", summary: "Found 4 contract tests",
+      usage: { total_tokens: done.tokens + 1_000, tool_uses: done.tools + 1, duration_ms: 6_000 },
+    });
+    system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.slice(0, 2).map(levelEntry), shell, ambient] });
+  }, BACKGROUND_AGENTS_FINISH_MS);
+}
+
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
 function beginScoutTurn(prompt) {
+  beginHeldTurn(runScout(prompt));
+}
+
+// ---------------------------------------------------------------------------
+// The report-bug scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * The first sentence of the brief the DAEMON writes for a Report bug session
+ * (`launchFailureReportBrief`). Recognised from the daemon's own words, as the scout is, so the
+ * brief's delivery is part of what a spec proves rather than something the spec scripted.
+ */
+const REPORT_BUG_MARKER = "The operator pressed Report bug on a Mission Control dispatch that did not start.";
+
+/** This session's Mission Control MCP descriptor: inline JSON from the SDK, a file path from a terminal. */
+function missionMcpDescriptor() {
+  const raw = argvValue("--mcp-config");
+  if (!raw) return null;
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch {
+    config = JSON.parse(readFileSync(raw, "utf8"));
+  }
+  return config.mcpServers?.["mission-control"] ?? null;
+}
+
+/** Run real Mission Control tools from this fake agent, without a model call. */
+async function withMissionMcp(work) {
+  const descriptor = missionMcpDescriptor();
+  if (!descriptor) return "This session has no Mission Control MCP server, so nothing was reported.";
+  const child = spawn(descriptor.command, descriptor.args ?? [], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...descriptor.env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending = new Map();
+  let sequence = 0;
+  // A child that cannot start, or exits before answering, answers every request still waiting
+  // with an error - otherwise the held turn never ends and stdin close cannot finish it.
+  const settleAll = (reason) => {
+    for (const settle of pending.values()) settle({ error: { message: reason } });
+  };
+  child.on("error", (error) => settleAll(String(error)));
+  child.on("exit", (code) => settleAll(`MCP server exited with code ${code}`));
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (message.id) pending.get(message.id)?.(message);
+  });
+  // No deadline on purpose: the tool call is waiting on a person.
+  const request = (method, params) => new Promise((resolveRequest) => {
+    const id = ++sequence;
+    pending.set(id, (message) => { pending.delete(id); resolveRequest(message); });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+  try {
+    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-mission-tools", version: "1" } });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    return await work(request);
+  } finally {
+    child.stdin.end();
+  }
+}
+
+/** A conversation delegates work through the real MCP server without a model call. */
+async function runChatTaskScheduling() {
+  return withMissionMcp(async (request) => {
+    const call = async (name, args) => {
+      const called = await request("tools/call", { name, arguments: args });
+      const text = called.result?.content?.map((part) => part.text).join("\n");
+      if (called.error || called.result?.isError) throw new Error(text ?? JSON.stringify(called.error));
+      return JSON.parse(text);
+    };
+    await call("create_task", {
+      title: "Work scheduled from chat", intent: "Keep this separate work parked for later.",
+      workflowId: null, enabled: false,
+    });
+    const launch = await call("create_task", {
+      title: "Work dispatched from chat", intent: "Perform this separate work now.",
+      workflowId: null,
+    });
+    const dispatched = await call("dispatch_task", { taskId: launch.id });
+    return `Scheduled one backlog task and dispatched another from chat (${dispatched.status}).`;
+  });
+}
+
+/** The bug-report scenario waits for the public issue preview's human response. */
+async function runReportBug(prompt) {
+  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
+  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
+  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  return withMissionMcp(async (request) => {
+    const called = await request("tools/call", {
+      name: "report_product_issue",
+      arguments: {
+        type: "bug",
+        title: `A ${kind} dispatch did not start`,
+        details: [
+          `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
+          `${attempts} attempt(s) failed the same way.`,
+          "The base branch could not be fetched from <repository>'s origin.",
+        ].join("\n\n"),
+      },
+    });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `report_product_issue answered: ${text}`;
+  });
+}
+
+/**
+ * The repair packet the DAEMON writes when a workflow Command is one the repository does not
+ * provide (`src/server/workflows/command-fit.ts`). Recognised from the daemon's own words, so
+ * the packet's delivery is part of what a spec proves.
+ */
+const CONFIGURE_COMMAND_MARKER = "Configure the test Command for this repository; do not add files to satisfy it";
+
+/**
+ * What a session does with that packet, without a model: inspect its own checkout for how the
+ * repository runs its tests, call the real `configure_workflow_command` (which waits on the
+ * operator's confirmation card), then resubmit the unchanged work.
+ */
+async function runConfigureCommand(prompt) {
+  const runId = /^Run: (\S+)$/m.exec(prompt)?.[1];
+  let script = null;
+  try {
+    script = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")).scripts?.test ?? null;
+  } catch { /* no manifest: nothing to propose */ }
+  if (!runId || !script || existsSync(join(process.cwd(), "Makefile"))) {
+    return "Inspected the checkout and found no package.json test script to propose.";
+  }
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const configured = await request("tools/call", { name: "configure_workflow_command",
+      arguments: { runId, slot: "test", command: ["npm", "test"] } });
+    if (configured.result?.isError || configured.error) return `configure_workflow_command failed: ${text(configured)}`;
+    const resubmitted = await request("tools/call", { name: "trigger_workflow_action", arguments: { request: {
+      action: "resubmit", runId, parameters: { requestId: `e2e-configured-${runId}`, resubmitUnchanged: true } } } });
+    return `configure_workflow_command answered: ${text(configured)}; resubmit answered: ${text(resubmitted)}`;
+  });
+}
+
+/** A resident records its pacing, then waits inside the real review tool. */
+async function runResidentReview() {
+  return withMissionMcp(async (request) => {
+    const pacing = await request("tools/call", { name: "schedule_next_iteration", arguments: {
+      callId: "resident-review-before", delaySeconds: 2, reason: "Review cadence" } });
+    const result = await request("tools/call", { name: "request_input", arguments: {
+      question: "Continue resident triage?", options: [{ label: "Continue" }, { label: "Defer" }] } });
+    return `Resident review resolved: ${JSON.stringify(result)}; pacing: ${JSON.stringify(pacing)}`;
+  });
+}
+
+/**
+ * The first sentence of the packet the DAEMON types for a resident's retro
+ * (`RESIDENT_RETRO_LEAD` in `src/server/residents/retro-packet.ts`). Recognised from the daemon's
+ * own words, so the packet's delivery is part of what a spec proves.
+ */
+const RESIDENT_RETRO_MARKER = "Run a retrospective over your work as this resident, and turn what the operator taught you into proposed changes to your standing instructions.";
+
+/**
+ * A resident's retro without a model, following the packet's own procedure: read the
+ * conversation back from the daemon's transcript route for the session the packet names, keep
+ * the operator's turns (every user turn after the opening brief, less loop wakes and this
+ * packet), read the current
+ * instructions through the real tool, and propose one change per steering turn, each quoting the
+ * turn it came from. A turn that sets a new cadence edits the profile's "every hour"; any other
+ * steering becomes Persona guidance when the profile names an editable Persona. Then it waits
+ * inside the real proposal tool for the operator. No steering, no proposal.
+ */
+async function runResidentRetro(prompt) {
+  const sessionId = /^Session: (\S+)$/m.exec(prompt)?.[1];
+  if (!sessionId) return "Resident retro: the packet named no session, so there is no conversation to read.";
+  const response = await fetch(`http://127.0.0.1:${process.env.MISSION_PORT ?? "7317"}/api/sessions/${encodeURIComponent(sessionId)}/transcript?turns=200`);
+  if (!response.ok) return `Resident retro: the transcript could not be read (${response.status}).`;
+  // The first user turn is the opening brief, whatever launch sections ride on it; steering is
+  // what comes after it, less loop wakes and this packet.
+  const steering = ((await response.json()).messages ?? [])
+    .filter((message) => message.role === "user")
+    .slice(1)
+    .map((message) => String(message.text ?? "").trim())
+    .filter((text) => text
+      && !text.startsWith("[mission-resident:")
+      && !text.includes(RESIDENT_RETRO_MARKER));
+  if (steering.length === 0) return "Resident retro: nothing in the conversation warrants a change.";
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const read = await request("tools/call", { name: "get_resident_instructions", arguments: {} });
+    if (read.error || read.result?.isError) return `get_resident_instructions failed: ${text(read)}`;
+    const view = JSON.parse(text(read));
+    const personaEditable = view.persona !== null && view.refusals.persona === null;
+    const changes = [];
+    for (const turn of steering) {
+      const rationale = `You told me: "${turn}"`;
+      const cadence = /every (\d+) minutes/i.exec(turn);
+      if (cadence && view.profile.instructions.includes("every hour")) {
+        changes.push({ target: "profile", title: `Check every ${cadence[1]} minutes`, rationale, find: "every hour", replace: `every ${cadence[1]} minutes` });
+      } else {
+        const title = turn.split(/\s+/).slice(0, 6).join(" ").replace(/[.,;:]+$/, "");
+        changes.push({ target: personaEditable ? "persona" : "profile", title, rationale, replace: turn });
+      }
+    }
+    const proposed = await request("tools/call", { name: "propose_resident_instruction_changes", arguments: { summary: `Proposed from ${steering.length} steering turn(s) in this conversation.`, changes } });
+    return `Resident retro: ${text(proposed)}`;
+  });
+}
+
+/** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
+function beginHeldTurn(work) {
   const held = { prompts: [] };
   openTurn = held;
   // Tracked so a stdin close cannot exit the process out from under a submission that is
   // already in flight - the answer would never be written and the card would go from
   // working straight to exited, which reads as a crash rather than as a race.
-  scoutTurn = runScout(prompt).then((text) => {
+  scoutTurn = work.catch((error) => `The turn failed: ${String(error)}`).then((text) => {
     openTurn = null;
     appendTurn("assistant", [{ type: "text", text }]);
     emit({
@@ -1306,6 +2151,16 @@ rl.on("line", (line) => {
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
     if (frame.request?.subtype === "initialize") {
+      appendedSystemPrompt = typeof frame.request.appendSystemPrompt === "string" ? frame.request.appendSystemPrompt : "";
+      // What the driver appended to Claude Code's system prompt travels in this frame, not on
+      // the argv, so it is recorded here - apart from `claude/`, whose readers expect launches.
+      if (recordDir) {
+        mkdirSync(join(recordDir, "claude-initialize"), { recursive: true });
+        writeFileSync(
+          join(recordDir, "claude-initialize", `initialize-${Date.now()}-${process.pid}.json`),
+          JSON.stringify({ cwd: process.cwd(), appendSystemPrompt: frame.request.appendSystemPrompt ?? null }, null, 2),
+        );
+      }
       ok(frame.request_id, {
         commands: [], agents: [], output_style: "default", available_output_styles: [],
         account: {},
@@ -1317,6 +2172,42 @@ rl.on("line", (line) => {
           { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5", description: "Sonnet", supportsEffort: true },
           { value: "opusplan", resolvedModel: "claude-sonnet-5", displayName: "Opus Plan Mode", description: "Mode, not a model" },
         ],
+      });
+      return;
+    }
+    // The configured MCP servers, as the real CLI reports them: what `--mcp-config` named. A
+    // resident launch checks this against its snapshot, so answering with the argv keeps that
+    // check exercised without starting any server. A remote server on a `needs-login.` host
+    // stands for one behind an OAuth login Claude Code holds no usable token for, which the real
+    // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
+    // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
+    // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
+    //
+    // Without `--strict-mcp-config`, and without `disableClaudeAiConnectors` in its `--settings`,
+    // the real CLI also loads the account's claude.ai connectors and reports them beside what
+    // `--mcp-config` named. Two stand for them: one connected, and one that needs a login, which a
+    // resident on all native sources must start despite - it is Claude Code's to report, not a
+    // server Mission Control put in the set.
+    if (frame.request?.subtype === "mcp_status") {
+      const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
+      const status = (server) => {
+        if (server?.url === undefined) return { status: "connected" };
+        if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
+        return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
+      };
+      // `--settings` may also name a file; only inline JSON can carry the switch here.
+      const settings = argvValue("--settings") ?? "{}";
+      const flags = settings.trimStart().startsWith("{") ? JSON.parse(settings) : {};
+      const connectors = process.argv.includes("--strict-mcp-config") || flags.disableClaudeAiConnectors === true
+        || flags.env?.ENABLE_CLAUDEAI_MCP_SERVERS === "false"
+        ? []
+        : [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "needs-auth" }];
+      const nativeFixture = duplicatePluginState();
+      ok(frame.request_id, {
+        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })),
+          ...(nativeFixture
+            ? [...nativeFixture.plugins, ...nativeFixture.connectors].map((server) => ({ name: server.name, status: "connected" }))
+            : connectors)],
       });
       return;
     }
@@ -1367,8 +2258,13 @@ rl.on("line", (line) => {
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
+    if (prompt === WEDGE_AUTH_TURN) authenticationExpired = authenticationWedged = true;
     if (authenticationExpired && !AUTHENTICATED_AT_START) {
       answerAuthenticationFailure();
+      return;
+    }
+    if (prompt === CAPACITY_TURN) {
+      answerCapacityFailure();
       return;
     }
 
@@ -1385,6 +2281,11 @@ rl.on("line", (line) => {
     // A selection changes future turns, while a held turn keeps its original model.
     turnModel = MODEL;
 
+    if (results === 0 && duplicatePluginState()) {
+      beginHeldTurn(probeDuplicatePlugin());
+      return;
+    }
+
     // A fixture-owned permission wait: keep the SAME first turn alive until teardown, so a
     // hook a spec posts for it cannot be followed by a stale result from before the hook.
     // No timer on purpose. A real permission prompt also has no time-based completion; only
@@ -1396,8 +2297,17 @@ rl.on("line", (line) => {
 
     // Blocks the turn on a human, which is the whole point: no `result` is emitted until the
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
+    if (prompt === PERMISSION_TURN) {
+      askPermission(prompt);
+      return;
+    }
+    if (prompt === MOCKUPS_THEN_ASK_TURN) {
+      presentMockupsThenAsk();
+      return;
+    }
     if (prompt === ASK_TURN) {
-      ask(prompt);
+      if (DISALLOWED_TOOLS.includes("AskUserQuestion")) askWithoutBuiltin(prompt);
+      else ask(prompt);
       return;
     }
 
@@ -1407,6 +2317,35 @@ rl.on("line", (line) => {
     // card stays "working" until the archive exists, exactly as a real one would.
     if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED || prompt.includes("E2E_REPORT_")) {
       beginScoutTurn(prompt);
+      return;
+    }
+
+    // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
+    // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes(RESIDENT_RETRO_MARKER)) {
+      beginHeldTurn(runResidentRetro(prompt));
+      return;
+    }
+
+    if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
+      beginHeldTurn(runResidentReview());
+      return;
+    }
+
+    if (prompt.includes("E2E_CHAT_SCHEDULE_TASKS")) {
+      beginHeldTurn(runChatTaskScheduling());
+      return;
+    }
+
+    if (prompt.includes(REPORT_BUG_MARKER)) {
+      beginHeldTurn(runReportBug(prompt));
+      return;
+    }
+
+    // A workflow repair asking for the repository's own test Command, recognised by the
+    // daemon's packet. Held open while the real tool waits on the operator's card.
+    if (prompt.includes(CONFIGURE_COMMAND_MARKER)) {
+      beginHeldTurn(runConfigureCommand(prompt));
       return;
     }
 
@@ -1444,10 +2383,79 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (prompt.includes(MANY_BACKGROUND_AGENTS_TURN)) {
+      runManyBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(LIVE_BACKGROUND_AGENTS_TURN)) {
+      runLiveBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(FOLDED_TWIN_BACKGROUND_AGENTS_TURN)) {
+      runFoldedTwinBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(DEEP_BACKGROUND_AGENTS_TURN)) {
+      runDistantBackgroundAgents(prompt, DEEP_FILLER_TURNS);
+      return;
+    }
+    if (prompt.includes(DISTANT_BACKGROUND_AGENTS_TURN)) {
+      runDistantBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(SPLIT_BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt, { split: true });
+      return;
+    }
+    if (prompt.includes(BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt);
+      return;
+    }
+
+    // Three advisor calls, then the echoed reply, all stamped with the advisor model as the
+    // real CLI stamps every record of an advisor-enabled request. See `ADVISOR_TURN`.
+    if (prompt === ADVISOR_TURN) {
+      const stamped = { advisorModel: ADVISOR_MODEL };
+      const advisorResults = [
+        { type: "advisor_result", text: ADVISOR_TEXT },
+        { type: "advisor_redacted_result", encrypted_content: "ENCRYPTED_CONTENT_REMOVED_FOR_FIXTURE" },
+        { type: "advisor_tool_result_error", error_code: "overloaded" },
+      ];
+      advisorResults.forEach((content, call) => {
+        const id = `srvtoolu_e2e_${turn}_${call}`;
+        appendTurn("assistant", [{ type: "server_tool_use", id, name: "advisor", input: {} }], stamped);
+        appendTurn("assistant", [{ type: "advisor_tool_result", tool_use_id: id, content }], stamped);
+      });
+      answer([prompt], stamped);
+      return;
+    }
+
     // One deterministic busy window for the queued-turn browser specs. Ordinary prompts
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    // A `/compact` that the CLI accepts and then never finishes, the way it hung behind a
+    // dead network. Only an interrupt ends it, which is the recovery under test.
+    if (STALL_COMPACT && prompt.startsWith("/compact")) {
+      openTurn = { prompts: [prompt] };
+      return;
+    }
+    // A `/compact` the CLI finishes, in the shape of the real CLI's stream: the boundary frame
+    // carrying the measured context after compaction, then the command's result. The command,
+    // focus and all, is recorded so a spec can read what the daemon asked the summary to keep.
+    if (prompt.startsWith("/compact")) {
+      if (process.env.MC_E2E_RECORD_DIR) {
+        appendFileSync(join(process.env.MC_E2E_RECORD_DIR, "claude-compactions.jsonl"), `${JSON.stringify({ prompt })}\n`);
+      }
+      emit({
+        type: "system",
+        subtype: "compact_boundary",
+        session_id: SESSION_ID,
+        compact_metadata: { trigger: "manual", pre_tokens: 184_000, post_tokens: 2_000 },
+      });
+      emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+      return;
+    }
     if (prompt.includes(RELEASED_TURN)) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setInterval(() => {
@@ -1481,6 +2489,12 @@ rl.on("line", (line) => {
 // close into `{kind:"exited"}` and evicts the session. Stay alive until the SDK closes
 // stdin, then leave cleanly.
 rl.on("close", () => {
+  // A wedged CLI never notices its input closed. Only the SDK's SIGTERM ends it.
+  // The interval stands in for the hung request that kept the real process alive.
+  if (authenticationWedged) {
+    setInterval(() => {}, 60_000);
+    return;
+  }
   const leave = () => {
     if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
     else process.exit(0);

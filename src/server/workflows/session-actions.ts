@@ -67,6 +67,11 @@ export class SessionActionManager {
     return this.publish(this.store.archiveSessionActionCas(id, expectedRevision, now));
   }
 
+  /** Put an editable built-in (Grill) back on its shipped instruction. */
+  reset(id: string, expectedRevision: number, now = Date.now()): SessionActionMutation {
+    return this.publish(this.store.resetBuiltinSessionActionCas(id, expectedRevision, now));
+  }
+
   private publish(result: SessionActionStoreWrite): SessionActionMutation {
     if (!result.ok) return result;
     // Archive is an upsert: the row remains addressable and its archived state is live data.

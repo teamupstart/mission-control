@@ -51,6 +51,16 @@ test("a dialog with nothing under its headline renders no empty paragraph", () =
   assert.equal((html.match(/class="btn /g) ?? []).length, 1);
 });
 
+test("up to date while a newer build is still being signed says so, as a success and not an error", () => {
+  const html = render({ ...UPDATE_DIALOGS.upToDate("2.1.0 (alpha aaaaaaa)", "alpha ddddddd"), id: "d4" });
+
+  assert.match(html, /update-dialog update-dialog-success/);
+  assert.ok(!html.includes("update-dialog-error"), html);
+  assert.ok(html.includes("Mission Control 2.1.0 (alpha aaaaaaa) is up to date"), html);
+  assert.ok(html.includes("Mission Control alpha ddddddd is still being built and signed. It will be offered once it is ready to install."), html);
+  assert.ok(!html.includes("could not be completed"), html);
+});
+
 test("nothing is drawn when the updater is not asking", () => {
   assert.equal(render(null), "");
 });

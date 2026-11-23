@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import type { AgentType } from "@shared/types.ts";
+import type { AgentType, TaskKind } from "@shared/types.ts";
 import { fetchResolvedStandingInstructions } from "../lib/api.ts";
 import { deliverySummary } from "../lib/standing-instructions-view.ts";
 import { StandingInstructionsDeliveryView } from "./StandingInstructionsDelivery.tsx";
@@ -29,11 +29,23 @@ export function StandingInstructionsNote({
   repoRoots,
   agent,
   storedRuntime,
+  personaId = null,
+  kind,
+  pipelineRuntime = null,
 }: {
   repoRoots: readonly string[];
   agent: AgentType;
   /** The harness config's stored runtime for this agent, narrowed the way a launch narrows it. */
   storedRuntime: string | null | undefined;
+  /** The dispatch Persona the form will send, whose section the launch appends after the rules. */
+  personaId?: string | null;
+  /** The task kind; a Pipeline's Engineer host is sent no repository rules, only its Persona. */
+  kind?: TaskKind;
+  /**
+   * The Pipeline launch runtime the form last read. The daemon answers from its own config, as
+   * the launch does; this only makes the note ask again when that runtime changes.
+   */
+  pipelineRuntime?: string | null;
 }): React.JSX.Element | null {
   const [delivery, setDelivery] = useState<StandingInstructionsDelivery | null>(null);
   const [open, setOpen] = useState(false);
@@ -66,7 +78,7 @@ export function StandingInstructionsNote({
     // by shelling out to `git`, and all but the last of them are about a path that was never
     // a repository. The abort still covers the in-flight one when the value moves again.
     const timer = setTimeout(() => {
-      void fetchResolvedStandingInstructions(paths, agent, runtime, abort.signal).then((d) => {
+      void fetchResolvedStandingInstructions(paths, agent, runtime, abort.signal, { personaId, kind }).then((d) => {
         if (!abort.signal.aborted) setDelivery(d);
       });
     }, RESOLVE_DEBOUNCE_MS);
@@ -74,7 +86,7 @@ export function StandingInstructionsNote({
       clearTimeout(timer);
       abort.abort();
     };
-  }, [key, agent, runtime]);
+  }, [key, agent, runtime, personaId, kind, pipelineRuntime]);
 
   if (!delivery?.text) return null;
 

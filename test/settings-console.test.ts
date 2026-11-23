@@ -237,11 +237,13 @@ function inspectorHtml(): string {
 function shippingHtml(): string {
   const state: ShippingState = {
     config: {
-      autoMerge: true,
+      codeRabbitAutoResolve: false,
+    autoMerge: true,
       soakMinutes: 5,
       method: "squash",
       repoAllowlist: ["/repo"],
       closeSessionAfterMerge: false,
+    maxStackDepth: 3,
     },
     inspections: [row()],
     update: async () => true,

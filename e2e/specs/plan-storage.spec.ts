@@ -272,7 +272,8 @@ test("local plans preserve preferences, require final human approval and release
   await dialog.getByPlaceholder("What should this agent do?").fill("Plan a local documentation update");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
   const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
-  await expect(afterWork).toHaveValue("builtin-workflow:local-plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  await expect(afterWork.locator("option:checked")).toContainText("Local Plan Validation");
   await afterWork.selectOption("__none");
   await expectContentClearsBorder(dialog);
   await dialog.getByRole("button", { name: "Dispatch now" }).click(); await expect(dialog).toBeHidden();

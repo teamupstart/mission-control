@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PauseState } from "@shared/pause.ts";
 import { PlanPublicationContextSchema, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import {
   existsSync,
@@ -22,7 +23,14 @@ import {
   isLlmRunnerId,
 } from "@shared/llm.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
-import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
+import { z } from "zod";
+import {
+  ForemanConfigSchema,
+  InspectorConfigSchema,
+  InspectorFindingsResponseSchema,
+  InspectorInspectionSchema,
+  TRANSCRIPT_DEFAULT_TAIL_TURNS,
+} from "@shared/protocol.ts";
 import type { ForemanHealthSnapshot } from "@shared/foreman-health.ts";
 import type {
   BacklogPlanInput,
@@ -30,6 +38,8 @@ import type {
   ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
+  InspectorConfig,
+  InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
   PromptedRecoveryDelivery,
@@ -44,6 +54,7 @@ import type {
   AssignRefusalScope,
   BacklogPlan,
   ForemanPlannerHealth,
+  InspectorInspection,
   ReviewItem,
   Session,
   SessionDiff,
@@ -1047,6 +1058,11 @@ export class ForemanClient implements ForemanActions {
     return get<BacklogPlan | null>("/api/backlog/plan");
   }
 
+  /** Pause all and the priority session: whether the operator has held automatic launches. */
+  pauseState(): Promise<PauseState> {
+    return get<PauseState>("/api/pause");
+  }
+
   /**
    * Store a fresh plan, replacing whatever was there.
    *
@@ -1192,9 +1208,31 @@ export class ForemanClient implements ForemanActions {
     return PlanPublicationContextSchema.parse(await get(`/api/sessions/${enc(id)}/plan-publication`));
   }
 
+  /**
+   * Every GitHub Inspector finding on one pull request, with whether each reached GitHub.
+   *
+   * Parsed rather than cast: the relay types finding text into a session, so a shape it
+   * cannot vouch for throws like a failed read, and the caller holds the round for the next
+   * pass instead of relaying something half-read.
+   */
+  async inspectorFindings(prKey: string): Promise<InspectorFindingsResponse> {
+    return InspectorFindingsResponseSchema.parse(
+      await get<unknown>(`/api/inspector/findings?pr=${enc(prKey)}`),
+    );
+  }
+
+  /** Every open pull request the Inspector adopted, with tallies. Parsed, as findings are. */
+  async openInspections(): Promise<InspectorInspection[]> {
+    return z.array(InspectorInspectionSchema).parse(await get<unknown>("/api/inspector/prs?state=open"));
+  }
+
+  async inspectorConfig(): Promise<InspectorConfig> {
+    return InspectorConfigSchema.parse(await get<unknown>("/api/inspector/config"));
+  }
+
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
   async workflowEvidence(id: string): Promise<WorkflowSessionEvidenceList | null> {
-    const path = `/api/sessions/${enc(id)}/workflow-evidence`;
+    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered`;
     const res = await fetch(BASE_URL + path);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
@@ -1291,6 +1329,11 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as WorkItem;
   }
 
+  /** Shipping owns this source switch independently of Foreman's review settings. */
+  async shippingConfig(): Promise<import("@shared/protocol.ts").ShippingConfig> {
+    return get("/api/shipping/config");
+  }
+
   /**
    * Deliver a whole prompt as ONE bracketed-paste submission. Throws on failure,
    * which is what lets the caller stamp `awaiting_pickup` only after it resolves.
@@ -1300,12 +1343,17 @@ export class ForemanClient implements ForemanActions {
    * ever safe when the daemon positively said `pasted: false`; a request that never
    * completed tells us nothing about what the daemon did with it.
    */
-  async inject(id: string, text: string): Promise<void> {
+  async inject(
+    id: string,
+    text: string,
+    codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup,
+    stack?: import("@shared/stacking.ts").StackPromptRequest,
+  ): Promise<void> {
     let res: Response;
     try {
       // `origin` is what lets the conversation log say who typed this. Every inject from
       // this client is Foreman's: the human's own replies go through the dashboard.
-      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text, origin: "foreman" });
+      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text, origin: "foreman", codeRabbit, stack });
     } catch (err) {
       throw new InjectError(`inject ${id} -> ${String(err)}`, true);
     }

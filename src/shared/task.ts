@@ -1,4 +1,10 @@
-import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID, DOCUMENTATION_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
+import {
+  BUG_FIX_REVIEW_WORKFLOW_ID,
+  DOCUMENTATION_REVIEW_WORKFLOW_ID,
+  LOCAL_PLAN_VALIDATION_WORKFLOW_ID,
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  PLAN_VALIDATION_WORKFLOW_ID,
+} from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -12,6 +18,16 @@ import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VAL
 
 import { TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
+
+/**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because several
+ * request surfaces - task dispatch, MCP task creation and resident launch - bound the same
+ * launch manifest and must not carry private copies.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
 
 /**
  * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
@@ -157,60 +173,116 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     accent: "#b4c0cf",
     icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   },
+  resident: {
+    label: "resident",
+    blurb: "Hold a standing role from a resident profile until Complete & close. No after-work.",
+    purpose: "hold a standing role from a profile",
+    accent: "#b5d462",
+    icon: [
+      { shape: "path", d: "M2.5 7.4 8 2.8l5.5 4.6M4 6.3V13.2h8V6.3" },
+      { shape: "rect", x: 6.6, y: 9.2, width: 2.8, height: 4, rx: 0.6 },
+    ],
+  },
 };
 
 /** The launch and scheduling rules every surface must apply to a task kind. */
 export interface TaskKindBehavior {
   /** Which repository catalog may offer this kind. */
-  repoAvailability: "workspace" | "pipeline-enabled";
-  /** Who owns the launched process and runtime choices. */
-  launch: "harness" | "pipeline";
+  repoAvailability: "workspace" | "pipeline-enabled" | "optional";
+  /**
+   * Who owns the launched process and runtime choices.
+   *
+   * `resident` is Mission Control's own harness launch with every choice taken from a
+   * resident profile: the profile names the harness, model and effort, and the run is always
+   * the Agent SDK. That is why it is not `harness` - per-kind defaults would be a second
+   * source for answers the profile already gives.
+   */
+  launch: "harness" | "pipeline" | "resident";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
+  /**
+   * Whether a session Mission Control launches for this kind invites Foreman by
+   * construction - the implicit `"sdk"` grant of an embedded session and the `"dispatch"`
+   * row a confirmed terminal spawn writes. `false` launches the session uninvited, exactly
+   * like a merely discovered one: Foreman stays out until the operator invites it from the
+   * session's Foreman rail. A resident holds a standing role with its own instructions, so
+   * Foreman triage, wrap-up and follow-through there would compete with the profile.
+   */
+  foremanInvite: boolean;
+  /**
+   * Whether a task of this kind is a piece of work with a work unit id (`Task.workUnitId`).
+   * False only for a resident run: a standing agent, not a piece of work (decision D6 in
+   * `docs/plans/work-unit-id/plan.md`). Read through `taskKindHasWorkUnit`.
+   */
+  workUnit: boolean;
+  /**
+   * Whether a task created through MCP by a session running this kind joins that session's
+   * work unit when the caller does not say otherwise. True only for a plan, so its phase tasks
+   * share its id (decision D1). Read through `taskKindSessionJoinsWorkUnit`.
+   */
+  sessionTasksJoinWorkUnit: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
   constraint: string | null;
 }
 
 /**
  * Behaviour stays registry-driven so every picker and autonomous path gains a new kind only
- * after answering the same three questions: where it is available, who launches it, and
- * whether Foreman may schedule it.
+ * after answering the same questions: where it is available, who launches it, whether
+ * Foreman may schedule it, and whether Foreman is invited into the sessions it launches.
  */
 export const TASK_KIND_BEHAVIOR = {
   document: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   bugfix: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   scout: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   plan: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: true,
     constraint: null,
   },
   pipeline: {
     repoAvailability: "pipeline-enabled",
     launch: "pipeline",
     autopilot: false,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
@@ -218,11 +290,24 @@ export const TASK_KIND_BEHAVIOR = {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
+  },
+  resident: {
+    repoAvailability: "optional",
+    launch: "resident",
+    autopilot: false,
+    foremanInvite: false,
+    workUnit: false,
+    sessionTasksJoinWorkUnit: false,
+    constraint:
+      "Resident tasks launch only from a resident profile, in the Agent SDK, with the profile's harness, model and effort.",
   },
   // `as const satisfies` rather than a plain annotation: `satisfies` keeps the
   // exhaustiveness gate exactly as it was - a new kind still does not compile until it has
-  // answered all four questions - while `as const` keeps each answer's LITERAL type, which
+  // answered every question - while `as const` keeps each answer's LITERAL type, which
   // is what lets `HarnessLaunchedTaskKind` below be derived from this record instead of
   // being a second, hand-maintained list that can silently disagree with it.
 } as const satisfies Record<TaskKind, TaskKindBehavior>;
@@ -249,9 +334,58 @@ export function taskKindLaunchesHarness(kind: TaskKind): kind is HarnessLaunched
   return TASK_KIND_BEHAVIOR[kind].launch === "harness";
 }
 
+/**
+ * Why a task of this kind cannot carry a dispatch Persona, or null when it can.
+ *
+ * Every kind the Dispatch form offers can. A harness-launched kind carries it in its launch's
+ * standing instructions, and a pipeline carries it to its managed Engineer host the same way.
+ * A resident is the one exception: it takes its Persona from its resident profile, and a
+ * second source for the same answer would only disagree with it.
+ */
+export function taskKindPersonaRefusal(kind: TaskKind): string | null {
+  return TASK_KIND_BEHAVIOR[kind].launch === "resident"
+    ? `a ${TASK_KIND_INFO[kind].label} task takes its Persona from its resident profile`
+    : null;
+}
+
 /** Whether the external provider projection, rather than a host session, owns completion. */
 export function providerOwnsTaskCompletion(kind: TaskKind): boolean {
   return TASK_KIND_BEHAVIOR[kind].launch === "pipeline";
+}
+
+/**
+ * The runtime a kind always launches on, or null when the harness's configured runtime decides.
+ *
+ * A resident is an Agent SDK session by definition: its persona travels as standing
+ * instructions on the SDK channel and its lifetime is the embedded session's. Derived from
+ * `launch` so the answer cannot disagree with who owns the launch.
+ */
+export function taskKindForcedRuntime(kind: TaskKind): "sdk" | null {
+  return TASK_KIND_BEHAVIOR[kind].launch === "resident" ? "sdk" : null;
+}
+
+/**
+ * Why a session running a task of this kind cannot Continue in terminal, or null. A kind that
+ * forces the Agent SDK keeps its session there: its role is delivered on the SDK channel, and a
+ * terminal handoff would leave the kind's one runtime.
+ */
+export function taskKindTerminalHandoffRefusal(kind: TaskKind): string | null {
+  return taskKindForcedRuntime(kind) === "sdk"
+    ? `A ${TASK_KIND_INFO[kind].label} runs only in the Agent SDK, so it cannot continue in a terminal.`
+    : null;
+}
+
+/** Whether a task of this kind has a work unit id. Every kind but a resident run's. */
+export function taskKindHasWorkUnit(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].workUnit;
+}
+
+/**
+ * Whether a task created through MCP by a session running this kind joins that session's
+ * work unit by default. A plan's phase tasks do; work any other session files is its own.
+ */
+export function taskKindSessionJoinsWorkUnit(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].sessionTasksJoinWorkUnit;
 }
 
 /** Whether Foreman's unattended backlog loop may schedule this kind. */
@@ -279,6 +413,7 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: false,
   chat: false,
+  resident: false,
 };
 
 /**
@@ -301,14 +436,139 @@ const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: true,
   chat: false,
+  resident: false,
 };
 
 export const TASK_KIND_BACKLOG_REFUSAL =
   "Chat tasks must be launched immediately from Dispatch.";
 
+/** The refusal a resident task meets on any surface but its profile's Launch. */
+export const RESIDENT_TASK_REFUSAL =
+  "Resident tasks are launched from a resident profile. Launch a new resident instead.";
+
+/**
+ * Why a kind with no backlog cannot be stored, retried or edited into one. One sentence per
+ * kind, so a refusal names the surface that does launch it.
+ */
+const KIND_BACKLOG_REFUSALS: Record<TaskKind, string | null> = {
+  document: null,
+  ship: null,
+  bugfix: null,
+  scout: null,
+  plan: null,
+  pipeline: null,
+  chat: TASK_KIND_BACKLOG_REFUSAL,
+  resident: RESIDENT_TASK_REFUSAL,
+};
+
 export function taskKindAllowsBacklog(kind: TaskKind): boolean {
   return KIND_ALLOWS_BACKLOG[kind];
 }
+
+/** The sentence a backlog-only operation refuses this kind with. */
+export function taskKindBacklogRefusal(kind: TaskKind): string {
+  return KIND_BACKLOG_REFUSALS[kind] ?? TASK_KIND_BACKLOG_REFUSAL;
+}
+
+/**
+ * How a Recurring Mission may file this kind.
+ *
+ * - `backlog`: as ordinary backlog work. The kind's own backlog and autopilot answers apply
+ *   unchanged, so a scheduled Pipeline still waits for a manual start.
+ * - `scheduled-only`: a kind with no backlog of its own (`chat`) that a mission may still
+ *   file. Only a task the mission filed may sit in the backlog, and Foreman launches it like
+ *   any other run - otherwise every occurrence would wait for a click, which is not a
+ *   recurring mission. A chat dispatched by hand stays Dispatch-only.
+ * - `never`: no mission may file it.
+ */
+type KindScheduleFiling = "backlog" | "scheduled-only" | "never";
+
+const KIND_SCHEDULE_FILING: Record<TaskKind, KindScheduleFiling> = {
+  document: "backlog",
+  ship: "backlog",
+  bugfix: "backlog",
+  scout: "backlog",
+  plan: "backlog",
+  pipeline: "backlog",
+  chat: "scheduled-only",
+  resident: "never",
+};
+
+/** Whether a Recurring Mission's template may name this kind. */
+export function taskKindAllowsSchedule(kind: TaskKind): boolean {
+  return KIND_SCHEDULE_FILING[kind] !== "never";
+}
+
+/**
+ * Why a chat a Recurring Mission filed still cannot carry dependencies: the backlog row is only
+ * how its run reaches Foreman, and a conversation does not wait on other work.
+ */
+export const CHAT_DEPENDENCY_REFUSAL = "A chat cannot wait on other tasks. Remove its dependencies first.";
+
+/**
+ * Why a chat a Recurring Mission filed takes no after-work Workflow. A chat dispatched by hand
+ * may still opt into one in Dispatch; a mission's chat is the run the operator scheduled so
+ * that nothing reviews it afterwards.
+ */
+export const CHAT_WORKFLOW_REFUSAL = "A chat a recurring mission files runs no after-work Workflow.";
+
+/** Task kinds the Recurring Mission editor offers, in `TASK_KINDS` order. */
+export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
+
+/** The fields the task-level backlog answers read, so a draft answers as well as a `Task`. */
+export type BacklogCandidate = Pick<Task, "kind"> & { scheduleId?: string | null };
+
+/** A task of a `scheduled-only` kind that a Recurring Mission filed. */
+function scheduledOnlyTask(task: BacklogCandidate): boolean {
+  return KIND_SCHEDULE_FILING[task.kind] === "scheduled-only" && (task.scheduleId ?? null) !== null;
+}
+
+/**
+ * Whether this TASK may sit in the backlog and be launched from it.
+ *
+ * The kind's answer, plus a mission-filed task of a `scheduled-only` kind. Every gate that
+ * asks about an existing backlog row asks this rather than `taskKindAllowsBacklog`, so a
+ * scheduled chat can be edited, dispatched, retried and returned to its card on a failed
+ * launch exactly like the backlog work around it.
+ */
+export function taskAllowsBacklog(task: BacklogCandidate): boolean {
+  return taskKindAllowsBacklog(task.kind) || scheduledOnlyTask(task);
+}
+
+/** Whether Foreman's unattended backlog loop may launch this TASK. See `taskAllowsBacklog`. */
+export function taskAllowsBacklogAutopilot(task: BacklogCandidate): boolean {
+  return allowsBacklogAutopilot(task.kind) || scheduledOnlyTask(task);
+}
+
+/**
+ * Which creation surface may file a task of this kind.
+ *
+ * - `any`: every creator, durable producers included.
+ * - `dispatch`: only the manual Dispatch capability (`chat`).
+ * - `resident-launch`: only `ResidentManager.launch`, which reserves the run first. The
+ *   Dispatch form does not offer it as a kind and `DispatchSchema` refuses it.
+ */
+export type TaskKindCreator = "any" | "dispatch" | "resident-launch";
+
+const KIND_CREATOR: Record<TaskKind, TaskKindCreator> = {
+  document: "any",
+  ship: "any",
+  bugfix: "any",
+  scout: "any",
+  plan: "any",
+  pipeline: "any",
+  chat: "dispatch",
+  resident: "resident-launch",
+};
+
+export function taskKindCreator(kind: TaskKind): TaskKindCreator {
+  return KIND_CREATOR[kind];
+}
+
+/** Kinds the Single agent Dispatch form may offer: everything a profile does not launch. */
+export const DISPATCH_TASK_KINDS = TASK_KINDS.filter(
+  (kind) => taskKindCreator(kind) !== "resident-launch",
+);
 
 /** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */
 export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
@@ -325,7 +585,7 @@ export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
  * the backlog cannot restart.
  */
 export function taskRequeueRefusal(task: RequeueCandidate): string | null {
-  if (!taskKindAllowsBacklog(task.kind)) return TASK_KIND_BACKLOG_REFUSAL;
+  if (!taskKindAllowsBacklog(task.kind)) return taskKindBacklogRefusal(task.kind);
   if (task.kind === "pipeline" && task.pipelineCommissionId) {
     return "a Pipeline commission cannot return to the backlog; create a new Pipeline task";
   }
@@ -339,7 +599,29 @@ export function taskRequeueRefusal(task: RequeueCandidate): string | null {
       return "task is already in the backlog";
     case "done":
       return "task is done; its result is recorded, not re-run";
+    case "hibernated":
+      return "task is hibernated; resume it to continue its conversation";
   }
+}
+
+/**
+ * The kinds that offer Grill me first: every kind this app launches a harness for. Pipeline
+ * and resident are not here because nothing here launches them.
+ */
+export const GRILL_FIRST_TASK_KINDS = HARNESS_LAUNCHED_TASK_KINDS;
+export type GrillFirstTaskKind = (typeof GRILL_FIRST_TASK_KINDS)[number];
+
+export function isGrillFirstTaskKind(kind: TaskKind | null | undefined): kind is GrillFirstTaskKind {
+  return (GRILL_FIRST_TASK_KINDS as readonly string[]).includes(kind ?? "");
+}
+
+/**
+ * Whether a task's session interviews the human with the Grill action before it starts its
+ * work: Grill me first, as the task was pinned with. The one reading the skill gate, both
+ * delivery seams, the launch's tool grant and the dashboard take.
+ */
+export function taskGrillsFirst(task: Pick<Task, "kind" | "grillFirst"> | null | undefined): boolean {
+  return isGrillFirstTaskKind(task?.kind) && task?.grillFirst === true;
 }
 
 /**
@@ -562,21 +844,64 @@ export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
   return kind === "ship" || kind === "bugfix" || kind === "document";
 }
 
-const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
+/**
+ * The after-work Workflow each kind arms when nobody chose one, keyed by the kinds this app
+ * launches. `pipeline` has no entry: Conductor owns what runs after its work.
+ *
+ * These are the BUILT-IN answers. An operator overrides any of them in each kind's After work
+ * row under Settings -> Tasks (`WorkflowPolicy.kindWorkflowDefaults`), and a kind left
+ * unset there keeps following this record, so a later build can change a built-in and reach
+ * everyone who never chose.
+ */
+export const BUILTIN_KIND_WORKFLOW_DEFAULTS: Readonly<Record<HarnessLaunchedTaskKind, string | null>> = {
   document: DOCUMENTATION_REVIEW_WORKFLOW_ID,
-  ship: undefined,
-  scout: undefined,
+  ship: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  scout: null,
   plan: PLAN_VALIDATION_WORKFLOW_ID,
-  pipeline: undefined,
-  chat: undefined,
+  chat: null,
   bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
 };
 
-export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
-  return KIND_WORKFLOW_DEFAULTS[kind] !== undefined;
+/**
+ * The operator's per-kind choices. An absent kind follows `BUILTIN_KIND_WORKFLOW_DEFAULTS`;
+ * `null` is an explicit None; a string is a workflow identity, resolved to its newest
+ * published version when the session is bound.
+ */
+export type KindWorkflowDefaults = Partial<Record<HarnessLaunchedTaskKind, string | null>>;
+
+/**
+ * The Workflow a new task of this kind arms when its creator named none.
+ *
+ * Explicit None and workflow choices bypass this default at the caller. Every creation path
+ * resolves through here - the dispatch form, `POST /api/tasks`, task-source sweeps and the
+ * Recurring Mission editor - so a row set in Settings reaches all of them.
+ */
+export function taskDefaultWorkflowId(
+  kind: TaskKind,
+  configured: KindWorkflowDefaults,
+  storage: "repository" | "local" = "repository",
+): string | null {
+  if (!taskKindLaunchesHarness(kind)) return null;
+  // A locally stored plan has no checkout files and no planning PR, so the repository Plan
+  // Validation (and any row aimed at it) cannot review it.
+  if (kind === "plan" && storage === "local") return LOCAL_PLAN_VALIDATION_WORKFLOW_ID;
+  const chosen = configured[kind];
+  return chosen === undefined ? BUILTIN_KIND_WORKFLOW_DEFAULTS[kind] : chosen;
 }
 
-/** Explicit None and workflow choices bypass this default at the caller. */
-export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null, storage: "repository" | "local" = "repository"): string | null {
-  return kind === "plan" && storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
+/**
+ * The kinds whose row names this workflow, in registry order, for the archive and delete
+ * guards: a workflow a row still points at cannot be retired from under it.
+ */
+export function kindsDefaultingToWorkflow(
+  workflowId: string,
+  configured: KindWorkflowDefaults,
+): HarnessLaunchedTaskKind[] {
+  return HARNESS_LAUNCHED_TASK_KINDS.filter((kind) => configured[kind] === workflowId);
+}
+
+/** Missing markers on historical tasks still mean a repository. Only residents may opt out. */
+export function taskHasRepository(task: { kind?: TaskKind; workspaceKind?: "resident-workspace" | null }): boolean {
+  return !(task.kind && TASK_KIND_BEHAVIOR[task.kind].repoAvailability === "optional"
+    && task.workspaceKind === "resident-workspace");
 }

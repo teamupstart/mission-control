@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import type { LineStageId, LineStageSummary, LineSummary } from "@shared/line.ts";
 import { LINE_STAGES, LINE_STAGE_LABELS, lineStage } from "@shared/line.ts";
 import type { LineDensity } from "@shared/protocol.ts";
-import { lineUrgentReadout, nextLineDensity } from "../lib/line-density.ts";
+import { lineUrgentReadout, nextLineDensity, type LineChoice } from "../lib/line-density.ts";
 import { lineStageHasDrawer } from "../lib/line-targets.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -110,6 +110,94 @@ function stageTooltip(fold: LineStageSummary): string {
 /** The id the drawer's region carries, so an expanded stage button can point at it. */
 export const LINE_DRAWER_DOM_ID = "line-drawer";
 
+/**
+ * The `aria-expanded` and `aria-controls` pair for one stage button, or nothing.
+ *
+ * Only the stages that OPEN something are expandable. Announcing `aria-expanded="false"` on
+ * Working - which clears the filter - would promise a panel that no press produces.
+ */
+function stageDisclosure(
+  stage: LineStageId,
+  openStage: LineStageId | null,
+): Pick<React.ButtonHTMLAttributes<HTMLButtonElement>, "aria-expanded" | "aria-controls"> {
+  if (!lineStageHasDrawer(stage)) return {};
+  return {
+    "aria-expanded": openStage === stage,
+    ...(openStage === stage ? { "aria-controls": LINE_DRAWER_DOM_ID } : {}),
+  };
+}
+
+/**
+ * The stages the dock carries: every stage whose click opens a drawer, read off the target
+ * table so a stage retargeted away from a drawer leaves the dock with it. Working is not one,
+ * and the dock has no use for it anyway - the rail it sits in IS the Working stage.
+ */
+export const LINE_DOCK_STAGES: readonly LineStageId[] = LINE_STAGES.filter(lineStageHasDrawer);
+
+/** What the dock needs from App: the same four things the strip is handed. */
+export interface LineDockProps {
+  summary: LineSummary | null;
+  openStage: LineStageId | null;
+  stageRef?: (stage: LineStageId, button: HTMLButtonElement | null) => void;
+  onStage: (stage: LineStageId) => void;
+}
+
+/**
+ * The Line's drawer stages, for a fleet that has switched the Line off.
+ *
+ * Disabling the Line removes the strip, and the strip was the only door to its five drawers.
+ * The Board keeps a Backlog column; the Console has nothing. So the Console draws this in the
+ * strip's place, and only while the strip is not drawn - two doors to one drawer would be two
+ * answers to "which button is open".
+ *
+ * It is the strip's stage buttons in a smaller register, not a second opinion about them: the
+ * same `line_summary` fold, the same tone, the same accessible name and tooltip, and the same
+ * `onStage` handler, so a press here and a press on the strip are one gesture. It computes
+ * nothing either.
+ *
+ * `row` sits under the rail's head, each stage a glyph, a count and its name. `column` is the
+ * folded rail's 40px strip, where only the glyph and the count fit; the name is still in the
+ * accessible name and the tooltip.
+ */
+export function LineStageDock({
+  summary,
+  openStage,
+  stageRef,
+  onStage,
+  orientation = "row",
+}: LineDockProps & { orientation?: "row" | "column" }): React.JSX.Element {
+  const column = orientation === "column";
+  return (
+    <div
+      className={`line-dock${column ? " is-column" : ""}`}
+      role="group"
+      aria-label="Line drawers"
+    >
+      {LINE_DOCK_STAGES.map((stage) => {
+        const fold = lineStage(summary, stage) ?? blankStage(stage);
+        return (
+          <Tooltip key={stage} label={stageTooltip(fold)}>
+            <button
+              type="button"
+              ref={stageRef ? (el) => stageRef(stage, el) : undefined}
+              className={`line-dock-stage tone-${fold.tone}${openStage === stage ? " is-open" : ""}`}
+              aria-label={stageLabel(fold)}
+              {...stageDisclosure(stage, openStage)}
+              onClick={() => onStage(stage)}
+            >
+              <span className="ld-glyph" aria-hidden>{LINE_STAGE_GLYPHS[stage]}</span>
+              <span className="ld-count" aria-hidden>{fold.count}</span>
+              {!column && (
+                <span className="ld-name" aria-hidden>{LINE_STAGE_LABELS[stage]}</span>
+              )}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LineStrip({
   summary,
   density = "expanded",
@@ -117,13 +205,14 @@ export function LineStrip({
   stageRef,
   onStage,
   onDensity,
+  preview = false,
 }: {
   /** The daemon's fold, or null before the first snapshot lands. */
   summary: LineSummary | null;
   /**
    * How much the strip says. `expanded` is the two-line strip at 86px; `condensed` drops
    * the sentences and the wires for a single 38.5px row, handing 47.5px to the
-   * conversation below.
+   * conversation below; `hidden` renders nothing at all.
    *
    * Defaulted to `expanded` rather than to the product default, which is `condensed`. The
    * default here is for a CALLER that forgot the prop, and the honest answer to that is
@@ -131,7 +220,7 @@ export function LineStrip({
    * because of a missing prop. The product default lives in `UI_CONFIG_DEFAULTS`, where
    * one line decides it, and `App` passes it in.
    */
-  density?: LineDensity;
+  density?: LineChoice;
   /**
    * Which stage's drawer is showing, or null. The strip does not own this - App does - and
    * it is passed IN rather than held here because the drawer is a sibling of the strip, not
@@ -155,8 +244,18 @@ export function LineStrip({
    * `renderToStaticMarkup` tests and the tour render the strip without wiring a store.
    */
   onDensity?: (next: LineDensity) => void;
-}): React.JSX.Element {
+  /**
+   * A picture of the strip - the Settings preview - rather than the fleet's own. It does not
+   * register as the See work tour's `see-work:line` target: a tour started from Settings
+   * would otherwise find this copy, and lose it when the page changes to the fleet, in place
+   * of the strip the tour is about.
+   */
+  preview?: boolean;
+}): React.JSX.Element | null {
   const tourRef = useTourTargetRef<HTMLElement>("see-work:line");
+  // Switched off in Settings. Nothing at all rather than a zero-height band: an empty `nav`
+  // named "The Line" would still be announced as a landmark that holds nothing.
+  if (density === "hidden") return null;
   const condensed = density === "condensed";
   // Only condensed spends a row on this, and only when a stage is actually asking for a
   // person. Expanded already prints every sentence in full under its own stage.
@@ -169,7 +268,7 @@ export function LineStrip({
 
   return (
     <nav
-      ref={tourRef}
+      ref={preview ? undefined : tourRef}
       className={`line${condensed ? " is-condensed" : ""}`}
       aria-label="The Line"
     >
@@ -201,15 +300,7 @@ export function LineStrip({
                 openStage === fold.stage ? " is-open" : ""
               }`}
               aria-label={stageLabel(fold)}
-              // Only the stages that OPEN something are expandable. Announcing
-              // `aria-expanded="false"` on Working - which clears the filter - would promise
-              // a panel that no press produces.
-              {...(lineStageHasDrawer(fold.stage)
-                ? {
-                    "aria-expanded": openStage === fold.stage,
-                    ...(openStage === fold.stage ? { "aria-controls": LINE_DRAWER_DOM_ID } : {}),
-                  }
-                : {})}
+              {...stageDisclosure(fold.stage, openStage)}
               onClick={() => onStage(fold.stage)}
             >
               <span className="ls-head">

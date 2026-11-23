@@ -101,7 +101,7 @@ export function ResetModal({
           </button>
         </Tooltip>
         <Tooltip label={`Discard the changes listed above, reset to ${target}, and clear the agent's context`}>
-          <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
+          <button data-dialog-default className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
             {busy ? "Resetting…" : "Reset & clear"}
           </button>
         </Tooltip>

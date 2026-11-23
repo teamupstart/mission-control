@@ -39,12 +39,20 @@ process.env.HARNESS_HOME = home;
 // which differ per machine and must not be recorded in a committed fixture.
 const repos = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
 process.env.MISSION_WORKSPACE_DIRS = repos;
+// The same for Claude's user settings, which `GET /api/harnesses/advisor` reads: a path that
+// does not exist, so the fixture records "no advisor configured" on every machine.
+process.env.CLAUDE_SETTINGS_PATH = join(repos, "no-claude-settings.json");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// The oracle records the route surface as built, the hidden ai-conductor routes included, so
+// its fixture does not churn with the switch. `conductor-integration-switch.test.ts` pins what
+// those routes answer while the integration is hidden.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 const { openDb } = await import("../src/server/db.ts");
 const { reconcileSkills } = await import("../src/server/skills/config.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
@@ -82,6 +90,11 @@ const HOST_PROBING = new Set([
   // configured directory itself is pinned by MISSION_WORKSPACE_DIRS and does appear.
   "GET /api/repo-index",
   "POST /api/repo-index/rescan",
+  // The resident catalog enumerates installed global and operator-registered skills.
+  // Scanner values and bounds are pinned separately with disposable source fixtures.
+  "GET /api/residents/skills",
+  "POST /api/residents/skills/rescan",
+  "PUT /api/residents/skill-sources",
   // Carries provider probes that look for a local `conduct-ts` install. This one passed on the
   // Node 24 runner and failed on the Node 26 one, which is the clearest possible evidence that
   // what it reports is the machine and not the route.
@@ -232,6 +245,7 @@ const SETUP_PROBES = {
     throw new Error("not probed in the oracle");
   },
   terminalTargets: () => [],
+  repositoryIndex: async () => ({ repoCount: 1, directories: [{ path: "~/fixture", status: "ok", repoCount: 1 }] }),
   environmentChecks: async () => [
     {
       id: "upstartclaw-core-setup",

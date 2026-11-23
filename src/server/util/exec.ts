@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { refreshLoginShellPath } from "./path-env.ts";
 import { executableLocator } from "../executables/locator.ts";
@@ -82,6 +82,72 @@ export interface RunResult {
   outcomeUnknown: boolean;
   /** stdout exceeded `maxBuffer`. Retrying the same command cannot produce less. */
   overflowed: boolean;
+  /**
+   * `run` killed the child because it reached `timeoutMs`. One of the causes behind
+   * `outcomeUnknown`, kept apart so a message can say "timed out after 15 s" rather than
+   * the "exit 1" a killed child's coerced code would print.
+   *
+   * Optional where `outcomeUnknown` is required: it only words a failure and never decides
+   * one, so a stub that leaves it out loses a better message, never a safety check.
+   */
+  timedOut?: boolean;
+  /** The signal that ended the child, ours at a timeout or anybody else's. Null when it exited. */
+  signal?: string | null;
+  /** The timeout the child ran under, so a timeout can be named with its length. */
+  timeoutMs?: number;
+  /**
+   * The `cwd` this run asked for, when it did not exist and nothing was spawned.
+   *
+   * Node reports a missing working directory as `spawn <binary> ENOENT` - the same code
+   * and message as a missing binary - so every caller that reads ENOENT as "not installed"
+   * told an operator with the tool installed to go and install it. This is the fact those
+   * classifiers check first. Absent on every other result, including hand-built stubs,
+   * which model a process that ran.
+   */
+  missingCwd?: string;
+}
+
+/**
+ * How a child that never reported its own exit ended: "timed out after 15 s" or "was killed
+ * by SIGKILL". Null for a child that exited by itself, and for an overflow, which is a fact
+ * about the output rather than about the child.
+ */
+export function unansweredOutcome(result: RunResult): string | null {
+  if (result.overflowed) return null;
+  if (result.timedOut) {
+    return result.timeoutMs === undefined ? "timed out" : `timed out after ${seconds(result.timeoutMs)} s`;
+  }
+  if (result.signal) return `was killed by ${result.signal}`;
+  return null;
+}
+
+/**
+ * One failed command in words: "`<step>` timed out after 15 s", "`<step>` was killed by
+ * SIGKILL", or "`<step>` failed: " and its stderr or exit code. A command that did not exit
+ * never reads as "exit 1".
+ */
+export function describeCommandFailure(step: string, result: RunResult): string {
+  const unanswered = unansweredOutcome(result);
+  return unanswered
+    ? `${step} ${unanswered}`
+    : `${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`;
+}
+
+/** The same words without a step, for a message that already names the command. */
+export function commandFailureText(result: RunResult): string {
+  return unansweredOutcome(result) ?? (result.stderr.trim() || `exit ${result.code}`);
+}
+
+function seconds(ms: number): number {
+  return Math.round(ms / 100) / 10;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -147,6 +213,7 @@ export async function run(
     };
   }
   const resolved = executable.path;
+  const timeoutMs = opts.timeoutMs ?? 4000;
   return await new Promise((resolve) => {
     let child: ReturnType<typeof execFile>;
     let childPid: number | null = null;
@@ -155,7 +222,7 @@ export async function run(
         resolved,
         args,
         {
-          timeout: opts.timeoutMs ?? 4000,
+          timeout: timeoutMs,
           maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
           windowsHide: true,
           cwd: opts.cwd,
@@ -192,15 +259,33 @@ export async function run(
           const e = err as { killed?: unknown; signal?: unknown } | null;
           const outcomeUnknown =
             !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
+          // Node sets `killed` only for a kill it sent itself, and without an overflow the
+          // one kill it sends is the timeout's.
+          const timedOut = outcomeUnknown && e?.killed === true;
+          // Checked only after an ENOENT refusal, so the hot path pays no extra stat and the
+          // answer describes the directory at the moment the spawn actually failed.
+          const missingCwd =
+            spawnRefused &&
+            (err as { code?: unknown }).code === "ENOENT" &&
+            opts.cwd !== undefined &&
+            !isDirectory(opts.cwd)
+              ? opts.cwd
+              : undefined;
           resolve({
             stdout: stdout ?? "",
             stderr: overflowed
               ? (err.message ?? "maxBuffer exceeded")
-              : (stderr ?? "") || (spawnRefused ? err.message : ""),
+              : missingCwd !== undefined
+                ? `${bin} could not start because its working directory ${missingCwd} does not exist`
+                : (stderr ?? "") || (spawnRefused ? err.message : ""),
             code,
             childPid,
             outcomeUnknown,
             overflowed,
+            timedOut,
+            signal: typeof e?.signal === "string" ? e.signal : null,
+            timeoutMs,
+            ...(missingCwd !== undefined ? { missingCwd } : {}),
           });
         },
       );

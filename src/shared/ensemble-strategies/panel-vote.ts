@@ -218,12 +218,12 @@ export const PanelVoteConfigSchema = z
       .array(PanelVoteMemberSchema)
       .min(PANEL_VOTE_MIN_MEMBERS)
       .max(PANEL_VOTE_MAX_MEMBERS)
-      .default([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
+      .prefault([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
     judges: z
       .array(PanelVoteJudgeSchema)
       .min(PANEL_VOTE_MIN_JUDGES)
       .max(PANEL_VOTE_MAX_JUDGES)
-      .default(DEFAULT_JUDGES),
+      .prefault(DEFAULT_JUDGES),
     /**
      * Persisted, always `true`, and NOT an operator control - see the consensus strategy's copy of
      * this field for the argument. The panel packet is unconditionally anonymous, so this states

@@ -12,10 +12,52 @@ import type { TypeOf, ZodTypeAny } from "zod";
 export async function parseBody<S extends ZodTypeAny>(
   c: Context,
   schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
-  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
+  /**
+   * `strict`: a body that is present but is not JSON is refused with a 400, instead of being
+   * read as `{}`. For a route whose defaults DO something - a pause's `{}` freezes now, Pause
+   * all's holds launches - a garbled request must not quietly become the default action. An
+   * absent or empty body still reads as `{}`.
+   */
+  options: { strict?: boolean } = {},
+): Promise<
+  | { ok: true; data: TypeOf<S> }
+  | {
+    ok: false;
+    error: string;
+    /** The schema's issues, in order, when the body was read but failed it; absent otherwise. */
+    issues?: readonly { message: string }[];
+    res: Response;
+  }
+> {
+  let raw: unknown = {};
+  if (options.strict) {
+    let text: string;
+    try {
+      text = await c.req.text();
+    } catch {
+      // Not the same as an empty body: a body that could not be read must not become `{}`.
+      const error = "the request body could not be read";
+      return { ok: false, error, res: c.json({ error }, 400) };
+    }
+    if (text.trim() !== "") {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        const error = "the request body is not valid JSON";
+        return { ok: false, error, res: c.json({ error }, 400) };
+      }
+    }
+  } else {
+    raw = await c.req.json().catch(() => ({}));
+  }
+  const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
+    return {
+      ok: false,
+      error: parsed.error.message,
+      issues: parsed.error.issues,
+      res: c.json({ error: parsed.error.message }, 400),
+    };
   }
   return { ok: true, data: parsed.data };
 }

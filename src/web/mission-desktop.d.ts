@@ -2,9 +2,9 @@
 // Present only when running inside the Electron shell; the plain browser build
 // leaves `window.missionDesktop` undefined, so every caller must guard on it.
 
-import type { UpdateSnapshot } from "@shared/update.ts";
+import type { UpdateApplyOutcome, UpdateSnapshot } from "@shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "@shared/update-dialog.ts";
-import type { SessionControlAuthorization } from "@shared/session-control-authorization.ts";
+import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "@shared/session-control-authorization.ts";
 
 export {};
 
@@ -23,6 +23,12 @@ declare global {
     claimProductIssueAuthorization?(): string | null;
     claimSessionControlAuthorization?(): string | null;
     authorizeSessionControl?(capability: string, input: SessionControlAuthorization): boolean;
+    /**
+     * Arm one resident launch - request, profile and revision - for the session-control grant,
+     * only inside a trusted Launch click and only for the module holding the session-control
+     * capability. Optional for an older preload beside a newer dashboard.
+     */
+    authorizeResidentLaunch?(capability: string, input: ResidentLaunchAuthorization): boolean;
     /** Arm one exact report only for the module that claimed the private capability. */
     authorizeProductIssue?(
       capability: string,
@@ -41,6 +47,8 @@ declare global {
       repairMigration?(): Promise<void>;
       cancel(): Promise<void>;
       defer(): Promise<void>;
+      /** Optional for an older preload beside a newer dashboard. */
+      dismissOutcome?(outcome: UpdateApplyOutcome): Promise<boolean>;
       onState(cb: (snapshot: UpdateSnapshot) => void): () => void;
       /**
        * Subscribe to the update questions the shell needs answered, and announce that this
@@ -76,6 +84,13 @@ declare global {
      * again by an edit that still typechecks. Add later members the same way.
      */
     setCardJumpKeys?(claimed: boolean): Promise<void>;
+    /**
+     * Report the applied skin's background (`#rrggbb`), so the window repaints behind the page.
+     * It persists nothing: the next launch's colour comes from the daemon, from the stored skin.
+     * Optional for `setCardJumpKeys`'s reason: an older preload
+     * beside a newer bundle has no such member. Only `src/web/lib/skin.ts` calls it.
+     */
+    setWindowBackground?(color: string): Promise<void>;
     /** Subscribe to the native Settings… menu item (⌘,). Returns an unsubscribe. */
     onOpenSettings(cb: () => void): () => void;
   }

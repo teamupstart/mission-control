@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -9,6 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { realHelperLockOperations, parseClaimEntryName, parseStagingEntryName, HELPER_LOCK_DIR_NAME, type LockOperations } from "../../scripts/update-lock.mjs";
+import { withMigrationLockSync } from "../../scripts/install-migration.mjs";
 import { stateDir } from "../shared/harness-runtime.mjs";
 import type { UpdateApplyOutcome } from "../shared/update.ts";
 import { logMain } from "./main-log.ts";
@@ -77,18 +79,27 @@ export function readUpdateOutcome(path = updateOutcomePath()): UpdateApplyOutcom
 
 /** Read and remove a marker so a surfaced result cannot recur forever. */
 export function consumeUpdateOutcome(path = updateOutcomePath()): UpdateApplyOutcome | null {
-  const outcome = readUpdateOutcome(path);
-  if (outcome) rmSync(path, { force: true });
-  return outcome;
+  if (!existsSync(path)) return null;
+  return withMigrationLockSync(dirname(path), () => {
+    const outcome = readUpdateOutcome(path);
+    if (outcome) rmSync(path, { force: true });
+    return outcome;
+  });
 }
 
-export function clearUpdateOutcome(path = updateOutcomePath(), expected?: UpdateApplyOutcome): void {
-  if (expected) {
-    const current = readUpdateOutcome(path);
-    if (!current || current.result !== expected.result || current.targetVersion !== expected.targetVersion || current.recordedAt !== expected.recordedAt ||
-      (current.result === "failure" && expected.result === "failure" && current.message !== expected.message)) return;
-  }
-  rmSync(path, { force: true });
+/** False means the expected marker is absent or has been replaced. */
+export function clearUpdateOutcome(path = updateOutcomePath(), expected?: UpdateApplyOutcome): boolean {
+  // Every helper and recovery writer holds this same lock before publishing an
+  // outcome. Keep comparison and removal inside ownership, not merely the read.
+  return withMigrationLockSync(dirname(path), () => {
+    if (expected) {
+      const current = readUpdateOutcome(path);
+      if (!current || current.result !== expected.result || current.targetVersion !== expected.targetVersion || current.recordedAt !== expected.recordedAt ||
+        (current.result === "failure" && expected.result === "failure" && current.message !== expected.message)) return false;
+    }
+    rmSync(path, { force: true });
+    return true;
+  });
 }
 
 /** The freshly opened app starts before its helper can publish the verified outcome. */

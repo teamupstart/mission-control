@@ -288,6 +288,20 @@ export function SessionActionLibrary({
     }
   }
 
+  async function reset(action: SessionAction, apply: (reset: SessionAction) => void): Promise<void> {
+    try {
+      const restored = await sessionActionRequest<SessionAction>(
+        `/api/session-actions/${action.id}/reset`,
+        { method: "POST", body: JSON.stringify({ expectedRevision: action.revision }) },
+      );
+      apply(restored);
+      setDirty(false);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not reset this session action");
+    }
+  }
+
   return (
     <section className="wf-action-library">
       <aside className="wf-action-sidebar" aria-label="Session action library" ref={tourRailRef}>
@@ -406,6 +420,19 @@ export function SessionActionLibrary({
                 confirmHint: "Retire this action from new workflows, keeping published history",
                 danger: true,
                 onConfirm: () => void archive(action),
+              });
+            }}
+            onReset={(action, apply) => {
+              setConfirm({
+                title: `Reset ${action.name}`,
+                body: `${action.name} goes back to the instruction this build shipped with, and `
+                  + "your edited instruction is discarded"
+                  + (dirty ? ", along with the unsaved changes in the editor." : ".")
+                  + " Tasks already started keep what they were sent.",
+                confirmLabel: "Reset to built-in",
+                confirmHint: "Discard the edited instruction and use the shipped one",
+                danger: true,
+                onConfirm: () => void reset(action, apply),
               });
             }}
             footer={selected ? (

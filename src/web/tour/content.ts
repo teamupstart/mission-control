@@ -1,3 +1,4 @@
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { TOUR_CONTENT_SOURCES } from "./content.generated.ts";
 import type { TourId, TourStep, TourStopDetail } from "./contracts.ts";
 
@@ -16,6 +17,21 @@ export class TourContentError extends Error {}
 
 const STAGE_MARKER = /^<!--\s*stage:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*-->$/;
 const DETAIL = /^-\s+\*\*(.+?):\*\*\s+(.+)$/;
+/** A trailing `<!-- requires: <id> -->` on a definition entry: shown only while `<id>` is on. */
+const REQUIRES = /\s*<!--\s*requires:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*-->$/;
+
+/**
+ * Which optional integrations this build offers, by the id a tour entry names in `requires`.
+ *
+ * An entry describing something a build has switched off would teach a control that is not
+ * there, so the copy stays authored and the switch decides whether it is shown. A requirement
+ * missing from this table is an authoring error, refused like any other malformed entry.
+ */
+export type TourRequirements = Readonly<Record<string, boolean>>;
+
+export const TOUR_REQUIREMENTS: TourRequirements = {
+  "ai-conductor": CONDUCTOR_INTEGRATION_ENABLED,
+};
 const BULLET = /^-(?:\s+|$)/;
 
 function prose(lines: readonly string[]): string {
@@ -35,7 +51,12 @@ function prose(lines: readonly string[]): string {
   return paragraphs.join("\n\n");
 }
 
-function parseStageBody(slug: string, stageId: string, lines: readonly string[]): {
+function parseStageBody(
+  slug: string,
+  stageId: string,
+  lines: readonly string[],
+  requirements: TourRequirements,
+): {
   description: string;
   details?: readonly TourStopDetail[];
 } {
@@ -48,7 +69,19 @@ function parseStageBody(slug: string, stageId: string, lines: readonly string[])
     const match = DETAIL.exec(line);
     if (match) {
       readingDetails = true;
-      details.push({ label: match[1]!.trim(), description: match[2]!.trim() });
+      const required = REQUIRES.exec(match[2]!);
+      if (required) {
+        // Own keys only: an inherited name such as `constructor` is not a requirement.
+        const offered = Object.hasOwn(requirements, required[1]!) ? requirements[required[1]!] : undefined;
+        if (offered === undefined) {
+          throw new TourContentError(
+            `tour ${slug} stage ${stageId} requires unknown integration ${required[1]}`,
+          );
+        }
+        if (!offered) continue;
+      }
+      const description = (required ? match[2]!.slice(0, required.index) : match[2]!).trim();
+      details.push({ label: match[1]!.trim(), description });
       continue;
     }
     if (BULLET.test(line)) {
@@ -72,7 +105,11 @@ function parseStageBody(slug: string, stageId: string, lines: readonly string[])
 }
 
 /** Parse the deliberately small Markdown shape documented in `tours/README.md`. */
-export function parseTourContent(slug: string, markdown: string): TourContent {
+export function parseTourContent(
+  slug: string,
+  markdown: string,
+  requirements: TourRequirements = TOUR_REQUIREMENTS,
+): TourContent {
   const lines = markdown.replaceAll("\r\n", "\n").split("\n");
   const h1 = lines.findIndex((line) => line.startsWith("# "));
   if (h1 < 0 || !lines[h1]!.slice(2).trim()) {
@@ -110,7 +147,7 @@ export function parseTourContent(slug: string, markdown: string): TourContent {
     const stageId = marker[1]!;
     if (stages[stageId]) throw new TourContentError(`tour ${slug} repeats stage ${stageId}`);
     const body = section.slice(markerIndex + 1);
-    stages[stageId] = { title: stageTitle, ...parseStageBody(slug, stageId, body) };
+    stages[stageId] = { title: stageTitle, ...parseStageBody(slug, stageId, body, requirements) };
   }
 
   return { title, stages };

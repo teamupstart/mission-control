@@ -1,8 +1,8 @@
-import { loadPiExtensionMetadata } from "../src/server/extensions/pi-candidate.ts";
+import { loadPiExtensionMetadata, PI_EXTENSION_LOAD_TIMEOUT_MS } from "../src/server/extensions/pi-candidate.ts";
 // Health is read-only, bounded, and uses the same manifest and bridge as publication.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, writeFileSync, symlinkSync, rmSync, lstatSync, realpathSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, writeFileSync, symlinkSync, rmSync, lstatSync, realpathSync, existsSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { inspectPiExtension, canInstallPiExtension, piExtensionLinkPath } from "../src/server/environment/pi-extension.ts";
@@ -31,6 +31,22 @@ function setBridge(source: string) {
 function setExtension(source: string) {
   for (const file of [expected, installed]) { writeFileSync(file, source); sealPiIntegration(dirname(file)); }
 }
+async function waitForBridgeProbe(path: string, count: number, probe: ReturnType<typeof missionToolsAvailability>) {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const check = () => {
+    if (readFileSync(path, "utf8").length >= count) markStarted();
+  };
+  const watcher = watch(path, check);
+  try {
+    check();
+    // The real extension load and MCP handshake already have their own deadlines.
+    const early = await Promise.race([started, probe]);
+    assert.equal(early, undefined, `probe ${count} finished before its bridge started`);
+  } finally {
+    watcher.close();
+  }
+}
 beforeEach(() => {
   rmSync(root, { recursive: true, force: true }); mkdirSync(extensions, { recursive: true });
   process.env.MISSION_HOME = join(root, "state");
@@ -42,7 +58,7 @@ beforeEach(() => {
 after(() => { process.env = previous; rmSync(root, { recursive: true, force: true }); });
 
 test("environment IDs preserve every earlier index and append Pi", () => {
-  assert.deepEqual(ENVIRONMENT_CHECK_IDS, ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"]);
+  assert.deepEqual(ENVIRONMENT_CHECK_IDS.slice(0, 3), ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"]);
 });
 test("never installed is silent but unavailable; enabled missing link warns and allows repair", async () => {
   assert.equal((await inspectPiExtension()).warning, null);
@@ -80,6 +96,23 @@ test("timeout uses SIGKILL even for a module ignoring SIGTERM", async () => {
   const start = Date.now();
   assert.equal((await loadPiExtensionMetadata(realpathSync(installed), 200)).loaded, false);
   assert.ok(Date.now() - start < 3000);
+});
+test("the default load bound admits a healthy extension slower than 3s and still refuses one slower than 15s", async () => {
+  // At the old 3s default a loaded Mac's Node startup alone ran past the bound, and a healthy
+  // candidate was refused as one that "could prevent Pi sessions from starting". A module that
+  // only becomes loadable after each delay shows which side of the bound it falls on.
+  const slow = (name: string, delayMs: number) => {
+    const path = join(root, name, "extension.js");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `await new Promise((resolve) => setTimeout(resolve, ${delayMs})); export default function () {}`);
+    return realpathSync(path);
+  };
+  assert.equal((await loadPiExtensionMetadata(slow("slow-healthy", 3_500))).loaded, true,
+    "a module ready after 3.5s loads under the default bound");
+  const start = Date.now();
+  assert.equal((await loadPiExtensionMetadata(slow("too-slow", PI_EXTENSION_LOAD_TIMEOUT_MS + 1_500))).loaded, false,
+    "a module that would only be ready after 16.5s is refused at the default bound");
+  assert.ok(Date.now() - start < PI_EXTENSION_LOAD_TIMEOUT_MS + 1_500, "refused at the bound, not after the module finished");
 });
 test("loads canonical target and probes the MCP child with daemon secrets scrubbed", async () => {
   process.env.MISSION_API_TOKEN = "must-not-leak"; process.env.MISSION_API_TOKEN_FILE = "/must-not-leak";
@@ -215,11 +248,12 @@ test("a slower earlier dispatch probe cannot overwrite a newer completed health 
   const started = join(root, "first-bridge-started");
   const release = join(root, "release-first-bridge");
   const probes = join(root, "bridge-probes");
+  writeFileSync(probes, "");
   setBridge( `import {createInterface} from 'node:readline';
     import {existsSync,writeFileSync,appendFileSync} from 'node:fs';
     const first = !existsSync(${JSON.stringify(started)});
-    appendFileSync(${JSON.stringify(probes)}, 'x');
     writeFileSync(${JSON.stringify(started)}, 'started');
+    appendFileSync(${JSON.stringify(probes)}, 'x');
     const tools = ${JSON.stringify(MISSION_MCP_TOOLS.map(name => ({ name })))};
     createInterface({input:process.stdin}).on('line', async line => {
       const m=JSON.parse(line); if (!m.id) return;
@@ -233,9 +267,7 @@ test("a slower earlier dispatch probe cannot overwrite a newer completed health 
   symlinkSync(installed, link);
   const older = missionToolsAvailability("pi");
   try {
-    const deadline = Date.now() + 5000;
-    while (!existsSync(started) && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
-    assert.ok(existsSync(started), "the older probe reached its bridge before the newer one starts");
+    await waitForBridgeProbe(probes, 1, older);
     assert.equal((await missionToolsAvailability("pi")).available, true);
   } finally { writeFileSync(release, "released"); }
   assert.equal((await older).available, false);
@@ -265,21 +297,22 @@ test("completed health can serve continued arrivals while a newer probe is pendi
         : {protocolVersion:'2025-06-18',capabilities:{},serverInfo:{name:'fixture',version:'1'}}}));
     });`);
   symlinkSync(installed, link);
-  const waitForProbes = async (count: number) => {
-    const deadline = Date.now() + 5000;
-    while (readFileSync(probes, "utf8").length < count && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
-    assert.equal(readFileSync(probes, "utf8").length, count);
-  };
   const first = missionToolsAvailability("pi");
   let second: ReturnType<typeof missionToolsAvailability> | undefined;
   try {
-    await waitForProbes(1);
+    await waitForBridgeProbe(probes, 1, first);
+    // The newer probe takes its sequence synchronously inside this call, so it is pending from
+    // here on whether or not its bridge has started. Waiting for that start before releasing the
+    // first probe would stretch the first one's 15-second handshake budget across a second cold
+    // `node` start, which under full-suite contention outlasts it.
     second = missionToolsAvailability("pi");
-    await waitForProbes(2);
     writeFileSync(firstRelease, "released");
     assert.equal((await first).available, true);
     const arrivals = await Promise.all(Array.from({ length: 4 }, () => missionToolsAvailability("pi")));
     assert.ok(arrivals.every(result => result.available));
+    // An arrival that probed would have logged its bridge before it resolved, so once the newer
+    // probe's own bridge is in, exactly two means no arrival probed.
+    await waitForBridgeProbe(probes, 2, second);
     assert.equal(readFileSync(probes, "utf8"), "xx", "continued arrivals reuse the completed result while the newer probe is pending");
   } finally {
     writeFileSync(firstRelease, "released"); writeFileSync(secondRelease, "released");

@@ -196,19 +196,16 @@ test("an Ensemble goes out through Review then Launch, and never files a task", 
   const task = "Compare two ways to cap the poller's retries.";
   await fillBrief(dashboard, dialog, daemon.repo, task);
 
-  // The Single form's launch chord does nothing here. Ensemble's primary is a deliberate
-  // two-step, and a chord that filed this brief as one task would be the Single payload
-  // leaving from the Ensemble form.
+  // The shared default-action chord follows Ensemble's deliberate Review-then-Launch
+  // flow. The first press previews the plan and never files the brief as a Single task.
   await dialog.getByPlaceholder("What should this agent do?").focus();
-  await dashboard.keyboard.press("Control+Enter");
-  await expect(dialog).toBeVisible();
   const launch = dialog.getByRole("button", { name: /^Launch \d+ agents$/ });
-  await expect(launch, "nothing is reviewed until Review is pressed").toHaveCount(0);
+  await expect(launch, "nothing is reviewed before the first press").toHaveCount(0);
 
   const previewed = dashboard.waitForResponse(
     (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/ensembles/preview",
   );
-  await dialog.getByRole("button", { name: "Review launch" }).click();
+  await dashboard.keyboard.press("Control+Enter");
   expect((await previewed).ok(), "the daemon previewed the plan").toBe(true);
   await expect(dialog.getByText("Reviewed ✓")).toBeVisible();
   await expect(launch).toBeEnabled();
@@ -216,7 +213,8 @@ test("an Ensemble goes out through Review then Launch, and never files a task", 
   const created = dashboard.waitForResponse(
     (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/ensembles",
   );
-  await launch.click();
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
   const createdResponse = await created;
   expect(createdResponse.status(), "the daemon launched the ensemble").toBe(201);
   const runId = ((await createdResponse.json()) as { run: { id: string } }).run.id;

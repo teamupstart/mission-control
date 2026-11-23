@@ -67,6 +67,10 @@ function spec(
  * Workflow commands are resolved inside the same environment but are not built-in ids.
  */
 export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
+  acli: spec("acli", "Atlassian CLI", "acli", "ACLI_BIN"),
+  coderabbit: spec("coderabbit", "CodeRabbit", "coderabbit", "CODERABBIT_BIN", {
+    candidates: ({ home }) => [join(home, ".local/bin/coderabbit"), join(home, ".coderabbit/bin/coderabbit")],
+  }),
   claude: spec("claude", "Claude Code", "claude", "CLAUDE_BIN", {
     legacyEnv: ["FOREMAN_CLAUDE_BIN"],
   }),
@@ -151,6 +155,13 @@ export const FIXED_OS_EXECUTABLES = {
   swVers: "/usr/bin/sw_vers",
   lipo: "/usr/bin/lipo",
   plistBuddy: "/usr/libexec/PlistBuddy",
+  // Seeding's copy-on-write clone. Pinned rather than searched because its flags are the
+  // platform's own: `-c` is macOS clonefile, so a PATH that put GNU `cp` first would turn the
+  // clone into a refusal or something else.
+  cp: "/bin/cp",
+  // `ARG_MAX`, read once so a launch-argument turn one is budgeted against the platform's
+  // combined argument-and-environment limit. POSIX names the utility; both platforms ship it here.
+  getconf: "/usr/bin/getconf",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

@@ -36,14 +36,25 @@ export const test = base.extend<{
    * role selectors remain about the surface they were written to exercise.
    */
   setupReminder: boolean;
+  /**
+   * Turn on **Show sessions started outside Mission Control** before the test runs. A spec that
+   * starts an agent by hand in a terminal (a fake binary in a tmux or Herdr pane) is starting an
+   * outside session, which discovery hides by default. One whose sessions all come from a
+   * dispatch, a resume, or an observed pipeline worktree must NOT set this: those sessions are
+   * shown with it off, and that is what such a spec should keep proving. One that pairs those
+   * with a hand-started control session sets it, because the control is an outside session
+   * (`session-driven-by-engine.spec.ts`); see "outsideSessions" in `e2e/README.md`.
+   */
+  outsideSessions: boolean;
   daemon: DaemonHandle;
   dashboard: Page;
 }>({
   daemonEnv: [{}, { option: true }],
   startupPicker: [false, { option: true }],
   setupReminder: [false, { option: true }],
+  outsideSessions: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, startupPicker, setupReminder }, use) => {
+  daemon: async ({ daemonEnv, startupPicker, setupReminder, outsideSessions }, use, info) => {
     const daemon = await startDaemon(daemonEnv);
     try {
       if (!startupPicker) {
@@ -73,8 +84,19 @@ export const test = base.extend<{
           throw new Error("the daemon should accept the first-launch Setup acknowledgement");
         }
       }
+      if (outsideSessions) {
+        const shown = await fetch(`${daemon.baseURL}/api/terminals/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ externalSessions: true }),
+        });
+        if (!shown.ok) throw new Error("the daemon should accept showing outside sessions");
+      }
       await use(daemon);
     } finally {
+      if (info.status !== info.expectedStatus) {
+        await info.attach("daemon.log", { body: daemon.readLog(), contentType: "text/plain" });
+      }
       await daemon.stop();
     }
   },
@@ -104,6 +126,11 @@ export const test = base.extend<{
    * suite was written while Console was the default, and a spec that wants Board says so
    * with its own PUT. The shipped default is covered through the raw page fixture in
    * `fresh-install-defaults.spec.ts`.
+   *
+   * `residentPlacement` is pinned to Board and Console for the same reason. Residents ship in
+   * the Residents drawer, but every resident spec before it was written against residents on
+   * the Board and the Console rail with the dock. `specs/residents-drawer.spec.ts` opts into
+   * the drawer itself, and covers the shipped default through the raw page fixture.
    *
    * `lineDensity` is the same story and the newest instance of it. The strip SHIPS
    * condensed, which drops each stage's sentence from the row - and `line-strip.spec.ts`
@@ -139,10 +166,13 @@ export const test = base.extend<{
           conversationView: "chat",
           lineDensity: "expanded",
           layout: "console",
+          residentPlacement: "fleet",
         }),
       });
       expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
-      await page.goto(`${daemon.baseURL}/#/fleet`);
+      // Establish the origin without booting the application. A dashboard followed by a
+      // reload left its uncancelled Setup/catalog probes competing with the next boot.
+      await page.goto(`${daemon.baseURL}/api/health`);
       await page.evaluate(() => window.localStorage.clear());
       await page.evaluate(() =>
         window.localStorage.setItem(
@@ -152,10 +182,11 @@ export const test = base.extend<{
             showToursOnStartup: false,
             conversationView: "chat",
             lineDensity: "expanded",
+            residentPlacement: "fleet",
           }),
         ),
       );
-      await page.reload();
+      await page.goto(`${daemon.baseURL}/#/fleet`);
       // Exact: a spec that switches discovery on (`session-driven-by-engine.spec.ts`) adopts
       // whatever agents the machine is running, and a rail row whose title merely mentions
       // "dispatch" would otherwise make this ready check a strict-mode violation.

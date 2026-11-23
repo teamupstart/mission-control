@@ -5,6 +5,7 @@ import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
+import { piTurnFailure } from "./sdk-errors.ts";
 import { piPassiveRead } from "./meta.ts";
 import { readRange } from "../../util/file-tail.ts";
 
@@ -180,6 +181,11 @@ export function piToMessages(o: unknown): TranscriptMessage[] {
   if (role === "assistant" && m.stopReason === "aborted") {
     messages.push({ id: `interrupt:${id}`, role: "user", text: "[Request interrupted by user]", tools: [], ts });
   }
+  if (role === "assistant" && m.stopReason === "error") {
+    messages.push({ id: `failure:${id}`, role: "assistant", tools: [], ts,
+      text: piTurnFailure(typeof m.errorMessage === "string" ? m.errorMessage : null,
+        typeof m.provider === "string" ? m.provider : null) });
+  }
   return messages;
 }
 
@@ -198,4 +204,6 @@ export const piTranscript: TranscriptSpec = {
   // with no such notion.
   messages: piMessages,
   retain: null,
+  // pi launches no sub-agents Mission Control can see.
+  subagentLaunch: null,
 };

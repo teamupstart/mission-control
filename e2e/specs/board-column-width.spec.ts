@@ -11,7 +11,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * three-stop control in its head.
  *
  * Only a browser settles these claims. That the collapsed track is actually 40px once the
- * stylesheet, the Backlog's own basis, and the all-clear column's basis have all had their say.
+ * stylesheet and the Backlog's own basis have both had their say.
  * That a click on a stop reaches the daemon and comes back as a fold that survives a reload,
  * while the expanded column does not. That a collapsed Needs you still reacts when a session
  * starts waiting on you, which is a server event arriving at a column that has no cards drawn.
@@ -92,6 +92,19 @@ async function askForInput(daemon: DaemonHandle, cwd: string): Promise<void> {
     .toBe(200);
 }
 
+/**
+ * One task saved straight to the Backlog. An empty Backlog leaves the board like any empty
+ * column, so a spec that works the Backlog's own controls has to give it a card first.
+ */
+async function seedBacklogTask(daemon: DaemonHandle, title: string): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoRoot: daemon.repo, title, intent: title, backlog: true }),
+  });
+  expect(response.ok, `seeding "${title}" answered ${response.status}`).toBe(true);
+}
+
 async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
@@ -128,6 +141,7 @@ test("any column collapses to a strip and back, and only the fold survives a rel
   daemon,
 }) => {
   await dispatchIdleAgent(dashboard, daemon, "sit in the idle column");
+  await seedBacklogTask(daemon, "Tidy the release notes");
   await useBoardLayout(dashboard, daemon);
 
   const board = dashboard.locator("main.board");
@@ -139,14 +153,13 @@ test("any column collapses to a strip and back, and only the fold survives a rel
 
   // The Backlog: its own component and its own 232px basis, so it has to be asked separately.
   await pressStop(dashboard, backlog, "Collapse Backlog");
-  const backlogStrip = dashboard.getByRole("button", { name: "Restore Backlog, 0 cards" });
+  const backlogStrip = dashboard.getByRole("button", { name: "Restore Backlog, 1 card" });
   await expect(backlogStrip).toBeVisible();
   await expect.poll(() => widthOf(backlog)).toBeLessThanOrEqual(41);
 
-  // An empty Needs you is already the slim all-clear rail, so it offers no width control. It
-  // is collapsed through the control once something needs you (the arrival case below).
-  await expect(needsYou).toHaveClass(/\bis-calm\b/);
-  await expect(needsYou.getByRole("group", { name: "needs you width" })).toHaveCount(0);
+  // An empty Needs you is not on the board at all, so there is nothing to collapse. It is
+  // collapsed through the control once something needs you (the arrival case below).
+  await expect(needsYou).toHaveCount(0);
 
   // A column with a card in it: the strip holds the count, and the card leaves the DOM.
   await pressStop(dashboard, idle, "Collapse idle");
@@ -177,14 +190,14 @@ test("any column collapses to a strip and back, and only the fold survives a rel
 
   await dashboard.reload();
   await expect(board).toBeVisible();
-  await expect(dashboard.getByRole("button", { name: "Restore Backlog, 0 cards" })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: "Restore Backlog, 1 card" })).toBeVisible();
   // The expansion was a gesture, and a reload forgets it.
   await expect(idle).not.toHaveClass(/\bis-wide\b/);
   await expect(idle.getByRole("button", { name: "idle at normal width" }))
     .toHaveAttribute("aria-pressed", "true");
 
   // One expanded column at a time: expanding a second returns the first to normal.
-  await dashboard.getByRole("button", { name: "Restore Backlog, 0 cards" }).click();
+  await dashboard.getByRole("button", { name: "Restore Backlog, 1 card" }).click();
   await pressStop(dashboard, backlog, "Expand Backlog");
   await expect(backlog).toHaveClass(/\bis-wide\b/);
   await pressStop(dashboard, idle, "Expand idle");
@@ -204,6 +217,7 @@ test("double-clicking a column header still expands it, and again restores it", 
   // puts a card in the idle column, a tone column, and an empty fleet would draw a "no
   // sessions" placeholder instead of the board.
   await dispatchIdleAgent(dashboard, daemon, "sit in the idle column");
+  await seedBacklogTask(daemon, "Tidy the release notes");
   await useBoardLayout(dashboard, daemon);
   const board = dashboard.locator("main.board");
 
@@ -234,8 +248,8 @@ test("a collapsed Needs you counts and pulses when a session starts waiting on y
   dashboard,
   daemon,
 }) => {
-  // Needs you has a width control only while something is in it: empty, it is the slim
-  // all-clear rail. So one session asks first, and a second arrives while it is collapsed.
+  // Needs you is on the board only while something is in it. So one session asks first, and a
+  // second arrives while it is collapsed.
   const first = await dispatchIdleAgent(dashboard, daemon, "wait on you first");
   await askForInput(daemon, first.cwd!);
   await useBoardLayout(dashboard, daemon);

@@ -13,7 +13,10 @@
 // happened, and DELIVERY decides what is worth interrupting for (see
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
-import type { Session, Task } from "./types.ts";
+import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
+import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
+import type { ReviewItem, Session, Task } from "./types.ts";
+import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
   dialogIdentity,
@@ -71,6 +74,8 @@ export interface Alert {
 export interface AlertScope {
   sessions: Session[];
   tasks: Task[];
+  /** Existing review snapshot, used to describe the newest pending ask in its toast. */
+  reviews?: ReviewItem[];
   /**
    * Currently-stalled sessions, from the daemon's stall detector. Optional because
    * nothing but the daemon can COMPUTE it - the elapsed-time signal never reaches
@@ -100,6 +105,13 @@ export interface AlertScope {
   ensembleSummaries?: EnsembleSummary[];
   pipelineCommissions?: PipelineCommission[];
   pipelineRuns?: PipelineRun[];
+  /**
+   * The live resident runs, present only while the `inbox` flag is on. Its presence is what
+   * makes an alert title name its agent by `agentDisplayName`; absent, titles read exactly as
+   * they always have. Both callers pass it from the same flag, so a toast and an Away digest
+   * line name one agent alike.
+   */
+  names?: readonly ResidentNameSource[];
 }
 
 /**
@@ -118,7 +130,8 @@ export function bufferable(a: Alert): boolean {
   return !deliverable(a);
 }
 
-function sessionLabel(s: Session): string {
+function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined): string {
+  if (names) return agentDisplayName(sessionDisplayNameInput(s, names)).name;
   return s.task?.title || s.name || "a session";
 }
 
@@ -153,12 +166,12 @@ function stallKeys(scope: AlertScope): Set<string> {
  * threshold tripped. Deriving both from here means the refreshed line and the alert
  * that announced it can never diverge.
  */
-export function stuckAlert(st: Stall, sessions: Session[]): Alert {
+export function stuckAlert(st: Stall, sessions: Session[], names?: readonly ResidentNameSource[]): Alert {
   const s = sessions.find((x) => x.id === st.sessionId);
   return {
     id: `stuck:${st.sessionId}:${st.kind}`,
     kind: "stuck",
-    title: `${s ? sessionLabel(s) : "a session"} looks stuck`,
+    title: `${s ? sessionLabel(s, names) : "a session"} looks stuck`,
     body: st.reason,
     sessionId: st.sessionId,
     // Spread, so only the one stall kind that HAS a run carries the key. The toast turns
@@ -179,6 +192,17 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
 export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
+  // Newest pending review per session, split the way the two counts are: a review its agent has
+  // stopped on (inside the call, or a filed plan form), and a message-mode question
+  // (`async-input`) its agent kept working past (`agentKeepsWorking`).
+  const latestReviews = new Map<string, ReviewItem>();
+  const latestQuestions = new Map<string, ReviewItem>();
+  for (const review of next.reviews ?? []) {
+    if (review.status !== "pending") continue;
+    const into = agentKeepsWorking(review) ? latestQuestions : latestReviews;
+    const latest = into.get(review.sessionId);
+    if (!latest || review.createdAt >= latest.createdAt) into.set(review.sessionId, review);
+  }
   const attentionByCommission = (scope: AlertScope) => {
     return new Map(pipelineCommissionAttentionEntries({
       commissions: scope.pipelineCommissions,
@@ -196,7 +220,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
-    const label = sessionLabel(s);
+    const label = sessionLabel(s, next.names);
 
     // needs-input: the agent is blocked on you (awaiting input or a review decision).
     const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
@@ -241,13 +265,31 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       });
     }
 
-    // review: a review item landed (pending count rose from zero).
-    if (s.pendingReviews > 0 && (before?.pendingReviews ?? 0) === 0) {
+    // A new question/review needs attention even if an older one is still pending.
+    // Stable counts and answers stay silent; retries reuse the existing review.
+    if (s.pendingReviews > (before?.pendingReviews ?? 0)) {
+      const review = latestReviews.get(s.id);
+      const description = review?.kind === "input" ? review.body : review?.title;
       alerts.push({
         id: `review:${s.id}`,
         kind: "review",
-        title: `${label} needs review`,
-        body: s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review",
+        title: `${label} ${review?.kind === "input" ? "needs your answer" : "needs review"}`,
+        body: goalLine(description ?? "", 240)
+          || (s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review"),
+        sessionId: s.id,
+        severity: "attention",
+      });
+    } else if (openQuestionCount(s) > (before ? openQuestionCount(before) : 0)) {
+      // The same alert for a message-mode question, raised by `openQuestions` growing. Its title
+      // says whether the agent is still working past it or has stopped on it; no second alert
+      // fires when a working session later stops. `else if` with the same id: one session, one
+      // toast for one frame.
+      const question = latestQuestions.get(s.id);
+      alerts.push({
+        id: `review:${s.id}`,
+        kind: "review",
+        title: `${label} ${confirmedWorking(s) ? "has a question, still working" : "needs your answer"}`,
+        body: goalLine(question?.body ?? "", 240) || "a question is open",
         sessionId: s.id,
         severity: "attention",
       });
@@ -332,7 +374,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
-    alerts.push(stuckAlert(st, next.sessions));
+    alerts.push(stuckAlert(st, next.sessions, next.names));
   }
 
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));
@@ -346,9 +388,28 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `failed:${t.id}`,
         kind: "task-failed",
-        title: `Task failed: ${t.title}`,
+        // A launch failure says what it is: the work never started, which is a different
+        // thing to act on from a session that ran and failed.
+        title: t.launchFailure ? `Did not start: ${t.title}` : `Task failed: ${t.title}`,
         body: t.error ?? "dispatch failed",
         sessionId: t.sessionId,
+        severity: "attention",
+      });
+    } else if (
+      t.status === "backlog" &&
+      t.launchFailure &&
+      beforeTask !== undefined &&
+      beforeTask.launchFailure?.at !== t.launchFailure.at
+    ) {
+      // The dispatch failed while provisioning and the task went back to the Backlog. Its
+      // status never passes through `failed`, so without this the only sign was the card
+      // moving columns - a launch that failed in silence.
+      alerts.push({
+        id: `returned:${t.id}:${t.launchFailure.at}`,
+        kind: "task-failed",
+        title: `Did not start, back in Backlog: ${t.title}`,
+        body: t.error ?? "dispatch failed",
+        sessionId: null,
         severity: "attention",
       });
     } else if (
@@ -608,7 +669,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
 /** Compact one-line summary of several alerts, for the reconnect catch-up toast. */
 export function summarizeAlerts(alerts: Alert[]): string {
-  const titles = alerts.map((a) => a.title);
+  const titles = alerts.map((a) => a.kind === "review" && a.body ? `${a.title}: ${a.body}` : a.title);
   const shown = titles.slice(0, 3).join(" · ");
   return titles.length > 3 ? `${shown} · +${titles.length - 3} more` : shown;
 }

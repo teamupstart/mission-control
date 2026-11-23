@@ -12,7 +12,7 @@ This phase is grounded in:
 
 - [`plan.md`](plan.md)
 - [`phased-plan.md`](phased-plan.md)
-- [`../../reports/test-evidence-auditor-first-pass/report.html`](../../reports/test-evidence-auditor-first-pass/report.html)
+- `docs/reports/test-evidence-auditor-first-pass/report.html` (removed from the repository in #1213)
 - `AGENTS.md`
 - `docs/agent-guides/architecture.md`
 - `docs/agent-guides/change-contracts.md`

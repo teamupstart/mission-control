@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
@@ -78,4 +78,57 @@ test("the fake jira answers a version probe, and is silent about anything else",
 test("the fake jira exists and is executable, which is what MISSION_JIRA_BIN points at", () => {
   assert.ok(existsSync(agents.bins.jira));
   assert.ok(agents.bins.jira.endsWith("fake-jira"));
+});
+
+test("fake acli records argv, uses captured auth and search shapes, and refuses unsupported commands", () => {
+  const env = { ...process.env, MC_E2E_RECORD_DIR: recordDir };
+  const call = (args: string[]) => spawnSync(agents.bins.acli, args, { cwd: home, env, encoding: "utf8" });
+  assert.match(call(["--version"]).stdout, /acli version .* \(fake\)/);
+  const status = call(["jira", "auth", "status"]);
+  assert.equal(status.status, 0);
+  assert.match(status.stdout, /Site: example.atlassian.net/);
+  const issues = [{ key: "MC-1", self: "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/1", fields: { summary: "Synthetic issue" } }];
+  writeFileSync(join(recordDir, "fake-acli-state.json"), JSON.stringify({ issues, afterSearchSite: "other.atlassian.net" }));
+  const args = ["jira", "workitem", "search", "--jql", "project = MC", "--json", "--limit", "1"];
+  assert.deepEqual(JSON.parse(call(args).stdout), issues);
+  assert.match(call(["jira", "auth", "status"]).stdout, /Site: other.atlassian.net/);
+  const records = readdirSync(recordDir).filter((name) => /^acli-\d/.test(name))
+    .map((name) => JSON.parse(readFileSync(join(recordDir, name), "utf8")));
+  assert.ok(records.some((r) => JSON.stringify(r.argv) === JSON.stringify(args) && r.cwd === home));
+  writeFileSync(join(recordDir, "fake-acli-state.json"), JSON.stringify({ unauthorized: true }));
+  assert.equal(call(["jira", "auth", "status"]).status, 1);
+  assert.match(call(args).stderr, /auth login/);
+  writeFileSync(join(recordDir, "fake-acli-state.json"), "{}");
+  assert.equal(call(["jira", "workitem", "delete", "MC-1"]).status, 1);
+});
+
+test("fake acli absorbs write verbs, records argv and models refusals, confirmation and site switches", () => {
+  const env = { ...process.env, MC_E2E_RECORD_DIR: recordDir };
+  const call = (args: string[]) => spawnSync(agents.bins.acli, args, { cwd: home, env, encoding: "utf8" });
+  const state = (value: unknown) => writeFileSync(join(recordDir, "fake-acli-state.json"), JSON.stringify(value));
+  const comment = ["jira", "workitem", "comment", "create", "--key", "MC-2", "--body", '{"type":"doc"}'];
+  const transition = ["jira", "workitem", "transition", "--key", "MC-2", "--status", "Done", "--yes", "--json"];
+  const view = ["jira", "workitem", "view", "MC-2", "--fields", "status", "--json"];
+  state({});
+  assert.equal(call(comment).status, 0);
+  assert.equal(call(transition).status, 0);
+  assert.equal(JSON.parse(call(view).stdout).fields.status.name, "Done");
+  state({ transition: "refused", reason: "Review needed" });
+  assert.match(call(transition).stderr, /✗ Error: Review needed/);
+  state({ transition: "json-failure" });
+  assert.equal(JSON.parse(call(transition).stdout)[0].success, false);
+  state({ transition: "unchanged" });
+  call(transition);
+  assert.equal(JSON.parse(call(view).stdout).fields.status.name, "In Review");
+  state({ confirmError: true });
+  call(transition);
+  assert.equal(call(view).status, 1);
+  state({ afterWriteSite: "other.atlassian.net" });
+  call(comment);
+  assert.match(call(["jira", "auth", "status"]).stdout, /other.atlassian.net/);
+  const records = readdirSync(recordDir).filter((name) => /^acli-\d/.test(name))
+    .map((name) => JSON.parse(readFileSync(join(recordDir, name), "utf8")));
+  assert.ok(records.some((r) => JSON.stringify(r.argv) === JSON.stringify(comment)));
+  assert.ok(records.some((r) => JSON.stringify(r.argv) === JSON.stringify(transition)));
+  state({});
 });

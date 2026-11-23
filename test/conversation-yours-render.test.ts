@@ -36,6 +36,8 @@ function render(messages: TranscriptMessage[]): string {
       onTab: () => {},
       selectedTurnId: null,
       onSelectTurn: () => {},
+      collapsed: false,
+      onCollapsed: () => {},
     }),
   );
 }

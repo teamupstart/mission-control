@@ -21,6 +21,7 @@
 // Pure data and pure functions - no React - for the same reason `settings-search.ts` is: the
 // providers, the component and the tests all read the SAME rows.
 
+import type { FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { ensembleStageWord, type EnsembleStrategyId, type EnsembleSummary } from "@shared/ensemble.ts";
 import { creatableStrategies } from "@shared/ensemble-strategies.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
@@ -38,8 +39,8 @@ import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES, tourEntry } from "../tour/entries.ts";
-import { SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
-import { SETTINGS_CONTROLS, type SettingsBindings } from "./settings-search.ts";
+import { visibleSettingsCategories, settingsCategory } from "./settings-registry.ts";
+import { settingsControls, type SettingsBindings } from "./settings-search.ts";
 
 /**
  * The three groups the palette renders, in order.
@@ -76,6 +77,7 @@ export const PALETTE_KINDS = [
   "command",
   "setting",
   "panel",
+  "resident",
 ] as const;
 export type PaletteKind = (typeof PALETTE_KINDS)[number];
 
@@ -108,6 +110,8 @@ export const PALETTE_KIND_INFO: Record<PaletteKind, PaletteKindInfo> = {
   command: { id: "command", label: "command", glyph: "▸", group: "do" },
   setting: { id: "setting", label: "setting", glyph: "⚙", group: "settings" },
   panel: { id: "panel", label: "panel", glyph: "⚙", group: "settings" },
+  // The Residents button's own glyph, so a live resident row reads as the drawer it opens from.
+  resident: { id: "resident", label: "resident", glyph: "⌂", group: "jump" },
 };
 
 export function paletteKindGroup(kind: PaletteKind): PaletteGroup {
@@ -137,7 +141,9 @@ export type PaletteTarget =
   | { kind: "browse-tours" }
   | { kind: "start-tour"; tourId: TourId }
   | { kind: "report-product-issue" }
-  | { kind: "open-mission"; scheduleId: string };
+  | { kind: "open-mission"; scheduleId: string }
+  | { kind: "residents-dock" }
+  | { kind: "open-resident"; sessionId: string };
 
 export interface PaletteRow {
   /** Unique across every provider. Prefixed by kind, so two stores cannot collide on an id. */
@@ -193,7 +199,30 @@ export interface PaletteStores {
    * only by its workflow is indistinguishable from the other three runs of that workflow.
    */
   sessionNames: ReadonlyMap<string, string>;
+  /**
+   * The live residents that have a session to open, in the drawer's order. A projection for
+   * the reason `sessionNames` is one: a resident row needs its name, label and state, never
+   * the session itself.
+   */
+  residents: readonly PaletteResident[];
   settingsBindings: SettingsBindings;
+  /**
+   * The live feature-flag config, so a settings category behind a flag, and its controls, are
+   * offered exactly while the flag is on - through the same gate the rail reads.
+   */
+  featureFlags: FeatureFlagsConfig;
+}
+
+/** One live resident, as the palette names and finds it. */
+export interface PaletteResident {
+  sessionId: string;
+  name: string;
+  /** The marker's short label, which the chip prints. */
+  label: string;
+  /** The state word its card shows. */
+  state: string;
+  /** It needs you, by the same rule the top bar's Need you count uses. */
+  attention: boolean;
 }
 
 export interface PaletteProvider {
@@ -257,6 +286,17 @@ const pageProvider: PaletteProvider = {
       // either mean a fetch from the palette or loading every scout ever run into memory to
       // answer a keystroke. Archive search stays inside the page that owns the catalog.
       target: { kind: "route", route: { page: "scouts" } },
+    },
+    {
+      id: "page:residents",
+      kind: "page",
+      title: "Residents",
+      detail: "Author resident profiles and launch long-running agents from them.",
+      // The words an operator reaches for when they want an agent that stays: none of them is
+      // the product's name for it.
+      keywords: ["resident", "profile", "persona", "long-running", "standing", "agent", "launch", "loop"],
+      glyph: "⌂",
+      target: { kind: "route", route: { page: "residents" } },
     },
   ],
 };
@@ -468,6 +508,24 @@ const missionProvider: PaletteProvider = {
 };
 
 /**
+ * Live residents, found by name or label. Opening one lands on its full detail the way the
+ * Residents drawer's Open does, wherever residents live.
+ */
+const residentProvider: PaletteProvider = {
+  id: "residents",
+  rows: ({ residents }) =>
+    residents.map((resident) => ({
+      id: `resident:${resident.sessionId}`,
+      kind: "resident" as const,
+      title: resident.name,
+      detail: `${resident.label} · ${resident.state}`,
+      ...(resident.attention ? { attention: true } : {}),
+      keywords: ["resident", "long-running", resident.label],
+      target: { kind: "open-resident" as const, sessionId: resident.sessionId },
+    })),
+};
+
+/**
  * The ensemble strategy launchers - the Library's Ensembles shelf, as verbs.
  *
  * Through `creatableStrategies()` for the shelf's own reason: a strategy this build has
@@ -523,6 +581,14 @@ const commandProvider: PaletteProvider = {
       target: { kind: "dispatch" },
     },
     {
+      id: "command:residents-dock",
+      kind: "command",
+      title: "Open the Residents drawer or dock",
+      detail: "Live residents and the profiles you can launch.",
+      keywords: ["resident", "long-running", "standing", "agent", "launch", "dock", "drawer", "profile"],
+      target: { kind: "residents-dock" },
+    },
+    {
       id: "command:report-product-issue",
       kind: "command",
       title: "Report product feedback…",
@@ -576,7 +642,7 @@ const commandProvider: PaletteProvider = {
 };
 
 /**
- * Settings, wrapping `SETTINGS_CONTROLS` - the one control-level index, unchanged.
+ * Settings, wrapping `settingsControls` - the one control-level index, unchanged.
  *
  * A control renders as an inline switch only when a binding for it is in hand, and jumps to
  * its panel otherwise. That is `settings-search.ts`'s own rule ("a null source gets NO
@@ -598,8 +664,8 @@ const commandProvider: PaletteProvider = {
  */
 const settingsPanelProvider: PaletteProvider = {
   id: "settings-panels",
-  rows: () =>
-    SETTINGS_CATEGORIES.map((category) => ({
+  rows: ({ featureFlags }) =>
+    visibleSettingsCategories(featureFlags).map((category) => ({
       id: `panel:${category.id}`,
       kind: "panel" as const,
       title: `${category.label} settings`,
@@ -612,8 +678,8 @@ const settingsPanelProvider: PaletteProvider = {
 
 const settingsProvider: PaletteProvider = {
   id: "settings",
-  rows: ({ settingsBindings }) =>
-    SETTINGS_CONTROLS.map((control) => {
+  rows: ({ settingsBindings, featureFlags }) =>
+    settingsControls(featureFlags).map((control) => {
       const binding = control.kind === "toggle" && !control.risky
         ? settingsBindings.get(control.id)
         : undefined;
@@ -655,6 +721,7 @@ export const PALETTE_PROVIDERS: readonly PaletteProvider[] = [
   personaProvider,
   actionProvider,
   missionProvider,
+  residentProvider,
   strategyProvider,
   commandProvider,
   settingsProvider,
@@ -683,6 +750,8 @@ function routeDestination(route: MissionRoute): string {
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":
       return "the Fleet";
+    case "residents":
+      return "Residents";
   }
 }
 
@@ -713,6 +782,10 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open the Feedback form to file a public GitHub issue about Mission Control.";
     case "open-mission":
       return "Open Recurring Missions on this schedule's run history.";
+    case "residents-dock":
+      return "Open the Residents drawer, or the dock in the top bar when residents live on the Board and Console.";
+    case "open-resident":
+      return "Open this resident's conversation.";
   }
 }
 

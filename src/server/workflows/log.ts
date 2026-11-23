@@ -19,6 +19,7 @@ const WORKFLOW_LOG_FIELDS = [
   "output_bytes",
   "duration_ms",
   "state",
+  "effort",
 ] as const;
 type WorkflowLogField = (typeof WORKFLOW_LOG_FIELDS)[number];
 export type WorkflowLogFields = Partial<

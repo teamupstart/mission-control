@@ -1,0 +1,160 @@
+/* Neon Dusk: a late-night synth palette - violet surfaces, a magenta and cyan glow.
+
+   Tokens first, then the skin's decoration, every rule scoped to this skin. `--purple` is
+   magenta here, so everything that already reads it - Foreman, cost, a merged PR and the held
+   state - reads magenta with no rule of its own. The decoration stays inside the limit every
+   skin is held to (backgrounds, `text-shadow`, `box-shadow` and `text-transform`; no box
+   metrics, no `filter`, `backdrop-filter` or animation):
+
+   - a violet-to-indigo radial backdrop on the app shell's own background;
+   - a magenta glow on the surfaces that are focused or asking for a person: the board's
+     keyboard cursor, a tile that needs attention, the Line stage that does, and a focused
+     text field. A `box-shadow` takes no space, so nothing moves when it lights;
+   - a magenta-to-cyan gradient on the topbar's Dispatch button, lettered in this skin's
+     darkest ink, which clears 4.5:1 on both ends of the gradient.
+
+   Every glow restates the shadow it replaces and keeps any ring that was there, so the
+   cursor ring and a resident's own glow survive it.
+
+   The swatches in `src/shared/skins.ts` must equal the values here. */
+
+:root[data-skin="neon-dusk"] {
+  color-scheme: dark;
+
+  /* Surfaces, lines and the text ramp. */
+  --bg: #120a1f;
+  --bg-2: #170d28;
+  --panel: #1e1233;
+  --panel-2: #24163d;
+  --border: #3d2766;
+  --border-soft: #2a1a47;
+  --border-strong: #523585;
+  --fg: #f4ecff;
+  --fg-strong: #ffffff;
+  --muted: #bba8db;
+  --dim: #a08cc2;
+
+  /* Session states and the tones that ride on them. */
+  --working: #3fd0ff;
+  --idle: #36f1a8;
+  --attention: #ffb13d;
+  --danger: #ff5c86;
+  --exited: #7a6a96;
+  --neutral: #9484b3;
+  --select: #36f1a8;
+  --find: #ffd34d;
+  --purple: #ff6ad5;
+  /* A delegated message must read as neither the human (blue) nor Foreman (now magenta), so
+     it moves off Default's pink to a cool lavender. */
+  --delegated: #a99bff;
+  --syntax-type: #ff9e7a;
+  --pr-open: #4fe39a;
+
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(5, 0, 15, 0.5), 0 8px 24px rgba(5, 0, 15, 0.35);
+
+  --shadow-ink: #05000f;
+  --scrim-ink: #07030f;
+
+  /* Text on solid fills: the accent fills are bright here, so their text is dark. */
+  --on-accent: #120a1f;
+  --on-attention: #241400;
+  --on-wait: #241400;
+  --on-select: #032417;
+  --working-deep: #1f7fa8;
+  --attention-deep: #a86a10;
+
+  /* The failure family, stepped around this skin's hot pink-red. */
+  --danger-soft: #ff8fab;
+  --danger-muted: #ff5c86;
+  --danger-text: #ff7096;
+  --danger-bright: #ff85a5;
+  --danger-fill: #ff5c86;
+  --danger-fill-hover: #ff7a9c;
+  --approve-fill: #36f1a8;
+  --approve-fill-hover: #6af5be;
+  --diff-del: #ff5c86;
+  --diff-del-count: #ff7096;
+
+  --wf-action: #ff6ad5;
+  --wf-success: #36f1a8;
+
+  /* The backdrop: violet at the top right fading through indigo at the top left. */
+  --backdrop-glow-right: #3b1a66;
+  --backdrop-glow-left: #1f1a5c;
+
+  /* The dropdown chevron, restated in this skin's --muted (#bba8db). */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23bba8db' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  /* The glow every decoration below casts. */
+  --neon-glow: 0 0 18px color-mix(in oklab, var(--purple) 38%, transparent);
+  --neon-rim: 0 0 0 1px color-mix(in oklab, var(--purple) 55%, transparent);
+}
+
+/* The radial backdrop, on the shell only: violet into indigo into the night. */
+:root[data-skin="neon-dusk"] body {
+  background:
+    radial-gradient(1400px 800px at 78% -12%, var(--backdrop-glow-right) 0%, transparent 60%),
+    radial-gradient(1100px 700px at 0% 0%, var(--backdrop-glow-left) 0%, transparent 55%),
+    var(--bg);
+}
+
+/* A tile that needs you glows magenta outside its amber border; the spine stays amber, so its
+   state still reads first. A resident keeps its own marker glow, and an expanded workflow tile
+   its ring, as each already wins over the attention shadow under Default. A drop target keeps
+   its highlight too, so the tile a drag will land on stays visible. A selected tile is left to
+   the cursor rule below: the two never match one tile, so neither depends on out-weighing the
+   other's selector. */
+:root[data-skin="neon-dusk"] .tile.attention:not(.is-resident):not(.workflow-expanded):not(.drop-over):not(.selected) {
+  box-shadow: var(--shadow), var(--neon-glow);
+}
+
+/* The board's keyboard cursor: the same selection ring, lit, on any tile it rests on - one that
+   needs you included, so the cursor stays visible on the tile that needs you most. */
+:root[data-skin="neon-dusk"] .tile.selected:not(.drop-over):not(.is-resident),
+:root[data-skin="neon-dusk"] .tile.selected:not(.drop-over):not(.is-resident):hover {
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px color-mix(in oklab, var(--select) 65%, transparent),
+    var(--neon-glow);
+}
+
+:root[data-skin="neon-dusk"] .line-stage.tone-attention {
+  box-shadow: var(--neon-glow);
+}
+/* An open stage keeps the ring that says its drawer is showing. */
+:root[data-skin="neon-dusk"] .line-stage.tone-attention.is-open {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--working) 30%, transparent),
+    var(--neon-glow);
+}
+
+/* A focused text field. Checkboxes, radios and sliders keep their own focus ring. */
+:root[data-skin="neon-dusk"] textarea:focus-visible,
+:root[data-skin="neon-dusk"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible {
+  box-shadow: var(--neon-rim), var(--neon-glow);
+}
+
+/* The topbar's Dispatch button: magenta into cyan, lettered in the night's ink. The gradient
+   is laid from the border box, or it would repeat under the transparent border and leave a
+   sliver of cyan on the magenta end. */
+:root[data-skin="neon-dusk"] .dispatch-btn {
+  color: var(--bg);
+  background: linear-gradient(90deg, var(--purple), var(--working)) border-box;
+  border-color: transparent;
+  box-shadow: var(--neon-glow);
+}
+:root[data-skin="neon-dusk"] .dispatch-btn:hover {
+  color: var(--bg);
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--purple) 82%, var(--highlight-ink)),
+    color-mix(in oklab, var(--working) 82%, var(--highlight-ink))
+  ) border-box;
+  border-color: transparent;
+}
+/* Its shortcut keycap, in the same ink: the shared keycap's --dim would vanish on the gradient. */
+:root[data-skin="neon-dusk"] .dispatch-btn .kb-hint {
+  color: var(--bg);
+  border-color: color-mix(in oklab, var(--bg) 55%, transparent);
+}

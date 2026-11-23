@@ -1,0 +1,15 @@
+# Phase 14: Setup, doctor, mod install and the Claude-session loop proof (WP7 and WP12, reduced)
+
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`). Branch from `main`; start after P8 has merged, then `git rebase --onto origin/main <old base>`.
+
+**1. Outcome.** On a clean machine `mctl setup` finds `claude` and stages and installs the Mission Control mod plugin itself (marketplace add, then install at user scope), so the pane and the banner above the prompt appear in the next Claude session with no manual step; `mctl doctor` reports what is wrong and the fix. The automated Claude-session loop test (plan.md 0.3) passes, and the manual walkthrough there works.
+
+**2. Entry.** P8 merged to start the install work. The proof commit waits for P11 and P12 to merge, then rebases with `git rebase --onto origin/main <old base>`. P14 merges last. Soft spikes S17 and S18 only: if none is recorded, install through the folder marketplace and ship documentation-only facts as warn, never fail.
+
+**3. Scope.** `src/cli/commands/setup.ts` and `doctor.ts`; the `mod`, `flag` and `daemon` step files in `src/cli/setup-steps/` (the `codex` and `agents` steps stay stubs and are skipped with `step not available in this build`); `src/cli/claude-cli.ts` (one detection function: `MISSION_CLAUDE_BIN`, `PATH`, known places, accepted if `claude --version` runs and `claude plugin --help` lists `marketplace`); `src/server/mod-stage.ts` (stage by writing a sibling folder and renaming, never copying onto the published path); the version probe and stale-build reinstall (never `claude plugin update`). Doctor checks kept: `claude` found, `mod-enabled`, `mod-current`, `mod-calls` (reads P8's `allowed-calls.json`), daemon reachable on `/api/health`, flag on. Deferred: the other mods-* documentation checks, the Foreman LaunchAgent, `mctl` reads. The proof: `test/headless-claude-session-loop.test.ts`, plus the walkthrough in this phase's pull request description.
+
+**4. Findings.** P13 is deferred, so this phase owns `claude-cli.ts` alone and `mctl claude` is not touched. A failed reinstall prints the cause and the two recovery commands (`claude plugin marketplace add {stateDir}/mod` and `claude plugin install mission-control@mission-control --scope user`), finishes the other steps, and exits 1.
+
+**5. Tests.** Detection order; staging by rename; install idempotence; stale-version reinstall; the double-failure path; each kept check against planted settings with a fake `claude` runner; exit codes; then the loop test (plan.md 0.3): pane at start (docked and inline), dispatch, toast, band and status, Needs you answer, plan approval with a stale revision refused, task finish, flag off, dismissal sends nothing.
+
+**6. Exit.** Setup and doctor run against fakes; the loop test passes with no model tokens; the flag-off check for the files this phase touched shows no behavior change.

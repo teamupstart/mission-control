@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import type { LlmProviderView } from "@shared/types.ts";
+import type { LlmProviderView, ThinkingLevel } from "@shared/types.ts";
+import { personaEffortLevels } from "@shared/workflow.ts";
 import type { WorkflowNodeExecutionOverride } from "@shared/workflow.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -12,7 +13,9 @@ import {
   withNodeExecutionMode,
   withNodeExecutionRunner,
   type NodeExecutionFormState,
+  type NodeExecutionSeed,
 } from "./node-execution.ts";
+import { EffortSelect } from "./EffortSelect.tsx";
 
 /**
  * One reviewer occurrence's provider and model, edited in one place for both editor views.
@@ -75,7 +78,7 @@ export function NodeExecutionEditor({
   /** The occurrence's saved choice, or null when it inherits. */
   override: WorkflowNodeExecutionOverride | null;
   /** What the Persona resolves to today. Seeds a new override; null when the Persona is gone. */
-  seed: { runner: LlmRunnerId; model: string } | null;
+  seed: NodeExecutionSeed | null;
   /** The inherited routing as a line a person reads, or null when nothing resolves. */
   inherited: string | null;
   providers: readonly LlmProviderView[];
@@ -175,6 +178,14 @@ export function NodeExecutionEditor({
               </select>
             </Tooltip>
           </label>
+          <EffortSelect
+            name={name}
+            levels={personaEffortLevels(state.runner, state.model.trim() || null)}
+            value={state.effort}
+            readOnly={readOnly}
+            tooltip={`How much reasoning effort ${name} spends in this workflow`}
+            onChange={(effort: ThinkingLevel | "") => commit({ ...state, effort })}
+          />
           <ModelCatalogNotice agent={state.runner} />
         </>
       )}

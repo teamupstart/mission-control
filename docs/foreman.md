@@ -58,10 +58,10 @@ A session is invited when any of these is true:
 
 | Invite | Which sessions |
 |--------|----------------|
-| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition. |
+| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition - except [residents](residents.md#lifecycle). |
 | `dispatch` | **Dispatched** terminal sessions. Recorded automatically once the spawn is confirmed. |
 | `operator` | Sessions **you** invited, explicitly. |
-| *(none)* | Everything else - every session merely discovered on your machine, and any session whose invite you withdrew. |
+| *(none)* | Everything else - every session merely discovered on your machine, every resident session until you invite Foreman, and any session whose invite you withdrew. |
 
 In an uninvited session Foreman does nothing at all: no Purpose note, no decision brief, no
 queue tick, no wrap-up prompt, no pull-request follow-through, and no backlog assignment. It
@@ -200,8 +200,10 @@ Personal sessions retain their ordinary completion boundary. See
 
 **A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
 phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
-review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
-part of planning when needed to make scheduled task paths durable. An unbound plan retains the
+review follow-through, CI waiting, merge, and the bound workflow's own validation or review
+result belong to the workflow. That last one is deferred because Foreman's completion claim is
+what starts the workflow, so a plan can never be held for a result only that run produces.
+Commit and push remain part of planning when needed to make scheduled task paths durable. An unbound plan retains the
 skill's direct PR path. Foreman reads live publication ownership independently of Persona
 evidence eligibility and discards the verdict if binding identity, version, or trigger mode
 changes during verification or before the completion check. The completion claim carries that
@@ -221,6 +223,13 @@ selection and an empty evidence tray establish no such authority. With no eligib
 workflow evidence registration is not required, including when an older prompt or held verdict
 asked for it. Manually attaching a Persona workflow makes registration applicable, and removing
 it retires that obligation. Implementation and verification remain required in either case.
+
+Registration includes evidence still staged and evidence reserved by this conversation's own
+workflow submissions. Capture does not unregister that proof or require the agent to register
+it again for the same intent episode. The dashboard staging tray still shows only editable,
+staged items. Foreman rechecks the admitted evidence after verification; a change in identity,
+content, or eligibility discards the stale verdict without consuming the work generation or
+sending recovery gaps.
 
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
@@ -257,22 +266,45 @@ decision without episode metadata remains readable but feeds no verifier history
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
+Because the queue row keeps only the latest decision, the worker also appends one line per
+decision to `foreman.log` in the state directory, beside the app's Foreman lifecycle lines.
+Each line carries the time, session, task kind, generation, intent episode, outcome, blocking gap
+ids with their kind, a claimed run id, and the verifier's summary clamped to one line. Gap
+details, transcripts and diffs are never written. At 5 MiB the worker renames it to `foreman.log.1`.
+The app writes its Foreman lifecycle lines to the path rather than through a handle it keeps open,
+so every line lands in `foreman.log` or `foreman.log.1` and none is lost to a rotation.
+A hold that later turns out to have stalled a workflow can therefore still be read after the
+next completion has replaced it.
+
 Two of those outcomes - `empty` and `retired` - can also *conclude a task*, and only ever a
 [recurring mission's](recurring-missions.md#when-a-run-finishes-but-its-task-does-not) whose
 own completion policy asked for it. Both mean the run is over with nothing to ship, which is
 exactly the case no merge will ever settle. Nothing else changes: every other outcome, and
 every task that did not come from a mission, still completes the way it always has.
 
-**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship`, `bugfix` and `document`
+sessions, and to a plan that waits on Foreman to start its workflow.** That plan is a
+repository-stored `plan` task whose publication a **Foreman Complete** workflow owns. Its
+workflow starts only from Foreman's completion claim, so a held verdict would otherwise leave
+it idle with no run, no message and no next turn. A plan receives only its held gaps, or an
+escalation when the verifier keeps failing. The relay keeps the planning handoff's
+commit-and-push rule and tells the session that the workflow's own result is not its gap to
+close. An unbound plan, a Manual binding and a local-storage plan are not relayed. The popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
-ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
-settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
+task of one of those kinds, an explicit Foreman invite, a drivable hook-instrumented session,
+and a completed settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
 
-When prompted completion records a real held verdict for an eligible managed ship task, Foreman
+Prompted completion is also refused while the session has an outstanding `request_input`
+question, pending or snoozed, under the `async-input` preview flag's
+[completion rules](sessions.md#asking-without-stopping); the same generation is consumed once
+the question is answered or dismissed. Foreman's answer to a question filed without stopping
+reaches the agent as a message, like yours.
+
+When prompted completion records a real held verdict for an eligible managed task, Foreman
 does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
 and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the
 existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery, live-mode, and
@@ -391,10 +423,21 @@ relationship or reconciliation state, and Foreman's rationale. This is the inspe
 for what Foreman currently believes the session is trying to finish; the rows below it remain
 the decision history.
 
+While that reading is paused (an instruction still reconciling, or a relationship of **needs
+more context**), Foreman skips the session on every tick, because it never judges completion
+against an unresolved instruction. The section then offers **Accept objective as is**, which
+ends the pause; what it records and what it leaves alone are described under
+[Goal](sessions.md#goal). Foreman's next tick after that verifies the work against the
+objective and can claim the session's bound Workflow.
+
 Only one worker drives the sessions at a time. A manually started worker beside the packaged
 app is safe: the second process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
+
+Foreman can answer a question filed without stopping the agent. See
+[Asking without stopping](sessions.md#asking-without-stopping) for answer delivery and the
+question lifecycle.
 
 ### Its standing instructions (`FOREMAN.md`)
 
@@ -644,8 +687,15 @@ plan is successfully stored.
 When Foreman reports a failure, its top-bar control turns amber and shows an issue count.
 Open it to read the error received, the activity and provider/model involved, occurrence
 count, first/last occurrence, and the names of sessions where it was seen. **Copy error**
-copies the displayed diagnostic; **Open model settings** takes you to Foreman's model
-choices. Error text is plain text, bounded to 600 characters, with common credential forms
+copies the displayed diagnostic, falling back to the desktop app's synchronous clipboard
+path when the async Clipboard API is refused; **Open model settings** takes you to Foreman's
+model choices. **Dismiss** hides an error group once you have read it, and **Dismiss all**
+appears when there is more than one. A dismissed group stays hidden while the worker keeps
+republishing the same occurrence, and returns, with its full count, the next time that
+failure happens again. Dismissing acknowledges the occurrence on screen: if the error
+recurred after the popover drew it, that newer occurrence is not hidden, and the popover says
+so and shows it. Dismissal only filters what the popover and issue count show: it does
+not change retries, recovery, or what the worker reports. Error text is plain text, bounded to 600 characters, with common credential forms
 redacted. An unknown error stays an unknown error: a rate-limit response is not relabeled
 as exhausted account usage.
 
@@ -669,7 +719,8 @@ that every such session remains blocked.
 Errors remain visible when Foreman is disabled or its worker stops, labeled as the last report
 when reporting is stale. Reports are process-local, not a durable incident history: a replacement
 worker starts a new record, and a surviving worker republishes on its next heartbeat after a
-daemon restart. The worker sends this bounded projection over HTTP; the daemon projects it in
+daemon restart. Dismissals are process-local the same way: a daemon restart shows every
+reported group again. The worker sends this bounded projection over HTTP; the daemon projects it in
 the existing Foreman status response, and the worker never opens the database.
 
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
@@ -677,6 +728,10 @@ Foreman control: those are the things you reach for while watching the fleet, an
 panel is the durable posture.
 
 ### Mechanical pipeline triage
+
+Temporarily unavailable with the rest of the ai-conductor integration (see
+[Pipelines](pipelines.md)): the daemon reports pipeline triage as disabled and the worker does
+nothing for it, whatever the stored permission says.
 
 **Settings → Conductor → Foreman triage** is a separate, default-off permission for external
 pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its
@@ -690,3 +745,19 @@ This permission does not put pipeline tasks into backlog autopilot and does not 
 re-entry. Foreman reads the daemon's halt view and posts its episode and action over HTTP. The
 daemon remains the only SQLite writer, and each attempted provider action is reserved in the
 decision ledger before the engine is called so a lost response cannot cause a duplicate act.
+
+
+### CodeRabbit review follow-through
+
+The off-by-default **Settings > Shipping > Follow up on CodeRabbit comments** switch adds a
+third source to Foreman's existing PR pass. It is independent of Inspector-comment and CI
+tracking. It uses the same invitation, Live mode, trust, settled-idle, human-input and queue
+rules. Non-terminal workflows retain ownership, including parked runs.
+
+The daemon rechecks the owning conversation, current intent episode, repository checkout,
+branch, PR association and complete fresh observation when claiming feedback and again inside
+the runtime write lock. Attached repositories require their own trust. One prompt per session
+per pass keeps PR follow-through ahead of ship recovery and ordinary queue work. Inspector/CI
+marks retain their existing clocks; CodeRabbit generations and claims live in the adoption
+ledger, never in the Foreman process. Unknown delivery stays spent across restarts and appears
+in Shipping with manual messaging available. Nothing in this source authorizes a merge.

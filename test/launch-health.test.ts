@@ -15,6 +15,8 @@ test("unmanaged startup reports the current process, with the same job remediati
   const ops = realMacAppOps();
   ops.uid = 501;
   ops.kill = () => { throw new Error("must not signal"); };
+  // The scripted pid 42 is a GUI start, so its argument record carries no Node-mode flag.
+  ops.processArguments = () => ({argv: [`${bundle}/Contents/MacOS/Mission Control`], env: ["HOME=/Users/test"]});
   ops.run = async (command, args) => ({code: 0, stdout: command.endsWith("ps") ? `42 1 S ${bundle}/Contents/MacOS/Mission Control\n`
     : command.endsWith("lsappinfo") ? "" : args[0] === "list" ? "PID\tStatus\tLabel\n42 0 recovery-job\n"
       : `program = ${bundle}/Contents/MacOS/Mission Control\n`});

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import {
   SETTINGS_BACKUP_DOMAIN_IDS,
   type SettingsBackupDomainId,
@@ -51,8 +52,8 @@ export const SettingsBackupJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.
   z.boolean(),
   z.number().finite(),
   z.string(),
-  z.array(SettingsBackupJsonValueSchema),
-  z.record(SettingsBackupJsonValueSchema),
+  z.array(SettingsBackupJsonValueSchema).max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
+  boundedRecord(z.string(), SettingsBackupJsonValueSchema, SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
 ]));
 
 export const SettingsBackupDomainEntrySchema = z.object({
@@ -67,6 +68,8 @@ export const SettingsBackupCountsSchema = z.object({
   workflowCommands: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
   workflowDefinitions: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
   workflowVersions: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
+  /** Absent on a snapshot written before resident profiles were backed up. */
+  residentProfiles: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).optional(),
 }).strict();
 
 const SettingsBackupEnvelopeV1BaseSchema = z.object({
@@ -143,6 +146,8 @@ export const SettingsRestorePreviewSchema = z.object({
   workflowCommandsChanged: z.number().int().nonnegative(),
   workflows: SettingsRestoreCatalogChangesSchema,
   workflowVersions: SettingsRestoreVersionChangesSchema,
+  /** All zero for a snapshot that predates resident profiles: restoring it leaves them as they are. */
+  residentProfiles: SettingsRestoreCatalogChangesSchema,
   externalEffects: z.array(z.enum(["skills", "cost"])).max(2),
   exclusions: z.array(z.string().max(200)).max(SETTINGS_BACKUP_LIMITS.previewItems),
   warnings: z.array(z.string().max(SETTINGS_BACKUP_LIMITS.errorCharacters))
@@ -190,7 +195,7 @@ export const SETTINGS_RESTORE_CONFIRMATION = "RESTORE SETTINGS" as const;
 
 export const SettingsRestoreRequestSchema = z.object({
   expectedDigest: z.string().regex(/^[a-f0-9]{64}$/),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
   confirmation: z.literal(SETTINGS_RESTORE_CONFIRMATION),
 }).strict();
 export type SettingsRestoreRequest = z.infer<typeof SettingsRestoreRequestSchema>;
@@ -243,7 +248,7 @@ export const SettingsRestoredEventSchema = z.object({
   type: z.literal("settings_restored"),
   snapshotId: SettingsBackupIdSchema,
   restoredAt: z.string().datetime({ offset: true }),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
 }).strict();
 export type SettingsRestoredEvent = z.infer<typeof SettingsRestoredEventSchema>;
 

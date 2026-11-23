@@ -182,7 +182,7 @@ Every task whose kind is **scout** is told, in its own prompt, that its delivera
 
 > Write the report to `docs/reports/<slug>/report.html` ... Answer first ... Self-contained and
 > static ... call the `submit_scout_artifacts` tool with the report path, a short plain-text
-> summary of the finding, optional tags, and only the additional files worth preserving. Do not
+> summary of the finding, optional tags, and a `files` list including the primary report and each evidence file. Do not
 > commit the report or other scout output unless the operator's task explicitly requests a commit.
 
 That instruction is appended by the daemon, not by a skill, so it arrives whether Skills are
@@ -216,6 +216,11 @@ or explicitly choose **Close without report**. That confirmed exit marks the tas
 inventing a transcript-derived report; no older client or automatic completion path can take it
 because the confirmation flag defaults to false.
 
+That confirmation waives the submitted-report requirement, not the checkout's cleanup guard.
+Before returning the checkout, cleanup still preserves report files already on disk. This
+recovery and its search indexing finish asynchronously after the session closes; it never
+invents a report from the conversation.
+
 **An assignment asks a third question, because it targets an agent that is already running.**
 That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
 at that moment - so rebuilding the bundle afterwards does not change what the agent can call.
@@ -231,7 +236,7 @@ time is unknown the two cannot be ordered, and the disk check stands on its own.
 | Submitted | Captured as |
 |---|---|
 | `reportPath` | `report/report.html`, byte for byte |
-| every file beside it, recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
+| selected files beside it (or every neighbor when `files` is omitted), recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
 | `supporting: [{ repoSlot, path }]` | `artifacts/<repo-slot>/…` |
 
 The optional submission `title` names the report. Its fallback is the session name followed
@@ -242,14 +247,30 @@ clipped. Later entries are positively delivered human user turns in conversation
 
 `repoSlot` is a generated name (`repo-01`) that the task's own prompt hands out, one per
 attached checkout. An absolute path, a path that leaves the checkout, a path that resolves
-through a symbolic link, a path git ignores, and a file that changes while it is being read are
+through a symbolic link, and a file that changes while it is being read are
 each refused **by name** - a submission fails with every offending path listed, and the task
 stays exactly where it was so the agent can correct all of them at once.
 
-Files beside the report are captured automatically and must not be listed as supporting files.
-Hidden entries (`.DS_Store`, an editor swap file) cannot be represented inside a bundle at all,
-so they are skipped; if the report actually links to one, the whole capture is refused rather
-than published with a dead link.
+Use `files: [{ repoSlot, path }]` for explicit publication. Include `reportPath` itself in
+the primary repository slot and every evidence file to preserve. Selected files are accepted
+even when repository or global Git ignore rules exclude the whole directory. Only selected
+files are copied; other neighbors are not inspected or captured. Selected files beneath the
+report directory retain their relative layout under `report/`; selected files elsewhere use
+`artifacts/<repo-slot>/…`. Every local report reference must name a selected report file or
+capture fails with the missing target. The selection is persisted for retries and recovery.
+The HTTP route forwards that selection unchanged to the archive manager. Both the daemon
+and MCP submission schemas bound every collection, so an oversized one is refused before its
+elements are parsed.
+
+Do not combine `files` with nonempty `supporting`. Existing callers that omit `files` keep
+automatic directory capture, additional `supporting` files, and Git-ignore filtering. In
+that legacy mode, files beside the report must not also be listed as supporting files.
+Hidden entries cannot be represented inside a bundle: explicit selection refuses them;
+legacy discovery skips them, but refuses a report that links to one.
+
+All path, symlink, size, static-HTML, and integrity checks still apply. Publication never
+stages files, creates commits, or modifies Git ignore rules. Ignored working copies remain
+outside the Files tab's discovery; published reports are readable through the archive.
 
 ### Normal completion waits for the archive
 
@@ -370,6 +391,68 @@ submitted it is gone. A plan's session can exit while the task is still running,
 can never be rewritten - so publishing then would freeze a draft as the permanent record of a
 plan still being written. Teardown is the only moment a plan is captured.
 
+## How a report produces one
+
+An [agent report](sessions.md#agent-reports) can carry an `.html` or `.md` document, which
+Mission Control copies into `<state home>/reports/<id>/` when the report is posted. **Publish as
+scout** on the report's inbox card turns that stored copy into an ordinary `scout` bundle. It is
+the archive's one operator-initiated capture: nothing else publishes a report, and no capture
+job, exit, cleanup or restart path reaches it.
+
+| From the report | Captured as |
+|---|---|
+| the stored `.html` document | `report/report.html`, byte for byte |
+| the stored `.md` document | `report/report.html`, a static page the daemon renders with the dashboard's Markdown dialect (GitHub-flavoured; raw HTML and unsafe link schemes are dropped) |
+
+The bundle's title is the report's title. It has no prompt trail, no summary or tags, no
+companions and no `artifacts/` half; its source session is the session that posted the report,
+and its `source` is `report`. The bundle format is unchanged, so any reader opens it as a scout
+archive.
+
+- **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
+  its path. A body that names a page, a path or anything else is refused, and no checkout is
+  read, so what is archived is always the document as it was posted.
+- **The same checker.** The page must pass the static checker every bundle passes. A report
+  bundle has no companions, so a relative link is refused along with anything that runs or
+  fetches. A refused page is answered with every problem named, shown on the card, and nothing
+  is written.
+- **One archive per report.** The archive id is derived from this machine's producer id, the
+  report's id and when it was posted. Pressing again on a report that records its key checks
+  only that the bundle is still present and returns it. When the key was lost (a lost response,
+  or a restart before the key was written), the press verifies the bundle already at that id in
+  full and reuses it, unchanged, when it holds the same page or when its manifest says this
+  report's session published it (a Markdown page is re-rendered on every press, so a renderer
+  change must not turn the report's own archive into a conflict). Any other bundle at that id
+  is a conflict that is never overwritten: delete it from the Scouts page, then publish again.
+  Either way the report records its key once.
+  A report's recorded key is checked against the library at four moments, and cleared only
+  when its bundle is absent, so the report can be published again under the same key:
+
+  - **Publish as scout.** A press on a report that already records a key checks that its bundle
+    is still in the library. If it is gone, the report is published again rather than answered
+    with the stale key.
+  - **Deleting the archive.** `DELETE /api/archives/:archiveKey` re-checks the reports recorded
+    under that one key. The check waits behind any Publish of the same report, so a publish
+    that recreated the archive meanwhile keeps its key.
+  - **Startup.** Every recorded key is checked once, which heals a delete interrupted between
+    removing the bundle and clearing the key.
+  - **In the background.** When a reconciliation pass prunes bundles that left the library, it
+    hands over exactly those keys, and only the reports recorded under them are re-checked. A
+    bundle removed by hand heals this way, and publishing or deleting other archives costs
+    nothing.
+
+  A bundle that is present but no longer verifies, because it was edited or damaged on disk,
+  keeps its report's key: the card stays **Published** and the Scouts page shows the archive
+  as unreadable. It is never rewritten. Delete it from the Scouts page to publish the report
+  again. A press that finds such a bundle at its key with no key recorded refuses with that
+  instruction and writes nothing. A library that cannot be read right now (a permission error,
+  an I/O error, running out of file descriptors) is not an absence either: every key is kept,
+  and a Publish press answers with the error instead of publishing again. A library root that is
+  missing, or empty because its volume is not mounted, does count as absence: Mission Control
+  cannot tell it from a deleted library, so the startup check clears those keys. Nothing is
+  lost: once the volume is back, a Publish press finds the bundle at the report's key, verifies
+  it and records the key again without writing anything.
+
 ## Cleanup asks first
 
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
@@ -485,6 +568,7 @@ GET    /api/archives/:archiveKey/artifacts/:artifactId
 POST   /api/archives/:archiveKey/artifacts/:artifactId/open
 DELETE /api/archives/:archiveKey
 POST   /mcp/scouts/submit
+POST   /api/reports/:id/publish
 ```
 
 `kind` filters to one kind. An unreadable bundle has no readable kind, so a kind filter

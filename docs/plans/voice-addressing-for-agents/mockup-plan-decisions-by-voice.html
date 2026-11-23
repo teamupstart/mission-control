@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice mock-ups: filling a plan-decisions form by voice (selected)</title>
+<link rel="stylesheet" href="../../../src/web/styles.css">
+<style>
+/* ---- Mock-up kit: page chrome shared by every voice-addressing mock-up page ----
+   The product stylesheet (src/web/styles.css) is linked above this block, so every
+   var(--token) and every product class (.btn, .field, .review, .inbox-item, .modal ...)
+   is the real one. Rules here only frame the variants. */
+html, body { height: auto !important; overflow: auto !important; }
+body.mk {
+  margin: 0;
+  padding: 28px 32px 90px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--sans);
+  min-width: 1180px;
+}
+.mk-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.mk-ico { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.mk-ico.sm { width: 11px; height: 11px; }
+.mk-ico.lg { width: 18px; height: 18px; }
+
+.mk-top h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+.mk-top p { color: var(--muted); max-width: 1020px; margin: 0 0 6px; }
+.mk-top .mk-spec { color: var(--dim); font-size: 12px; }
+.mk-top code, .mk-notes code, .mk-pitch code { font: 11.5px var(--mono); color: var(--fg); background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px; }
+.mk-toc { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.mk-toc a { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.mk-toc a b { color: var(--working); font-family: var(--mono); margin-right: 4px; }
+
+.mk-variant { margin-top: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-2); overflow: hidden; }
+.mk-variant-head { display: flex; gap: 14px; align-items: baseline; padding: 13px 18px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+.mk-letter { font: 700 14px var(--mono); color: var(--on-accent); background: var(--working); border-radius: 8px; padding: 3px 10px; flex: none; }
+.mk-variant-head h2 { margin: 0; font-size: 16px; white-space: nowrap; }
+.mk-pitch { color: var(--muted); margin: 0; flex: 1; }
+.mk-stage { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px 18px 22px; align-items: flex-start; }
+.mk-state { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mk-cap { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.mk-cap b { color: var(--muted); }
+.mk-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 28px; margin: 0; padding: 12px 18px 15px; border-top: 1px solid var(--border-soft); list-style: none; color: var(--muted); font-size: 12px; }
+.mk-notes li::before { content: "+ "; color: var(--idle); font-weight: 700; font-family: var(--mono); }
+.mk-notes li.con::before { content: "- "; color: var(--attention); }
+
+/* What the operator said. Never part of the product UI: it labels the mock-up. */
+.mk-say { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; font: 12px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 999px; padding: 3px 11px 3px 9px; }
+.mk-say .mk-ico { color: var(--working); }
+.mk-say q { color: var(--fg); quotes: "\201C" "\201D"; }
+
+/* A slice of the macOS menu bar, for anything that lives in or hangs off the tray. */
+.mk-menubar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; height: 26px; padding: 0 12px; border-radius: 8px 8px 0 0; background: linear-gradient(#3a3d44, #33363c); color: #f2f3f5; font: 500 12.5px -apple-system, system-ui, sans-serif; }
+.mk-menubar .mk-mb-left { margin-right: auto; display: flex; gap: 14px; opacity: 0.92; }
+.mk-menubar .mk-mb-left b { font-weight: 700; }
+.mk-menubar .mk-mb-item { display: inline-flex; align-items: center; gap: 4px; opacity: 0.9; }
+.mk-menubar .mk-mb-item.is-open { background: rgba(255, 255, 255, 0.2); border-radius: 4px; padding: 1px 6px; margin: 0 -6px; opacity: 1; }
+.mk-menubar .mk-mb-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff9f0a; }
+/* Some other app in front (Mission Control minimized). */
+.mk-desktop { position: relative; border-radius: 0 0 8px 8px; background: linear-gradient(135deg, #20304a, #3a2a4a 60%, #4a3340); overflow: hidden; }
+.mk-otherapp { position: absolute; inset: 18px 18px 0; border-radius: 9px 9px 0 0; background: #f4f5f7; opacity: 0.16; }
+/* A slice of the Mission Control window. */
+.mk-win { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; position: relative; }
+.mk-win-bar { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); color: var(--dim); font-size: 11.5px; }
+.mk-win-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); }
+.mk-win-bar span { margin-left: 8px; }
+.mk-skel { height: 9px; border-radius: 5px; background: var(--panel-2); margin: 8px 0; }
+.mk-skel.w40 { width: 40%; } .mk-skel.w60 { width: 60%; } .mk-skel.w80 { width: 80%; }
+.mk-tile { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+
+/* ---- Shared voice vocabulary. Variants restyle these; the names stay the same. ---- */
+/* An agent's display name, in its resident board colour (set --resident inline). */
+.v-name { font-weight: 650; color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg)); }
+/* The always-visible inline voice hint: lighter text, no hover. */
+.v-hint { font-size: 11.5px; color: var(--dim); }
+.v-hint q { color: var(--muted); quotes: "\201C" "\201D"; font-style: normal; }
+/* A draining cancel-window bar. Width is set inline to show a moment in time. */
+.v-count { height: 3px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.v-count > i { display: block; height: 100%; background: var(--working); border-radius: 2px; }
+.v-secs { font: 600 11px var(--mono); color: var(--working); }
+.v-live { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); box-shadow: 0 0 8px color-mix(in oklab, var(--idle) 70%, transparent); flex: none; }
+
+
+.pd-col { width: 545px; }
+.pd-card.inbox-item { margin: 0; }
+.pd-card .review { padding: 10px 0 2px; }
+.pd-card .review-head { margin-bottom: 10px; gap: 8px; }
+.pd-card .review-wait { margin: -2px 0 8px; }
+.pd-card .decisions { gap: 8px; }
+.pd-card .decision { padding: 8px 10px 9px; gap: 6px; }
+.pd-card .decision-option { align-items: center; padding: 5px 9px; }
+.pd-card .decision-option input { margin-top: 0; }
+.pd-card .decision-q { display: flex; align-items: center; gap: 8px; }
+.pd-rev { color: var(--working); background: color-mix(in oklab, var(--working) 15%, transparent); white-space: nowrap; }
+.pd-earlier { margin-left: auto; flex: none; padding: 2px 8px; font-size: 11.5px; }
+.pd-plan.review-content { display: flex; align-items: baseline; gap: 9px; margin-bottom: 10px; padding: 7px 11px; font-size: 12px; color: var(--muted); }
+.pd-plan-t { font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.pd-plan-x { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pd-plan-more { color: var(--working); white-space: nowrap; }
+.pd-hintline { margin: 8px 0 0; }
+.pd-hintline.pd-top { margin: 2px 0 0; }
+.pd-key { flex: none; width: 17px; height: 17px; display: grid; place-items: center; font: 700 10px var(--mono); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; }
+/* Anything voice filled is marked in the working blue, the human's colour in a transcript. */
+.pd-voice { display: inline-flex; align-items: center; gap: 4px; flex: none; font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--working); background: color-mix(in oklab, var(--working) 14%, transparent); border-radius: 999px; padding: 2px 8px 2px 6px; }
+.pd-micmark { color: var(--working); margin-left: 5px; }
+.decision-option.pd-picked { border-color: color-mix(in oklab, var(--working) 55%, var(--border)); background: color-mix(in oklab, var(--working) 8%, var(--bg-2)); }
+.pd-picked .pd-key { color: var(--working); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); }
+.decision.pd-missing { border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); background: color-mix(in oklab, var(--attention) 5%, var(--bg-2)); }
+.decision.pd-next { border-style: dashed; border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+.pd-miss, .pd-alert { display: flex; align-items: flex-start; gap: 7px; margin: 0; font-size: 12px; line-height: 1.45; color: var(--attention); }
+.pd-miss .mk-ico, .pd-alert .mk-ico { margin-top: 2px; }
+.pd-alert q, .pd-miss q { quotes: "\201C" "\201D"; color: var(--fg); }
+.pd-alert b { color: var(--fg); font-weight: 600; }
+.pd-num { flex: none; min-width: 18px; height: 18px; padding: 0 4px; display: inline-grid; place-items: center; font: 700 10.5px var(--mono); color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; }
+.pd-mini { padding: 1px 7px; font-size: 11px; }
+
+/* A: ordinal badges */
+.pd-ord { flex: none; display: inline-flex; align-items: center; gap: 4px; font: 700 12px var(--mono); letter-spacing: 0.02em; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px 8px; }
+.pd-ord.is-voice { color: var(--on-accent); background: color-mix(in oklab, var(--working) 78%, var(--bg)); border-color: transparent; }
+.pd-ord.is-missing { color: var(--on-attention); background: var(--attention); border-color: transparent; }
+
+/* B: spoken labels on options */
+.pd-rowhint { flex: none; white-space: nowrap; }
+
+/* C: progress rail */
+.pd-rail { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 6px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--panel); }
+.pd-seg { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; font-size: 11.5px; color: var(--dim); background: var(--bg-2); border: 1px solid var(--border-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pd-seg b { font: 700 10.5px var(--mono); }
+.pd-seg.is-voice { color: var(--fg); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); background: color-mix(in oklab, var(--working) 12%, var(--bg-2)); }
+.pd-seg.is-voice b { color: var(--working); }
+.pd-seg.is-missing { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); background: color-mix(in oklab, var(--attention) 8%, var(--bg-2)); }
+.pd-rail-count { flex: none; padding: 0 6px; font: 600 11px var(--mono); color: var(--muted); }
+.pd-railmsg { margin: 0 0 10px; }
+
+/* D: review panel */
+.pd-split { display: grid; grid-template-columns: minmax(0, 1fr) 178px; gap: 10px; align-items: start; }
+.pd-split .decisions-actions { justify-content: flex-start; }
+.pd-panel { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border)); border-radius: 9px; background: color-mix(in oklab, var(--working) 6%, var(--panel)); }
+.pd-panel-t { display: inline-flex; align-items: center; gap: 5px; font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--working); }
+.pd-panel ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.pd-panel li { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 4px 6px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--border-soft); }
+.pd-panel li b { font: 700 10.5px var(--mono); color: var(--muted); }
+.pd-panel li span { flex: 1; min-width: 0; }
+.pd-panel li.is-open { color: var(--dim); }
+.pd-panel li.is-voice b { color: var(--working); }
+.pd-panel li.is-missing { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); }
+.pd-panel p { margin: 0; }
+.pd-panel .btn-approve { align-self: stretch; }
+
+/* E: step-through */
+.pd-sum { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-2); font-size: 12.5px; }
+.pd-sum-q { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pd-sum-a { flex: none; color: var(--dim); font-size: 12px; }
+.pd-sum.is-voice .pd-sum-a { color: var(--fg); font-weight: 600; }
+.decision.pd-focus { border-color: color-mix(in oklab, var(--working) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in oklab, var(--working) 14%, transparent); }
+.decision.pd-focus.pd-missing { border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 14%, transparent); }
+.pd-of { margin-left: auto; font: 500 11px var(--mono); color: var(--dim); }
+.pd-inhint { margin: 0; }
+
+</style>
+</head>
+<body class="mk">
+<svg class="mk-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 16 16"><path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z"/><path d="M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 16 16"><path d="M10 6V3.5a2 2 0 0 0-3.7-1M6 6v1.500a2 2 0 0 0 3 1.700"/><path d="M4 7.5a4 4 0 0 0 6.300 3.300M12 7.500a4 4 0 0 1-.300 1.500M8 11.500v3M5.500 14.500h5M2 1.500l12 13"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 16 16"><path d="M3 2.500h2.500l1 3-1.500 1a7 7 0 0 0 3.500 3.500l1-1.500 3 1V12a1.500 1.500 0 0 1-1.500 1.500A9.500 9.500 0 0 1 1.500 4 1.500 1.500 0 0 1 3 2.500z"/></symbol>
+  <symbol id="i-ptt" viewBox="0 0 16 16"><path d="M8 3a1.700 1.700 0 0 0-1.700 1.700v3a1.700 1.700 0 0 0 3.400 0v-3A1.700 1.700 0 0 0 8 3z"/><path d="M4.800 8a3.200 3.200 0 0 0 6.400 0M8 11.200v2.300M2 4.500a7 7 0 0 0 0 5.500M14 4.500a7 7 0 0 1 0 5.500"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.500l3.200 3.200L13 4.800"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.200l6.300 11H1.700z"/><path d="M8 6.500v3.200M8 11.700v.100"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.500V8l2.300 1.500"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8l11.500-5.500L10 14l-2.500-5z"/><path d="M7.500 9l6-6.500"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.500A5.500 5.500 0 0 1 6.500 3 5.500 5.500 0 1 0 13 9.500z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.300 6.300a1.800 1.800 0 1 1 2.600 1.600c-.600.300-.900.700-.900 1.300M8 11.500v.100"/></symbol>
+  <symbol id="i-keys" viewBox="0 0 16 16"><rect x="1.500" y="4" width="13" height="8" rx="1.500"/><path d="M4 6.500h.100M6.500 6.500h.100M9 6.500h.100M11.500 6.500h.100M4.500 9.500h7"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v8M4.800 7L8 10.200 11.200 7M2.500 13.500h11"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2 8v0M4.500 6v4M7 3.500v9M9.500 5.500v5M12 7v2M14 8v0"/></symbol>
+</svg>
+
+
+
+<header class="mk-top">
+  <h1>Filling a plan-decisions form by voice</h1>
+  <p>A <code>request_plan_decisions</code> form is fill-only by voice: <em>"Steve, first one B, second one A"</em> ticks options and sends nothing. The form waits for <em>"Steve, submit"</em> (or <em>"reply, submit"</em>) or a click, and validation refuses to submit a half-filled form.</p>
+  <p class="mk-spec">Fixed in every variant: the filed form as the filed-plan-decisions plan draws it (<code>decisions</code> tag, <code>Revision 2</code> tag with Earlier version, the gate status line "Waiting on your decisions", no snooze), the agent's display name in its board colour, blue for anything voice filled, and no countdown anywhere, because voice never submits this form on its own. Each decision's Chat about it row and note box are unchanged and left out here to keep the cards short. What varies is <b>how a decision and an option are addressed</b> and <b>how the form shows what is still missing</b>. Each variant shows four moments: at rest, two of three filled, "Steve, submit" refused, and complete.</p>
+  <nav class="mk-toc"><a href="#a"><b>A</b>Ordinal badges</a></nav>
+<p class="mk-spec"><b>Selected by the operator on 2026-11-22: variant A.</b> This page holds the selected design; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
+</header>
+
+<!-- ============================== A ============================== -->
+<section class="mk-variant pd-a" id="a" style="--resident: var(--resident-cyan)">
+  <div class="mk-variant-head"><span class="mk-letter">A</span><h2>Ordinal badges</h2>
+    <p class="mk-pitch">Each decision wears a badge with the word the operator says for it: 1st, 2nd, 3rd. A badge turns blue when voice fills its decision and amber when a refused submit is waiting on it.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state pd-col">
+      <span class="mk-cap"><b>1</b> At rest, form open</span>
+      <span class="mk-say"><svg class="mk-ico"><use href="#i-help"/></svg>Steve's form is open on screen</span>
+      <section class="inbox-item inbox-reviews pd-card">
+  <div class="inbox-head"><span class="agent-dot" style="--agent-accent: var(--resident)"></span><strong class="v-name">Steve</strong><span class="dim"> · 1 pending</span><span class="inbox-spacer"></span><button class="btn btn-ghost">Open session</button><button class="btn btn-ghost">Dismiss</button></div>
+  <section class="review review-plan-decisions">
+    <div class="review-head"><span class="kind-tag kind-plan-decisions">decisions</span><span class="kind-tag pd-rev">Revision 2</span><h3>Cache layer plan</h3><button class="btn btn-ghost pd-earlier">Earlier version</button></div>
+    <p class="review-wait review-wait-stopped"><span class="review-wait-state">Waiting on your decisions</span><span class="review-wait-asked">filed 12m ago</span></p>
+    <div class="review-content pd-plan"><span class="pd-plan-t">Plan</span><span class="pd-plan-x">Add a read-through cache in front of the queue store, behind one flag &hellip;</span><span class="pd-plan-more">Show plan</span></div>
+    
+    <div class="decisions">
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord">1st</span>Where does the cache live?</legend>
+          <label class="decision-option"><input type="radio" name="a0-1"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">SQLite</span></span></label>
+          <label class="decision-option"><input type="radio" name="a0-1"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Postgres<span class="decision-rec"> · recommended</span></span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord">2nd</span>How are entries invalidated?</legend>
+          <label class="decision-option"><input type="radio" name="a0-2"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">TTL only<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a0-2"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Write-through</span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord">3rd</span>Ship it behind a preview flag?</legend>
+          <label class="decision-option"><input type="radio" name="a0-3"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">Yes, a preview flag<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a0-3"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">No, on for everyone</span></span></label>
+          
+        </fieldset>
+        <div class="decisions-actions"><button class="btn btn-ghost">Dismiss</button><button class="btn btn-chat decisions-chat-all">Chat about all</button><button class="btn btn-approve" disabled>Submit</button></div>
+      </div>
+      <p class="v-hint pd-hintline">Say <q>Steve, first one B, second one A</q> to fill it in. Nothing is sent until you say <q>Steve, submit</q>.</p>
+  </section>
+</section>
+    </div>
+    <div class="mk-state pd-col">
+      <span class="mk-cap"><b>2</b> Two of three filled by voice</span>
+      <span class="mk-say"><svg class="mk-ico"><use href="#i-mic"/></svg><q>Steve, first one B, second one A</q></span>
+      <section class="inbox-item inbox-reviews pd-card">
+  <div class="inbox-head"><span class="agent-dot" style="--agent-accent: var(--resident)"></span><strong class="v-name">Steve</strong><span class="dim"> · 1 pending</span><span class="inbox-spacer"></span><button class="btn btn-ghost">Open session</button><button class="btn btn-ghost">Dismiss</button></div>
+  <section class="review review-plan-decisions">
+    <div class="review-head"><span class="kind-tag kind-plan-decisions">decisions</span><span class="kind-tag pd-rev">Revision 2</span><h3>Cache layer plan</h3><button class="btn btn-ghost pd-earlier">Earlier version</button></div>
+    <p class="review-wait review-wait-stopped"><span class="review-wait-state">Waiting on your decisions</span><span class="review-wait-asked">filed 12m ago</span></p>
+    <div class="review-content pd-plan"><span class="pd-plan-t">Plan</span><span class="pd-plan-x">Add a read-through cache in front of the queue store, behind one flag &hellip;</span><span class="pd-plan-more">Show plan</span></div>
+    
+    <div class="decisions">
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>1st</span>Where does the cache live?</legend>
+          <label class="decision-option"><input type="radio" name="a1-1"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">SQLite</span></span></label>
+          <label class="decision-option pd-picked"><input type="radio" name="a1-1" checked><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Postgres<span class="decision-rec"> · recommended</span></span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>2nd</span>How are entries invalidated?</legend>
+          <label class="decision-option pd-picked"><input type="radio" name="a1-2" checked><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">TTL only<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a1-2"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Write-through</span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord">3rd</span>Ship it behind a preview flag?</legend>
+          <label class="decision-option"><input type="radio" name="a1-3"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">Yes, a preview flag<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a1-3"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">No, on for everyone</span></span></label>
+          
+        </fieldset>
+        <div class="decisions-actions"><button class="btn btn-ghost">Dismiss</button><button class="btn btn-chat decisions-chat-all">Chat about all</button><button class="btn btn-approve" disabled>Submit</button></div>
+      </div>
+      <p class="v-hint pd-hintline">Filled in, not sent. Say <q>Steve, third one A</q> for the last one.</p>
+  </section>
+</section>
+    </div>
+    <div class="mk-state pd-col">
+      <span class="mk-cap"><b>3</b> “Submit” refused: one is unanswered</span>
+      <span class="mk-say"><svg class="mk-ico"><use href="#i-mic"/></svg><q>Steve, submit</q></span>
+      <section class="inbox-item inbox-reviews pd-card">
+  <div class="inbox-head"><span class="agent-dot" style="--agent-accent: var(--resident)"></span><strong class="v-name">Steve</strong><span class="dim"> · 1 pending</span><span class="inbox-spacer"></span><button class="btn btn-ghost">Open session</button><button class="btn btn-ghost">Dismiss</button></div>
+  <section class="review review-plan-decisions">
+    <div class="review-head"><span class="kind-tag kind-plan-decisions">decisions</span><span class="kind-tag pd-rev">Revision 2</span><h3>Cache layer plan</h3><button class="btn btn-ghost pd-earlier">Earlier version</button></div>
+    <p class="review-wait review-wait-stopped"><span class="review-wait-state">Waiting on your decisions</span><span class="review-wait-asked">filed 12m ago</span></p>
+    <div class="review-content pd-plan"><span class="pd-plan-t">Plan</span><span class="pd-plan-x">Add a read-through cache in front of the queue store, behind one flag &hellip;</span><span class="pd-plan-more">Show plan</span></div>
+    
+    <div class="decisions">
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>1st</span>Where does the cache live?</legend>
+          <label class="decision-option"><input type="radio" name="a2-1"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">SQLite</span></span></label>
+          <label class="decision-option pd-picked"><input type="radio" name="a2-1" checked><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Postgres<span class="decision-rec"> · recommended</span></span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>2nd</span>How are entries invalidated?</legend>
+          <label class="decision-option pd-picked"><input type="radio" name="a2-2" checked><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">TTL only<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a2-2"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Write-through</span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision pd-missing">
+          <legend class="decision-q"><span class="pd-ord is-missing">3rd</span>Ship it behind a preview flag?</legend>
+          <label class="decision-option"><input type="radio" name="a2-3"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">Yes, a preview flag<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a2-3"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">No, on for everyone</span></span></label>
+          <p class="pd-miss" role="alert"><svg class="mk-ico"><use href="#i-warn"/></svg><span>Not sent. The third one has no answer yet.</span></p>
+        </fieldset>
+        <div class="decisions-actions"><button class="btn btn-ghost">Dismiss</button><button class="btn btn-chat decisions-chat-all">Chat about all</button><button class="btn btn-approve" disabled>Submit</button></div>
+      </div>
+      <p class="v-hint pd-hintline">Say <q>Steve, third one A</q> or <q>Steve, third one B</q>, then <q>Steve, submit</q>.</p>
+  </section>
+</section>
+    </div>
+    <div class="mk-state pd-col">
+      <span class="mk-cap"><b>4</b> Complete, waiting for “Steve, submit”</span>
+      <span class="mk-say"><svg class="mk-ico"><use href="#i-mic"/></svg><q>Steve, third one A</q></span>
+      <section class="inbox-item inbox-reviews pd-card">
+  <div class="inbox-head"><span class="agent-dot" style="--agent-accent: var(--resident)"></span><strong class="v-name">Steve</strong><span class="dim"> · 1 pending</span><span class="inbox-spacer"></span><button class="btn btn-ghost">Open session</button><button class="btn btn-ghost">Dismiss</button></div>
+  <section class="review review-plan-decisions">
+    <div class="review-head"><span class="kind-tag kind-plan-decisions">decisions</span><span class="kind-tag pd-rev">Revision 2</span><h3>Cache layer plan</h3><button class="btn btn-ghost pd-earlier">Earlier version</button></div>
+    <p class="review-wait review-wait-stopped"><span class="review-wait-state">Waiting on your decisions</span><span class="review-wait-asked">filed 12m ago</span></p>
+    <div class="review-content pd-plan"><span class="pd-plan-t">Plan</span><span class="pd-plan-x">Add a read-through cache in front of the queue store, behind one flag &hellip;</span><span class="pd-plan-more">Show plan</span></div>
+    
+    <div class="decisions">
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>1st</span>Where does the cache live?</legend>
+          <label class="decision-option"><input type="radio" name="a3-1"><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">SQLite</span></span></label>
+          <label class="decision-option pd-picked"><input type="radio" name="a3-1" checked><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Postgres<span class="decision-rec"> · recommended</span></span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>2nd</span>How are entries invalidated?</legend>
+          <label class="decision-option pd-picked"><input type="radio" name="a3-2" checked><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">TTL only<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a3-2"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">Write-through</span></span></label>
+          
+        </fieldset>
+        <fieldset class="decision">
+          <legend class="decision-q"><span class="pd-ord is-voice"><svg class="mk-ico sm"><use href="#i-mic"/></svg>3rd</span>Ship it behind a preview flag?</legend>
+          <label class="decision-option pd-picked"><input type="radio" name="a3-3" checked><span class="pd-key">A</span><span class="decision-option-body"><span class="decision-option-label">Yes, a preview flag<span class="decision-rec"> · recommended</span></span></span></label>
+          <label class="decision-option"><input type="radio" name="a3-3"><span class="pd-key">B</span><span class="decision-option-body"><span class="decision-option-label">No, on for everyone</span></span></label>
+          
+        </fieldset>
+        <div class="decisions-actions"><button class="btn btn-ghost">Dismiss</button><button class="btn btn-chat decisions-chat-all">Chat about all</button><button class="btn btn-approve">Submit</button></div>
+      </div>
+      <p class="v-hint pd-hintline">All three answered. Say <q>Steve, submit</q>, or click Submit.</p>
+  </section>
+</section>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>The badge is the spoken grammar printed on the card: “first one B” is badge 1st, letter B. Nothing to translate.</li>
+    <li class="con">A managed plan's final bundle gets an approval decision appended by the daemon, so the ordinals must count it too or “third one” points at the wrong question.</li>
+    <li>A refused submit lands on the decision that caused it, inside the <code>fieldset.decision</code> that <code>DecisionForm</code> already draws.</li>
+    <li class="con">Badges and letters add weight to every decision for an operator who never speaks, and the form looks different with the voice flag off.</li>
+  </ul>
+</section>
+
+<!-- ============================== B ============================== -->
+
+</body>
+</html>

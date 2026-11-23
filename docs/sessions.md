@@ -4,7 +4,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the terminal sessions [discovery admits](#sessions-started-outside-mission-control) by default, and for every session once outside sessions are shown |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
@@ -28,6 +28,35 @@ This keeps the **PR chip** honest without a terminal session sharing the checkou
 all, and the PR poller finds a session's pull request by asking
 `gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
 
+### Sessions started outside Mission Control
+
+By default the sweep admits the terminal sessions Mission Control started (dispatched tasks, the
+agent button and terminal chooser, managed resume, and **Continue in terminal**), plus the
+fallbacks described below, which include pipeline workers.
+Agent SDK sessions never pass through the sweep: the daemon registers them itself when it starts
+them, so they are shown whichever way the setting below is set. The sweep recognizes its own
+terminal launches by the private wrapper each one runs beneath, read from the same process table
+(`isMissionLaunchProcess` in `src/server/terminal/launch-process.ts`), so they stay on the
+dashboard across a daemon restart. Fallbacks also admit a terminal session: being a running
+task's session or holding a dispatch Foreman invite, working inside an observed
+[pipeline run's](pipelines.md) worktree, since an external engine starts those workers, and
+being owed a close by a finished task, so its teardown is never dropped while it still runs.
+
+Any other `claude`, `codex`, or `pi` process is skipped before its pane is captured, its Git
+facts are read, or its Codex rollout is looked up with `lsof`. One batched `lsof` still reads
+every agent's working directory, because the pipeline rule needs it. A skipped session is
+simply absent from the sweep, so a card it already had leaves through the ordinary exit and
+eviction lifecycle, and a hook from it finds no card, as any unmatched hook does. It still counts
+toward the hook's unique-directory fallback, so its hook is never bound to the one visible card
+that shares its working directory.
+
+**Settings > Setup > Terminals > Show sessions started outside Mission Control** turns the old
+behavior back on, and the next sweep cards them again. It is off for every install, including
+upgrades, and it carries a warning: on some setups those cards show the wrong state, name, or
+pane, and sending to them can fail. It is stored in the `terminals` settings-backup domain. An
+agent started from a shell inside a Mission-launched session, such as one opened by the
+**Terminal** button, runs beneath that wrapper and counts as Mission-launched.
+
 The chip is that one pull request: the one on the branch of the checkout the session is
 standing in. A session running a
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) owns one in each
@@ -38,6 +67,20 @@ quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) r
 
 PR links are green while open, purple when merged, and red when closed without merging.
 Closed links remain visible until the session moves to a branch with no matching PR.
+
+A red triangle beside the chip (a `⚠` on the rail and the board tile) means a CI check on the
+pull request's head commit is failing. It follows the latest run of each check, the way GitHub's
+checks list and `gh pr checks` do. When a check runs again on the same commit - the title check
+after the title is edited, a run cancelled and started over - the earlier run stops counting once
+the later one has started, so a failure a later run re-checked does not hold the alert. The same
+check means a GitHub Actions run of the same workflow file, triggering event and check name: the
+`push` and `pull_request` runs of one job are two checks, whatever their timing, and a failure in
+either still counts. So do two runs of one check that overlapped. Only GitHub Actions reports all
+of that, so a failed check from any other app, or a failed commit status, stays failing until the
+next push, as GitHub's own rollup reads it. `gh pr list` does not report the app or the event, so
+before a failure is cleared the poller reads that commit's checks once more through GitHub's
+GraphQL API, and keeps the failure unless that answer is complete and confirms the later run was
+the same check.
 
 ### The title bar stays compact at half-screen
 
@@ -427,9 +470,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
   field; multi-question or multi-select asks show every question together and submit once.
   Each question accepts either its choice rows or non-empty custom text, and parallel asks
-  wait their turn on the same session detail instead of replacing one another. Claude's own question
-  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
-  terminal is unreadable, and here it is not;
+  wait their turn on the same session detail instead of replacing one another. A task's Claude
+  session only shows that form when it launched without the Mission MCP server, because
+  otherwise it asks through `request_input` like a terminal session does
+  ([the ask channel](#the-ask-channel));
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge
@@ -437,6 +481,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 - if a Claude SDK session reports that it is no longer logged in, authenticate Claude from
   any terminal. Its next Mission Control message replaces the stale SDK subprocess, resumes
   the same Claude conversation, and delivers that message with the credentials now on disk.
+  A resident's next scheduled wake does the same. If Claude reports the failure but never
+  closes its turn, Mission Control closes it after 30 seconds so the session returns to idle
+  and that next message or wake can reach it. If the stale subprocess then ignores its input
+  closing, it is stopped after 10 seconds instead of holding up the recovery.
   `/login` is not an interactive command in the embedded composer. If authentication fails
   before Claude reports a conversation id, there is nothing safe to resume; the session exits
   as unresumable so the operator can start a new conversation;
@@ -704,6 +752,259 @@ every other shortcut it is rebindable in **Settings → Keyboard**.
 With nothing to stop - an idle agent - the chord does nothing, and the session keeps
 everything it had.
 
+### Pause and resume a session
+
+Pausing stops an agent from using the machine and the network without ending it. The
+conversation, the checkout and the task are untouched, and a resumed agent carries on exactly
+where it stopped. There are three ways to pause:
+
+- **One session**, from its card or its console. **Pause now** freezes it at once. **Pause
+  after this turn** lets the current turn finish and freezes it then; a turn waiting on your
+  answer to a question is not finished, so you can still answer it.
+- **Pause all**, the two-bar button in the title bar. It pauses every live session at once.
+  With nothing running it can still hold automatic launches, so the autopilot starts nothing.
+  Its confirm can also hold automatic launches, so the backlog autopilot starts nothing new
+  until you resume. It can also resume everything automatically in 1 hour, in 4 hours or
+  tomorrow at 8:00 am. A banner under the title bar says what is paused and offers **Resume
+  all now**.
+- **Make priority**, from a session's pause menu. That session keeps running and every other
+  live session pauses for it, which is how you give an urgent session (an oncall
+  investigation, say) the whole machine. Automatic launches are held while it lasts. **End
+  priority** resumes the sessions it paused.
+
+**What a pause does.** From the moment you ask, nothing automated starts a turn in the
+session: Foreman, workflow packets, the resident loop, the work queue and the outbox all hold
+their work rather than failing it. The hold is in place before the daemon has finished reading
+the process table, so nothing can slip a turn in while the freeze is being prepared. Pause all
+and Make priority hold every session they take before freezing the first one. When the pause freezes, the daemon stops the agent's whole
+process tree with `SIGSTOP`, including its running tools and background sub-agents. A stopped
+process sends and receives nothing, which is what frees the network. Resume sends `SIGCONT`.
+If the model's server dropped a request during a long pause, the agent retries it.
+
+For a pane-backed agent started from an interactive shell, that shell is stopped first and
+resumed last, so it never notices its foreground job stop and keeps the terminal.
+
+**A process that will not stop is never called frozen.** If any process in the tree refuses
+`SIGSTOP` (for example it belongs to another user), whatever did stop is continued again, the
+session stays held but running, and the control that asked says which process refused. The
+freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
+loop. A **Pause now** keeps retrying even while its turn runs, including on an SDK session whose
+driver process has not started yet or an agent, idle or not, that one read of the process table
+missed;
+only **Pause after this turn** waits for the turn to end. A
+paused card and conversation say when the agent actually froze, which for an after-turn pause is
+when its turn ended, not when you asked. After every stop the tree is read again, so a tool the agent started
+in the instant before it stopped, or a process whose identity changed in that instant (it
+replaced its own program, or its pid went to another process), is saved and stopped as a new
+member; the session reads as frozen only once a read finds nothing new. While a **Pause now** is
+being retried, its card and console say **Held - not frozen yet**, not "Pausing after this turn".
+While any Pause all session is only held, its banner reads "Paused, but not everything is
+frozen" and counts frozen and held sessions separately; a Pi session, which has nothing to stop, is always counted as held, never as frozen. A re-freeze after a restart
+that cannot read the process table keeps the processes an earlier freeze stopped, so resuming
+still continues them.
+
+**A resume that does not complete says so.** If a stopped process refuses `SIGCONT`, the
+session stays paused with only that process recorded, and Resume reports it, so pressing Resume
+again finishes the job. A resume is saved as asked for before any `SIGCONT` is sent, and its
+record stays until the processes have continued and that is saved too. So a restart in between
+finishes the resume instead of freezing the session again, and never loses a process that
+refused. Each stopped process is saved with a fingerprint of its start time and command line,
+and checked against it immediately before every `SIGSTOP` and every `SIGCONT`, so a pid that an
+unrelated process reused - in the instant between reading the tree and stopping it, or while
+Mission Control was down - is never frozen or continued. A process whose identity changed in that
+instant fails the freeze rather than being skipped, and the retry reads the tree again. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
+and say why, because a stopped process cannot act on any of them.
+
+**Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
+saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
+a record of what to continue. The next one also finishes that freeze at once, even though the
+stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
+those stopped processes. A pause that cannot be saved stops and holds nothing, and says so, and
+a Pause all or priority that cannot be saved holds nothing either. Once a freeze has happened,
+what it stopped is already saved, so a failure of the last save after it is not reported as a
+pause that did not happen: the pause is reported as it stands and that save is retried on the
+backing-off timer. Either way: no launch or delivery waits behind a
+pause you were told did not happen. A resume
+that cannot be saved continues nothing, because a restart would otherwise freeze again what you
+resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries
+again on a timer that backs off from 15 seconds to 5 minutes. A Pi session
+running inside Mission Control has no separate process to stop. It is held instead, and once
+its current turn ends it starts nothing new until you resume.
+
+**Who resumes what.** Every pause has one owner. Ending Pause all or priority is saved before
+it is reported, even when there is nothing left for it to resume, so its launch hold does not
+come back after a restart. Ending priority, Resume all and the scheduled
+morning resume each lift only what they paused. If any of it will not continue, Pause all or
+priority stays in force, banner and button included, and pressing it again retries just those. A session you paused yourself stays paused
+until you resume it. Making a paused session the priority is saved before that session is
+continued: if it cannot be saved, or the session would not continue, nothing changes. Pausing a
+session that Pause all or priority already holds makes it yours
+only once that is saved: if it cannot be, the control says so and the session stays theirs, so
+Resume all still brings it back. Resuming one session lifts it whatever paused it.
+
+**Messages wait.** While a session is paused, the reply box's **Send** reads **Queue**. A
+message sent then waits in the session's outbox and is delivered when it resumes. Its steer
+and interrupt deadlines count from the resume, not from when you typed it, so a message queued
+overnight does not interrupt the turn it resumed. Foreman's work queue counts the same way: an
+item delivered just before a pause gets its whole pickup window again after the resume, so it is
+not resent or escalated for the time the agent spent paused. The resume time is saved, so a
+daemon restart just after a resume keeps those deadlines too. Writing straight into a frozen agent is
+refused, which includes answering a menu on its screen. Resume it first.
+
+**Stopping a paused session thaws it first.** Kill, Complete, Interrupt and Reset all need an
+answer from the agent, so they resume it before acting.
+
+**Across a restart.** A frozen pane agent outlives the daemon, so quitting Mission Control
+leaves it frozen, and the next start picks the pause back up without rescanning or signalling
+it again. An Agent SDK session is the
+daemon's own child: it is thawed so it can shut down cleanly, then frozen again once it is
+restored. Until that new freeze succeeds the session reads as pausing, never as frozen, and a failed
+attempt - including one made before the restored driver has started - is retried on the same
+backing-off timer; the processes it listed before are kept for the resume. A paused session that does not come back is thawed and forgotten.
+
+**Where the controls are.** Settings → Display → **Pause controls** chooses which pause
+controls the cards and the console draw, each with its own preview. Any number of each can be
+on, or none. On a card:
+
+- **Corner buttons**: pause and priority buttons in the card's corner, shown when you point at it.
+- **Run chip**: a Running, Paused or Priority chip that leads the runtime row and opens the pause menu. On by default.
+- **Card menu**: a ⋯ menu, plus a Resume button on a paused card.
+
+In the console:
+
+- **Toolbar button**: a button beside session control in the tab row that opens the pause menu. On by default.
+- **Message box button**: a button beside Send, plus a band above the reply box while paused.
+- **State badge and band**: a pause half on the header's state badge, plus a band under the header while paused or while it is the priority session. On by default.
+
+A paused session looks paused whichever controls are on. Its card has a hatched slate spine
+and a flag that says why: **Paused · 14m**, **Fleet paused** or **Paused for priority**. Its
+activity line says when it stopped and what it was doing, and its state reads `paused`.
+Pause all can be hidden from the title bar under Settings → Display → **Top bar**. On the
+narrowest title bar it gives way with the fleet pulse's words, and comes back as the window
+widens; while Pause all or priority is on, the banner under the title bar keeps **Resume all
+now** and **End priority** at every width.
+
+### Hibernate a task and resume it later
+
+Pause keeps the agent's process in memory. **Hibernate** ends it, so a low-priority task you
+want to leave blocked for days stops using memory. The task, its conversation, its worktree and
+local changes, and its recorded blocker are all kept. **Resume** starts a new agent process that
+reopens the same conversation in the same worktree, under the same task.
+
+It is a preview: switch on **Hibernate tasks** in Settings → Feature flags. It then appears as
+the last row of the pause menu (the run chip, the card's ⋯ menu and the console's toolbar button
+all open that menu).
+
+**What can be hibernated.** An idle session of a running task, in a terminal or on the Agent
+SDK, with Claude Code or Codex. A terminal Pi session can be hibernated too. The row is offered but
+disabled, with the reason on it, when:
+
+- the agent is Pi on the Agent SDK, whose driver runs inside Mission Control, so there is no
+  memory to free;
+- it is mid-turn, starting, or waiting on your answer (finish the turn or answer the question
+  first);
+- it has messages still waiting to be delivered, or a question waiting for you;
+- Mission Control has not yet seen the conversation's id, so it could not reopen it, or cannot
+  read the checkout the session is running in;
+- the task is a Pipeline, resident or ensemble-member task, which keeps its own lifecycle.
+
+The priority session is not offered Hibernate at all, and the route refuses it: end priority
+first. A session whose workflow run is still in progress is refused too, and the menu says so
+before you click. An armed workflow
+that has not started a run is kept: it is still attached when the task resumes.
+
+**What Hibernate does.** The task is recorded as hibernated and unbound from its session first.
+Then the agent is stopped, after lifting its pause if it had one. An Agent SDK session is stopped
+and Mission Control waits until it has finished writing its conversation. A terminal agent is
+stopped the way Kill stops it: it is sent `SIGTERM`, and its terminal session is closed if the
+agent was the only thing in it. Hibernate then waits up to 10 seconds for the agent's process to
+be gone. If it is still running, Hibernate says the stop is incomplete instead of reporting
+success, and the task stays hibernated with that reason. Stop that session, or wait for it to
+exit, then Resume. Because nothing is bound to the session when it leaves, nothing
+settles the task as failed, clears its blocker or detaches its workflow. An Agent SDK session's
+record is kept with the status `hibernated`, which no restart picks back up. If the agent will not
+stop, the task goes back to running on its session and the menu says why.
+
+**Where a hibernated task is.** It leaves the board. It waits at the top of the Backlog column,
+in a **Hibernated** section, with its title, the blocker it was waiting on, how long it has been
+hibernated, and **Resume**. In the Console layout, the Line's Backlog drawer shows the same
+section, and its Backlog stage reads `1 hibernated` when nothing else is queued. A hibernated
+task stays hibernated across a Mission Control restart until you resume it. Foreman's backlog
+autopilot never starts it, a recurring mission treats it as still in flight, and a blocker
+it carries is never pruned for age. Nothing but your Resume changes its status: even a pull
+request that merges while it is hibernated leaves it hibernated, and it is settled by that
+merge only once it is running again.
+
+**What Resume does.** No prompt is sent either way: the agent comes back idle where it left off,
+still blocked if it was blocked, and the task is bound back to it and returns to the board.
+
+- An **Agent SDK** session is relaunched under the same id, with its conversation, model, effort
+  and permission mode, exactly as a daemon restart restores a session. The task is bound to it
+  only once the driver itself reports that it reopened the saved conversation. A driver that
+  reports a different conversation, or none within 30 seconds, is hibernated again, and the
+  task stays hibernated with the reason. A freshly hibernated card
+  lingers for a few seconds before it leaves, so a Resume pressed during that time is refused and
+  can be retried a moment later.
+- A **terminal** session is reopened with the managed terminal resume (the same one the
+  conversation pane's agent launcher uses): the agent's own resume command for that conversation,
+  in the task's worktree, with the permission mode it last ran in and Mission Control's tools, in
+  a new terminal session. It opens in the backend the task last used, or the one Settings →
+  Harnesses chooses for that agent. The agent is a new process with a new session id, so Resume
+  waits up to a minute for it to report the hibernated conversation's own id, then moves the
+  task, its work history and any armed workflow onto it. Only the process this Resume launched
+  qualifies: the one in the terminal tab it opened, or descended from the launch that claimed its
+  managed resume. If the agent it launched reports any other conversation, that launch is undone
+  like any failed one. An agent in the same worktree that Resume did not launch is left alone,
+  whatever conversation it reports. If something else opens the same conversation meanwhile, the
+  task is given to neither and the launch is undone, so two processes never write one
+  conversation.
+
+Hibernate records the checkout the conversation ran in, as the filesystem identifies that
+directory. Before Resume starts anything, it checks that the directory at that path is still
+the same one. A worktree moved away and back passes. If the worktree was removed and another
+directory now stands at its path, Resume refuses and says so, so the conversation is not
+reopened in a different checkout. That rests on the filesystem's directory ids: APFS, on the
+macOS Mission Control supports, does not hand a removed directory's id to a new one, but a
+filesystem that does (such as Linux's ext4) can make a directory removed and recreated at once
+look like the same checkout. The check is repeated just before a terminal agent is launched,
+and once more immediately before the task is bound, so a checkout replaced during the launch is
+caught too: the launch is undone, or an Agent SDK session is put back to sleep.
+
+Resume refuses a conversation that is already open in another session, so two processes never
+write one conversation at once. That includes the hibernated session's own agent: if it is still
+running, because it has not exited yet or because Mission Control stopped while hibernating a
+terminal session and the agent outlived it, Resume says so and launches nothing. Stop that
+session, or wait for it to exit, then Retry. Ownership is checked again across every live
+session immediately before the task is bound. If another session took the conversation while
+the agent was starting, a terminal launch is undone and an Agent SDK session is hibernated
+again, and the task stays hibernated with the reason. A launched terminal agent is bound only
+if it is still live, in the saved checkout and on the saved conversation at that moment, and an
+Agent SDK session only if its driver is still running and still on the saved conversation. A woken Agent SDK session whose driver
+ends before the task is bound, for any reason, keeps the status `hibernated`, so Retry can still
+reopen it. If the task itself was deleted, cancelled or completed while the agent was starting,
+nothing is bound: an Agent SDK driver is stopped, and a terminal launch is undone the same way as
+a failed one. Since there is no hibernated task left to record it on, an agent that could not be
+stopped is named in the reply instead. If an
+Agent SDK driver cannot be stopped again, the row says so, and the next Resume stops that driver
+before it launches anything.
+
+**When Resume fails.** If the worktree is gone, the agent cannot reopen its conversation, or a
+resumed terminal agent does not report that conversation within a minute (its new terminal
+session is closed again), the task stays hibernated. Its Backlog row turns red and says why, and **Retry** tries
+again. Nothing about the worktree, its changes or the conversation is touched by a failed attempt. A failed terminal Resume undoes its launch: it cancels a launch that has not
+started the agent yet, or closes the new terminal session and waits up to ten seconds for the
+agent it started to exit. If that terminal cannot be closed, or its agent is still running after
+it closed, the row says so and records it. So does a launch that failed to open its terminal
+after its agent may already have started: with no terminal to close, Retry refuses until that
+agent has ended. Retry first closes it (or finds it gone) and refuses to
+launch another agent while it may still be running, and the record is kept through any other
+failure in between. A launch that never started its agent but whose terminal would not close is
+recorded too: Retry closes that terminal again, and since no agent is in it, reopens the
+conversation either way.
+
+Turning the preview off hides Hibernate. Tasks already hibernated stay in the Backlog and can
+still be resumed, so switching the preview off never strands a conversation.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach
@@ -773,7 +1074,7 @@ Expected output:
 
 ```
 Wired Mission Control hooks into /Users/you/.claude/settings.json
-  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
+  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd, SubagentStart
   script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
 ```
 
@@ -853,7 +1154,7 @@ repo):
       ]}
     ]
     // ...one group per event: SessionStart, UserPromptSubmit, PostToolUse,
-    //    Notification, SubagentStop, PreCompact, SessionEnd
+    //    Notification, SubagentStop, PreCompact, SessionEnd, SubagentStart
   }
 }
 ```
@@ -936,6 +1237,8 @@ it does not change dispatch defaults. Until the conversation reports the selecte
 the badge marks it **selected**, including while runtime metadata is absent. Claude's `[1m]`
 context marker does not make an otherwise matching model pending. A response already underway
 can still report its previous model; rebinding does not replace the saved selection.
+Claude also retains an accepted model selection when authentication recovery replaces its
+subprocess and resumes the conversation, instead of replaying the original launch model.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
 selection. If saving an accepted change fails, Mission Control restores the previously saved model,
 including after repeated failed attempts.
@@ -943,6 +1246,16 @@ If restoration is also unavailable, the dropdown shows the accepted runtime choi
 that it was not saved and a restart may revert it. Retry that selection to save it, including
 after closing and reopening the dropdown.
 Terminal sessions and stopped sessions keep a read-only model badge.
+
+Codex's observed model and effort come from the newest turn in its rollout, even when
+large tool output pushes that record out of the live tail. Polling retains verified turn
+evidence for both terminal and SDK sessions and scans backwards across missed output after
+a restart or a gap between reads. If the latest turn cannot be established within the bounded
+16 MiB scan, its model remains unconfirmed rather than reverting to an older model from the log's
+beginning. This observation never changes the model configured for future turns.
+Before reusing a turn across file growth, the reader rechecks that turn's source record so
+an in-place rewrite cannot retain a model from the replaced record. A stale explicit rollout
+path falls back to discovery for the current session, with the usual lookup cache and retry delay.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
@@ -1021,6 +1334,129 @@ rather than sitting in the pane's footer: the posture governs the session, while
 readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
+
+### Background sub-agents
+
+A session can launch sub-agents: Claude through its Agent tool, Codex through its
+collaboration tools. One launched in the background keeps running after the parent's turn ends, so the parent can read as idle while
+agents are still reading, editing and spending tokens under it. The board shows them beneath
+the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), the parent's
+conversation docks them in a tray above its reply box with a **Jump to launch** link per agent
+(see [Background agents in a conversation](ui.md#background-agents-in-a-conversation)), and the
+parent's activity line reads **idle · N agents still running**. That is the default treatment;
+**Settings → Display → Board card → Background sub-agents → Chip and popover** shows the same
+summary as a chip on the card and an **Agents** tab on the conversation rail instead (see
+[Chip and popover](ui.md#chip-and-popover)).
+
+Each source reduces its own sub-agent signal into one bounded summary on the session,
+`Session.subagents`. An SDK driver sends it to the daemon whole as an `SdkEvent` of kind
+`subagents`; a terminal session's comes from its hooks (below). `Registry.setSubagents` is its
+only writer and it rides the existing `session_upsert`.
+It is live state, rebuilt from the agent's stream: nothing is written to SQLite, a session
+registered again starts without it, and a Claude process that is replaced starts from an empty
+set. The summary lists at most twelve agents, running first and then the newest finished;
+older finished ones fold into a count. Because running agents come first, a list with any
+finished agent in it holds every running one. Only a list of twelve running agents can be cut
+short, and `subagentCounts` reports that as `atLeast`, so every surface writes the count as
+**12+** instead of understating it.
+
+For a Claude Agent SDK session the source is the CLI's task stream. `background_tasks_changed`
+is the full live set and decides who is running; an agent that leaves it without reporting an
+end is shown as stopped. `task_started`, `task_progress`, `task_updated` and
+`task_notification` add the type, description, tool and token counts, last tool, summary and
+how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workflows, a
+backgrounded main session and anything flagged `ambient` are left out. The flag counts
+whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
+even when a later frame about the same run omits the field. The flag belongs to the run, so a
+new run of the same agent starts unclassified.
+
+A resumed agent keeps its task id. When the CLI reports run ids it also gets a new run id, but
+any frame, the live set included, may omit one. The run ids a task has had are remembered for
+the life of the CLI process, including after it leaves the live set and rejoins, and the rules
+below read them:
+
+- **What opens a run.** A run is new when the task reports an id it has not had before that
+  differs from the current run's id. If the current run has no id, a newly reported id is taken
+  as that run's own. Without run ids, a live set that names again an agent it had dropped opens
+  a new run. A new run starts a fresh row with nothing carried over. Once a live set has been
+  seen, a start counts only if the set names the agent, and it is refused when the set lists a
+  different run for it or when it names a run the task already had. An agent that has ended
+  then comes back only for a new run, so a repeated start without a run id does not revive it.
+  A CLI that sends no live set is read from its start and update frames, by `is_backgrounded`.
+- **What a progress, update or end frame can change.** These frames never open a run. One that
+  names a run other than the run being shown, or a run the task already had, is a late frame and
+  changes nothing. The second check covers a shown run that has no id of its own.
+
+A foreground agent
+counts only once it is moved to the background. Finished agents fold on the next turn you
+send, not on a turn the agent starts for itself, because a finished agent's notification can
+start one. A change to who is running or how one ended reaches the board at once; a change
+that moves only counters is sent at most once every five seconds per session.
+
+Each agent's `launchTurnId` is the id of the parent's tool call that launched it (Claude's
+`tool_use` id), not a transcript record id: the SDK stream and the transcript file do not share
+record ids, and the call id is the one both carry. The transcript reader keeps that id on each
+`ToolCall`, and the browser finds the turn that made the call among the turns it has loaded,
+paging older ones in when it is not there yet. An agent whose `launchTurnId` is null is found
+by identity too. Claude Code answers an `Agent` call that went to the background with a tool
+result naming the agent (`agentId`, in the result text and in the record's `toolUseResult`),
+and that id is the task id the SDK reports, so `SubagentEntry.id`. The browser asks
+`GET /api/sessions/:id/subagents/:agentId/launch`, and the harness's
+`TranscriptSpec.subagentLaunch` reads the transcript FILE for the result naming that agent and
+returns its `tool_use_id`; the browser then searches for that call id like any other. The read
+is asynchronous and incremental: each file's launch results are indexed in awaited chunks, so a
+long resident's transcript never holds the daemon's event loop, and a later lookup reads only
+what was appended since. A file that shrinks, is replaced, or is rewritten in place (its last
+indexed bytes changed, checked only when the file changed) is indexed again, and at most 32
+files' indexes are kept. The file answers rather than the turns the browser holds because the
+call and its result are written apart, so a live conversation receives them in separate appends
+and paging can split them, while the file holds both once the result is written. Until then the
+file names no call for the agent: the route answers `{ toolUseId: null }`, the link reports the
+launch as not in the transcript, and a later click asks again. A description is never used to claim
+a launch: agents can share one, and a folded agent's call stays behind. No page count limits a
+search; it ends at the start, on a failed page, or when a page arrives without moving the
+paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
+output, is progress and the search continues.
+
+Claude and Codex terminal sessions have no driver, so their sub-agents are read from their
+hooks, and only for the terminal runtime: an SDK session's hooks fire too, and are ignored
+because its driver already owns the summary. Which events count, end or list an agent is
+documented once, in
+[Background sub-agents from terminal hooks](harnesses-and-terminals.md#background-sub-agents-from-terminal-hooks).
+What a session shows as a result:
+
+- A terminal row carries the agent's type, the launch description when Claude sent one, its
+  state and elapsed time. Hooks carry no tool or token counters and no last tool, so those are
+  left out, and `launchTurnId` stays null.
+- Finished agents fold on the operator's next prompt, and the list starts again when the agent
+  process starts or resumes.
+- The state lives in memory, so a daemon restart forgets it, and a discovery sweep carries the
+  summary forward because discovery itself cannot see sub-agents. What comes back after a
+  restart differs by harness. A Claude session's next `Stop` lists the in-flight background
+  tasks, so its still-running agents reappear then. Codex hooks carry no such list: a child that
+  started before the restart is not shown again, and only children started afterwards appear.
+
+Claude hooks installed before `SubagentStart` was added do not run for it until they are
+installed again. Settings > Setup shows a **Claude Code hook events** row naming the missing
+event, with an **Install** button in the desktop app; see [setup.md](setup.md#run-mission-control).
+
+A Claude sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+handled separately:
+
+- **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
+  parent's own turn is running, it updates the parent's activity line, since the session is
+  working on that sub-agent's behalf, but it never opens a turn of its own. Once the parent's
+  turn has ended, such a frame is dropped, so it cannot re-open a finished turn or flip an idle
+  parent back to working.
+- **Hooks.** A hook Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it
+  as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+  cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
+  SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
+
+For Codex terminal hooks the guard is narrower. The Codex bridge forwards `agent_id` only on `SubagentStart`
+and `SubagentStop`, so a Codex child starting or stopping never re-arms an idle parent. Any other
+hook Codex raises for a child carries no forwarded id, and reaches the parent as it did before
+sub-agents were tracked.
 
 ### Open a terminal, or the agent's own CLI, on a session
 
@@ -1404,6 +1840,15 @@ sent. It shares its column with find - while find is open its results own the sp
 ([below](#find-in-a-conversation)), and closing find gives the rail back on the tab you
 left it on.
 
+To give its width back to the transcript, press **»** in the rail's header. The rail folds to
+a thin strip on the right edge that still names the tab that is up and its count; click
+anywhere on the strip to open it again. The fold is the same in the chat and terminal
+renderings - in the terminal one the key legend under the rail moves beside **Send** while it
+is folded - and it is remembered per machine, so it holds across sessions and restarts. Find
+still opens its results in a full column while the rail is folded. On a narrow conversation,
+where the rail is already a single row (below), there is nothing to fold and the control is
+not shown.
+
 #### Activity
 
 Not to be confused with the row above, which is a different feature with a different
@@ -1541,7 +1986,8 @@ objective, not a copy of the newest prompt or the step the agent happens to be w
 **Console detail draws it in the same place** - under the session's name, with the other
 facts that change rarely - rather than in a band above the transcript. There it takes one
 line and ellipses, and hovering gives you the whole sentence along with whatever the Goal's
-state has to add ("being refined", "automatic wrap-up is paused"). A harness that can never
+state has to add ("being refined", "automatic wrap-up is paused"). Both paused states end by
+naming their exit, **Accept objective as is** in the Foreman drawer. A harness that can never
 carry a Goal still says so there, in the same slot.
 
 The first substantive instruction establishes an immediate provisional objective with no
@@ -1597,10 +2043,26 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Every follow-up to an Agent SDK session is counted once, too.** A message you send
+afterwards, directly or from the pending-turn outbox, has the same two doors: the driver
+acknowledges it, and the agent's prompt hook reports the same text back. Each delivered turn
+is captured by exactly one of them. Mission Control notes the text just before the driver
+takes it, and whichever door arrives first opens the revision while the other is skipped. A
+door that fails to record the turn leaves it for the other, so a failed write is not a lost
+instruction. Without this rule every follow-up was classified twice, the second time against
+a conversation that had already moved on.
+
+A retype is its own send, so it is still heard: sending the same words again opens a revision
+of its own. The note lasts for the turn the message belongs to. A message accepted while the
+agent is mid-turn waits behind that turn, so its note outlives the running turn and ends with
+its own. Once its turn is next, the note also lapses after two minutes, for a conversation
+that never finishes a turn. A daemon restart between a delivery and its echo forgets the note
+and lets one duplicate through.
+
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
-restart are all typed into the session exactly the way you type, and the agent reports each
+restart, and resident loop wakes are all typed into the session exactly the way you type, and the agent reports each
 one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
 arrivals are recognized and discarded rather than captured. Without that rule a
 completion-review packet became the session's ask, was frozen onto the next workflow run, and
@@ -1619,6 +2081,10 @@ originally typed each turn; only the recognition is used up. Recognition is also
 a daemon restart landing between a delivery and its echo lets that single turn through as
 though you had typed it.
 
+Resident wake turns carry the `resident` origin. The conversation displays the loop prompt
+without its delivery marker; the native transcript retains that marker for crash reconciliation.
+Human and compaction turns are not resident iterations. See [the resident loop](residents.md#the-persistent-loop).
+
 Each reconciliation records one of five relationships:
 
 - **initial** establishes the first objective;
@@ -1626,22 +2092,56 @@ Each reconciliation records one of five relationships:
   objective;
 - **amend** extends the existing completion contract;
 - **replace** supersedes the old outcome; and
-- **unclear** keeps the existing objective while completion remains ambiguous.
+- **unclear** keeps the existing objective while completion remains ambiguous. An unclear
+  instruction is never dropped when a newer one arrives. If the newer one arrives after the
+  verdict, the unclear instruction goes back into the queue ahead of it and is reconsidered
+  with it. If it is judged unclear while a newer instruction is already waiting, it is kept as
+  steering ("Kept as steering: …"), and only the latest instruction can pause wrap-up.
 
 No command or special vocabulary is required. The model infers the relationship from the
 instruction and conversation. An amendment is accepted only when its proposed contract
-explicitly retains the existing objective as its prefix; a narrower amendment stays
-unresolved. An effective amendment or replacement updates the Goal and advances its objective
-version, while steering changes only the latest focus.
+explicitly retains the existing objective as its prefix. A line that is nothing but an
+absolute file path, such as a screenshot you attached (spaces included, as in
+`/Users/you/Desktop/Screen Shot.png`), is ignored by that comparison, and an accepted
+amendment keeps every such line of the objective it extends, so the attachment stays
+in the contract a run reviews against. An amendment too long to keep those lines within the
+stored objective's length limit is not shortened to fit. Like any amendment that fails the
+check, it is treated as steering: the objective and its version stay as they were, the drawer
+shows the relationship as **steering** with a rationale that starts "Treated as steering:",
+the instruction reaches the next Workflow run as steering context, and the daemon log records
+which rule failed without quoting the objective. The classifier is also told that a reply
+picking one of the options a session offered is steering. That is guidance to the model, not
+a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
+amendment is accepted; if it fails the check, it is treated as steering as above. An effective
+amendment or replacement updates the Goal and advances its objective version, while steering
+changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
 out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
-Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
-the last durable objective stays visible and the unresolved instruction remains ahead of later
+Mission Control. If the provider is missing, logged out, slow, or returns a reply that does
+not validate, the last durable objective stays visible and the unresolved instruction remains ahead of later
 ones. Prompted automatic wrap-up stays paused until every instruction has a resolved,
 unambiguous relationship. The same fail-closed rule covers migrated state whose missing prompt
 text cannot be recovered.
+
+**Accept objective as is** is the way out of that pause. While the Goal is reconciling or
+`unclear`, the Foreman drawer (opened from **Foreman intent** in the console header) offers it
+under the relationship, and the Goal line's hover names it. Pressing it records every pending
+instruction as steering, oldest first, with the rationale "Accepted by you: the current
+objective is the completion contract." An instruction whose text was lost before it could be
+stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
+its own instruction the same way. The relationship becomes **steer**, the latest revision
+counts as resolved, and Foreman judges completion against the objective on its next tick,
+which can claim a bound Workflow. A run frozen afterwards carries those instructions as
+steering. It confirms the contract and never rewrites it: the objective, its version, the
+card sentence and the opening request are left exactly as they were. Growing or replacing
+the objective stays the reconciler's job, through the next **amend** or **replace**. A
+session with no objective yet has nothing to accept, so the drawer shows no button; its
+next instruction becomes the objective. Pressing it again once the Goal has settled changes
+nothing. If the request fails, the drawer shows why under the button and the pause stays as it
+was, so it can be pressed again. The route behind the control, and what it may and may not write, are specified in
+[Who may change a Goal's objective](agent-guides/change-contracts.md#who-may-change-a-goals-objective).
 
 What it deliberately isn't:
 
@@ -1899,6 +2399,18 @@ reported usage, the Spend popover says **Claude utilization unavailable**, with 
 zero-percent bar. The next valid report updates the display automatically. Codex windows still
 disappear when their reset time passes.
 
+Mission Control treats a report that carries the 7-day window but no 5-hour window as the
+signal that the account has no 5-hour limit, and clears the saved 5-hour window on it, even one
+whose reset has not passed. This is an interpretation, not a documented Claude guarantee. It
+rests on two observations. Both transports read the two windows from one payload: the statusLine
+`rate_limits` block and the SDK usage response. And as of 2026-11-13, Claude's pricing page lists
+a 5-hour limit for Pro and Max but "No 5-hour limit" for verified Ultra (formerly Max 20x)
+accounts. On Ultra the **Claude · 5-hr window** bar therefore goes away on the first 7-day-only
+report instead of waiting for an update that will never come. Pro and Max are expected to keep
+reporting both windows and keep their bar. If Claude ever sends one of those accounts a 7-day-only
+report, its 5-hour bar disappears until the next report that includes the window. A 5-hour-only
+report keeps the saved 7-day window, because every plan has a weekly limit.
+
 **Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.
 **Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices
@@ -1953,6 +2465,10 @@ at any time; subsequent reads and actions refuse immediately. An action already 
 may finish. The grant lasts only for the current conversation, task and work episode in this
 daemon run. A reset, replacement conversation, different task, session removal or Mission
 Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+The one exception is a [resident](residents.md#session-control) whose profile turns
+**Control other sessions** on: launched with a click in the desktop app, its run gets the grant,
+and the grant survives a restart only when the conversation, task, working directory and work
+episode all still match.
 
 Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
 The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
@@ -1960,16 +2476,43 @@ The desktop app must own its daemon: if it reused a standalone daemon, stop that
 reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
 forged browser headers.
 
+#### When a session asks for control
+
+With the **Session control requests** preview on (Settings > Feature flags, off by default), a
+session that needs this grant can ask for it with the `request_session_control` tool, giving a
+reason. The ask appears as a **Permission** card at the top of that session's Conversation tab,
+showing the session's name and its reason verbatim, with **Decline** and **Accept**.
+
+- **Accept** gives the session exactly the grant the menu above gives, through the same real
+  desktop click. A scripted click, a browser dashboard, an agent, Foreman or another session
+  cannot accept it, and the browser shows Accept disabled. The ask is not a review, so it never
+  appears among the session's reviews and no review answer can approve it.
+- **Decline** works anywhere and grants nothing. The agent is told not to ask again unless you
+  tell it to.
+- Turning control on from the menu also answers a pending ask.
+
+The tool blocks until you decide and then returns `granted`, `declined`, or why the ask ended
+without a decision. `granted` records your decision when you made it, not current authority:
+turning control off later, or a reset, ends the grant without changing that answer, and the
+session's `read_sessions` and `control_session` calls then refuse. An ask lasts as long as the conversation that raised it: a reset,
+replacement conversation, different task, the session ending or a daemon restart withdraws the
+card, and so does turning the preview off. A session that already holds the grant is answered
+at once, and a repeated call rejoins its one pending ask without changing the reason you are
+reading.
+
 The session uses two Mission Control tools:
 
-- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+- `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`
+  when it has none). Pass `blocked: true` to list only blocked sessions. Supply `sessionId` to inspect a target's state,
   pending review prompts, native approval/question dialog, outbox and work queue. The top-level
   `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
   when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
 - `control_session` takes that target's `sessionId` and a typed `command`. It supports
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
-  and model, effort and permission-mode changes. Use current request ids, option labels and
+  model, effort and permission-mode changes, and the two blocker actions
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)), and
+  `complete` (see below). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2002,9 +2545,163 @@ arrived keeps both labels. Review answers retain
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.
 
-These tools cannot change the controller grant, global settings, delete sessions, or reset
-worktrees. The target's normal runtime and resource guards continue to apply. See
+`complete` is the **Complete** button, delegated. It records the target's current task as done
+with the controller's `outcome` (`completed` when omitted) and then closes the target session,
+in that order, through the same routes the dialog calls, so a stop that fails never leaves the
+outcome unwritten. Its two confirmations mean what the dialog's do and are never implied:
+`satisfyDependents: true` releases tasks declared to wait on this one without a merge, and a
+scout whose report is not archived is refused with the exact problems until a repeat carries
+`confirmIncompleteScout: true`. A target with no task refuses, as the dialog does.
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"complete","outcome":"Fix merged in #42"}}
+```
+
+These tools cannot change the controller grant or global settings, delete sessions, or reset
+worktrees. A session closes only through `complete`, with its task recorded first. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
+
+### Blocked sessions
+
+A session that cannot go on because it is waiting on **someone or something other than you**
+records a **blocker** with `report_blocker`: what it is waiting for (`reason`), who owns the
+answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
+`dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
+lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
+through `request_input`, and `report_blocker` is refused while the session is waiting inside a
+`request_input` call of its own. A question filed with
+[Ask without stopping](#asking-without-stopping) does not refuse it, because its agent kept working. It is also refused once the session's task has finished,
+since nothing would clear a blocker stored against a done, failed or cancelled task.
+
+The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
+an exit, a daemon restart and a `/clear`. It ends when the session calls `clear_blocker`, when
+you or a controlling session clear it, when the task it was reported for reaches a terminal status
+(merge settlement, Mark done, cancel, fail), or when no session has held its key for the goal
+pruning window. A later `report_blocker` updates it and keeps its start time; after a reply was
+flagged, it means "I checked, still blocked", clears the flag and records the check.
+
+While it stands, every idle-triggered automation leaves the session alone without marking
+anything complete: prompted completion (the work-cycle generation is not consumed, so it can
+still complete after the blocker clears), queue drain and the wrap-up ask, pre-PR ship
+recovery, review follow-through, backlog autopilot assignment, stack readiness for dependents,
+workflow resumption and evidence-preparation recovery, and the stuck-session alerts. Your own
+queued turns, delegated messages, restart continuations and merge settlement still run. The
+daemon enforces the hold too: it refuses Foreman's free-text writes, the wrap-up ask, queue
+items moving forward and ship-recovery claims for a blocked session. Foreman can still answer
+a blocked session's review, menu or form, which can only respond to the question on screen.
+
+On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
+flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
+[Board card items](ui.md). An idle blocked session is drawn where **Settings → Display → Blocked
+sessions** says: a lane under Needs you (the default), a red frame at the top of Idle, or a
+Blocked column of its own. See [Layout](ui.md#layout-console-or-board-in-settings).
+The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
+stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
+without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
+the reason to expand the row in place to every other field and the collapsible details. A
+flagged reply prints under the row either way. The band never shrinks to make room for a long
+conversation, so its buttons are always in view.
+
+Residents and other controlling sessions use `read_sessions` with `blocked: true` to find
+blocked sessions, `control_session` with `{"action":"flag_blocker_reply","note":"...",
+"referenceUrl":"..."}` to flag a likely reply, a `message` to tell the session to check, and
+`{"action":"clear_blocker","resolution":"..."}` to clear it. Every set, re-report, flag and
+clear writes one `session_events` row naming its actor: `session`, `operator`,
+`session:<controller-id>`, `task` for a terminal task, or `prune` for the pruning window.
+`session_blocker_set` also records the kind and reason. `session_blocker_updated` records the
+kind, reason, time since the blocker started (`sinceMs`) and whether it followed a flagged reply
+(`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
+how long the blocker stood (`durationMs`) and any one-line `resolution`.
+
+### Sessions awaiting a background process (preview)
+
+A session that has handed work to a background process and will resume on its own when it
+reports back declares that with `report_awaiting`: CI checks on a pull request it pushed, a long
+build or test run started in the background, a monitor watching a deploy, or a scheduled wakeup
+it set for itself. The declaration carries `what` it waits for (one line), its `wakeSource`
+(`command`, `monitor`, `wakeup` or `other`), a required `expectedBy` (when the process should be
+done, as an ISO 8601 date-time with a time zone, which must be in the future and no more than 240
+minutes after the daemon receives it), an optional http(s) `referenceUrl` and optional Markdown
+`details`. It is not a blocker kind: nobody is asked to do
+anything. It ships behind the **Awaiting background work** preview (`session-awaiting`) in
+**Settings > Feature flags**; with the preview off the tool answers that it is turned off and
+records nothing.
+
+`report_awaiting` is refused while the session has a `request_input` question pending, while it
+stands on a blocker, and once its task has finished. A question for you never hides behind a
+wait: a `request_input` asked while a wait stands ends the wait, and so does a `report_blocker`,
+because a human answer outranks a process. A second `report_awaiting` before the session wakes
+moves the deadline and keeps the start time, under a new id, so a Clear sent from a view of the
+earlier declaration is refused rather than ending a deadline its sender never saw. Every Clear
+from the dashboard or a controlling session must name the wait it was sent from, so one that
+names none is refused as well.
+
+The wait is stored in SQLite under the note key, so it survives a daemon restart, and it moves
+with the note key whenever that rotates, as a blocker does. It ends on the
+session's own next turn: the turn that declared it is seen to end first, and a turn that starts
+after that is the wake, so the label drops with nobody clearing it. When Mission Control already
+read the session as idle at the moment it declared (a turn too short for a discovery sweep to
+catch, or hooks that arrived after the call), the declaring turn ends the first time its hooks
+or its transcript report it idle after the declaration, so the next turn is still the wake. A
+`report_status` made during that turn does not end it.
+Your own message to the session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
+past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
+that follows one of their deliveries leaves the wait standing until the next turn that nobody in
+Mission Control started. Each delivery is recorded on the stored wait as it is claimed, with a
+fingerprint of its text, and matched to the turn whose prompt it is: that turn is the nudge, and
+a turn with any other prompt, such as your message arriving first, is the wake. So two deliveries
+are two nudged turns, a delivery that never lands is not counted, and a daemon restart between a
+delivery and its turn changes nothing. A message you or a controlling session send through
+Mission Control in exactly the words of a delivery still pending contests that delivery: nothing
+says which of the two turns of those words is whose, so the first of them is read as the wake.
+A message of yours that provably never lands lifts that contest again, unless another send of the
+same words still stands; one whose outcome is unknown keeps it. A delivery claimed just before the session declares the
+wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
+arrives after it starts is decided when it arrives, even across a restart; a turn that never
+reports one is the session's own wake on a session whose hooks report prompts, and uses up the
+oldest delivery on one that never does (a harness without hooks, or an SDK launch with no prompt
+hook). A turn a session without hooks starts and finishes between two discovery sweeps is
+still judged, from the turn marker its transcript records, compared with the last turn already
+judged in the transcript's own time, so a sweep that reads a nudge's turn late does not hide a
+real wake that began before that sweep. Only confirmed readings of the
+session's state count:
+rediscovering a session after a restart is never itself read as a wake, and a turn already
+under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made
+during a turn that Mission Control could not yet attribute still lets that turn use up the
+delivery that started it, so the agent's next real wake is not mistaken for it. It also ends on `clear_awaiting`, when you or a
+controlling session clear it, when the task it was declared for reaches a terminal status
+(including a reset that cancels it), and when the session is removed after its process exits or
+has not been seen live for three minutes, because the wake source it declared was its own and is
+presumed gone with it. The exited card a missed discovery sweep draws is not that removal: a
+process the next sweep sees again keeps its wait. Switching the preview off ends
+every wait.
+
+While a wait stands and its deadline has not passed, the same idle-triggered automation a
+blocker holds leaves the session alone: prompted completion (without consuming the work-cycle
+generation), queue drain and the wrap-up ask, pre-PR ship recovery, review follow-through,
+backlog autopilot assignment, stack readiness for dependents, workflow resumption (the run page
+says the session is waiting on a background process it started) and the stuck-session idle
+rules. The deadline is the safety net: once it passes the hold lifts, the session reads as
+**Overdue**, and the normal handling, the stuck-session alerts included, applies again.
+
+On the Board a waiting card stays in Idle, under an **awaiting background work** rule at the top
+of the column, soonest due first, and the column head counts them (**1 awaiting**), a pinned
+resident that is waiting included, though its card keeps its pinned place. The card shows
+**Awaiting** and what it waits for, its due time, and a deadline track that fills from when the
+wait was declared to when it is due. Past the deadline the track turns amber with the overrun
+hatched after the due tick, the card reads **Overdue** and how late, and it leaves the Awaiting
+section for plain Idle. A wait never enters Needs you and never counts as work you owe. The
+console rail draws the same section and a short track beside the row's state. The Conversation
+tab opens with a grey band, where a blocker's red band would be: the wait, how it wakes, how long it
+has been waiting, the same track with declared, now and due marked, an **Open** link and **Clear**,
+which ends the hold without sending the session anything. See [Sessions awaiting a background process](residents.md#sessions-awaiting-a-background-process)
+for how residents read them.
+
+Every declaration, re-declaration and clear writes one `session_events` row:
+`session_awaiting_set` and `session_awaiting_updated` record what, the wake source and the
+deadline; `session_awaiting_cleared` records the actor (`session`, `operator`,
+`session:<controller-id>`, `wake`, `exit`, `task`, `input`, `blocker` or `flag`), how long the
+wait lasted (`durationMs`) and whether it was overdue.
 
 ### Review channel (MCP)
 
@@ -2063,12 +2760,33 @@ stale item. The composer keeps unfinished uploads and edits across a
 closed confirmation or a failed submission, then clears only after the daemon accepts the
 review request.
 
+Task ids are tool arguments, not names. The dashboard shows tasks only by title, so the server's
+MCP instructions and the description of every task tool (`create_task`, `list_tasks`, `get_task`,
+`update_task`, `cancel_task`, `delete_task`) tell the agent to name another task by its title, never its id,
+whenever it mentions one to the human. An agent can still ignore that, so the daemon enforces it
+on everything it sends the dashboard: every task id in an agent's conversation turns, its status
+line, its blocker and its review or question cards arrives as the task's quoted title, including a
+task that has left the live board. A task id is a random UUID, so it is titled wherever it sits and
+in any case - `task-<id>`, `/tasks/<id>`, capitals and all - unless a letter or digit touches it.
+The one exception is a checkout path (`…/worktrees/<id>/…`), the only name Mission Control builds
+from a full task id, which is left as written so the path still opens its file. When titling would give two options of one question
+the same label, the titled one is numbered (` (2)`). The Sitrep report reads the same titled view.
+A diff review's patch is left byte for byte, and the human's own turns are shown exactly as typed.
+What is stored, and what agents and Foreman read back, keeps the agent's own words.
+
 The MCP tools are:
 
-- `share_plan(title, plan)` - show a markdown plan (non-blocking)
-- `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
-  options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer
+- `request_plan_decisions(title, plan, decisions, revises?)` - show a plan with selectable
+  options (radios / checkboxes) as a **gate** until the human submits their choices or
+  dismisses that decision set without an answer. The call waits for that answer, or, with
+  [filed plan decisions](#filed-plan-decisions) on, returns a receipt at once and the answer
+  arrives later as a message; the agent stops on the form either way. Every decision also has an optional note
+  box, so the human can pick an option and send instructions with it; a note returns to the
+  agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
+  an empty `decisions` list to show a plan for approval with no open choices. Any decision
+  can be [moved to chat](#chat-about-it) instead of answered. Pass `revises` with the review id
+  of the agent's earlier filed plan form to file this plan as its
+  [revision](#revising-a-filed-plan)
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2090,6 +2808,36 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `dispatch_task(taskId, overrideDisabled?, defaultModel?)` - launch a saved task, including one
+  just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
+  workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
+  The calling agent can set this override itself, without human approval; disabled is an
+  autopilot hold, not a permission boundary against the agent. The operator's launch hold
+  (Pause all, or a priority session) has no agent override: the launch is refused until it lifts.
+  `defaultModel` fills only a task without a pinned model. Returns the task's current status:
+  `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
+  daemon-token authority as task creation without a Control other sessions grant. Chat launches
+  pre-approve task creation and dispatch so a conversation can delegate separate work.
+- `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`,
+  `hibernated`),
+  `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
+  `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
+  Repository selectors accept an absolute checkout path or unique directory name; worktrees
+  resolve to their owning repository. Omitted filters read all tasks. Returns `{tasks, nextCursor}`
+  in descending creation-time order with descending task ID breaking ties. `limit` defaults to
+  50, with a maximum of 100. Pass `nextCursor` as `cursor` with unchanged filters to continue.
+  Pages are live rather than a frozen snapshot; newly inserted tasks before the cursor appear
+  on a fresh listing. Intent is omitted unless `includeIntent: true` is supplied.
+- `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
+  plan inputs, regardless of status or whether the task remains on the live board. Both read
+  tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps, and `shaping` (`state`,
+  `sessionId` and a one-line `summary`) when [task shaping](task-shaping.md#the-record) added
+  context to the launch the linked session received. Pull request references come from
+  durable work-episode bindings, so running work can report a PR before completion. See
+  [MCP task-read access](security.md#mcp-task-reads) for the security contract.
+  Neither tool launches, modifies, or reorders work.
 - `update_task(taskId, ...)` - edit a task still in the backlog, using the same configuration
   fields and repository selectors as creation, plus `title` and `intent`. Only supplied fields
   change. Null `model` or `effort` restores inheritance; changing `agent` clears either override
@@ -2099,22 +2847,30 @@ The MCP tools are:
   to edit prerequisites. An empty title derives a new one from the intent. Invalid edits,
   dependency cycles, and edits to tasks that have left the backlog are refused. The tool returns
   the saved configuration and never launches the task.
+- `cancel_task(taskId)` - cancel a saved task, including running work with no session id.
+  Returns `{taskId, cancelled: true}` on success. See [task cancellation](tasks-and-scheduling.md)
+  for lifecycle and cleanup behavior, and [MCP task access](security.md#mcp-task-reads) for
+  authorization rules.
 - `delete_task(taskId)` - delete one backlog or finished task using the dashboard's deletion
-  rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
+  rules. Running and dispatching tasks must be cancelled with `cancel_task` first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
-  With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer
-- `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
-  the session to report Mission Control feedback, publishes a public GitHub issue automatically
-  and returns its URL without a second dashboard approval. The tool prepares the daemon preview
-  and submits the same bounded draft, with the daemon choosing the destination and labels.
-  Both MCP tools inherit the dashboard report schema and use its `ProductIssueService` for
-  issue formatting, destination, labels, attachments, and publication. Only caller attribution
-  and approval differ. Include only public-safe content. Screenshot limits and retry guidance
-  match the tool below.
+- `request_input(question, context?, options?, meanwhile?)` - ask a question. By default the call
+  **blocks** for an answer or dismissal; with the `async-input` preview flag on, it files the
+  question and returns at once (see [Asking without stopping](#asking-without-stopping)). The human can always type an answer. With `options` the card also shows radios
+  (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
+  Use `question` for the decision itself, which becomes the card's heading. The card prints
+  `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
+  needs to decide on their own, including why the decision came up, what the agent found, and the tradeoffs.
+  Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
+  pick. The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
+  and the dispatch-scoped Claude and Codex prompts repeat it in the same words. Either shape
+  can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
+  card could not carry is refused
+  before anything is shown: an empty question, an option with an empty label, or two options
+  with the same label (compared ignoring case and surrounding spaces), since the answer
+  comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
+  nothing waits on the human
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -2126,6 +2882,11 @@ The MCP tools are:
   attachment failure without that matching URL is unknown and blocks retry; only a text-only
   refusal without a URL says retrying is safe
 - `report_status(activity)` - update the session's activity line
+- `report_blocker(kind, reason, waitingOn, resumeWhen, referenceUrl?, details?)` - record that
+  this session is waiting on someone or something other than the operator. See
+  [Blocked sessions](#blocked-sessions)
+- `clear_blocker(resolution?)` - clear this session's own blocker. A session with none is a
+  no-op success
 - `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
   left on a file, in the thread it was written in (non-blocking). `commentId` is the handle
   the delivered message printed - `MC-a41f.2`, the comment's per-session short id plus which
@@ -2198,6 +2959,87 @@ so an agent that legitimately asks the same thing again later gets a fresh sessi
   session's identical question is never folded into yours; and changing the options makes it a
   different question, because the options are what you are choosing between.
 
+**A reworded retry replaces the question it retries.** Agents usually do not retry word for
+word. Codex's client gives up on a blocking call after five minutes without telling Mission
+Control, and the model then reissues the decision in new words ("The previous prompt timed
+out..."). When a session's new `request_input` question is a retry of an older one from that
+same session that is still waiting on you, the older card is withdrawn and leaves the queue,
+so you answer the decision once. The older one is recorded as `superseded`, which is nobody's
+answer, so it is not shown in the conversation and nothing is sent to the agent.
+
+A new question counts as a retry of an older one when it asks the same decision, judged in
+two ways:
+
+- **It says it is a retry in its question** (a sentence that is not itself a question mentions
+  that an earlier request or prompt timed out or was interrupted, or that the decision is still
+  unresolved), and it shares at least 35% of its wording with the older question, counting the
+  question and its context. A reference in the context alone, such as **See previous request.**,
+  is not an announcement. The `request_input` tool description asks agents to say so when they
+  ask again.
+- **It does not say so, but restates the older question almost word for word**: at least 80% of
+  its wording is shared.
+
+Either way, a new question that swaps what the older one is about is a different decision, and
+both cards stay: a number under the same label changes (**Phase 1** to **Phase 2**, **PR #101**
+to **PR #102**), a capitalised name is replaced (**grant Alice access** to **grant Bob
+access**), or one word is replaced, by up to three words or with up to three words, inside at
+least three identical words on each side (**should I grant alice access to the production
+repository** to **...grant bob access...** or **...grant bob temporary access...**). The questions are
+also compared whole, after setting aside a sentence that only announces the retry. A question
+edited in one place keeps both cards however little wording surrounds the edit: one subject
+changed (**Grant alice access?** then **The earlier request timed out. Grant bob access?**), or
+wording added or removed (**Should I deploy to production?** then **Should I deploy to
+production and delete the database?**), since approving the newer one would authorize something
+else. Targets swapped in several places count the same way when every other difference is just
+as small (**deploy to staging and notify alice** then **deploy to production and notify bob**). The context beneath the question is read the same way: the same question over **Deploy to
+staging.** and then over **Deploy to production.** keeps both cards, while a retry that restates
+its background in its own words does not. A question that gains or loses a negation is a
+different decision too (**should I grant alice access** to **should I not grant alice access**,
+a **shouldn't**, or **deploy with backups** to **deploy without backups**), and so is one that keeps the same words but moves its negation to another
+action (**should I not deploy to staging and deploy to production** to **should I deploy to
+staging and not deploy to production**): approving one means the opposite of approving the
+other. Only the question is read for negation, not its context, which a retry restates freely,
+and not the retry announcement (**The previous prompt was not answered.** is about the last
+call). A retry that only leaves a number or a name out still counts as the same
+decision.
+
+The choices must be identical, because the options are what you are choosing between. Every
+option's label and detail, and how many options there are, must match the older question
+exactly; only case, punctuation and a **(Recommended)** marker are ignored. Only the question
+itself may be reworded. A **Ship** option whose detail goes from **deploy to staging** to
+**roll out to production** is a different choice, and so is one that merely rewords its detail:
+no wording rule could tell a restatement from a changed action, so both keep two cards.
+
+That is the operator's decision for issue #1527, made after its consequence was laid out:
+removing a different decision is worse than leaving two cards. Agents that retry usually reword
+their options as well as their question, and every retry in Mission Control's own history
+reworded at least one option, including the Codex retry behind issue #1527. Those retries still
+show two cards, as an accepted result of that decision rather than an open defect. The
+`request_input` tool description asks an agent that re-asks to offer the same options, which is
+what lets its retry collapse to one card.
+
+The matching reads wording, so it has one known edge, accepted as a product decision for this
+feature (issue #1527): a paraphrase that shares too little of the question's wording keeps both
+cards, for example **Which linter should this repository use?** then **Choose a linting tool for
+this project.** The options never count toward that wording, because they already have to be
+identical; two different questions offering the same long options are not made alike by them.
+The same goes for numbers: **PR #101**, **pull/101** and **pull request 101** are one pull
+request, so **#101** then **pull/102** is a different one, and a sign is part of a number
+(**+5** and **-5** are different settings).
+
+A card withdrawn by mistake is a question you never see again, while a card kept by mistake is
+one extra answer, so where the rules are unsure they keep the card.
+
+Any other new question leaves every older one in place, however similar it looks.
+Two kinds of question are never withdrawn at all:
+
+- Questions asked together in one batch of parallel tool calls, which reach Mission Control
+  less than 30 seconds apart. The agent is still waiting on all of them.
+- A question you chose **Remind me later** on, even after it comes back. You parked it on
+  purpose.
+
+Plan approvals, diff reviews, and other tools' confirmations are not affected.
+
 If the client cancels the blocking call before you answer, Mission Control marks that result
 channel detached. Your eventual answer is then queued through the same durable pending-turn
 outbox as a message you type into the session. The review id makes that fallback idempotent, so
@@ -2206,14 +3048,15 @@ restored after restart is treated as detached because the stdio request owned by
 process cannot have survived it.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
-session's conversation, at the point in time you answered. What the entry shows depends on
-how you were asked:
+session's conversation, at the point in time you answered (or, for an answer delivered as a
+message, where the agent received it; see [Asking without stopping](#asking-without-stopping)).
+What the entry shows depends on how you were asked:
 
 | You answered | The entry shows |
 |---|---|
-| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** and any **Note** you added |
 | **A direct-text question** (`request_input` with no options) | the text you submitted |
-| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A diff** (`request_review`) | what you did - approved, or requested changes - and the note you left, if any |
 | **A dismissal** | that you closed it without choosing, and nothing more |
 
 It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be
@@ -2245,25 +3088,339 @@ the first is evidence of your intent.
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
 
+#### Chat about it
+
+Every question with options, on a `request_plan_decisions` card or an option-carrying
+`request_input` card, has a **Chat about it** row below the agent's options. An open-ended
+`request_input`, which has no options, has a **Chat about it** button beside **Send answer**
+instead. Use it when you need more context before choosing. A moved question
+counts as answered, so you can still pick options for the others; Submit then reads
+**Submit & chat (N)**, and a form with several questions also offers **Chat about all**. Picking
+the row clears that question's options, and picking an option takes it back out of chat. A note
+typed beside a moved question, or text already in an open-ended answer box, goes along as what
+is unclear.
+
+Submitting resolves the review as answered, so the agent unblocks with one tool result: the
+real answers, `→ Chat about it` under each moved question, and an instruction not to decide the
+moved questions or ask them again, to act on the other answers only where they stand alone, and
+to explain each moved question in its next message before ending its turn. The dialog closes
+and the cursor lands in the session's message box. The conversation's record of the answer
+marks each moved question **Moved to chat** rather than **No option chosen**. The structured
+answer carries `chat: true` on each moved decision. A product-issue confirmation moved to chat
+publishes nothing and returns `outcome=cancelled reason=chat published=false`.
+
+#### Remind me later
+
+Every question an agent asks through the `request_input` tool has a **Remind me later…** button
+beside **Dismiss**, on its card in the review modal and in the attention inbox. Use it when you
+cannot decide yet but do not want the agent to stop. The button opens a short sheet in place of
+the answer form with two choices:
+
+- **Ask me again in** 15 minutes, 1 hour, 2 hours, 4 hours or 1 day. The daemon adds the delay to
+  its own clock.
+- **Meanwhile, the agent should** use its best judgment (the default), go with one of the
+  question's options as a provisional answer, or hold the work that depends on the answer and do
+  everything else first.
+
+**Remind me at …** parks the question with the status `snoozed`, and the agent's blocking call
+returns at once. The tool result says the question is not answered, gives the instruction you
+picked, tells the agent not to ask again, and says the answer will arrive later as a message.
+If that call had already ended before you chose, because the agent's MCP client stopped waiting,
+the same instruction reaches the agent as a message instead, so it is never left without it.
+Anything you had typed or picked on the card stays in its draft for when the question returns.
+
+While a question is snoozed it does not count as waiting on you, so its session is not amber.
+The attention inbox and the top bar list it apart from what needs an answer now; see
+[Snoozed questions](attention-and-alerts.md#snoozed-questions). The session's conversation shows
+a blue **Snoozed** entry at the point you snoozed it, with **Answer now**, which brings the
+question back at once.
+
+At the chosen time the daemon puts the question back to pending. It checks every 15 seconds, and
+a question that fell due while the daemon was down comes back as soon as the daemon starts again.
+The returned card carries a **reminder** tag and a line saying when you snoozed it and what the
+agent has been doing since. You can snooze it again: the new delay applies, and the agent keeps
+the instruction it was given the first time, because the first snooze is the only time it is
+told anything. When you resolve it, the agent hears through the same continuation path as any
+resolution given after its wait ended. The message says whether you answered or dismissed the
+question it carried on without: an answer comes with the instruction to reconcile what it did
+meanwhile, and a dismissal with the instruction to keep what it chose. A snoozed question whose
+session goes away is settled as `orphaned`, like a pending one.
+
+A question filed with [Ask without stopping](#asking-without-stopping) has an agent that never
+waited on it, so the sheet reads differently. Its first **Meanwhile** choice is **Keep doing what
+it said**, which quotes the agent's own `meanwhile` line and stays the default. Choosing it sends
+the agent nothing: it was already told to carry on when it filed the question. A provisional
+option or **Hold work that depends on this** changes what the agent does, so either is sent as a
+message, as for any question whose call has ended. Because "Keep doing what it said" tells the
+agent nothing, it does not count as the one time the agent is told: when the question comes back
+and you snooze it again, the Meanwhile choice is offered again, and a provisional option or Hold
+chosen then is still sent. The button's hint and the sheet follow the
+card's status line: while the agent is still working they say it keeps working, and once it has
+stopped on the question they say so, and that it hears nothing unless you choose a provisional
+option or **Hold**. The snoozed row and the reminder line on the returned question say what you
+chose. For **Keep doing what it said** that is "You left it to do what it said it would when it
+asked", never a claim that the agent kept working: by the time the question comes back it may have
+stopped, which the card's own status line says.
+
+Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
+you select and have no agent told how to carry on: a public product issue confirmation, a
+workflow Command override and a resident's proposed instruction changes. The operator alone can
+snooze or bring a question back early. Session control has no snooze command. The daemon refuses
+both from any other actor, such as a controlling session or Foreman, and from any request that
+carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
+operation or a page from another origin. The question stays open.
+
+#### Asking without stopping
+
+**Ask without stopping** is a preview feature behind the `async-input` flag (Settings > Feature
+flags). With it on, `request_input` files the question and returns at once with a receipt instead
+of waiting inside the call:
+
+- The receipt says the question is filed and not answered. The agent keeps doing every part of
+  its task that does not depend on the answer, proceeds only on choices that are easy to reverse
+  where the work does depend on it, holds anything irreversible or outward-facing, and does not
+  ask again or poll. An agent with nothing else to do says what is waiting on the question and
+  ends its turn.
+- The question appears in the attention inbox and the review modal exactly as before, with
+  Answer, Dismiss, Chat about it and Remind me later. The agent may pass `meanwhile`, one line of
+  at most 300 characters saying what it does while the question is open.
+- Your answer reaches the agent as a message in its conversation through the same outbox as a
+  message you type: an idle session gets a new turn, and a busy one is steered after 60 seconds
+  where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
+  standing approval, is delivered the same way.
+- That message is Mission Control's, not yours, whoever answered. It is never captured as a new
+  Goal prompt for the session and is not drawn as a turn you typed. Its first line is a marker,
+  `[mission-control:answer review=<id>]` (or `reviews=<id>,<id>` when several answers travel
+  together), followed by a blank line and the answer text; the agent reads both. A **Remind me
+  later** instruction carries `[mission-control:remind-later review=<id>]`. With the flag on, an
+  answer to a question that waited inside the call and lost it, and a Remind me later instruction
+  sent as a message, carry the line too; with the flag off they are sent exactly as before.
+- In the conversation, the message is drawn as the gold answer entry, once, at the point the agent
+  received it, with **Delivered to the agent** and its time, and the agent's reply directly below.
+  Until the outbox delivers it, the entry stays where you answered and reads **On its way to the
+  agent**. Several answers delivered together draw one entry each on that one turn. A delivered
+  Remind me later instruction is drawn as the blue **Snoozed** entry rather than as its text.
+  **What the agent received** on the entry opens exactly the text the agent read, and find in
+  conversation searches it. This holds after a daemon restart and on a reload of an old
+  conversation.
+- Only a turn Mission Control recorded delivering is drawn this way. The daemon records each
+  delivery before it sends it and binds it to the turn it wrote, so a message you type that
+  starts with the same marker line, or a copy of a delivered message you send, stays your own
+  visible message and still moves the Goal. If another send of the same words races a delivery,
+  neither turn is drawn as an entry. A delivered message naming a question the dashboard can no
+  longer find (after a database restore, say) is still drawn as an entry, reading **This question
+  is no longer available**, with the delivery time and **What the agent received**. While the
+  conversation's history is still loading, or a read of it failed and is being retried (backing
+  off, for a few minutes at most), the same entry reads **Loading the question…** instead. If
+  those retries run out without an answer, or the daemon refuses the read (it no longer holds the
+  session), it reads **Couldn't load the question**: the question may still exist, so **This
+  question is no longer available** is kept for a history that was read.
+- While the agent works past its question, its session is not amber. Once it stops with the
+  question still pending, it is amber and reads **waiting on your answer**, and it holds queue
+  sends and backlog assignment like any session that needs you. A resident is the exception: it
+  keeps iterating on its cadence while its questions wait in the inbox.
+- Every new question alerts. The title says whether the agent **has a question, still working**
+  or **needs your answer**.
+- The question's card, its conversation entry and its session's state badge say which; the board
+  tile and the Residents drawer show it by the colour the session already wears. The card, in the
+  inbox and the review modal, carries a line under the title: **Still working** with the agent's `meanwhile` line, or
+  **Stopped, waiting on this answer**, and how long ago it was asked. While the agent works, the
+  state badge reads **N questions open** in the working colour and opens them, as **e** does once
+  every stopped session has been reached (or at once, when it is the selected session); a board tile carries the same count as a flag. The
+  conversation shows an **Asked** entry where the question was filed. While it is open, the entry
+  says **Still working** or **Stopped, waiting on this answer** and offers **Answer**; once it has
+  ended, the entry says how instead: answered (your answer is the gold entry, where its agent
+  received it when it went as a message, or where you gave it when the call returned it; see
+  "Your answer stays in the conversation" under [Review channel (MCP)](#review-channel-mcp)), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
+  the agent** with its reason. A question that waited in a call and was closed by a merge shows the
+  same merge line in a **Closed** entry: in place of its Snoozed entry if it had been snoozed, or
+  at the moment the merge closed it if it never was. These Closed entries show only while the flag
+  is on, because such a question was never in the conversation before this feature. All of these
+  entries come back after a reload.
+
+Each answer restates the full question and context, the agent's `meanwhile` plan, and the elapsed
+time since the ask. It tells the agent to reconcile its work and resume anything interrupted;
+a dismissal tells it to keep its provisional choice. Message-mode answers for the same
+conversation coalesce into one message only at the unclaimed answer tail of the queue, without
+passing an intervening message. Claimed deliveries keep their original text, and call-mode
+answers keep their existing delivery behavior.
+
+With the flag on, a session may have at most ten open `request_input` questions in either wait
+mode, including snoozed ones. Existing questions above the limit are retained, but new asks
+cannot grow the set. With the flag off, call-mode asks keep their previous behavior. An exact
+duplicate reattaches to the existing question even at the limit: message mode returns its
+receipt, while call mode waits on that question through the existing call path. A new ask beyond
+the limit returns an error with the open titles and tells the agent to work on what it can or
+end its turn.
+With the flag on, `list_open_questions` lists the caller's pending and snoozed `request_input`
+questions in either wait mode, including id, title, asked time and `meanwhile`.
+`withdraw_question(id, reason)` settles the caller's own open message-mode question as
+`withdrawn`, records the reason, and sends no answer. It releases that question's completion
+hold. Questions belonging to other sessions and call-mode questions cannot be withdrawn.
+The receipt names the question id and both tools; listing is for housekeeping, not polling.
+
+The daemon decides how each ask waits and says so in its response. A question is filed this way
+only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
+a receipt, and the session can receive a message. Everything else waits inside the call as
+before: the other review tools (plan decisions unless [filed plan decisions](#filed-plan-decisions)
+is also on, diff review, the confirmations other tools raise),
+an MCP child from an older build, and a session no message can reach, such as a Pipeline engine
+session or a terminal session with no writable pane. The flag is read for every ask, so it takes
+effect without a restart.
+
+Two completion rules apply to **every outstanding `request_input` question** of a session, meaning
+one that is pending or snoozed, whether it waits in a call or was filed. They always apply to a
+filed question, and to a question waiting in a call while the flag is on:
+
+- **It holds completion.** Foreman's prompted completion, workflow resumption and automatic
+  evidence preparation refuse while the session has one, whatever the session is doing. This
+  includes a snoozed question, which turns nothing amber. A resident is not held.
+- **A merge still completes the task.** A merged pull request is your own conclusion, so
+  merge-driven completion is not held. Every outstanding question is closed at that moment, with
+  the status `orphaned` and the recorded reason `merged`, and leaves the inbox. The agent, if it
+  is still waiting inside a call, is told the pull request merged before anyone answered.
+
+Operator messages, workflow repair rounds and `report_blocker` are not held by a filed question.
+Turning the flag off sends new asks back to waiting inside the call. Questions already filed stay
+answerable, their answers are still delivered, and both completion rules keep applying to them
+until they are settled; questions waiting in a call return to today's completion behavior.
+
+#### Filed plan decisions
+
+**File plan decisions** is a preview feature behind the `filed-plan-decisions` flag. It takes
+effect only while **Ask without stopping** (`async-input`) is also on; with either flag off,
+`request_plan_decisions` waits inside the call exactly as before. With both on, a current MCP
+child and a session that can receive a message, the form is filed and the tool returns a receipt
+at once, so no call is held open and nothing can time out.
+
+The form is still a gate:
+
+- The receipt says the plan is filed and not answered. The agent may do read-only preparation,
+  makes no edits, commits, pushes, task creation or other outward action, does not file the form
+  again or poll, then says what is waiting and ends its turn. Nothing enforces read-only at the
+  tool level; it is an instruction, as `request_input`'s receipt is.
+- The session is amber and the form counts in **to answer** from the moment it is filed, while
+  the agent is still finishing its turn and after it stops. The session reads **to review**, and
+  the "needs review" alert fires once, at filing. A resident with a filed form is held too.
+- The form is the one a blocking plan form uses: the inbox row, the review modal, Submit and
+  Dismiss, and the check that keeps a half-filled form from being submitted. It offers no
+  **Remind me later**, and its status line reads **Waiting on your decisions**, never "Still
+  working". The conversation shows a **Plan filed** entry where it was filed, with an **Open**
+  button while it is open and how it ended afterwards.
+- Your answer reaches the agent as one message through the same outbox as a filed question's
+  answer. It names the form and how long ago it was filed, the plan's title, an excerpt of the
+  plan of about 2,000 characters cut at a line, every decision with what you chose (notes and
+  "Chat about it" included), and what to do next. A dismissal says nothing was selected or
+  approved. A form bound to a managed plan also names the plan and revision it approved or did
+  not.
+- Nothing completes the task past an open filed form except a merge. Prompted completion,
+  workflow resumption and automatic evidence preparation refuse while it is open. A merge closes
+  it as `orphaned` with the reason `merged`, shown as **Closed unanswered: pull request merged**.
+- `list_open_questions` lists the caller's filed forms with its questions, each with its kind,
+  and `withdraw_question(id, reason)` takes one back with a reason, for example when you message
+  the agent that the scope changed; the agent then files the revised plan, linked with
+  `revises` (see [Revising a filed plan](#revising-a-filed-plan)). A withdrawal sends no answer
+  and never approves. Only the asking session can withdraw its own form, and a form that waits
+  inside a call cannot be withdrawn.
+- Plan forms take no slot in the ten-question limit, and are never refused by it. There is no
+  limit across sessions.
+
+Managed final-bundle approval works on the filed path. The form is bound to its plan revision at
+filing, exactly as a blocking one is, and the approval, **Approve all future bundles**,
+`publish_plan` and the workflow freeze read the settled answer as before. A standing approval that
+covers the bundle with nothing else to ask still returns the approval as the tool result; with
+other decisions left, only those are filed, and the receipt says the bundle is already approved.
+
+Operator messages, typed or spoken, still reach an agent behind a filed form. Switching a flag never
+changes a form that already exists: switching either flag off sends new forms back to waiting inside
+the call, while a form already filed stays filed and keeps its hold. It can still be answered, and
+is listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+
+One thing does turn a filed form into a blocking one. If an MCP child from an older build re-asks
+the same form word for word, it cannot read a receipt and waits in its call, so the form becomes a
+form that waits inside that call, like any call-mode plan form. Its session stays amber, it still
+blocks completion, and its answer becomes that call's result. It is no longer listed or
+withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
+being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
+as a message.
+
+##### Revising a filed plan
+
+When scope changes after a plan is filed, the agent files the revised plan with
+`request_plan_decisions` and `revises` set to the earlier form's review id. The receipt of every
+filed form says so. You then see one card, tagged **Revision 2** (then 3, and so on), never two
+cards for one plan.
+
+- The earlier form may be still open or already withdrawn by its agent with `withdraw_question`.
+  An open one is withdrawn in the same step as the revision is filed, with the reason "Revised:
+  replaced by revision N of this plan.", through the same write path `withdraw_question` uses. If
+  filing fails, neither happens.
+- The new form's number is the earlier form's number plus one, and a form that revised nothing
+  is revision 1. A form can be revised once, so the agent always revises the latest form.
+- **Earlier version**, beside the tag on the card, in the review modal, the inbox and the
+  conversation entry, shows the form it replaced read-only: its title, when it was filed, how it
+  ended and why, its plan and its decisions, with no Submit. The conversation keeps that form as
+  a withdrawn **Plan filed** entry.
+- A revision never carries an approval or an answer forward. A revised managed bundle is a new
+  plan revision with its own binding; the withdrawn earlier form stays an unapproved record. If a
+  standing approval covers the revised bundle outright, the recorded approval carries the link
+  and an open earlier form is still withdrawn.
+- The new form waits however this ask is decided now: filed with both flags on, or inside the
+  call otherwise. Only the earlier form must be a filed form.
+
+`revises` is refused with its reason, and nothing is filed or withdrawn, when the review it names:
+
+- is unknown, or belongs to another session, including a form that session's agent withdrew;
+- is not a plan form, such as a `request_input` question;
+- waits inside a call, whether it was asked that way or an older MCP child re-asked a filed form
+  and so turned it into one. Its call returns the answer;
+- was answered, dismissed, closed by a merge, closed when its session went away (an eviction or a
+  runtime-transfer settle), or replaced as a reworded retry;
+- is withdrawn but not by its own agent;
+- was already revised, including a form a revision replaced. The refusal names the latest form.
+
+An agent on an older MCP bundle cannot send `revises` and keeps the earlier flow: withdraw, then
+file a new, unlinked form.
+
 ### The ask channel
 
-Claude sessions the dashboard dispatches into the **terminal runtime** do not use Claude's
-built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is pointed at
-`request_input` instead, so a clarifying question arrives as structured arguments in the
-dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
-keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
-lands in the session's conversation as the same gold entry - the two channels differ in how
-the question reaches you, not in what is written down afterwards.
+Claude sessions the dashboard dispatches for a task do not use Claude's built-in
+`AskUserQuestion`, on either runtime. It is disallowed at launch, `request_input` is
+pre-approved, and the agent is told to ask every decision there instead - with the decision as
+`question`, the background in `context`, a tradeoff on each option and its recommended pick -
+so every decision a task asks arrives as the same `request_input` review, in the review queue
+with **Chat about it** and with what you need to make it, rather than as a menu drawn on a
+terminal nobody is watching or a driver-only form with no room for context. On the terminal
+runtime that is four argv flags; on the **Agent SDK runtime** the same three pieces ride on
+the query options on every launch (`sdkAskChannel` in `src/server/ask-channel-prompt.ts`):
+`allowedTools` pre-approves `request_input`, `disallowedTools` removes the built-in, and the
+redirect leads the one `systemPrompt.append`, ahead of any standing instructions. A Claude
+launch on either runtime that cannot be given the Mission Control MCP server is refused, and
+lands in **Did not start** with a message saying so (usually the MCP bundle is not built -
+run `npm run build`), rather than started with the built-in or with no way to ask at all; see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Restoring an SDK session after
+a restart applies the same check, but a refused restore costs a conversation, so only a bundle
+verified not to publish `request_input` fails the session. A bundle that is not built yet, or a
+handshake that did not complete, leaves it `suspended` for the next restore instead - for at
+most three restores in a row. A deferral that has not cleared by then is refused the ordinary
+way: the card appears, says why it could not be resumed, and its task settles. A resume that
+goes through starts the count over. The answer
+lands in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
-appends one developer instruction: when the operator needs to review alternatives, select an
-option, or answer another discrete multiple-choice question, call `request_input` with
-`options` and wait for the response instead of presenting the choices only as prose and
-ending the turn. Mission Control reads Codex's effective configured developer instruction
-first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
-effective instruction cannot be read safely, the appendix is omitted so the launch never
-points Codex at an unavailable tool or replaces the operator's customization.
+appends one developer instruction: whenever it needs a decision, a clarification or a choice
+from the operator, call `request_input` - with `options` for discrete choices, `context` for
+the background and a tradeoff on each option - and wait for the response instead of
+presenting the choices only as prose and ending the turn. Mission Control reads Codex's
+effective configured developer instruction first and preserves it ahead of this appendix. A
+Codex launch without the MCP server is refused, like a Claude one.
+
+If that effective instruction cannot be read safely, the developer instruction is left as the
+operator configured it, and the decision instruction is sent in turn one instead. It comes
+after everything else turn one carries - the intent, or the standing instructions when those
+fell back to turn one too - so a turn one that opens with a skill invocation such as
+`$engineer` keeps it first. On a resume that sends nothing else, it is turn one by itself.
+Either way the session is still told to ask its decisions through `request_input`.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`
@@ -2273,15 +3430,14 @@ carries the redirect that tells the agent where to go instead, inline.
 
 If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
 ran), or the state directory cannot be written - then **none** of them are passed and the
-session keeps the built-in menu. An agent with nowhere to ask is worse than one with a menu
-we can read, so every failure disarms the whole channel rather than half of it, and setting
-up the *ask channel* never fails the dispatch: it is best-effort, and the daemon logs which
-condition it hit.
+dispatch is refused, naming the condition it hit. The flags are still all or nothing: an
+agent with the built-in removed and nowhere to ask is worse than one with a menu. But a
+session that kept the built-in would ask its decisions outside `request_input`, without the
+context and tradeoffs a decision needs, so a Claude task never starts that way either.
 
-A launch that **requires** a Mission tool is the exception, and it is a different question.
-Asking is best-effort because a session that keeps the built-in menu is merely the status quo;
-submitting is not, because a scout with no `submit_scout_artifacts` and an ensemble member with
-no `submit_ensemble_result` have no way to finish their task at all. So those launches are
+A launch that **requires** another Mission tool is checked further. A scout with no
+`submit_scout_artifacts` and an ensemble member with no `submit_ensemble_result` have no way
+to finish their task at all. So those launches are
 checked twice before the agent spawns - that the registration reached the argv, and that the
 bundle it names actually **publishes** the tools, established by a real MCP handshake against
 that exact file. Either check failing fails the dispatch, names the tool and points at
@@ -2313,6 +3469,73 @@ that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same 
 leaves whatever **Install integrations** registered machine-wide alone.
 
 
+### Agent reports
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, an agent tells you it has
+finished something you need to read with the Mission Control MCP tool `post_report`. It takes a
+one-line `title`, a Markdown `body` (up to 4,000 characters), and optionally a checkout-relative
+`.html` or `.md` `file`, an http(s) `url`, and `replaces`, the id of one of its own earlier
+reports. The tool returns at once with a receipt naming the report's id (`r-42`) and telling the
+agent not to wait for a reply. Its description tells the agent when to report: when asked to, or
+when it has finished something you must read to act. Progress stays on `report_status`, and
+anything urgent or needing your decision is a `request_input` question.
+
+- **Stored apart from questions.** A report has its own table and never becomes a review: the
+  session does not turn amber, nothing counts toward **need you** or **to answer**, completion is
+  not held, and Foreman never sees it. It is read in the attention inbox's
+  [Reports](attention-and-alerts.md#agent-reports) section and counted in the top bar's **to read**.
+- **An attached document is copied.** The file must be inside the session's checkout (the same
+  containment rules as the Files viewer: no symlinks, nothing outside), an `.html` or `.md` file,
+  at most 2 MiB. It is copied to `<state home>/reports/<id>/` when the report is posted, so worktree
+  cleanup does not take it away.
+- **Replacing a report.** `replaces` must name one of the agent's own reports that is still
+  waiting to be read. Anything else is refused with the list of the agent's open reports and their
+  titles, so an agent that lost the id can retry. A resident is one author across its runs.
+- **A report outlives its session.** It keeps the author's name, task, repository and resident
+  profile from when it was posted. `GET /api/sessions/:id/reports` lists every report the session
+  posted, every version, read or not, after the session has gone.
+- **In the conversation.** Each report is an entry in its session's conversation at the moment it
+  was posted, marked **Report**, with its title (click it to show the body and link), its id, its
+  version when it replaced an earlier report, and how it stands: **Waiting to be read** with
+  **Mark read**, **Replaced by a later version**, or how you cleared it (**Read**, **Replied to**,
+  or **Followed up in a new task**). Every version keeps its entry, so a replaced report stays
+  here after the inbox shows only its successor. Entries come from the history route and update
+  live as reports are posted, read and replaced. Opening an entry opens the same report in the
+  inbox: there is one open report on screen.
+- **Replying and following up.** From the report's inbox card you reply to a running agent, or
+  start a follow-up task for a session that has ended; see
+  [Answering a report](attention-and-alerts.md#answering-a-report). Who may call
+  `POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up` is set out in
+  [Agent reports](security.md#agent-reports) in the security guide. A reply is delivered as an
+  ordinary operator message, but its text is built from the report: a line naming it, the report
+  restated, then your words (see the format in
+  [Answering a report](attention-and-alerts.md#answering-a-report)).
+  Messages you type in the composer are unchanged: nothing is added to them.
+- **Open report.** A report with an attached document offers **Open report** on its inbox card
+  and its conversation entry. It reads the copy stored under `<state home>/reports/<id>/`
+  through `GET /api/reports/:id/document`, never the checkout, so it opens after the worktree is
+  gone and shows what was posted even if the checkout file changed since. An HTML document is
+  drawn in the dashboard's sandboxed preview frame, which runs none of its scripts and fetches
+  nothing; a Markdown document is drawn by the dashboard's Markdown renderer. The route serves
+  the stored copy as an attachment with `nosniff` and a `default-src 'none'; sandbox` policy, as
+  an archived page is served. A stored copy that has gone missing is a 404 whose message the
+  reader shows; one that is there but cannot be opened (a permission or I/O error) is a 500
+  naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
+  not mark it read.
+- **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
+  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
+  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
+  on the card and publishes nothing. Pressing it again returns the same archive. If that archive
+  is deleted or leaves the library, the card offers **Publish as scout** again; see
+  [How a report produces one](archives.md#how-a-report-produces-one). It does not mark the
+  report read. `POST /api/reports/:id/publish` is the operator's alone and takes nothing but
+  the report id: a request that carries a page or a path is refused. A report with no document
+  cannot be published.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply,
+  follow-up, document and publish routes refuse, and no conversation entry is drawn. A session on an MCP bundle
+  older than this build does not have the tool.
+
 ### Scout reports from a session
 
 The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y
@@ -2321,3 +3544,10 @@ Selecting a report opens its source HTML in the Files preview. **Open archive** 
 immutable published copy in the archive reader with a source-session filter. Report publication is
 available from every task kind and from taskless sessions; it does not complete the task.
 See [Archives](archives.md) for titles, immutable retries, and retained provenance.
+
+### Pi provider failures
+
+A Pi assistant turn recorded with an error shows **Pi turn failed** and a bounded, redacted
+provider diagnostic in the conversation, including when the provider produced no response.
+The marker survives reload and remains beside later successful turns. The managed session
+stays available for another message after the provider or credentials are repaired.

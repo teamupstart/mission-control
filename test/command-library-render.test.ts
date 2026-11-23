@@ -134,6 +134,19 @@ test("the editor states, once, that saving executes nothing", () => {
   );
 });
 
+test("timeout and skip-or-block policies are edited in the existing Command surface", () => {
+  const html = markup([view({
+    timeoutMs: 90 * 60_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
+  })]);
+  assert.match(html, /<label for="workflow-command-timeout">Timeout in minutes<\/label>/);
+  assert.match(html, /id="workflow-command-timeout"[^>]*value="90"/);
+  assert.match(html, /<label for="workflow-command-unavailable">If the command is unavailable<\/label>/);
+  assert.match(html, /<option value="block" selected="">Block for operator action<\/option>/);
+  assert.match(html, /<label for="workflow-command-budget-exhausted">When the run budget is exhausted<\/label>/);
+});
+
 test("both fields are offered, with the default named as repository-neutral", () => {
   const html = markup([view()]);
   // No more Default-command and Overrides headings: one table, one header row, and the two
@@ -304,6 +317,9 @@ test("blank means no default, and one save carries a slot's whole state", () => 
     defaultCommand: null,
     overrides: [],
     maxRuns: 1,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
   });
 
   // Both halves, always, under the revision the draft was taken from: a partial save of a
@@ -338,6 +354,9 @@ test("dirtiness is measured against the stored slot, not against the text", () =
     defaultText: "npm test",
     overrides: [{ repoRoot: "/a", command: ["a"] }],
     maxRuns: 1,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
   });
   assert.equal(commandDraftDirty(draft, stored), false);
   // Trailing whitespace re-parses to the same argv, so it is not a change an operator has to
@@ -348,6 +367,9 @@ test("dirtiness is measured against the stored slot, not against the text", () =
   assert.equal(commandDraftDirty({ ...draft, defaultText: 'npm "unclosed' }, stored), true);
   assert.equal(commandDraftDirty({ ...draft, defaultText: "" }, stored), true);
   assert.equal(commandDraftDirty({ ...draft, defaultText: "npm run test" }, stored), true);
+  assert.equal(commandDraftDirty({ ...draft, timeoutMs: 90 * 60_000 }, stored), true);
+  assert.equal(commandDraftDirty({ ...draft, onUnavailable: "block" }, stored), true);
+  assert.equal(commandDraftDirty({ ...draft, onBudgetExhausted: "block" }, stored), true);
   assert.equal(commandDraftDirty({ ...draft, overrides: [] }, stored), true);
   // The run budget is part of the slot, so moving it alone is an unsaved change like any
   // other - otherwise the guard would let an operator navigate away from the one edit on
@@ -607,4 +629,19 @@ test("neither helper claims durable state without the catalog to back it", () =>
   // And with the catalog in hand, an absent view is the honest "nobody configured this".
   assert.equal(workflowCommandFact(null, true), "Not configured");
   assert.match(workflowCommandStatusSentence(null, true), /skips and passes with a note/);
+});
+test("CodeRabbit authoring explains YAML defaults and conditional blocking without requiring an override",()=>{
+ const view=emptyWorkflowCommandView("coderabbit");
+ assert.match(workflowCommandStatusSentence(view,true),/without a Library override/);
+ assert.match(workflowCommandStatusSentence(view,true),/incomplete review blocks/);
+ assert.match(workflowCommandFact(view,true),/YAML-enabled defaults/);
+ assert.doesNotMatch(workflowCommandStatusSentence(view,true),/Nothing is configured/);
+});
+test("restoring CodeRabbit tuning to its saved values clears dirty state regardless of property order",()=>{
+ const view={...emptyWorkflowCommandView("coderabbit"),overrides:[{repoRoot:"/repo",command:[],review:{kind:"coderabbit" as const,baseRef:"main",severity:"major" as const}}]};
+ const draft=commandDraftFrom(view);
+ draft.overrides[0]!.review={kind:"coderabbit",severity:"major",baseRef:"main"};
+ assert.equal(commandDraftDirty(draft,view),false);
+ draft.overrides[0]!.review.baseRef="other";
+ assert.equal(commandDraftDirty(draft,view),true);
 });

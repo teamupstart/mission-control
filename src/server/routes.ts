@@ -1,14 +1,76 @@
-import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
+import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { registerShapingRoutes } from "./shaping/routes.ts";
+import { registerVoiceRoutes } from "./voice/routes.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { taskShapingForReads } from "./shaping/reads.ts";
+import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import type { PauseManager } from "./pause/manager.ts";
+import { registerPauseRoutes } from "./pause/routes.ts";
+import { HibernationManager } from "./hibernation/manager.ts";
+import { registerHibernationRoutes } from "./hibernation/routes.ts";
+import { getResidentProfile as stateProfile } from "./residents/store.ts";
+import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
+import {
+  CreateResidentMcpServerSchema,
+  DeleteResidentMcpServerSchema,
+  RedeemResidentMcpTicketSchema,
+  RefreshResidentMcpCatalogSchema,
+  UpdateResidentMcpServerSchema,
+} from "@shared/resident-mcp.ts";
+import { ResidentMcpServerError } from "./residents/mcp-store.ts";
+import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
+import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
+import type { ResidentLoop } from "./residents/loop.ts";
+import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
+import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
+import { canMessage, paneToken } from "@shared/pane.ts";
+import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
+import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, getTask as getDurableTaskRow, inTransaction, setStackAwaitReplacement } from "./db.ts";
+import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import type { PrRefs } from "./inspector/github.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
+import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
+import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
+import {
+  registerSessionControlRoutes, sessionControlActor, sessionControlCaller, sessionControlCallerRefusal,
+} from "./session-control.ts";
+import { registerReportRoutes } from "./report-routes.ts";
+import { followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
+import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
-import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
-import { validatePlanInputs } from "./plans/inputs.ts";
-import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
+import {
+  localPlanAuthorityContext,
+  validatePlanReview,
+  bindPlanReview,
+  finalBundleDecision,
+  assertStandingApprovalGrantable,
+  grantStandingBundleApproval,
+  hasStandingBundleApproval,
+  isStandingFollowUp,
+  recordStandingFollowUp,
+  reusableStandingApproval,
+  standingBundleAnswer,
+  unbindPlanReview,
+  STANDING_FOLLOW_UP_NOTE,
+  filedPlanIdentityNote,
+} from "./plans/publication.ts";
+import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
-import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
-import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
+import { getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -16,8 +78,27 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
-import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
+import {
+  HARNESS_LAUNCHED_TASK_KINDS,
+  TASK_KIND_BEHAVIOR,
+  TASK_KIND_INFO,
+  kindsDefaultingToWorkflow,
+  taskHasRepository,
+  taskAllowsBacklog,
+  taskKindCreator,
+} from "@shared/task.ts";
+import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "@shared/plan-publication.ts";
+import {
+  dismissLaunchFailures,
+  launchFailureGroupFor,
+  launchFailureReportBrief,
+  launchFailureReportTitle,
+  markLaunchFailureReport,
+  recordLaunchFailureReport,
+} from "./launch-failures.ts";
+import { dismissAttentionItems, listAttentionDismissals } from "./attention-dismissals.ts";
+import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -45,8 +126,15 @@ import {
   CostConfigPatchSchema,
   CreateReviewSchema,
   DetachReviewWaitSchema,
+  ListOpenQuestionsSchema,
+  WithdrawQuestionSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
+  DismissLaunchFailuresSchema,
+  DismissAttentionItemsSchema,
+  ATTENTION_DISMISSAL_LIMITS,
+  ReportLaunchFailureSchema,
+  RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
   PipelineRetrySchema,
   PipelineSettlementSchema,
@@ -68,6 +156,7 @@ import {
   ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
+  HarnessAdvisorEnvironmentsSchema,
   HarnessModelCatalogQuerySchema,
   HarnessModelCatalogsSchema,
   TerminalsConfigPatchSchema,
@@ -81,11 +170,15 @@ import {
   type McpCreateTaskV3,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpCancelTaskSchema,
+  McpListTasksSchema,
+  McpGetTaskSchema,
   type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
+  INSPECTOR_PR_KEY_PATTERN,
   ResolveFindingsSchema,
   SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
@@ -96,6 +189,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -107,8 +201,14 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  SnoozeReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
+  CreateResidentProfileSchema,
+  UpdateResidentProfileSchema,
+  ArchiveResidentProfileSchema,
+  ResetResidentStateSchema,
+  LaunchResidentRequestSchema,
   RunScheduleNowSchema,
   ScheduleHistoryQuerySchema,
   SchedulePreviewSchema,
@@ -116,6 +216,7 @@ import {
   UpdateScheduleSchema,
   SelectOptionSchema,
   SendTextSchema,
+  InboxMessageSchema,
   OpenSessionFileSchema,
   ArchiveSearchQuerySchema,
   RenameArchiveSchema,
@@ -165,6 +266,13 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  McpReportBlockerSchema,
+  McpClearBlockerSchema,
+  McpClearAwaitingSchema,
+  McpReportAwaitingSchema,
+  ClearAwaitingSchema,
+  FlagBlockerReplySchema,
+  ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
@@ -174,6 +282,7 @@ import {
   ArchivePersonaSchema,
   CreateWorkflowSchema,
   UpdateWorkflowSchema,
+  UpdateBuiltinWorkflowRoundLimitSchema,
   ValidateWorkflowSchema,
   PublishWorkflowSchema,
   ArchiveWorkflowSchema,
@@ -196,6 +305,7 @@ import {
   SetWorkflowPersonaDirectiveSchema,
   WorkflowCompletionClaimSchema,
   UpdateWorkflowCommandSchema,
+  ReadWorkflowCommandOutputSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
@@ -208,9 +318,12 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
+  InspectorFindingsResponse,
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
@@ -219,60 +332,76 @@ import {
   type ProductIssueSubmitResult,
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
+import { deliveredReviewIds } from "./review-deliveries.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
+  InspectorInspection,
   InspectorStatus,
   LlmStatus,
   ReviewActor,
+  ReviewItem,
   Session,
+  SessionBlocker,
   SkillsView,
+  Task,
   WorkItem,
 } from "@shared/types.ts";
-import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
+import { ReviewResolutionError, SnoozeActorRefusal, type ReviewManager } from "./reviews.ts";
+import { reviewSnoozeDelay } from "@shared/review-snooze.ts";
 import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskEffortUnsupportedError,
+  TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
+  type TaskWorkUnitSource,
 } from "./tasks.ts";
+import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
+import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
+import { grillFirstDispatchBlock } from "./grill-first.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import {
   confirmReservedInjection,
+  notePersonDelivery,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
+  PersonAttributionError,
+  type PersonDelivery,
+  withdrawPersonDelivery,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
-  type StandingInstructionsDelivery,
+  type StandingInstructionsResponse,
 } from "@shared/standing-instructions.ts";
 import {
   standingInstructionsConfig,
@@ -280,9 +409,11 @@ import {
   updateStandingInstructions,
 } from "./instructions/config.ts";
 import { composeStandingInstructions } from "./instructions/compose.ts";
+import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
@@ -292,6 +423,7 @@ import {
   getForemanConfig,
   recordForemanPlannerHealth,
   recordForemanHealth,
+  dismissForemanHealthIssues,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -313,6 +445,19 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
+import {
+  getDatabaseBackupsConfig,
+  setDatabaseBackupsConfig,
+  StaleBackupPreviewError,
+} from "./database-backups/config.ts";
+import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { IdleCachePlanUnavailable, StorageView } from "@shared/storage-health.ts";
+import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
+import { getStorageLimitsConfig, setStorageLimitsConfig } from "./storage-limits.ts";
+import { planIdleCache } from "./storage-pools.ts";
+import type { StorageUsageMonitor } from "./storage-usage.ts";
+import { DatabaseBackupsSaveRequestSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -380,6 +525,8 @@ import {
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
 import {
   pipelineEpisodeKey,
   pipelineEpisodeWrite,
@@ -390,7 +537,12 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  RepoIndexConfigPatchSchema,
+} from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
@@ -400,6 +552,7 @@ import {
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
 import { startSetupService } from "./setup/service.ts";
+import { locateExecutable } from "./executables/locator.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -485,8 +638,13 @@ import {
   retryWritebacks,
   getSkillsAcks,
   loadConversationResolvedReviews,
+  loadReviewsByIds,
+  loadReview,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadOpenInspectorInspections,
+  loadInspectorInspection,
+  loadInspectorComments,
   getInspectorPr,
   resolveInspectorFindings,
   updateInspectorPr,
@@ -520,6 +678,7 @@ import {
   formDelivered,
   type PaneDeps,
   submitPaneForm,
+  writeHold,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -528,6 +687,9 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  isScanUnavailable,
+  listReposScan,
+  repoIndexIdentity,
   resolveRepoPath,
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
@@ -551,6 +713,8 @@ import {
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
 import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { systemDefaultEmulator } from "./terminal/system-default.ts";
+import type { EmulatorId } from "@shared/terminal.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -579,6 +743,7 @@ import {
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type {
+  Persona,
   TestEvidenceAuditAggregate,
   WorkflowConfig,
   WorkflowLaunchBlock,
@@ -587,12 +752,14 @@ import type {
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
+import { CommandArtifactReadError } from "./workflows/command-artifacts.ts";
 import {
   getWorkflowPolicy,
   setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
+import type { ResidentManager } from "./residents/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
 import type { ScheduleValidationError } from "@shared/schedules.ts";
 import type { EnsembleManager, EnsembleSubmitResult } from "./ensembles/manager.ts";
@@ -687,6 +854,21 @@ const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes *
  * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
  * second opinion about what a valid catalog looks like.
  */
+/**
+ * One attention-inbox Dismiss at its largest: every key a request may carry, each at its longest.
+ *
+ * Derived from `ATTENTION_DISMISSAL_LIMITS` so a body the schema accepts is never refused here,
+ * with `JSON_UTF8_MAX_BYTES_PER_CHAR` because the schema counts characters and `bodyLimit` counts
+ * bytes. The 256 per key covers the field names, the integer basis and the punctuation. Its job
+ * is the one the schema cannot do under Zod 3: stop an absurd body before every element of it is
+ * parsed (GHSA-mrhx-c7xc-m3w5).
+ */
+const ATTENTION_DISMISSAL_BODY_MAX_BYTES =
+  ATTENTION_DISMISSAL_LIMITS.keysPerRequest
+    * ((ATTENTION_DISMISSAL_LIMITS.itemIdLength + ATTENTION_DISMISSAL_LIMITS.occurrenceLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 256)
+  + 1024;
 const WORKFLOW_COMMAND_BODY_MAX_BYTES =
   (WORKFLOW_LIMITS.commandOverrides + 1)
     * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
@@ -817,6 +999,7 @@ async function parseBoundedBody<S extends ZodTypeAny>(
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
 const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+const FOREMAN_SESSION_BLOCKED = "The session is blocked on someone else; Foreman holds until the blocker is cleared";
 
 interface ForemanWriteRefusal {
   error: string;
@@ -843,15 +1026,70 @@ interface ForemanWriteRefusal {
  * they are shared with the dashboard and are bookkeeping downstream of a typing act these
  * gates already refused, so widening their schemas would buy nothing.
  */
+/**
+ * One row's stack standing, or null when it cannot be computed. It reads the database, and one
+ * bad row must not turn a whole merge-queue listing into a 500 - the same fallback the
+ * Registry's own copy uses.
+ */
+function safeStackStanding(...args: Parameters<typeof stackStandingFor>): ReturnType<typeof stackStandingFor> {
+  try {
+    return stackStandingFor(...args);
+  } catch (error) {
+    console.error("[routes] could not compute a stack standing:", args[0].key, error);
+    return null;
+  }
+}
+
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
+  /**
+   * The write answers the question on screen (a review decision, a menu row, a form). These
+   * are the triage responses a blocked session may still take: they can only answer what
+   * the session is asking, so they cannot carry a stale wrap-up or recovery payload.
+   */
+  structuredAnswer = false,
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  // The daemon's half of the blocker hold, for a worker that predates it and outlives a
+  // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
+  // reaches a session waiting on someone else, whatever bucket it is in: the route cannot tell
+  // a prose triage answer from a stale automated payload, so a blocked session's prose
+  // question is left to the operator.
+  if (!structuredAnswer && hasBlocker(session)) {
+    return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
+  }
+  // No structured-answer exemption here: a paused session is the operator's to resume, and
+  // Foreman answering its menu would start the very turn the pause is holding back.
+  if (session.pause) return { error: PAUSED_SESSION_REASON, status: 409 };
   return null;
+}
+
+/**
+ * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
+ * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
+ * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
+ * same millisecond. No current blocker is not a mismatch: the routes treat that as their own
+ * no-op or 409.
+ */
+function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string | undefined): string | null {
+  if (expectedId === undefined || !current || current.id === expectedId) return null;
+  return "The blocker changed since you last looked; reread it before acting.";
+}
+
+/**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
+export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+  if (origin !== "foreman") return null;
+  const live = registry.getSession(sessionId);
+  return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
 
 /**
@@ -1110,6 +1348,12 @@ export interface RouteDeps {
    * than constructing a second manager here.
    */
   schedules?: ScheduleService;
+  /**
+   * Resident profiles and the one resident launch path. The resident routes answer 503 when
+   * it is absent rather than constructing a second manager here.
+   */
+  residents?: ResidentManager;
+  residentLoop?: ResidentLoop;
   ensembles?: EnsembleManager;
   /**
    * The owner of embedded (SDK-runtime) sessions.
@@ -1151,6 +1395,11 @@ export interface RouteDeps {
    */
   keepAwake?: KeepAwakeManager;
   /**
+   * The one owner of pausing (`src/server/pause/manager.ts`). Absent, the pause routes answer
+   * 503 rather than building a second owner of the same frozen processes.
+   */
+  pauses?: PauseManager;
+  /**
    * The archive library owner. Absent means the archive routes answer 503 rather than
    * constructing a manager here. A route-built twin would be a second owner of one filesystem
    * library and one reconciler - two background walks over the same directory, two writers of
@@ -1180,8 +1429,21 @@ export interface RouteDeps {
   fileComments?: FileCommentManager;
   /** The walkthrough. Absent for the same reason `fileComments` is; its routes answer 503. */
   fileCommentWalkthrough?: FileCommentWalkthrough;
+  /**
+   * The owner of the `reports` table. Absent means the report routes answer 503 rather than
+   * constructing a second writer of the table and a second emitter of `report_upsert`.
+   */
+  reports?: ReportManager;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
+  /** The daemon's full-database backup owner. Its routes return 503 without it. */
+  databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
+  /**
+   * The state directory's measurer. Measure now and the pool-cache plan return 503 without it.
+   */
+  storageUsage?: StorageUsageMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1196,6 +1458,11 @@ export interface RouteDeps {
    * preference is read through the real composition.
    */
   focusTerminals?: TerminalDeps;
+  /**
+   * The emulator macOS hands a shell to, which terminal pickers start on. Injected so a route
+   * test does not read the machine's own LaunchServices preferences.
+   */
+  systemDefaultTerminal?: () => Promise<EmulatorId | null>;
 }
 
 /**
@@ -1217,6 +1484,8 @@ export const ROUTE_DEP_NAMES = [
   "workflows",
   "sessionTransfers",
   "schedules",
+  "residents",
+  "residentLoop",
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
@@ -1226,6 +1495,7 @@ export const ROUTE_DEP_NAMES = [
   "pendingTurns",
   "paneDeps",
   "keepAwake",
+  "pauses",
   "archives",
   "workflowCommands",
   "worktrees",
@@ -1234,10 +1504,15 @@ export const ROUTE_DEP_NAMES = [
   "productIssues",
   "fileComments",
   "fileCommentWalkthrough",
+  "reports",
   "settingsBackups",
+  "databaseBackups",
+  "storageHealth",
+  "storageUsage",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
+  "systemDefaultTerminal",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1488,6 +1763,44 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
+/**
+ * The answer for a route that needed a workspace scan and could not get one: the walk timed
+ * out or is refused over one still stuck (a stalled mount), and no earlier scan of these
+ * directories is held to answer from. 503 with the reason, rather than a bare 500 - the
+ * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
+ * error is not this and is rethrown.
+ */
+/**
+ * Tell every window the indexed directories changed, after a save that already succeeded.
+ *
+ * Never throws: the write is persisted, and a failure here must not be reported to the caller
+ * as a failed save. If the new identity cannot be computed, windows are told it is unknown -
+ * which still makes them drop their lists, the point of the event - and the cause is logged.
+ */
+function announceRepoIndexChanged(registry: Registry): void {
+  let identity: string;
+  try {
+    identity = repoIndexIdentity();
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not compute its identity; telling windows it is unknown: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    identity = REPO_INDEX_IDENTITY_UNKNOWN;
+  }
+  try {
+    registry.emitRepoIndexChanged(identity);
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not announce it to open windows: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function scanUnavailableAnswer(c: Context, error: unknown): Response {
+  if (!isScanUnavailable(error)) throw error;
+  return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
+}
+
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // JavaScript would discard these in silence. The count is named because it is what locates
   // the mistake for the caller.
@@ -1508,6 +1821,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     personas,
     workflows,
     schedules,
+    residents,
+    residentLoop,
     ensembles,
     sdkSessions,
     authorizeSessionControl,
@@ -1517,6 +1832,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     pendingTurns,
     paneDeps,
     keepAwake,
+    pauses,
     archives,
     workflowCommands,
     worktrees,
@@ -1525,10 +1841,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     productIssues,
     fileComments,
     fileCommentWalkthrough,
+    reports,
     settingsBackups,
+    databaseBackups,
+    storageHealth,
+    storageUsage,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
+    systemDefaultTerminal,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -1563,6 +1884,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.subscribe?.((e) => {
     if (e.type === "session_remove") agentResumeClaims.delete(e.id);
   });
+  // A resident's proposed changes to its own standing instructions. Built from the managers
+  // already here: the review it opens is an ordinary review, and the human's answer to it is
+  // applied by the resolve route below, inside the transaction that records the answer.
+  // Guarded because route tests build the app with a null or stub `reviews`, as the
+  // `registry.subscribe?.` call above documents for the registry.
+  const residentInstructions = personas && reviews
+    ? new ResidentInstructionChanges({
+      registry,
+      reviews,
+      persona: (id) => personas.store.getPersona(id),
+      writePersonaGuidance: (id, expectedRevision, guidance, at) =>
+        personas.writeGuidance(id, expectedRevision, guidance, at),
+      publishPersona: (persona) => {
+        personas.announce(persona);
+        workflows?.refreshSummaries();
+      },
+    })
+    : null;
+  // A resident whose proposal call timed out learns what the answer applied in the continuation.
+  if (residentInstructions) {
+    reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
+  }
+  // A filed plan form's answer names the managed plan and revision it approved or did not.
+  reviews?.addContinuationAddendum?.(filedPlanIdentityNote);
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -1577,8 +1922,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  // Headless mode (FR-05): every `/dispatch/*` route, gated by the `headless-mode` flag.
+  registerHomeDispatchRoutes(app, deps, requireLoopback);
+
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
+
+  // The ai-conductor integration is hidden (`shared/conductor-integration.ts`). While it is,
+  // nothing here may reach the engine: no probe, registration, installer, control verb,
+  // console, run-detail read, plugin push, or Engineer host callback. The two reads a live
+  // surface polls answer "nothing is observed" instead of an error - the Dispatch form and the
+  // Runs page ask for the observed repositories, and the Foreman worker asks for halts - so
+  // neither logs a failure every cycle for a feature nobody can see.
+  const conductorHidden: MiddlewareHandler = async (c, next) => {
+    if (conductorIntegrationEnabled()) return next();
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/repos") {
+      return c.json({ repos: [], launchRuntime: getPipelinesConfig().launchRuntime });
+    }
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/foreman") {
+      return c.json({ enabled: false, items: [] } satisfies PipelineForemanView);
+    }
+    return c.json({ error: CONDUCTOR_UNAVAILABLE_DETAIL }, 404);
+  };
+  app.use("/api/pipelines/*", conductorHidden);
+  app.use("/ingest/conductor", conductorHidden);
+  app.use("/mcp/pipelines/*", conductorHidden);
 
   app.get("/api/health", (c) =>
     c.json({
@@ -1586,7 +1954,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 
@@ -1708,10 +2076,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1724,6 +2105,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
@@ -1840,6 +2230,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       : c.json({ error: "no failed worktree operation has that id" }, 404);
   });
 
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
+  });
+
   app.post("/api/worktrees/:slotId/open", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     const parsed = await parseBody(c, OpenWorktreeSchema);
@@ -1860,9 +2264,80 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
-  registerSessionControlRoutes(app, registry, authorizeSessionControl);
+  // A resident run's durable grant follows the operator's toggle: turning control off forgets
+  // it before the live grant goes, so a restart never gives back what the operator took away.
+  registerSessionControlRoutes(app, registry, authorizeSessionControl, (sessionId) => {
+    residents?.sessionControlRevoked(sessionId);
+  });
+  // Agent reports (`inbox` flag): the tool's post, the operator's opened and read, and a
+  // session's history.
+  registerReportRoutes(app, registry, reports, {
+    // The composer's Send for a human, exactly: a reply is an ordinary operator turn.
+    submit: pendingTurns
+      ? (sessionId, text) => {
+        const result = pendingTurns.submit(sessionId, text);
+        if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, { kind: "human", origin: "dashboard", basis: "declared" });
+        return result;
+      }
+      : undefined,
+    followUpTasks: {
+      create: async (report, words, record) => {
+        // The agent and model the report's own task ran on, when that task is still known; the
+        // kind too when it is one a follow-up can be filed as. Everything else is the Dispatch
+        // form's default, so a follow-up is reviewed like any other dispatched work.
+        const original = report.taskId ? registry.getTask(report.taskId) ?? getDurableTaskRow(report.taskId) : undefined;
+        const input = DispatchSchema.safeParse({
+          repoRoot: report.repository,
+          intent: followUpIntent(report, words),
+          title: followUpTitle(report),
+          kind: followUpKind(original?.kind),
+          ...(original ? { agent: original.agent } : {}),
+          ...(original?.model ? { model: original.model } : {}),
+          // Filed to the backlog and dispatched as a second, recorded step, so a dispatch that
+          // fails leaves one task to retry rather than none or two.
+          backlog: true,
+        });
+        if (!input.success) return { ok: false, status: 400, error: input.error.issues[0]?.message ?? "invalid follow-up" };
+        const created = await createTaskFromDispatch(input.data, undefined, (task) => record(task.id));
+        if (!created.ok) return { ok: false, status: created.status, error: String(created.body.error ?? "could not create the follow-up task") };
+        return { ok: true, taskId: created.task.id };
+      },
+      exists: (taskId) => {
+        const task = tasks.get(taskId);
+        return task !== undefined && task.status !== "cancelled";
+      },
+      dispatch: async (taskId) => {
+        // A retry after a launch that failed with no session, as the launch-failure Retry does: a
+        // failure that kept its worktree is re-filed first, which reclaims that tree.
+        const task = tasks.get(taskId);
+        if (task && launchFailureOutcome(task) === "not-started" && task.worktreePath) {
+          const filed = await tasks.reschedule(taskId);
+          if (!filed.ok) return { ok: false, error: filed.error ?? "the follow-up task could not be filed again" };
+        }
+        const result = await tasks.dispatch(taskId, {});
+        return result.ok ? { ok: true } : { ok: false, error: result.error ?? "the follow-up task could not be dispatched" };
+      },
+    },
+    // Publish as scout: the archive's one operator-initiated capture.
+    publisher: archives
+      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.archivePresent(key) }
+      : undefined,
+  });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Pausing sessions: one session, Pause all, and the priority session ---
+  registerPauseRoutes(app, pauses);
+
+  // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
+  registerHibernationRoutes(
+    app,
+    new HibernationManager(registry, sdkSessions ?? null, {
+      workflows,
+      pause: pauses,
+      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+    }),
+  );
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -1914,7 +2389,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
-  registerWorkflowMcpRoutes(app, registry, workflowManager);
+  registerWorkflowMcpRoutes(app, registry, workflowManager, () => workflowCommands ?? null, () => reviews);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
@@ -2037,6 +2512,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         code,
         current: result.current,
       }, 409);
+    }
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
+    if (result.reason === "unsupported_effort") {
+      return c.json({
+        error: "reasoning effort is not supported by this provider and model",
+        code,
+        current: result.current,
+      }, 400);
     }
     return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
   };
@@ -2253,6 +2736,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
+  // Reset an editable built-in (the Grill action) to its shipped instruction.
+  app.post("/api/session-actions/:id/reset", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.reset(c.req.param("id"), parsed.data.expectedRevision);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
   app.delete("/api/session-actions/:id", bodyLimit({
     maxSize: REVISION_ONLY_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "session action request is too large" }, 413),
@@ -2292,8 +2788,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (result.reason === "builtin") {
       return c.json({
         ...body,
-        error: "this workflow ships with Mission Control: it cannot be edited, published, "
-          + "archived, restored, or deleted. Duplicate it to make a copy you own.",
+        error: "this workflow ships with Mission Control: only its maximum repair rounds can be "
+          + "changed, and it cannot be edited, published, archived, restored, or deleted. "
+          + "Duplicate it to make a copy you own.",
+      }, 409);
+    }
+    if (result.reason === "not_builtin") {
+      return c.json({
+        ...body,
+        error: "only a built-in workflow takes a round limit in place: edit this workflow's draft "
+          + "and publish it instead.",
       }, 409);
     }
     return c.json(body, 409);
@@ -2309,6 +2813,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list(raw === "true"));
   });
   const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   /**
    * The legacy config shape, COMPOSED rather than stored.
    *
@@ -2345,14 +2854,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.defaultWorkflowId) {
-      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = parsed.data.kindWorkflowDefaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
       if (
         !detail
         || detail.workflow.archivedAt !== null
         || detail.workflow.currentVersionId === null
       ) {
-        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+        return c.json({
+          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
+        }, 409);
       }
     }
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -2376,7 +2889,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Global Command catalog: what each portable workflow slot runs on this machine ---
   //
-  // Four fixed slots, so this family has no create and no delete: only a list, a read, and
+  // Fixed slots, so this family has no create and no delete: only a list, a read, and
   // one compare-and-swap replacement of a slot's whole state. The legacy config route above
   // writes through the same manager, so there is exactly one durable authority and one live
   // event whichever surface an operator used.
@@ -2385,6 +2898,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     result: Exclude<WorkflowCommandMutation, { ok: true }>,
   ) => {
     const code = `workflow_command_${result.reason}`;
+    if (result.reason === "invalid_recipe") return c.json({ error: c.req.param("slot") === "coderabbit"
+      ? "CodeRabbit requires repository-root tuning and a supported coderabbit review command"
+      : `${c.req.param("slot")} requires nonempty argv overrides without review tuning`, code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);
     }
@@ -2468,6 +2984,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = manager.update(c.req.param("id"), parsed.data);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
+  // A built-in's round budget, the one setting it lets an operator change without Duplicate.
+  // Its own route rather than a PATCH exception, so the schema itself is the proof that
+  // nothing else about a built-in can be written.
+  app.put("/api/workflows/:id/round-limit", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateBuiltinWorkflowRoundLimitSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setBuiltinRoundLimit(c.req.param("id"), parsed.data.maxRepairRounds);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result);
+  });
   app.delete("/api/workflows/:id", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -2475,9 +3002,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before archiving this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
       }, 409);
     }
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
@@ -2502,9 +3030,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before deleting this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
       }, 409);
     }
     const result = manager.remove(id, parsed.data.expectedDraftRevision);
@@ -2649,7 +3178,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    const staged = manager.stagedEvidenceForSession(
+      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
+    );
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(
@@ -2830,6 +3361,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           code: "workflow_run_not_found",
         }, 404);
   });
+  app.get(
+    "/api/workflow-runs/:id/attempts/:attemptId/command-output/:artifactId",
+    (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const rawLimit = c.req.query("limit");
+      const parsed = ReadWorkflowCommandOutputSchema.safeParse({
+        runId: c.req.param("id"),
+        attemptId: c.req.param("attemptId"),
+        artifactId: c.req.param("artifactId"),
+        cursor: c.req.query("cursor") ?? null,
+        ...(rawLimit === undefined ? {} : { limit: Number(rawLimit) }),
+      });
+      if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+      try {
+        const page = manager.readCommandOutput(parsed.data);
+        return page ? c.json(page) : c.json({ error: "Command output service unavailable" }, 503);
+      } catch (error) {
+        const known = error instanceof CommandArtifactReadError ? error : null;
+        return c.json({
+          error: known?.message ?? "Retained Command output could not be read",
+          code: known?.code ?? "command_output_failed",
+        }, (known?.status ?? 409) as 400 | 404 | 409 | 410);
+      }
+    },
+  );
   app.get("/api/workflow-runs/:id/images/:imageId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -3135,10 +3692,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return c.json({ files: await listGitTreeFiles(resolved.repoRoot, resolved.view.commit) });
       }
       if (!resolved.root) return c.json({ error: "session has no working directory" }, 400);
-      return c.json({ files: await listSessionFiles(resolved.root) });
+      return c.json({ files: await listSessionFiles(resolved.root, session.task ?? undefined) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
+      return c.json({ error: known?.message ?? "could not list session files" }, (known?.status ?? 500) as ContentfulStatusCode);
     }
   });
   app.get("/api/sessions/:id/file", async (c) => {
@@ -3701,10 +4258,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const parsed = await parseBody(c, DeleteArchiveSchema);
     if (!parsed.ok) return parsed.res;
+    // A report published under this archive no longer has one once its bundle is gone: its card
+    // offers Publish as scout again rather than an Open archive that leads nowhere. Checked after
+    // every attempt, including one that failed after the bundle was already moved to the trash
+    // (a cleanup failure), and conditional and queued with that report's Publish: a bundle still
+    // present, or one a publish recreated meanwhile, keeps its key. A failure of this check is
+    // healed at the next startup and never replaces the delete's own answer.
+    const reconcileReport = () => reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
+      .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
     try {
       const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
+      await reconcileReport();
       return c.json(result);
     } catch (error) {
+      await reconcileReport();
       const failure = archiveErrorStatus(error);
       return c.json({ ok: false, error: failure.message }, failure.status);
     }
@@ -3714,8 +4281,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) =>
-    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  const readSystemDefaultTerminal = systemDefaultTerminal ?? (() => systemDefaultEmulator({
+    platform: process.platform,
+    home: process.env.HOME || homedir(),
+    run: (bin, args, opts) => runCommand(bin, args, opts),
+    emulators: configuredTerminalTargetDeps.emulators,
+  }));
+  app.get("/api/terminal-targets", async (c) => {
+    // try/await, not `.catch`: a reader that throws before returning a promise must still
+    // leave the catalog answering, just without a default marked.
+    let systemDefault: EmulatorId | null = null;
+    try {
+      systemDefault = await readSystemDefaultTerminal();
+    } catch {
+      systemDefault = null;
+    }
+    const targets = terminalTargetViews(configuredTerminalTargetDeps).map((view) =>
+      view.id === systemDefault ? { ...view, systemDefault: true } : view);
+    return c.json({ targets });
+  });
   // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
   app.get("/api/sessions/:id/launch", (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -3919,9 +4503,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
-  app.get("/api/tasks", (c) => c.json(tasks.list()));
-  // Git repos under the workspace roots - the pickable bases for a new dispatch.
-  app.get("/api/repos", async (c) => c.json(await listRepos()));
+  // One review by id, settled or not: the earlier version of a revised plan form, which leaves
+  // the live snapshot at the next restart. The registry copy first, for what it derives.
+  app.get("/api/reviews/:id", (c) => {
+    const id = c.req.param("id");
+    const review = registry.getReview(id) ?? loadReview(id);
+    return review ? c.json(review) : c.json({ error: "no such review" }, 404);
+  });
+  // Every task read applies the one shaping reader rule: a record left by an earlier launch
+  // describes another session and is not returned.
+  app.get("/api/tasks", (c) => c.json(tasks.list().map(taskShapingForReads)));
+  app.get("/api/tasks/:id/plan-dependencies", (c) => {
+    const task = tasks.get(c.req.param("id"));
+    return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
+  });
+  // Git repos under the workspace roots - the pickable bases for a new dispatch. Answers
+  // from the last scan and rescans behind it; `?rescan=1` waits for a scan started after the
+  // request instead. The header orders scans, so a browser holding two answers keeps the
+  // newer one rather than whichever arrived last.
+  app.get("/api/repos", async (c) => {
+    try {
+      const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+      c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+      c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+      return c.json(repos);
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+  });
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
@@ -3937,13 +4546,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
-      return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
     }
+    // The save is persisted from here on, so nothing below may answer as if it failed - a
+    // client told "rejected" would keep showing the directories it just replaced.
+    announceRepoIndexChanged(registry);
+    return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
     invalidateReposCache();
@@ -3965,8 +4577,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
-  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
-  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+  // Read by a person, so built from the snapshot as the dashboard sees it: agent-written
+  // lines with task ids shown as titles (`task-titles.ts`).
+  const reportSnapshot = () => taskTitlePresenter(registry).snapshot(registry.snapshot());
+  app.get("/api/report", (c) => c.json(buildReport(reportSnapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(reportSnapshot()))));
 
   const backupUnavailable = (c: Context) => c.json({
     error: "service_unavailable" as const,
@@ -4150,6 +4765,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // reason, and it chains: each page reports the `start` the next call passes back. The
   // panel is the only caller, but it belongs on this route rather than the SSE stream
   // because it is a request for history, not a subscription to new turns.
+  /**
+   * The tool call that launched one of this session's background sub-agents, as its
+   * transcript file records it: `{ toolUseId }`, null when it records none.
+   *
+   * Asked by "Jump to launch" for an agent whose source did not name its launching call. The
+   * answer comes from the file because only the file always holds both halves of a launch -
+   * the call and the result naming its agent are written apart, so the dashboard can receive
+   * them in separate appends or on separate pages. The browser then finds the call by its id
+   * among the turns it holds, paging older ones in, exactly as for an agent the source named.
+   */
+  app.get("/api/sessions/:id/subagents/:agentId/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const agentId = c.req.param("agentId");
+    if (!agentId || agentId.length > 256) return c.json({ error: "agentId must be a sub-agent id" }, 400);
+    const spec = transcriptFor(session);
+    // A harness whose transcript ties no call to its agents answers "none", as does a file
+    // that has not appeared yet: both read as a launch this transcript does not record.
+    const path = spec?.subagentLaunch ? spec.locate(session) : null;
+    return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
+  });
+
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -4176,13 +4813,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // enough to reach the launch turn must not make it reappear in full.
       return c.json({
         ...page,
-        messages: attributeTranscript(
+        // The same task-title projection the live stream applies (`task-titles.ts`).
+        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
-        ),
+        )),
       });
     }
     const since = Number(c.req.query("since"));
@@ -4238,6 +4876,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, StandardsRequestSchema);
     if (!parsed.ok) return parsed.res;
+    if (!taskHasRepository(session.task ?? {})) return c.json({ docs: [], truncated: false });
     const resolved = await resolveRouteWorkspace(session.id);
     if (
       resolved.view?.authority === "provider" &&
@@ -4369,6 +5008,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
    * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
    * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   *
+   * `personaId`, when the form has chosen one, appends that Persona's section exactly as the
+   * launch will, and is refused for the reason the launch would refuse it. `kind`, when given,
+   * answers for that kind's launch: a Pipeline's Engineer host receives no repository block.
    */
   app.get("/api/instructions/resolved", async (c) => {
     const repoPaths = c.req.queries("repoPath") ?? [];
@@ -4397,9 +5040,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
       candidates.push({ repoPath });
     }
-    return c.json(
-      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
-    );
+    const kindParam = c.req.query("kind");
+    const kind = kindParam === undefined ? null : TASK_KINDS.find((k) => k === kindParam);
+    if (kind === undefined) return c.json({ error: `unknown task kind: ${kindParam}` }, 400);
+    const personaId = c.req.query("personaId");
+    let persona: Persona | null = null;
+    if (personaId) {
+      const library = personaManager()?.store;
+      const resolved = resolveTaskPersona(library && ((id) => library.getPersona(id)), personaId);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 409);
+      persona = resolved.persona;
+    }
+    // A provider-launched kind is not this harness launch at all: its Engineer host is sent what
+    // `pipelineHostStanding` says for the runtime the daemon will launch it on - never the
+    // repository block - so the preview asks the same function the dispatcher does.
+    if (kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
+      return c.json(pipelineHostStanding(persona, agent, getPipelinesConfig().launchRuntime));
+    }
+    const repository = composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime);
+    return c.json(persona ? withTaskPersona(repository, persona, agent, runtime) : repository);
   });
 
   /**
@@ -4422,13 +5081,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       text: snapshot.text,
       mechanism: snapshot.mechanism,
       sources: snapshot.sources,
-    } satisfies StandingInstructionsDelivery);
+      // Present only for a launch that included or skipped a repository task skill, so a
+      // session without one answers exactly as it did before.
+      ...(snapshot.repoTaskSkills ? { repoTaskSkills: snapshot.repoTaskSkills } : {}),
+    } satisfies StandingInstructionsResponse);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    if (!taskHasRepository(session.task ?? {})) return c.json(await computeSessionDiff(null));
     const resolved = await resolveRouteWorkspace(session.id);
     // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
     // diffs from the merge-base and would answer with everything since that sha.
@@ -4625,9 +5288,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions, snoozable, revises } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
+    // How this ask waits, decided once here and said in the response (`async-input`, and
+    // `filed-plan-decisions` for a plan form: the one reader of that flag). Read per ask so either
+    // flag takes effect without a restart. `call` is today's long poll; `message` returns the
+    // receipt for the MCP child to hand the agent at once.
+    const wait = decideWaitMode({
+      flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+      gateFlagOn: featureEnabled(FILED_PLAN_DECISIONS_FLAG),
+      kind,
+      snoozable: snoozable === true,
+      asyncCapable: parsed.data.asyncCapable === true,
+      messageable: canMessage(session),
+    });
+    // `revises` rides with the wait: every branch below that files a form passes it, and the
+    // review manager validates it and withdraws an open target with the insert.
+    const waitOptions = {
+      ...(wait === "message" ? { waitMode: "message" as const } : {}),
+      callerPolls: parsed.data.asyncCapable !== true,
+      ...(revises !== undefined ? { revises } : {}),
+    };
+    // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+    // answer names the row's own mode rather than the one this ask would have had.
+    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
+      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    };
     try {
       const target = parsed.data.managedPlan;
       if (target) {
@@ -4639,15 +5328,64 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const saved = readPlanRevision(target.planId, target.revision);
         const input = { planId: target.planId, revision: target.revision, repoKey: saved.manifest.repoKey };
         validatePlanReview(authority, input, manager);
-        const review = reviews.create(session.id, kind, title,
-          `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`,
-          [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision]);
+        const fullBody = `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`;
+        const allDecisions = [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision];
+        // The operator ticked "approve all future bundles for this task" on an earlier one, so
+        // this bundle is approved without a prompt and logged in the session's conversation.
+        // Any other open choice still needs a person, so only those are asked, as their own review.
+        if (hasStandingBundleApproval(authority.taskId)) {
+          // A retried identical ask reuses its approval rather than logging a second one.
+          let approvedId = reusableStandingApproval(authority, input, manager);
+          const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
+          // With nothing else to ask, the recorded approval is the revision. A reused approval
+          // answers a revision request only when it is that same revision (a retry); any other is
+          // set aside, so `revises` is checked and applied below.
+          if (approvedId && revises !== undefined && remaining.length === 0
+            && loadReview(approvedId)?.revision?.previousId !== revises) approvedId = null;
+          if (!approvedId) {
+            // Refused before the binding, so an invalid `revises` leaves no approval behind. With
+            // nothing else to ask, the recorded approval is the revision and carries the link.
+            if (revises !== undefined) reviews.assertRevisable(session.id, kind, revises);
+            approvedId = randomUUID();
+            bindPlanReview(authority, input, approvedId, manager);
+            // The binding and the record cannot share a transaction, so a failed record takes its
+            // binding back rather than leaving one that names no review.
+            try {
+              reviews.record({
+                id: approvedId, sessionId: session.id, kind, title, body: fullBody,
+                ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
+                ...(revises !== undefined && remaining.length === 0 ? { revises } : {}),
+              });
+            } catch (error) {
+              unbindPlanReview(approvedId);
+              throw error;
+            }
+          }
+          // Born settled: said as `call` even to a capable child, whose one poll returns the
+          // recorded approval as the tool result. Nothing is filed, so nothing is waited on.
+          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id, wait: "call" });
+          const followUp = reviews.create(session.id, kind, title,
+            `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
+            remaining, waitOptions);
+          recordStandingFollowUp(followUp.id, approvedId);
+          return created(followUp, { bundleApproved: true });
+        }
+        const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
-        return c.json({ id: review.id, sessionId: session.id });
+        // Offer "approve all future bundles" only where the resolve route can keep it.
+        if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
+        return created(review);
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
-      return c.json({ id: review.id, sessionId: session.id });
-    } catch (error) { return planFailure(c, error); }
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
+        snoozable,
+        ...waitOptions,
+        meanwhile: parsed.data.meanwhile || null,
+      });
+      return created(review);
+    } catch (error) {
+      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal) return c.json({ error: error.message }, 409);
+      return planFailure(c, error);
+    }
   }
   app.post("/mcp/reviews", (c) => createMcpReview(c, false));
   app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
@@ -4716,7 +5454,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId });
+      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId, planStorage: data.planStorage });
     } catch (error) {
       if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       throw error;
@@ -4728,6 +5466,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const blocked = manager.workflowSelectionBlock(workflowId);
       if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
+    // Resolved on every call, not only for plan inputs: a plan task's session shares its work
+    // unit with the tasks it creates (decision D1). A caller that resolves to no session is not
+    // an error unless it asked to inherit.
+    const caller = registry.findSessionByEnv(env, sessionId, cwd);
+    const callerTask = caller ? registry.taskForSession(caller.id, caller.cwd) ?? null : null;
+    const workUnit = mcpCreateWorkUnitSource(data.workUnit, callerTask);
+    if (!workUnit.ok) return c.json({ error: workUnit.error }, 409);
 
     try {
       const task = tasks.create({
@@ -4747,11 +5492,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         labels: data.labels,
         backlog: true,
         dependencies, planInputs,
-      }, undefined, undefined, creationPolicy);
+      }, undefined, undefined, creationPolicy, workUnit.source);
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError) {
+        return c.json({ error: error.message }, 400);
+      }
       throw error;
     }
   }
@@ -4781,6 +5528,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, McpCreateTaskV3Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true, true);
+  });
+
+  // Same token authority as task creation/update. These read durable task facts only,
+  // never private session state, so session-control capability is intentionally not used.
+  app.post("/mcp/tasks/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const query = parsed.data;
+    if (query.repository !== undefined) {
+      const selected = await resolveTaskRepositorySelector(query.repository);
+      if (!selected.ok) return c.json({ error: selected.error }, selected.status);
+      const resolved = await resolveTaskRepoRoot(selected.path);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      query.repository = resolved.repoRoot;
+    }
+    try {
+      return c.json(readTaskPage(query));
+    } catch (error) {
+      if (error instanceof InvalidTaskCursorError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/mcp/tasks/get", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpGetTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = tasks.getDurable(parsed.data.taskId);
+    return task ? c.json(taskReadSnapshot(task)) : c.json({ error: "no such task" }, 404);
   });
 
   app.post("/mcp/tasks/:id/update", async (c) => {
@@ -4813,12 +5592,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return updateTask(c, id, validated.data, true);
   });
 
+  app.post("/mcp/tasks/cancel", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCancelTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.cancel(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
   app.post("/mcp/tasks/delete", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpDeleteTaskSchema);
     if (!parsed.ok) return parsed.res;
     const r = await tasks.remove(parsed.data.taskId);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"), "agent");
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -4833,9 +5626,42 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
   });
 
+  app.post("/mcp/questions/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, ListOpenQuestionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    // Filed plan forms too (`openAsks`), each with its kind so the agent can tell the two apart.
+    return c.json({ questions: reviews.openAsks(session.id).map(({ id, kind, title, createdAt, meanwhile, status }) =>
+      ({ id, kind, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+  });
+
+  app.post("/mcp/questions/:id/withdraw", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, WithdrawQuestionSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, reason } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const review = reviews.withdrawQuestion(session.id, c.req.param("id"), reason);
+      return c.json({ id: review.id, status: review.status });
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
+    // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
+    const ended = new AbortController();
+    const release = openEndedRequests.add(() => ended.abort());
+    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
   });
@@ -4901,6 +5727,81 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  // The blocked session's own report: bound to the caller like `/mcp/status` (pane key or
+  // Mission session id), never to a body-named target. Refused while the session has a pending
+  // `request_input` of its own - it is already waiting on the operator.
+  app.post("/mcp/blocker", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportBlocker(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session a declared-wait call is about: the one its signed Registry credential names,
+  // never the body's `env` or `sessionId`, which any holder of the machine token can write. A
+  // body naming a different session is refused rather than silently retargeted.
+  const awaitingCaller = (
+    c: Context,
+    env: Parameters<Registry["findSessionByEnv"]>[0],
+    sessionId: string | null,
+  ): { ok: true; sessionId: string } | { ok: false; status: 403; error: string } => {
+    const caller = sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!caller) return { ok: false, status: 403, error: "Only a live session Mission Control registered can declare or clear its own wait." };
+    const named = registry.findSessionByEnv(env, sessionId);
+    if (named && named.id !== caller) return { ok: false, status: 403, error: "A session can only declare or clear its own wait." };
+    return { ok: true, sessionId: caller };
+  };
+
+  // A session declaring it is idle on purpose while a background process finishes. Bound to the
+  // caller by its signed credential (`awaitingCaller`), and refused while the session has a
+  // `request_input` pending or stands on a blocker. 404 with `feature` while the preview is off,
+  // which the tool reads.
+  app.post("/mcp/awaiting", requireFeature(SESSION_AWAITING_FLAG_ID), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    // Read again past the body's await: the preview switched off meanwhile ends every wait, and
+    // a declaration let through after that would stand until the next restart. No await
+    // separates this from the write below.
+    if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: SESSION_AWAITING_FLAG_ID }, 404);
+    }
+    const { env, sessionId, ...body } = parsed.data;
+    const caller = awaitingCaller(c, env, sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const result = registry.reportAwaiting(caller.sessionId, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: caller.sessionId, created: result.created, awaiting: result.awaiting });
+  });
+
+  // The session ending its own wait. Not gated on the preview, so a session can always end a
+  // wait it declared; with none it is a no-op success.
+  app.post("/mcp/awaiting/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const caller = awaitingCaller(c, parsed.data.env, parsed.data.sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const cleared = registry.clearAwaiting(caller.sessionId, "session", parsed.data.resolution);
+    return c.json({ sessionId: caller.sessionId, cleared });
+  });
+
+  // The session clearing its own blocker. Clearing a session with none is a no-op success.
+  app.post("/mcp/blocker/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearBlocker(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
   });
 
   app.post("/mcp/pipelines/adopt", async (c) => {
@@ -5163,6 +6064,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await library.submit({
       authority,
       submission: {
+        files: parsed.data.files,
         title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
@@ -5367,25 +6269,112 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
+    // "Approve all future bundles for this task" is the operator's standing grant. Checked
+    // before resolving, so a grant that cannot be kept leaves the question open to retry.
+    // Only an answer that approves this bundle grants it: "Needs revision" with the box ticked
+    // must not approve the next one.
+    const grant = parsed.data.action === "answer" && parsed.data.approveFutureBundles === true
+      && approvesFinalBundle(parsed.data.selections);
+    if (grant) {
+      if (by !== "human") return c.json({ error: "Only the operator can approve future plan bundles" }, 403);
+      if (registry.getReview(c.req.param("id"))?.status !== "pending") return c.json({ error: "This review is already settled" }, 409);
+      try {
+        assertStandingApprovalGrantable(c.req.param("id"));
+      } catch (error) { return planFailure(c, error); }
+    }
+    // A resident's proposed instruction changes: only a person's answer applies them, and the
+    // write commits with the answer. Refused before anything settles when the answer is not
+    // the operator's, so the question stays open for them.
+    const instructionChange = residentInstructions?.resolution(
+      c.req.param("id"),
+      parsed.data.action,
+      by,
+      parsed.data.selections ?? null,
+    ) ?? null;
+    if (instructionChange && "refusal" in instructionChange) {
+      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
+    }
+    if (grant && instructionChange) {
+      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
+    }
     try {
+      // An answer to the questions left beside an auto-approved bundle tells the agent the
+      // bundle is already approved, because this form no longer asked about it.
+      // Every answer gets the note, including one sent with selections and no response text.
+      const response = parsed.data.action === "answer" && isStandingFollowUp(c.req.param("id"))
+        ? [STANDING_FOLLOW_UP_NOTE, parsed.data.response].filter(Boolean).join("\n\n")
+        : parsed.data.response;
       const updated = reviews.resolve(
         c.req.param("id"),
         parsed.data.action,
-        parsed.data.response,
+        response,
         by,
         parsed.data.selections,
+        // Committed with the answer, so a failed grant leaves the review pending to retry.
+        grant
+          ? () => grantStandingBundleApproval(c.req.param("id"))
+          : instructionChange?.persist,
+      );
+      if (!updated) return c.json({ error: "no such review" }, 404);
+      instructionChange?.publish();
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
+      if (error instanceof PlanStoreError) return planFailure(c, error);
+      throw error;
+    }
+  });
+
+  // Who is asking to snooze or wake a question: the operator, a session acting through session
+  // control, or null for a caller that is neither. "Human" is never the default. It is granted
+  // only when the request carries none of the marks of an agent - the machine token, a signed
+  // agent credential, an agent-labelled operation, a page from another origin - which is the
+  // same test that guards the operator's session-control grant (`sessionControlCallerRefusal`).
+  const reviewOperatorActor = (c: Context): ReviewActor | null =>
+    sessionControlActor(c.req.raw) ?? (sessionControlCallerRefusal(c) === null ? "human" : null);
+  const ONLY_THE_OPERATOR = "Only the operator can choose Remind me later";
+
+  // "Remind me later" on a request_input question. The operator's alone: a session driving
+  // another through session control may answer its questions, but parking one tells its agent
+  // to carry on without a person, which is not a call one agent makes for another. Session
+  // control offers no snooze command today; the manager refuses any other actor regardless.
+  app.post("/api/reviews/:id/snooze", async (c) => {
+    const parsed = await parseBody(c, SnoozeReviewSchema);
+    if (!parsed.ok) return parsed.res;
+    const by = reviewOperatorActor(c);
+    if (!by) return c.json({ error: ONLY_THE_OPERATOR }, 403);
+    try {
+      const updated = reviews.snooze(
+        c.req.param("id"),
+        reviewSnoozeDelay(parsed.data.delay).ms,
+        parsed.data.meanwhile,
+        Date.now(),
+        by,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
       return c.json(updated);
     } catch (error) {
-      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
+      if (error instanceof SnoozeActorRefusal) return c.json({ error: error.message }, 403);
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
       throw error;
     }
+  });
+
+  // Answer now: bring a snoozed question back to the operator before its time. The operator's
+  // too, by the same test: it reopens a question the operator chose to set aside.
+  app.post("/api/reviews/:id/wake", (c) => {
+    if (reviewOperatorActor(c) !== "human") return c.json({ error: "Only the operator can bring back a snoozed question" }, 403);
+    const current = registry.getReview(c.req.param("id"));
+    if (!current) return c.json({ error: "no such review" }, 404);
+    if (current.status !== "snoozed") return c.json({ error: "This question is not snoozed" }, 409);
+    const updated = reviews.wake(current.id);
+    if (!updated) return c.json({ error: "This question is not snoozed" }, 409);
+    return c.json(updated);
   });
 
   // --- session actions (localhost only) ---
@@ -5410,7 +6399,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -5423,6 +6412,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
     // Mission Control, so it stays in flight until the race window closes.
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
+    // A person's words (the operator's, or a controlling session's) are always the session's
+    // wake, even when they repeat an automated delivery still on its way, so say so first.
+    // Taken back only on positive evidence that nothing landed, below; an unknown outcome keeps
+    // it, since the person's turn may still start.
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, parsed.data.text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        // Refused before anything is written: what these words are could not be stored on the
+        // waiting session's wait. Nothing landed, so it races nothing either.
+        if (otherSend) withdrawOtherSend(otherSend);
+        return c.json({ ok: false, error: error.message, pasted: false }, 500);
+      }
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -5431,11 +6436,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         parsed.data.text,
-        undefined,
+        origin === "foreman" ? () => foremanBlockedNow(registry, session.id, origin) : undefined,
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
-      if (otherSend && sent.pasted === false) withdrawOtherSend(otherSend);
+      if (sent.pasted === false) {
+        if (otherSend) withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
+      }
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
       // question this answers is how often conversation operations land, not what they said.
@@ -5460,8 +6468,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       parsed.data.submit,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
+    // Refused before anything reached the pane (no handle, the pane lock held, a guard): the
+    // person's words never landed. A write that was attempted, even one whose Enter failed and
+    // left a draft, keeps the announcement.
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     observeSessionOperation({
       session,
       // An unsubmitted write leaves a draft in somebody's composer and starts no turn, which
@@ -5472,6 +6484,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The request
+  // names a kind; the outbox picks the words and records them as daemon-written, so the agent's
+  // prompt hook never takes them for the operator's Goal. A free-form reply from the same row
+  // goes through /send like any other message.
+  app.post("/api/sessions/:id/inbox-message", async (c) => {
+    if (!featureEnabled(INBOX_FLAG)) return c.json({ ok: false, error: "the inbox preview flag is off" }, 403);
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ ok: false, error: "no such session" }, 404);
+    const parsed = await parseBody(c, InboxMessageSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!pendingTurns) return c.json({ ok: false, error: "pending turns are unavailable" }, 503);
+    const result = pendingTurns.submitInboxMessage(session.id, parsed.data.kind);
+    if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor("human", c.req.raw.headers));
+    return c.json(result, result.ok ? 200 : 409);
   });
 
   // Answer the option menu a session is showing by selecting a row.
@@ -5490,7 +6518,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5513,7 +6541,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data, panes);
+    // Re-read at the Enter: the walk to the row takes captures, and a pause can freeze the
+    // agent in between. `session` is the snapshot from before it.
+    const r = await selectPaneOption(session, parsed.data, panes, () => writeHold(registry.getSession(session.id) ?? session));
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
     observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
@@ -5532,7 +6562,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5567,7 +6597,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         409,
       );
     }
-    const r = await submitPaneForm(session, options, panes);
+    const r = await submitPaneForm(session, options, panes, () => writeHold(registry.getSession(session.id) ?? session));
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
@@ -5591,6 +6621,53 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const r = await handoffSession(session);
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // A likely answer to this session's blocker, flagged by the operator or (through
+  // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
+  // sends anything to the session; the flag is a card pill, not an alert.
+  app.post("/api/sessions/:id/blocker/reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FlagBlockerReplySchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
+    if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
+    return c.json({ ok: true, blocker });
+  });
+
+  // End this session's declared wait, from the dashboard's Clear or `control_session
+  // clear_awaiting`. Not gated on the preview: ending a hold is always allowed. The caller must
+  // name the wait it saw (`awaitingId`, required by the schema), and a stale one (the session
+  // re-declared since the caller looked) is refused rather than ending a wait it never saw.
+  app.post("/api/sessions/:id/awaiting/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const current = registry.getAwaiting(session.id);
+    if (current && current.id !== parsed.data.awaitingId) {
+      return c.json({ error: "This session declared a different wait since you looked. Read it again before clearing." }, 409);
+    }
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearAwaiting(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
+  });
+
+  // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
+  app.post("/api/sessions/:id/blocker/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
   });
 
   // Rename the session. On the terminal runtime that means the session's handle - discovery
@@ -5632,6 +6709,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // It also carries `paneBlocked` when a pane in a tmux mode refused the write, which
   // is what stops the worker charging an attempt for a human reading their scrollback.
   // Both ride along on the ActionResult itself, so neither can be forgotten here.
+  const codeRabbitSending = new Set<string>();
+  const stackSending = new Set<string>();
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -5648,11 +6727,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (origin === "human" && parsed.data.buffer && pendingTurns) {
+    // A stack prompt is never buffered: its claim settles on THIS delivery's outcome.
+    if (origin === "human" && parsed.data.buffer && pendingTurns && !parsed.data.stack) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
@@ -5669,6 +6749,91 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return c.json(result, result.ok ? 200 : 409);
     }
+    let text = parsed.data.text;
+    let claim: { id: string; noteKey: string; episodeKey: string; checkout: string } | null = null;
+    const request = parsed.data.codeRabbit;
+    const codeRabbitGuard = (): string | null => {
+      if (!request) return null;
+      try {
+        if (origin !== "foreman" || !workflowManager()) return "CodeRabbit delivery requires Foreman and workflow ownership";
+        const candidate = codeRabbitCandidate(registry, session.id, request, claim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
+        if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = workflowManager()!.runs().filter((run) => run.noteKey === candidate.owner.noteKey || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "CodeRabbit delivery prerequisites are unavailable"; }
+    };
+    // Stacked pull requests: the catch-up and restack prompts and the broken-stack actions,
+    // on the same rails as the CodeRabbit follow-up above - the text is rebuilt from the row,
+    // every guard is re-run inside the transport, a prompt is claimed before it is typed and
+    // the claim settles only on a known outcome. Foreman sends a prompt automatically; the
+    // operator's button sends one manually (re-arming an uncertain claim) or sends an action.
+    const stackRequest = parsed.data.stack;
+    const stackOrigin = origin === "foreman" ? "foreman" : origin === "human" ? "human" : null;
+    let stackClaim: string | null = null;
+    // The parent as read just before delivery, for a recovery action. The guard below runs
+    // inside the transport's write lock and cannot read GitHub (it is synchronous, and every
+    // sender shares it), so it checks the ledger's latest observation against this read instead.
+    let stackParentRead: PrRefs | null = null;
+    const stackGuard = (): string | null => {
+      if (!stackRequest) return null;
+      try {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
+          const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
+          if (changed) return changed;
+        }
+        if (!stackOrigin) return "Stack prompts are sent by Foreman or the operator";
+        const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin,
+          getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "Stack prompt delivery channel changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = (workflowManager()?.runs() ?? []).filter((run) => run.noteKey === noteKeyFor(session) || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "Stack prompt delivery prerequisites are unavailable"; }
+    };
+    if (stackRequest) {
+      if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
+      // A recovery action was chosen from the parent's last observed state; read it again
+      // before typing, so a parent that merged or closed since never gets a stale instruction.
+      if (!isStackPromptKind(stackRequest.kind)) {
+        const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
+        if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
+        stackParentRead = recheck.parent;
+      }
+      const blocked = stackGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin!,
+        getInspectorPr(stackRequest.prKey), getForemanConfig());
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (stackSending.has(stackRequest.prKey)) return c.json({ error: "A stack prompt is already being delivered", pasted: false }, 409);
+      // Every prompt and recovery action is claimed before it is typed. The operator's send is
+      // the explicit re-arm of an uncertain claim; Foreman's never is.
+      stackClaim = claimStackPrompt(stackRequest.prKey, candidate.claim.kind, candidate.claim.tip, session.id, Date.now(), origin === "human");
+      if (!stackClaim) return c.json({ error: "That stack prompt was already claimed", pasted: false }, 409);
+      text = candidate.payload;
+    }
+    if (request) {
+      const blocked = codeRabbitGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = codeRabbitCandidate(registry, session.id, request);
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (codeRabbitSending.has(candidate.owner.noteKey)) return c.json({ error: "A PR follow-up is already being delivered", pasted: false }, 409);
+      const id = claimCodeRabbit(request.prKey, candidate.owner, request.observationId);
+      if (!id) return c.json({ error: "CodeRabbit feedback was already claimed or its history limit was reached", pasted: false }, 409);
+      claim = { id, ...candidate.owner, checkout: candidate.checkout };
+      text = candidate.payload;
+    }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
@@ -5682,41 +6847,100 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
+    // Refused when its attribution could not be stored on a waiting session's wait, an automated
+    // delivery's or a person's: nothing is typed, and the delivery settles below as one that
+    // never reached the pane.
+    let attributionRefused: string | null = null;
+    // Whether this call's own reservation was made: only that one is released below, since a
+    // refused one recorded nothing and releasing would give back an earlier one of the same text.
+    let reserved = false;
+    if (daemonOrigin) {
+      try {
+        reserveInjection(session.id, text, daemonOrigin);
+        reserved = true;
+      } catch (error) {
+        if (!(error instanceof AutomatedAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
+    // A person's words, the operator's or a controller's, announced as such before the write,
+    // for the reason `/send` gives.
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.
     const delegatedKey = noteKeyFor(session);
     const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
-    const otherSend = controller ? null : noteOtherSend(conversation, parsed.data.text);
+    const otherSend = controller ? null : noteOtherSend(conversation, text);
     const delegatedTurn = controller
-      ? reserveDelegatedTurn(conversation, parsed.data.text, {
+      ? reserveDelegatedTurn(conversation, text, {
           id: controller,
           name: registry.getSession(controller)?.name ?? controller,
         })
       : null;
-    const r = await injectPromptForRuntime(
-      sdkSessions,
-      session,
-      parsed.data.text,
-      undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
-      origin,
-    );
-    if (daemonOrigin) {
+    // All reservations above are synchronous. Acquire only when the transport's finally
+    // can release it, so a reservation failure cannot strand this conversation's lock.
+    if (claim) codeRabbitSending.add(claim.noteKey);
+    if (stackRequest) stackSending.add(stackRequest.prKey);
+    const r = await (attributionRefused !== null
+      ? Promise.resolve({ ok: false, error: attributionRefused, pasted: false })
+      : injectPromptForRuntime(
+        sdkSessions,
+        session,
+        text,
+        undefined,
+        () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+          ?? registry.promptResourceBlockerForSession(session.id),
+        origin,
+      )
+    ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
+      .finally(() => {
+        if (claim) codeRabbitSending.delete(claim.noteKey);
+        if (stackRequest) stackSending.delete(stackRequest.prKey);
+      });
+    if (stackRequest) {
+      try {
+        // Delivered confirms; a POSITIVE non-delivery releases; anything else stays uncertain
+        // and is never retried automatically - the merge queue says so and offers the send.
+        if (stackClaim && (r.ok || r.pasted === false)) finishStackPrompt(stackClaim, r.ok ? "delivered" : "refused", Date.now());
+        registry.refreshInspections();
+      } catch (error) {
+        console.warn(`[mission-control] stack prompt bookkeeping failed for ${stackRequest.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (request && claim) {
+      try {
+        if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
+        registry.refreshInspections();
+      } catch (error) {
+        // Transport already completed. A failed receipt stays uncertain, but must not
+        // prevent attribution from settling or replace the actual delivery response.
+        console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (reserved && daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
       // would each owe an echo for one delivery.
-      if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
+      if (r.ok) confirmReservedInjection(session.id, text, daemonOrigin);
       // `pasted === false` and nothing weaker, which is the same line every other sender
       // draws. The note above about a refusal being positive evidence is true of the DRIVER
       // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
       // a real outcome - the text is in the composer and only the Enter failed. That echo may
       // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
       // reopened this race on the path Foreman's recovery packets travel.
-      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
+      else if (r.pasted === false) releaseInjection(session.id, text);
     }
     if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
     if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
     // here rather than at the button for the reason this whole route exists: `ok` is the only
     // place delivery is actually known, and on the pane arm it is genuinely different from
@@ -5896,7 +7120,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
-    const r = await requestSessionStop(session, sdkSessions);
+    const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
     if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
@@ -5934,7 +7158,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
     observeSessionOperation({
       session,
       operation: "interrupt",
@@ -6165,6 +7389,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      pauses,
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -6272,7 +7497,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadConversationResolvedReviews(session.id));
+    // `?lineage=1`: the same history for the sessions this conversation was transferred from,
+    // never this one's own. The dashboard reads it only to draw an answer delivered here whose
+    // question a predecessor asked (`mergeConversation`), never as entries of this session.
+    const lineage = c.req.query("lineage") === "1";
+    const owners = lineage
+      ? runtimeTransferPredecessors(session.id, noteKeyFor(session)).filter((id) => id !== session.id)
+      : [session.id];
+    const history = owners.flatMap((id) => loadConversationResolvedReviews(id));
+    // The history is capped to its newest rows. A review an answer delivered into this
+    // conversation names is added whatever its age, so the delivered turn can always draw its
+    // card rather than "no longer available" while the review still exists.
+    const present = new Set(history.map((review) => review.id));
+    const owned = new Set(owners);
+    const delivered = loadReviewsByIds(deliveredReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
+      .filter((review) => owned.has(review.sessionId));
+    return c.json([...history, ...delivered]);
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -6403,6 +7643,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
+    // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
+    // Clearing a stored answer is a reset, not an ask, and stays open.
+    // The live session, not the one read before the body: a blocker reported while the
+    // request was in flight must still refuse the ask.
+    if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
+    }
+    // Nor is one awaiting its own background process inside the deadline it declared.
+    if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -6490,17 +7741,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const queue = queues.get(session.id);
     const task = registry.getTask(parsed.data.taskId);
+    // The same live publication read the worker made: a plan is claimable only while its
+    // `foreman_complete` workflow still waits on Foreman's completion claim.
+    const planStartsWorkflow = task?.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
     if (
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !heldGapRecoveryApplies(task.kind, planStartsWorkflow)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
     }
-    const diff = await computeSessionDiff(session.cwd);
+    const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    // The session can report a blocker while the diff runs; the decision below reads the
+    // object taken before the await, so ask the live one first.
+    const live = registry.getSession(session.id) ?? session;
+    if (hasBlocker(live) || isAwaiting(live)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan
+    // ownership so a stale foreman_complete answer cannot authorize this attempt.
+    const livePlanStartsWorkflow = task.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
+    if (!heldGapRecoveryApplies(task.kind, livePlanStartsWorkflow)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
@@ -6515,6 +7783,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      planStartsWorkflowOnCompletion: livePlanStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -6564,6 +7833,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const goal = registry.getGoal(c.req.param("id"));
     if (!goal) return c.json({ error: "no goal for this session" }, 404);
     return c.json(goal);
+  });
+
+  // A person's exit from a paused goal: every pending instruction becomes steering and the
+  // current objective is confirmed as the completion contract, unchanged and at the same
+  // version. Foreman judges completion on its next tick. No body; idempotent on a goal that
+  // is already resolved. The answer is the full record, so the drawer can render it at once.
+  app.post("/api/sessions/:id/goal/accept", (c) => {
+    const result = registry.acceptGoalObjective(c.req.param("id"));
+    if (!result) return c.json({ error: "no goal for this session" }, 404);
+    if (!result.accepted) {
+      return c.json({ error: "this session has no objective to accept yet" }, 409);
+    }
+    return c.json(result.goal);
   });
 
   // Re-attach an orphaned queue onto this live session. Always an explicit click:
@@ -6618,6 +7900,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const config = setForemanConfig(parsed.data);
+    // Stacked pull requests: every cached stack standing says whether Foreman will send its
+    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
+    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
+    // merge queue hides the manual send it now needs.
+    registry.refreshInspections();
     if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
     return c.json(config);
   });
@@ -6629,6 +7916,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "that worker does not hold the Foreman lease" }, 409);
     }
     return c.json({ ok: true });
+  });
+  // The operator's acknowledgement. Filters the projection only; the worker's report is kept.
+  app.post("/api/foreman/health/dismiss", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ dismissed: dismissForemanHealthIssues(parsed.data.issues) });
   });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
@@ -6687,7 +7980,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Written by the worker (which never touches the DB) and read by the board. `null`
   // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
   // state, not an error, and both readers already branch on it.
-  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  // The reasons and note are model prose the board prints, so they are served with every task
+  // id shown as its title (`task-titles.ts`). The stored plan keeps the model's own words; the
+  // worker reads only its ids and logs the note.
+  app.get("/api/backlog/plan", (c) => c.json(taskTitlePresenter(registry).plan(getBacklogPlan())));
   app.put("/api/backlog/plan", async (c) => {
     const parsed = await parseBody(c, BacklogPlanSchema);
     if (!parsed.ok) return parsed.res;
@@ -6806,6 +8102,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       commitPlanHtml: cfg.commitPlanHtml,
       alwaysDraftPr: cfg.alwaysDraftPr,
       planStorage: cfg.planStorage,
+      grillFirstKinds: cfg.grillFirstKinds,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -6893,9 +8190,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
   // One route rather than two over the same table, for the reason `useShipping` records:
   // a second endpoint over one ledger is a second thing to keep honest.
+  //
+  // With `state=open`: every open row, uncapped, for Foreman's follow-through to find a pull
+  // request the Inspector adopted under a session whose card no longer carries it. It does not
+  // combine with `adoptedSince`, since the two orderings answer different questions.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50));
+    const state = c.req.query("state");
+    const withStanding = (rows: InspectorInspection[]) => {
+      const sessions = registry.liveSessions();
+      const foreman = getForemanConfig();
+      return rows.map((row) => ({
+        ...row,
+        codeRabbit: codeRabbitStanding(registry, row.key),
+        stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
+      }));
+    };
+    if (state !== undefined) {
+      const parsed = InspectorPrsStateSchema.safeParse(state);
+      if (!parsed.success) return c.json({ error: "state must be open" }, 400);
+      if (raw !== undefined) return c.json({ error: "state and adoptedSince do not combine" }, 400);
+      return c.json(withStanding(loadOpenInspectorInspections()));
+    }
+    if (raw === undefined) return c.json(withStanding(loadInspectorInspections(50)));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
@@ -6913,6 +8230,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * One pull request's findings, every one of them and in every status, with whether each
+   * reached GitHub - for Foreman's relay and the dashboard's findings view, which have no
+   * other way to read finding text: Foreman's worker never touches SQLite.
+   *
+   * The key is a query parameter rather than a path segment because it is `owner/repo#123`,
+   * and its shape is checked before the ledger is asked, so a malformed key is a 400 rather
+   * than a confident "no such pull request". Read-only.
+   */
+  app.get("/api/inspector/findings", (c) => {
+    const prKey = c.req.query("pr");
+    if (!prKey || !INSPECTOR_PR_KEY_PATTERN.test(prKey)) {
+      return c.json({ error: "pr must be a pull request key like owner/repo#123" }, 400);
+    }
+    const pr = loadInspectorInspection(prKey);
+    if (!pr) return c.json({ error: "no adopted pull request with that key" }, 404);
+    const findings = orderInspectorFindings(loadInspectorComments(prKey));
+    return c.json({ pr, findings } satisfies InspectorFindingsResponse);
   });
   /**
    * Close the findings the Inspector is carrying on one pull request.
@@ -6934,6 +8270,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * was nothing open". The status code is what makes the panel's error line say something
    * true when a pull request closes between its poll and the operator's click.
    */
+  // Stacked pull requests: the operator's *Wait for a replacement* on a child whose parent
+  // closed without merging. It only records the choice; the Inspector tick runs the
+  // replacement-parent transition once the parent task opens a replacement in the same work
+  // episode. Offered, and accepted, only while the child is open and that is its state.
+  app.post("/api/inspector/stack/await-replacement", async (c) => {
+    const parsed = await parseBody(c, StackAwaitReplacementSchema);
+    if (!parsed.ok) return parsed.res;
+    const pr = getInspectorPr(parsed.data.prKey);
+    if (!pr?.stack) return c.json({ error: "no stacked pull request with that key" }, 404);
+    if (parsed.data.wait) {
+      const standing = safeStackStanding(pr, registry.liveSessions(), getForemanConfig());
+      if (pr.state !== "open" || !standing?.actions.includes("await-replacement")) {
+        return c.json({ error: "waiting for a replacement is offered only for an open child whose parent closed" }, 409);
+      }
+    }
+    setStackAwaitReplacement(pr.key, parsed.data.wait ? Date.now() : null, Date.now());
+    registry.refreshInspections();
+    return c.json({ ok: true });
+  });
+
   app.post("/api/inspector/resolve-findings", async (c) => {
     const parsed = await parseBody(c, ResolveFindingsSchema);
     if (!parsed.ok) return parsed.res;
@@ -7013,6 +8369,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ShippingConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const next = setShippingConfig(parsed.data);
+    // The Stacked pull requests default decides which readiness stamps still stand, so a
+    // dependent that would now wait for merge stops reading as ready at once.
+    tasks.reconcileStackReadiness();
     // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
     publishSettingsStatus(registry);
     return c.json(next);
@@ -7020,6 +8379,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  // What each harness's own settings say about its advisor, so the panel can tell the
+  // operator whether a dispatched session will consult one. Read-only and read fresh: the
+  // operator edits those files outside Mission Control.
+  app.get("/api/harnesses/advisor", (c) => {
+    const view = Object.fromEntries(
+      AGENT_TYPES.map((agent) => [agent, harnessFor(agent).advisorEnvironment?.() ?? null]),
+    );
+    return c.json(HarnessAdvisorEnvironmentsSchema.parse(view));
+  });
   app.get("/api/harnesses/models", async (c) => {
     if (!modelCatalogs) return c.json({ error: "Harness model catalog service unavailable" }, 503);
     const query = HarnessModelCatalogQuerySchema.safeParse(c.req.query());
@@ -7260,7 +8628,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!isPipelineProviderId(provider)) {
       return c.json({ error: "no such pipeline provider" }, 400);
     }
-    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    try {
+      return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   /**
@@ -7274,7 +8646,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     const body = parsed.data;
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
+    // from a scan that predates a removal. The candidate list above is a picker and stays instant.
+    let catalog: string[];
+    try {
+      catalog = await listRepos({ fresh: true });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, catalog);
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,
@@ -7597,6 +8977,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/ui/config", async (c) => {
     const parsed = await parseBody(c, UiConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    // `ui.voice` is behind its flag like the voice routes: with it off a write is refused, and
+    // nothing in the patch is saved.
+    if (parsed.data.voice !== undefined && !featureEnabled(VOICE_FLAG)) {
+      return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    }
     setUiConfig(parsed.data);
     return c.json(uiConfigView());
   });
@@ -7838,6 +9223,150 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(setTerminalsConfig(parsed.data));
   });
 
+  // --- Database backups: how many full recovery points of each kind are kept ---
+  //
+  // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  const storageUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Storage health service is unavailable",
+  }, 503);
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
+  app.put("/api/storage/backups/config", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const { expectRemove, ...patch } = parsed.data;
+    // No save deletes a copy its caller did not name. A request without `expectRemove` is taken
+    // to expect no deletions: one that deletes nothing (an interval, a raised count) goes through
+    // as before, and one that would delete copies is refused with the exact list, which the
+    // caller confirms by sending it back. That refusal is the preview for any API caller.
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk, or
+    // a list the copies no longer match.
+    let saved;
+    try {
+      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
+    } catch (error) {
+      if (error instanceof StaleBackupPreviewError) {
+        return c.json(expectRemove === undefined
+          ? {
+              error: "preview_required" as const,
+              message: `Saving these limits deletes ${error.remove.length} ${error.remove.length === 1 ? "copy" : "copies"}. Nothing was saved or deleted; send them as expectRemove to confirm.`,
+              remove: error.remove,
+            }
+          : { error: "stale_preview" as const, message: error.message, remove: error.remove }, 409);
+      }
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
+  });
+
+  app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
+  app.put("/api/feature-flags", async (c) => {
+    const parsed = await parseBody(c, FeatureFlagIntentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = applyFeatureFlagIntent(parsed.data);
+      if (!result.ok) return c.json({ error: result.error }, 400);
+      return c.json({ config: result.config });
+    } catch (error) {
+      return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+
+  // Task shaping, behind its preview flag. See docs/task-shaping.md.
+  registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
+
+  // Voice addressing, behind its preview flag. See docs/voice.md.
+  registerVoiceRoutes(app);
+
+  // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
+  // idle-cache budget only chooses what a cleanup preview offers.
+  app.put("/api/storage/limits", async (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    let limits;
+    try {
+      limits = setStorageLimitsConfig(parsed.data);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
+    // to every open dashboard.
+    storageHealth.recompute();
+    return c.json({ limits });
+  });
+
+  // Measure now. The walk runs in the background and can take minutes; the answer is the state
+  // it started, and the finished measurement arrives through `storage_health`.
+  app.post("/api/storage/usage/measure", (c) => {
+    if (!storageUsage || !storageHealth) return storageUnavailable(c);
+    void storageUsage.measure();
+    void storageUsage.checkVolume();
+    return c.json({ usage: storageUsage.usage() }, 202);
+  });
+
+  // What the idle-cache budget would remove right now. On demand rather than in the aggregate,
+  // because it observes every native slot through Git.
+  app.get("/api/storage/pool-caches", async (c) => {
+    if (!storageUsage || !worktreeOperations) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: "Native worktree pools are unavailable",
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+    const limits = getStorageLimitsConfig();
+    try {
+      const status = await worktreeOperations.manager.status();
+      return c.json(planIdleCache({
+        status,
+        slotBytes: (path) => storageUsage.slotBytes(path),
+        sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+        budgetBytes: limits.poolIdleBudgetBytes,
+        keepWarm: limits.poolKeepWarm,
+        now: Date.now(),
+      }));
+    } catch (error) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  });
+
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
   //
   // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
@@ -7892,16 +9421,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
-    const result = await executeSetupInstall(parsed.data, {
-      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
-      homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
-      listProviderInstallers:
-        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
-      prepareProviderInstaller:
-        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
-      launchTerminal: terminalLauncher,
-    });
+    let result: Awaited<ReturnType<typeof executeSetupInstall>>;
+    try {
+      result = await executeSetupInstall(parsed.data, {
+        catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        // `homedir()` reads this process's HOME, the same effective home the daemon's own
+        // probes run under, so a sign-in pinned to it stores credentials where they are read.
+        homeDir: setupInstallDeps?.homeDir ?? homedir(),
+        // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+        // the catalog rather than offering it.
+        listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
+        listProviderInstallers:
+          setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+        prepareProviderInstaller:
+          setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+        resolveExecutable:
+          setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        ...(setupInstallDeps?.conductorIntegration
+          ? { conductorIntegration: setupInstallDeps.conductorIntegration }
+          : {}),
+        launchTerminal: terminalLauncher,
+      });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 
@@ -7921,26 +9464,68 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---
-  app.post("/api/tasks", async (c) => {
-    const parsed = await parseBody(c, DispatchSchema);
-    if (!parsed.ok) return parsed.res;
+  /**
+   * File one task from a dispatch input, through every check the dispatch form meets: the
+   * repositories, the creation policy, the Workflow and plan-skill blocks, and `create`'s own
+   * refusals. The one path a route takes to file a task, so a report session or a retried chat
+   * cannot become a task the form would have refused.
+   */
+  /**
+   * `create` and `alongside` in one transaction. A rollback (a throw from `create` after it
+   * published the task, from `alongside`, or a failed COMMIT) leaves no registry entry: every
+   * task that appeared in the registry during the attempt and has no durable row is removed,
+   * which also tells every window it is gone. Found by comparison rather than from `create`'s
+   * return, so a throw inside `create` (a `task_upsert` listener, say) is cleaned up too. The
+   * attempt is synchronous, so nothing else can add a task meanwhile. The task is a backlog task,
+   * so nothing was launched.
+   */
+  function createWithin(create: () => Task, alongside: (task: Task) => void): Task {
+    const before = new Set(registry.listTasks().map((task) => task.id));
+    try {
+      return inTransaction(() => {
+        const created = create();
+        alongside(created);
+        return created;
+      });
+    } catch (error) {
+      for (const task of registry.listTasks()) {
+        if (!before.has(task.id) && !getDurableTaskRow(task.id)) registry.removeTask(task.id);
+      }
+      throw error;
+    }
+  }
+
+  async function createTaskFromDispatch(
+    data: TypeOf<typeof DispatchSchema>,
+    workUnit?: TaskWorkUnitSource,
+    /**
+     * A write that must land with the task row or not at all: run inside the transaction that
+     * creates the task, and a throw from it rolls the task back. Only for a backlog task, so
+     * nothing is launched before the transaction commits; `tasks.create` does publish the task
+     * to the registry inside it, so a rolled-back creation removes that entry again.
+     */
+    alongside?: (task: Task) => void,
+  ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    if (alongside && !data.backlog) {
+      throw new Error("createTaskFromDispatch: a write alongside the task row needs a backlog task, so nothing launches before it commits");
+    }
     const prepared = await prepareTaskRepositories({
-      primary: parsed.data.repoRoot,
-      extras: parsed.data.extraRepoRoots,
-      kind: parsed.data.kind,
-      agent: parsed.data.agent,
+      primary: data.repoRoot,
+      extras: data.extraRepoRoots,
+      kind: data.kind,
+      agent: data.agent,
       shortNameSelectors: "none",
     });
-    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    if (!prepared.ok) return { ok: false, status: prepared.status, body: { error: prepared.error } };
     const { repoRoot, extraRepoRoots, agent } = prepared;
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy(parsed.data);
+      creationPolicy = tasks.prepareCreationPolicy(data);
     } catch (error) {
-      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
-    const { workflowId } = creationPolicy;
+    const { workflowId, grillFirst } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -7949,37 +9534,413 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // running the same resolution and hoping the config did not move between them.
     if (workflowId) {
       const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = parsed.data.backlog
+      if (!manager) return { ok: false, status: 503, body: { error: "Workflow manager unavailable" } };
+      const blocked = data.backlog
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+      if (blocked) return { ok: false, status: 409, body: workflowLaunchRefusal(blocked) };
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
     // dispatch that could not invoke them is refused before the task exists - the operator
     // reads the reason on the form they are still standing in, and there is no card to clean
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
-    if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock({ ...parsed.data, agent });
-      if (planBlock) return c.json({ error: planBlock }, 409);
+    if (!data.backlog) {
+      const planBlock = planDispatchBlock({ ...data, agent })
+        ?? grillFirstDispatchBlock({ kind: data.kind, agent, grillFirst });
+      if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
-    let task;
     try {
-      task = tasks.create(
-        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
+      const create = () => tasks.create(
+        { ...data, agent, repoRoot, extraRepoRoots, workflowId },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
         creationPolicy,
+        workUnit,
       );
+      return {
+        ok: true,
+        task: alongside ? createWithin(create, alongside) : create(),
+      };
     } catch (error) {
-      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {
+        return { ok: false, status: 409, body: { error: error.message } };
+      }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskPersonaError) {
+        return { ok: false, status: 400, body: { error: error.message } };
+      }
       throw error;
     }
-    return c.json(task);
+  }
+
+  app.post("/api/tasks", async (c) => {
+    const parsed = await parseBody(c, DispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const created = await createTaskFromDispatch(parsed.data);
+    return created.ok ? c.json(created.task) : c.json(created.body, created.status);
+  });
+
+  /** Why an existing task's armed Workflow refuses its dispatch, or null when nothing does. */
+  function taskWorkflowDispatchRefusal(
+    task: Task | undefined,
+  ): { status: 409 | 503; body: Record<string, unknown> } | null {
+    if (!task?.workflowId) return null;
+    const manager = workflowManager();
+    if (!manager) return { status: 503, body: { error: "Workflow manager unavailable" } };
+    const blocked = manager.dispatchWorkflowBlock(task.workflowId, task.agent, task.repoRoot);
+    return blocked ? { status: 409, body: workflowLaunchRefusal(blocked) } : null;
+  }
+
+  // ---- launch failures: a dispatch that never started (@shared/launch-failure.ts) ----
+
+  app.post("/api/launch-failures/dismiss", async (c) => {
+    const parsed = await parseBody(c, DismissLaunchFailuresSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
+  });
+
+  // ---- attention inbox: rows the operator dismissed without resolving them ----
+
+  // The stored decisions only. Which rows exist, and what each one currently says, is the
+  // dashboard's fold (`src/web/lib/attention.ts`); this remembers what was dismissed so a
+  // reload, a restart or a second window does not bring it back.
+  app.get("/api/attention/dismissals", (c) => c.json({ dismissals: listAttentionDismissals() }));
+  app.post(
+    "/api/attention/dismissals",
+    bodyLimit({
+      maxSize: ATTENTION_DISMISSAL_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Too many rows to dismiss in one request" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, DismissAttentionItemsSchema);
+      if (!parsed.ok) return parsed.res;
+      const written = dismissAttentionItems(parsed.data.items, Date.now());
+      if (!written.stored) {
+        return c.json({
+          error: "another window dismissed this since this one last looked - check it and dismiss again",
+          superseded: written.superseded,
+        }, 409);
+      }
+      registry.emitAttentionDismissalsChanged();
+      // The revisions just stored, and nothing more: each window reads the whole set through GET.
+      return c.json({ ok: true, accepted: written.accepted });
+    },
+  );
+
+  // Start the session that catalogs one failure and drafts its public bug report. The brief
+  // is built here from the task, never sent by the browser; publication stays behind the
+  // human review `report_product_issue` already requires.
+  /**
+   * Report creations in flight, by failure group. "One reason, one report" is a read of the
+   * group followed by an await on task creation and only then a write of the report id, so two
+   * presses for the same reason could both read "no report yet" and both start a session. The
+   * second press for a group waits on the first's creation instead, and is answered with the
+   * session it started.
+   */
+  const reportsInFlight = new Map<string, Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }>>();
+
+  async function startLaunchFailureReport(
+    task: Task,
+    repoRoot: string,
+  ): Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    const group = launchFailureGroupFor(registry.listTasks(), task);
+    // One report per reason: a live report session for this group is the answer.
+    const reportId = group.map((t) => t.launchFailure!.reportTaskId).find((id) => id !== null) ?? null;
+    const existing = reportId ? registry.getTask(reportId) : undefined;
+    if (existing && isActiveTask(existing.status)) return { status: 200, body: { ok: true, task: existing, existing: true } };
+    const input = DispatchSchema.safeParse({
+      repoRoot,
+      intent: launchFailureReportBrief(task, group),
+      title: launchFailureReportTitle(task),
+      kind: "chat",
+      agent: "claude",
+      workflowId: null,
+    });
+    if (!input.success) return { status: 400, body: { error: input.error.issues[0]?.message ?? "invalid report" } };
+    const created = await createTaskFromDispatch(input.data);
+    if (!created.ok) return { status: created.status, body: created.body };
+    // The session's own identity, on the session: what keeps a report that fails to start from
+    // offering a Report bug of its own, whatever later happens to the failure it reports.
+    const report = markLaunchFailureReport(registry, created.task.id, task.id, Date.now()) ?? created.task;
+    recordLaunchFailureReport(registry, launchFailureGroupFor(registry.listTasks(), task), report.id, Date.now());
+    return { status: 200, body: { ok: true, task: report, existing: false } };
+  }
+
+  app.post("/api/launch-failures/report", async (c) => {
+    const parsed = await parseBody(c, ReportLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to report" }, 404);
+    const key = launchFailureGroupKey(task);
+    const inFlight = reportsInFlight.get(key);
+    if (inFlight) {
+      const first = await inFlight;
+      return first.status === 200
+        ? c.json({ ...first.body, existing: true })
+        : c.json(first.body, first.status);
+    }
+    const work = startLaunchFailureReport(task, parsed.data.repoRoot);
+    reportsInFlight.set(key, work);
+    try {
+      const outcome = await work;
+      return c.json(outcome.body, outcome.status);
+    } finally {
+      reportsInFlight.delete(key);
+    }
+  });
+
+  /**
+   * Chat retries in flight, by work key. A chat is retried by filing a new task, and the failure
+   * it answers stays open until that task starts - so without this, a second press while the
+   * first replacement is still being filed or still starting would file a second one.
+   */
+  const retriesInFlight = new Set<string>();
+
+  // Try a failed launch again. A backlog kind retries as the same task; a chat, which has no
+  // backlog to come back through, is filed again as a new task with the same settings - and
+  // when that one starts, the dispatcher dismisses this failure as answered.
+  app.post("/api/launch-failures/retry", async (c) => {
+    const parsed = await parseBody(c, RetryLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to retry" }, 404);
+    if (launchFailureOutcome(task) !== "not-started") {
+      return c.json({ error: "only a launch that failed with no session can be retried here" }, 409);
+    }
+    if (taskKindCreator(task.kind) === "resident-launch") {
+      return c.json({ error: "launch this resident again from its profile" }, 409);
+    }
+    if (taskAllowsBacklog(task)) {
+      const refused = taskWorkflowDispatchRefusal(task);
+      if (refused) return c.json(refused.body, refused.status);
+      // A failure that kept a worktree cannot be dispatched over it; re-file it first, which
+      // reclaims that tree, then dispatch the clean row.
+      if (task.worktreePath) {
+        const filed = await tasks.reschedule(task.id);
+        if (!filed.ok) return c.json({ error: filed.error }, 409);
+      }
+      // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
+      // Only the operator's: an agent calling this route is held like any other launch.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: mayOverridePauseHold(c) });
+      return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
+    }
+    const workKey = launchWorkKey(task);
+    const starting = registry.listTasks().some((other) =>
+      other.id !== task.id && isActiveTask(other.status) && launchWorkKey(other) === workKey);
+    if (starting || retriesInFlight.has(workKey)) {
+      return c.json({ error: "a retry of this is already starting" }, 409);
+    }
+    retriesInFlight.add(workKey);
+    try {
+      return await fileChatRetry(c, task);
+    } finally {
+      retriesInFlight.delete(workKey);
+    }
+  });
+
+  /** File a failed chat again as a new task with the same settings, keeping a report's identity. */
+  async function fileChatRetry(c: Context, task: Task): Promise<Response> {
+    const input = DispatchSchema.safeParse({
+      repoRoot: task.repoRoot,
+      extraRepoRoots: task.extraRepos.map((extra) => extra.repoRoot),
+      intent: task.intent,
+      title: task.title,
+      kind: task.kind,
+      agent: task.agent,
+      model: task.model ?? undefined,
+      effort: task.effort ?? undefined,
+      personaId: task.personaId ?? undefined,
+      workflowId: task.workflowId,
+      grillFirst: task.grillFirst ?? false,
+      priority: task.priority,
+      labels: task.labels,
+    });
+    if (!input.success) return c.json({ error: input.error.issues[0]?.message ?? "this task cannot be filed again" }, 400);
+    // The same piece of work tried again, so the same work unit.
+    const created = await createTaskFromDispatch(input.data, { inherit: [task.id] });
+    if (!created.ok) return c.json(created.body, created.status);
+    // A report session filed again is still a report session.
+    const filed = task.launchReportFor
+      ? markLaunchFailureReport(registry, created.task.id, task.launchReportFor, Date.now()) ?? created.task
+      : created.task;
+    return c.json({ ok: true, task: filed });
+  }
+
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
+  if (residentInstructions) registerResidentInstructionRoutes(app, { registry, changes: residentInstructions });
+  app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
+  app.put("/api/residents/skill-sources", async (c) => {
+    const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
+    if (!parsed.ok) return parsed.res;
+    try { return c.json(saveResidentSkillSources(parsed.data.config, parsed.data.expectedRevision)); }
+    catch (error) {
+      if (error instanceof ResidentSkillSourcesConflictError) return c.json({ error: error.message }, 409);
+      if (error instanceof ResidentSkillScanCooldownError) {
+        c.header("Retry-After", "1");
+        return c.json({ error: error.message }, 429);
+      }
+      if (error instanceof RepoIndexConfigError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  });
+  app.post("/api/residents/skills/rescan", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RescanResidentSkillsSchema);
+    if (!parsed.ok) return parsed.res;
+    try { return c.json(rescanResidentSkillIndex()); }
+    catch (error) {
+      if (error instanceof ResidentSkillScanCooldownError) {
+        c.header("Retry-After", "1");
+        return c.json({ error: error.message }, 429);
+      }
+      throw error;
+    }
+  });
+
+  // --- resident MCP servers ---
+  //
+  // The catalog is on demand, never an SSE collection: global servers as allowlisted metadata
+  // and custom servers whose secret fields say only "set" or "not set". No route here returns a
+  // secret value, except `redeem` to the scoped launcher holding that server's single-use ticket.
+  app.get("/api/residents/mcp-catalog", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    return c.json(await residents.mcpServerCatalog());
+  });
+  app.post("/api/residents/mcp-catalog/refresh", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RefreshResidentMcpCatalogSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(await residents.mcpServerCatalog(true));
+  });
+  const mcpServerWrite = async (c: Context, write: () => Promise<unknown> | unknown, status: 200 | 201 = 200) => {
+    try {
+      const result = await write();
+      return result === undefined ? c.json({ ok: true }) : c.json(result, status);
+    } catch (error) {
+      if (error instanceof ResidentMcpServerError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  };
+  app.post("/api/residents/mcp-servers", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, CreateResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.createMcpServer(parsed.data), 201);
+  });
+  app.put("/api/residents/mcp-servers/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, UpdateResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.updateMcpServer(c.req.param("id"), parsed.data));
+  });
+  app.delete("/api/residents/mcp-servers/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, DeleteResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.deleteMcpServer(c.req.param("id"), parsed.data.expectedRevision));
+  });
+  // The scoped launcher's redemption. The ticket is the whole credential: single-use, bound to
+  // one run, one server and one start, and expiring within seconds. The answer is that server's
+  // definition and secrets alone; it is never logged.
+  app.post("/api/residents/mcp/redeem", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RedeemResidentMcpTicketSchema);
+    if (!parsed.ok) return parsed.res;
+    const redeemed = redeemResidentMcpTicket(parsed.data);
+    return redeemed.ok
+      ? c.json({ definition: redeemed.definition })
+      : c.json({ error: redeemed.error }, redeemed.status);
+  });
+
+  // --- resident profiles and their one launch path ---
+  //
+  // `ResidentManager` owns profiles, launch reservations and task-driven run ends;
+  // `residents/loop-store.ts` owns durable loop transitions, wake claims and pacing.
+  // The Registry is their live cache and notifier, so a GET and a reconnect return
+  // the same catalog.
+  app.get("/api/residents/profiles", (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    return c.json(registry.listResidentProfiles());
+  });
+
+  app.get("/api/residents/profiles/:id/state", async (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try {
+      const directory = ensureResidentState(c.req.param("id"));
+      return c.json({ directory, files: await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }) });
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "State unavailable" }, 409); }
+  });
+  app.get("/api/residents/profiles/:id/state/file", (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try { return c.json({ text: readResidentStateFile(c.req.param("id"), c.req.query("path") ?? "") }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State file unavailable" }, 409); }
+  });
+  app.post("/api/residents/profiles/:id/state/reset", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ResetResidentStateSchema);
+    if (!parsed.ok) return parsed.res;
+    try { await residents.resetState(c.req.param("id")); return c.json({ ok: true }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State reset failed" }, 409); }
+  });
+
+  app.post("/api/residents/profiles", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, CreateResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.createProfile(parsed.data.settings);
+    return result.ok
+      ? c.json(result.profile, 201)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  app.patch("/api/residents/profiles/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.updateProfile(
+      c.req.param("id"),
+      parsed.data.expectedRevision,
+      parsed.data.settings,
+    );
+    return result.ok
+      ? c.json(result.profile)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  app.delete("/api/residents/profiles/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.archiveProfile(c.req.param("id"), parsed.data.expectedRevision);
+    return result.ok
+      ? c.json(result.profile)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  // The ONE resident launch route. Idempotent on the body's `requestId`: 200 launched,
+  // 202 still starting (replay the same request to read the outcome), 409 for a failed launch
+  // (with its recorded reason) or a request id reused for a different launch. A body with
+  // `answerWhen: "accepted"` is answered once the run's task exists, so Dispatch closes as
+  // quickly as a task dispatch; its still-starting run answers 202.
+  //
+  // Like the resident restart route, it lets the manager consume a desktop launch click. A
+  // tool, an agent or a foreign origin still launches, but never consumes a click: its run
+  // starts without control, exactly as a launch from the standalone browser does.
+  app.post("/api/residents/profiles/:id/launch", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, LaunchResidentRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = await residents.launch(c.req.param("id"), parsed.data, {
+      mayConsumeControlClick: sessionControlCallerRefusal(c) === null,
+    });
+    if ("result" in outcome) return c.json(outcome.result, outcome.status);
+    return c.json({ error: outcome.error, code: outcome.code }, outcome.status);
   });
 
   // The tour route family. Not a second dispatch API: the body chooses only a repository,
@@ -8006,6 +9967,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
+      // A tour the operator started: theirs to launch whatever is paused. Not a token caller's.
+      overridePauseHold: mayOverridePauseHold(c),
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -8080,7 +10043,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resumable: false,
         });
       } else {
-        const stopped = await requestSessionStop(session, sdkSessions);
+        const stopped = await requestSessionStop(session, sdkSessions, undefined, pauses);
         if (!stopped.ok) {
           return c.json(
             { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
@@ -8222,27 +10185,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  /**
+   * Whether this request may lift the operator's launch hold (`overridePauseHold`): only the
+   * operator's own, by the same test the pause routes apply. An agent holding the daemon token
+   * can call any of these routes directly, so a flag in the body is never trusted on its own.
+   */
+  const mayOverridePauseHold = (c: Context): boolean => sessionControlCallerRefusal(c) === null;
+
+  async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
-    const task = tasks.get(id);
-    if (task?.workflowId) {
-      const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = manager.dispatchWorkflowBlock(
-        task.workflowId,
-        task.agent,
-        task.repoRoot,
-      );
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
-    }
-    const r = await tasks.dispatch(id, parsed.data);
+    const refused = taskWorkflowDispatchRefusal(tasks.get(id));
+    if (refused) return c.json(refused.body, refused.status);
+    // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set. Checked at
+    // this boundary, not only on the MCP route: the dashboard route is reachable with the token.
+    const operator = caller === "dashboard" && mayOverridePauseHold(c);
+    const options = operator ? parsed.data : { ...parsed.data, overridePauseHold: false };
+    const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
     const r = await tasks.recheckPipelineReadiness(c.req.param("id"));
@@ -8351,6 +10318,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
+      overridePauseHold: parsed.data.overridePauseHold === true && mayOverridePauseHold(c),
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
@@ -8461,19 +10429,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const scheduleValidationFailure = (c: Context, error: ScheduleValidationError) =>
     c.json({ error: error.message, field: error.field }, 400);
 
-  app.get("/api/schedules", (c) => {
+  // MCP aliases share the dashboard handlers and daemon-owned validation. The live
+  // preview gate affects only MCP access, never existing schedules or the scheduler.
+  const scheduleMcpAuth: MiddlewareHandler = async (c, next) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    await next();
+  };
+  app.use("/mcp/schedules", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+  app.use("/mcp/schedules/*", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+
+  const listScheduleCatalog = (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     // Served from the Registry, the SAME live collection the SSE snapshot carries, so a GET
     // and a reconnect return byte-identical catalogs. Non-archived schedules only.
     return c.json(registry.listSchedules());
-  });
+  };
+  app.get("/api/schedules", listScheduleCatalog);
+  app.get("/mcp/schedules", listScheduleCatalog);
 
   // Preview is a READ: no schedule, revision, occurrence, or task is written and no
   // ServerEvent is emitted. It forwards the WHOLE definition and the service runs the same
   // validation save does - cadence, name, title, intent, and repo-root resolution - so the
   // browser can never preview a definition the save route would then refuse.
-  app.post("/api/schedules/preview", async (c) => {
+  const previewScheduleDefinition = async (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, SchedulePreviewSchema);
@@ -8497,9 +10476,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // sub-hour interval, a non-repository root) returns `ok:false` with the offending field -
     // a 400, not a 500.
     return result.ok ? c.json(result) : scheduleValidationFailure(c, result.error);
-  });
+  };
+  app.post("/api/schedules/preview", previewScheduleDefinition);
+  app.post("/mcp/schedules/preview", previewScheduleDefinition);
 
-  app.post("/api/schedules", async (c) => {
+  const createScheduleDefinition = async (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, CreateScheduleSchema);
@@ -8518,7 +10499,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       enabled: d.enabled,
     });
     return result.ok ? c.json(result.schedule, 201) : scheduleValidationFailure(c, result.error);
-  });
+  };
+  app.post("/api/schedules", createScheduleDefinition);
+  app.post("/mcp/schedules", createScheduleDefinition);
 
   app.post("/api/schedules/:id/update", async (c) => {
     const svc = scheduleService();
@@ -8611,29 +10594,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   return app;
 }
 
-/** True when the Host header names a loopback address (defeats DNS-rebinding). */
-export function hostIsLoopback(host: string | undefined): boolean {
-  if (!host) return false;
-  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
-  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
-
-/** Guard browser-write routes that accept an otherwise empty JSON object. */
-function trustedLoopbackJsonRequest(c: Context): boolean {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return false;
-  }
-  const origin = c.req.header("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
+export { hostIsLoopback } from "./loopback.ts";
 
 /**
  * What a write into somebody's session is attributed to.

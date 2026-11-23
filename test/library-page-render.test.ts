@@ -304,7 +304,7 @@ test("Commands follows Workflows, with one card per built-in slot and no New car
     ["missions", "workflows", "commands", "personas", "actions", "ensembles"],
   );
   const cards = commandCards([], true);
-  assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation"]);
+  assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation", "coderabbit"]);
   // Every one is built-in and none of them is creatable, which is the difference between
   // this shelf and the three above it.
   assert.ok(cards.every((card) => card.tags.some((tag) => tag.label === "built-in")));
@@ -364,7 +364,7 @@ test("an unloaded catalog is said out loud, not drawn as unconfigured slots", ()
   );
   // The cards themselves stay: the slots ship with the build, so their existence is
   // knowable without the daemon even though what they run is not.
-  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation"]);
+  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation", "coderabbit"]);
 
   // A view that HAS arrived is trusted whatever the flag says - the flag describes an
   // absence, and a slot the stream already delivered is not absent.

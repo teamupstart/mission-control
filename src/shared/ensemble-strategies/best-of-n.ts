@@ -161,8 +161,8 @@ export const BestOfNConfigSchema = z
       .array(BestOfNMemberSchema)
       .min(BEST_OF_N_MIN_CANDIDATES)
       .max(BEST_OF_N_MAX_CANDIDATES)
-      .default([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
-    evaluator: BestOfNEvaluatorSchema.default({}),
+      .prefault([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
+    evaluator: BestOfNEvaluatorSchema.prefault({}),
     maxConcurrentMembers: z
       .number()
       .int()

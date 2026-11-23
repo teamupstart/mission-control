@@ -1,5 +1,5 @@
 import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, normalize, relative } from "node:path";
+import { isAbsolute, normalize, relative, sep } from "node:path";
 import { decodeUtf8Whole } from "./utf8.ts";
 
 // Reading a markdown doc OUT of a repo and INTO a model prompt, safely.
@@ -9,10 +9,16 @@ import { decodeUtf8Whole } from "./utf8.ts";
 // ordering of the symlink check against the read, which is easy to get subtly wrong
 // and impossible to notice when you have. One implementation, two callers.
 
-/** True when `abs` is at or under `root` (defeats a `..` escape in a diff path). */
+/**
+ * True when `abs` is at or under `root` (defeats a `..` escape in a diff path).
+ *
+ * Judged on path SEGMENTS: an escape is a relative path that is `..` or starts with a `..`
+ * segment. A string-prefix test would also refuse a contained file such as `..ship.md`.
+ */
 export function withinRoot(root: string, abs: string): boolean {
   const rel = relative(root, normalize(abs));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const escapes = rel === ".." || rel.startsWith(`..${sep}`);
+  return !escapes && !isAbsolute(rel);
 }
 
 /** The resolved path, or the input when it can't be resolved (a root that's gone). */

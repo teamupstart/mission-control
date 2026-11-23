@@ -1,4 +1,5 @@
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
+import { inputReviewBodyText } from "@shared/decision-asks.ts";
 
 // Which control a pending review is answered with, decided in one place.
 //
@@ -48,19 +49,30 @@ export function reviewDecisions(review: ReviewItem): PlanDecision[] | null {
  * `plan` and `diff` bodies ARE the content, and always render.
  */
 export function showsBody(review: ReviewItem): boolean {
-  return review.kind !== "input" || review.body !== review.title;
+  return review.kind !== "input" || inputReviewBodyText(review.title, review.body) !== "";
+}
+
+/**
+ * What an `input` review prints beneath its heading: the body without a leading paragraph
+ * that only repeats the heading (`inputReviewBodyText`). A `request_input` call with
+ * `context` files its question and then its context, so a short question shows the context
+ * alone under it, while a question too long for the heading keeps its full text.
+ */
+export function inputBody(review: ReviewItem): string {
+  return inputReviewBodyText(review.title, review.body);
 }
 
 // ---- answering a decision form, and replaying it afterwards ----
 
 /**
  * A decision is answered once it has a selected option, or free text when the decision
- * allows it. Submit stays disabled until every decision clears this bar, and an empty
- * decision set is "nothing to submit" rather than vacuously complete, so the agent never
- * unblocks on a half-filled or content-free form.
+ * allows it, or the human moved it to chat. Submit stays disabled until every decision clears
+ * this bar, and an empty decision set is "nothing to submit" rather than vacuously complete,
+ * so the agent never unblocks on a half-filled or content-free form.
  */
 export function isAnswered(decision: PlanDecision, answer: PlanDecisionAnswer | undefined): boolean {
   if (!answer) return false;
+  if (answer.chat) return true;
   if (answer.selected.length > 0) return true;
   return Boolean(decision.allowOther && answer.other?.trim());
 }
@@ -90,6 +102,8 @@ export function answeredDecisions(
  * that called both "you reviewed" would leave the reader unable to tell which.
  */
 export function reviewAnswerVerb(review: ReviewItem): string {
+  // Never in the human's voice: nobody was asked. Their earlier standing approval answered.
+  if (review.resolvedBy === "standing-approval") return "auto-approved (all future bundles for this task)";
   const who = review.resolvedBy?.startsWith("session:") ? `session ${review.resolvedBy.slice(8)}` : "you";
   switch (review.status) {
     case "approved":
@@ -101,4 +115,35 @@ export function reviewAnswerVerb(review: ReviewItem): string {
     default:
       return `${who} answered`;
   }
+}
+
+// ---- naming a pending review on a surface that does not answer it ----
+
+/**
+ * What a surface that only points at a review prints for it: a short kind and one line on what
+ * answering it takes. The Residents drawer's card draws this as a row and opens the review modal
+ * on a click, so the modal stays the one place a resident's review is answered.
+ */
+export function reviewAskSummary(review: ReviewItem): { kind: string; detail: string | null } {
+  const decisions = reviewDecisions(review);
+  switch (review.kind) {
+    case "input": {
+      if (decisions && decisions.length > 1) return { kind: "input", detail: `${decisions.length} questions` };
+      const options = decisions?.[0]?.options.map((option) => option.label) ?? [];
+      if (options.length > 0) return { kind: "input", detail: options.join(" · ") };
+      return { kind: "input", detail: showsBody(review) ? firstLine(inputBody(review)) : "Needs a written answer" };
+    }
+    case "plan-decisions": {
+      const n = decisions?.length ?? 0;
+      return { kind: "decisions", detail: `${n} decision${n === 1 ? "" : "s"} to make` };
+    }
+    case "plan":
+      return { kind: "plan", detail: "Plan to approve" };
+    case "diff":
+      return { kind: "diff", detail: "Changes to review" };
+  }
+}
+
+function firstLine(text: string): string | null {
+  return text.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? null;
 }

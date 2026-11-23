@@ -1,27 +1,36 @@
+import { InboxReplyBoxesContext } from "../../lib/inbox-reply-boxes.ts";
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
+import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
+import { useFeatureFlag } from "../../useFeatureFlag.ts";
+import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
+import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
-import { taskPillParts } from "@shared/task.ts";
+import { taskHasRepository, taskPillParts } from "@shared/task.ts";
 import { shortenCwd, uptime, relativeTime } from "../../lib/format.ts";
 import {
   newestSessionRun,
   sessionCanBindWorkflow,
   workflowBindChipTitle,
+  workflowCompletionStall,
 } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
+import { ShapingChip } from "../ShapingChip.tsx";
 import { SessionScoutsPane } from "../scouts/SessionScoutsPane.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
+import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
+import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -33,6 +42,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { ResidentBand, ResidentReplacedBand } from "../../residents/ResidentBand.tsx";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -48,7 +58,9 @@ import {
   ScheduleOriginChip,
   SessionTitle,
   StateBadge,
+  TaskClaimWarnings,
   TaskRepoPrs,
+  PrBranchUpdateDetails,
   WorkflowChips,
   EnsembleChip,
   PipelineChip,
@@ -58,7 +70,10 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
+import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
+import { useSessionReports } from "../../lib/sessionReports.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
   ensembleSummaryFor,
@@ -144,30 +159,43 @@ export function intentRefreshStamp(goal: Session["goal"]): string {
   ].join(":");
 }
 
-/** Load the full completion contract only for the drawer that can render it. */
+/**
+ * Load the full completion contract only for the drawer that can render it. The setter lets
+ * a write that answers with the full record (accepting the objective) show it at once: an
+ * `unclear` verdict accepted with nothing pending moves no revision the stamp reads.
+ */
 function useIntent(
   sessionId: string,
   refreshStamp: string,
   open: boolean,
-): SessionGoal | null {
+): [SessionGoal | null, (goal: SessionGoal) => void] {
   const [intent, setIntent] = useState<SessionGoal | null>(null);
+  // Bumped by every fetch and by every record a write hands back. A read applies only while it
+  // is still the newest, so a GET that started before an accept cannot land after it and put
+  // the paused reading back.
+  const generation = useRef(0);
   useEffect(() => {
     if (!open) return;
-    let live = true;
+    const mine = ++generation.current;
+    const current = () => generation.current === mine;
     setIntent(null);
     void api
       .goal(sessionId)
       .then((goal) => {
-        if (live) setIntent(goal);
+        if (current()) setIntent(goal);
       })
       .catch(() => {
-        if (live) setIntent(null);
+        if (current()) setIntent(null);
       });
     return () => {
-      live = false;
+      if (current()) generation.current++;
     };
   }, [sessionId, refreshStamp, open]);
-  return intent;
+  const applyWritten = useCallback((goal: SessionGoal) => {
+    generation.current++;
+    setIntent(goal);
+  }, []);
+  return [intent, applyWritten];
 }
 
 /**
@@ -188,11 +216,19 @@ function useIntent(
 export function ConsoleDetail({
   view,
   session,
+  onBack,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
+   * button is not on screen to do the job: the Board opened this session with no rail beside it
+   * (its column had no card to list), or the rail beside it is folded to its strip.
+   */
+  onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
+  const controlRequests = useFeatureFlag("session-control-requests");
   useEffect(() => {
     return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab === "scouts" ? "archives" : tab);
   }, [session.id, tab]);
@@ -206,9 +242,14 @@ export function ConsoleDetail({
   // gate above read every one. Derived from the same list so the two cannot disagree.
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
+  // A Foreman-complete binding whose cycle finished under an unresolved goal: the chip says so
+  // and its click opens the dialog that offers the ways forward.
+  const workflowStall = workflowCompletionStall(session, workflowBinding, workflowRuns);
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
+  const resident = view.residentBySession?.get(session.id) ?? null;
+  const replacedBy = resident ? null : view.residentReplacementBySession?.get(session.id) ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -219,6 +260,8 @@ export function ConsoleDetail({
     requestNonce: undefined,
   });
   const [hasReply, setHasReply] = useState(false);
+  // A Stuck row's message box in the attention inbox is this session's reply box too.
+  const inboxReplyBox = useContext(InboxReplyBoxesContext).has(session.id);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -242,8 +285,11 @@ export function ConsoleDetail({
    */
   const conversationView = useSessionConversationView(session.id);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
-  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
+  // Agent reports this session posted, every version, where each was posted (`inbox` flag).
+  const reportsOn = useFeatureFlag(INBOX_FLAG) && view.reportControls !== undefined;
+  const sessionReports = useSessionReports(session.id, view.reports ?? [], reportsOn);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
     note: session.note,
@@ -364,6 +410,14 @@ export function ConsoleDetail({
     }
   }
 
+  /** The drawer's exit from a paused goal. Returns the refusal sentence, or null on success. */
+  async function acceptObjective(): Promise<string | null> {
+    const res = await api.acceptGoal(session.id);
+    if (!res.ok) return `The objective was not accepted: ${res.error.replace(/[.\s]+$/, "")}.`;
+    setIntent(res.goal);
+    return null;
+  }
+
   async function withdrawForeman(): Promise<void> {
     setInviteBusy(true);
     try {
@@ -385,6 +439,8 @@ export function ConsoleDetail({
     focusPending.current = false;
     transcriptRef.current?.focusReply();
   }, [tab]);
+
+  useComposerFocusRequest(session.id, focusReply);
 
   // Both pieces of local state that are really claims ABOUT the invite, retired the moment
   // the invite itself moves - however it moved.
@@ -446,7 +502,9 @@ export function ConsoleDetail({
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  // Dependency install warnings render inside the band, so they keep it mounted on their own.
+  const showClaimWarnings = (session.task?.claimWarnings?.length ?? 0) > 0;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || showClaimWarnings;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -455,8 +513,8 @@ export function ConsoleDetail({
     [session.id, view.fileCommentThreads],
   );
   const tabs = useMemo(
-    () => detailTabs({ queueCount, fileReplyCount }),
-    [fileReplyCount, queueCount],
+    () => detailTabs({ queueCount, fileReplyCount }).filter((item) => item.id !== "diff" || taskHasRepository(session.task ?? {})),
+    [fileReplyCount, queueCount, session.task],
   );
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
@@ -504,6 +562,8 @@ export function ConsoleDetail({
   });
 
   useEffect(() => (headRef.current ? observeDetailHead(headRef.current) : undefined), []);
+  // The pause controls the operator chose for the console (Settings > Display > Pause controls).
+  const pauseControls = usePauseConsoleControls();
 
   return (
     <div className={`cdetail tone-${st.tone}`}>
@@ -512,6 +572,13 @@ export function ConsoleDetail({
         ref={headRef}
         style={kindMark === "tile" ? kindAccentStyle(session.task!.kind) : undefined}
       >
+        {onBack && (
+          <Tooltip label="Back to the board (Esc)">
+            <button className="board-back" aria-label="Back to the board" onClick={onBack}>
+              ‹
+            </button>
+          </Tooltip>
+        )}
         {kindMark === "tile" ? (
           <TaskKindMark kind={session.task!.kind} variant="tile">
             <AgentDot agent={session.agent} />
@@ -553,6 +620,7 @@ export function ConsoleDetail({
             chip that re-resolved would quote it text it never saw the moment the operator
             edits the rule, which is exactly when they are most likely to be reading it. */}
         <StandingInstructionsChip sessionId={session.id} />
+        <ShapingChip session={session} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />
@@ -593,16 +661,23 @@ export function ConsoleDetail({
         {/* The shared gate: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
-          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
+          <Tooltip label={workflowStall ?? workflowBindChipTitle(workflowBinding)}>
             <button
               ref={tourBindChipRef}
-              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
+              className={
+                workflowBinding
+                  ? `workflow-bind-chip armed${workflowStall ? " stalled" : ""}`
+                  : "workflow-bind-chip"
+              }
               onClick={() => view.onBindWorkflow?.(session.id)}
             >
               {workflowBinding
                 ? (
                   <>
-                    <span aria-hidden>⌘ </span>
+                    {/* The stalled chip trades the armed ⌘ for a pause mark, so the state does
+                        not rest on its amber alone. Still `aria-hidden`: the tooltip carries the
+                        stall in words, and the accessible name stays the workflow and version. */}
+                    <span className="wbc-mark" aria-hidden>{workflowStall ? "⏸\uFE0E " : "⌘ "}</span>
                     <span className="wbc-name">{workflowBinding.workflowName}</span>
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>
@@ -626,6 +701,12 @@ export function ConsoleDetail({
           onOpenReviews={() => view.onOpenReviews(session.id)}
           display={st}
         />
+        {/* The pause half sits flush against the state badge: pausing is an action on the
+            state, so it lives on the badge that names it (Pause controls > State badge). Its
+            own child of the header, never wrapped with the badge: the deepest rung's allowlist
+            keeps `.badge` and sheds everything else, so it takes the half and never the review
+            button. */}
+        {pauseControls.has("badge") && <BadgePauseHalf session={session} />}
         <span className="detail-head-spacer" />
         {/* Leads the runtime cluster - mode, model, context, cost - because the posture
             governs the session while the other three are consequences of running under
@@ -639,6 +720,27 @@ export function ConsoleDetail({
         <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
+      <PrBranchUpdateDetails session={session} />
+
+      {/* Paused, or the priority session: a band of its own under the header, the way the
+          resident and blocker bands sit, with the way back in it. Part of the State badge
+          placement; the other placements carry their own resume. */}
+      {pauseControls.has("badge") && <PausedBand session={session} />}
+
+      {/* The resident this session is, under the header rather than in it: the header's
+          one-row fit already has a give-way order to keep, and the band is the surface the
+          loop's state and controls join later. Not gated on the marker item - it is where a
+          resident is named, not decoration on top of it. */}
+      {resident && (
+        <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
+      )}
+      {replacedBy && (
+        <ResidentReplacedBand
+          replacement={replacedBy}
+          onOpenSession={view.onFocusSession ?? view.onSelect}
+          onComplete={live ? () => view.onComplete(session.id) : undefined}
+        />
+      )}
 
       {pipelineCommission && (
         <div className="detail-pipeline-meter">
@@ -661,7 +763,7 @@ export function ConsoleDetail({
             {/* The tooltip carries the UNTRUNCATED path, and is the only place it is
                 readable. It goes wherever this cell goes. */}
             <Tooltip label={workspaceRoot ?? "This session has no working directory"}>
-              <dd className="mono">{shortenCwd(workspaceRoot)}</dd>
+              <dd className="mono">{taskHasRepository(session.task ?? {}) ? shortenCwd(workspaceRoot) : "no repository"}</dd>
             </Tooltip>
           </div>
         )}
@@ -699,13 +801,17 @@ export function ConsoleDetail({
                 </a>
                 </Tooltip>
               ) : (
-                <span className="task-outcome">{session.task.outcome}</span>
+                // The outcome ellipsises, so the hover is the only place a long one is whole.
+                <Tooltip label={`Outcome: ${session.task.outcome}`}>
+                  <span className="task-outcome" tabIndex={0}>{session.task.outcome}</span>
+                </Tooltip>
               ))}
           </div>
           )}
           {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
-          <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          <TaskRepoPrs repoPrs={session.task.repoPrs} session={session} />
+          <TaskClaimWarnings warnings={session.task.claimWarnings} />
           </>
         )}
       </dl>
@@ -724,6 +830,7 @@ export function ConsoleDetail({
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           onWithdraw={() => void withdrawForeman()}
+          onAcceptObjective={acceptObjective}
         />
       )}
 
@@ -768,20 +875,25 @@ export function ConsoleDetail({
           session={session}
           registerLaunchers={view.registerLaunchers}
           leading={
-            // Only on Conversation, because unlike the launchers this control is about the
-            // pane you are reading rather than about somewhere else to open the session.
-            // On Files or Diff it would choose a rendering for a surface that is
-            // not on screen, changing nothing a reader can see.
-            tab === "conversation" ? (
-              <>
-                <SessionControlToggle key={session.id} session={session} />
-                <ConversationViewToggle
-                  terminal={conversationView.view === "terminal"}
-                  overridden={conversationView.overridden}
-                  onChange={conversationView.setView}
-                />
-              </>
-            ) : null
+            <>
+              {/* On every tab, unlike the two below: pausing is about the session, not about
+                  the pane you are reading. */}
+              {pauseControls.has("toolbar") && <PauseToolbarButton session={session} />}
+              {/* Only on Conversation, because unlike the launchers this control is about the
+                  pane you are reading rather than about somewhere else to open the session.
+                  On Files or Diff it would choose a rendering for a surface that is
+                  not on screen, changing nothing a reader can see. */}
+              {tab === "conversation" ? (
+                <>
+                  <SessionControlToggle key={session.id} session={session} />
+                  <ConversationViewToggle
+                    terminal={conversationView.view === "terminal"}
+                    overridden={conversationView.overridden}
+                    onChange={conversationView.setView}
+                  />
+                </>
+              ) : null}
+            </>
           }
         />
 
@@ -822,8 +934,22 @@ export function ConsoleDetail({
                 conversation its height whether or not anything was running, and that
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
-                child combinators that select through this container. */}
+                child combinators that select through this container. The blocker band
+                is the one exception: it takes its natural height up to 40% of the pane
+                and scrolls past that (`.detail-conv > .blocker-band`), so long details
+                cannot push the transcript or the reply box out of view. */}
+            <SessionBlockerBand session={session} />
+            {/* A declared wait on a background process. Never beside the blocker band: a
+                blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
+            <SessionAwaitingBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
+            {/* The session's own ask for Control other sessions: answered before reading on,
+                like the menu above. Capped and scrolled like the blocker band below its
+                reason (`.detail-conv > .session-control-request`). */}
+            {controlRequests && (
+              // Keyed by the ask, so one ask's error or busy state never shows on the next.
+              <SessionControlRequestCard key={`${session.id}:${session.sessionControlRequest?.id ?? ""}`} session={session} />
+            )}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}
@@ -842,7 +968,11 @@ export function ConsoleDetail({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={visibleEpisodes}
-              reviews={timelineReviews}
+              reviews={timelineReviews.reviews}
+              reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
+              reports={sessionReports}
+              reportControls={reportsOn ? view.reportControls : undefined}
+              onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               onCommentInFiles={view.onCommentInFiles
@@ -911,7 +1041,7 @@ export function ConsoleDetail({
           </div>
         )}
 
-        {tab === "diff" && (
+        {tab === "diff" && taskHasRepository(session.task ?? {}) && (
           session.cwd ? (
             <InlineDiffViewer
               session={session}
@@ -973,7 +1103,7 @@ export function ConsoleDetail({
         {live && (
           <ActionBar
             session={session}
-            hasReply={hasReply}
+            hasReply={hasReply || inboxReplyBox}
             onToggleQueue={() => setTab((t) => (t === "queue" ? "conversation" : "queue"))}
             onFocusReply={focusReply}
             registerActions={view.registerActions}

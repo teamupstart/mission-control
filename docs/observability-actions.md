@@ -32,6 +32,42 @@ Navigation identity (including a locally selected file) stays only in a bounded 
 
 Renderer loops keep at most 32 fingerprints, allow one occurrence per fingerprint/code per minute, and emit a suppression summary when the window closes. A departed page may lose that summary. Expected validation/policy refusals and semantic review rejection are domain results, not application exceptions. The next startup describes an unclean predecessor as `termination_unknown`; fatal errors retain their normal propagation. Exporter/ingress errors stay on the existing self-health path, avoiding recursive reporting.
 
+## Measuring conversation use
+
+Detected outside-terminal sessions participate in session telemetry when admitted by discovery
+and collection is enabled. Export also requires an enabled destination. Their
+`mission.sessions.started` origin is `discovered`; that describes adoption, not where later
+input is entered. Likewise, `runtime=terminal` describes the agent, not the person's input surface.
+
+`mission.session.operations` carries the bounded `interaction_source` label in both full and
+Datadog lean exports:
+
+- `dashboard`: a human actor with dashboard origin and `app_context` provenance.
+- `automation`: an agent, Foreman, workflow, scheduler, recovery or system actor with owner,
+  app-context or declared provenance.
+- `unknown`: everything else, including a human declaration without app context, conflicting
+  attribution, and older queued sends whose submitting context was not retained.
+
+For confirmed chat messages delivered through Mission Control, filter
+`interaction_source=dashboard`, `operation=send`, `outcome=delivered`. This includes messages
+sent to terminal sessions through the app and queued messages when delivered. It excludes
+drafts (`queued`), refused sends, interrupts, cancellations and question responses. To measure
+those other interactions, select their operation separately. In the bundled Prometheus naming:
+
+```promql
+sum(increase(mission_session_operations_total{interaction_source="dashboard",operation="send",outcome="delivered"}[1d]))
+```
+
+This counts delivery operations, not unique people or sessions. Direct terminal typing bypasses
+these delivery events and remains **unmeasured**. No dashboard sends does not prove terminal-only
+use, and subtracting sends from session turns does not produce a terminal-input count. The
+attribution is application context, not authentication or proof of a physical human.
+
+The label is derived from the existing event envelope; no prompt text, draft content or
+keystrokes are added. Already exported batches and historical series without the label remain
+unchanged. Unprojected events use their retained attribution; there is no historical backfill.
+Existing consent, retention, deduplication and series limits still apply.
+
 ## Coverage across the 21 groups
 
 `src/shared/telemetry-sources/primary-actions.ts` is the executable operation manifest and derives the primary feature vocabulary from its routes. `action-exclusions.ts` names every excluded mutation and its reason. The manifest test compares these and Phase 4's route registry with every mutating route in `routes.ts`, refusing overlaps, missing operations and nonexistent hooks. [The operation manifest](observability-action-manifest.md) links these authoritative route registries and maps browser, MCP and background callers to their semantic owners.

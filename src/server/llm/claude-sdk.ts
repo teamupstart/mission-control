@@ -272,6 +272,7 @@ export async function runClaudeSdkOneShot(
           stderr = (stderr + data).slice(-4_096);
         },
         ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
         ...(opts.maxBudgetUsd !== undefined ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
         ...(opts.schema
           ? { outputFormat: { type: "json_schema" as const, schema: opts.schema } }

@@ -38,7 +38,11 @@ const timer = setInterval(() => {
     });
     const events = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
     try {
-      const deadline = Date.now() + 5_000;
+      // Each stand-in is a cold `node` start, which under the full suite's concurrency has
+      // taken longer than 5 s, so three of the four had logged. The wait ends the moment the
+      // fourth does; the cap only has to stay inside the reads' own 20 s `gh` timeout, which
+      // starts at spawn, so no read can time out before `release` lets it finish.
+      const deadline = Date.now() + 15_000;
       while (events().length < 4 && Date.now() < deadline) await delay(10);
       assert.equal(events().length, 4, "four reads must start before any result is released");
       if (abort) controller.abort();

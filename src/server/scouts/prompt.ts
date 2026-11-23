@@ -68,13 +68,14 @@ export function scoutReportAppendix(slots: readonly ArchiveRepoSlot[]): string {
     "   no external request of any kind - the page must open correctly from `file://` with no network.",
     "   Mission Control archives the exact bytes and refuses a page that cannot.",
     "4. Anything the report links to goes in that same directory, beside the page, linked relatively",
-    "   (`evidence.csv`). A relative link that leaves the report directory is refused. The whole",
-    "   directory is captured for you - you do not list its files when you submit.",
+    "   (`evidence.csv`). A relative link that leaves the report directory is refused. Include every",
+    "   linked file in the explicit `files` list; unlisted neighbors are not archived.",
     "5. Cite ordinary source files as visible text with no href - `<code>src/server/registry.ts:42</code>`.",
     "   The checkout is gone by the time anyone reads the archive, so a link into it would be dead.",
     `6. When the page is written, call the \`${SUBMIT_SCOUT_ARTIFACTS_TOOL}\` tool with the report path,`,
-    "   a concise report title, a short plain-text summary, optional tags, and only the additional files worth",
-    "   preserving. Mission Control derives everything else; you never name a task, a destination, or",
+    "   a concise report title, a short plain-text summary, optional tags, and a `files` list including",
+    "   the primary report and each evidence file. Git-ignored files are accepted in this mode.",
+    "   Do not combine `files` with legacy `supporting`. You never name a task, a destination, or",
     "   an archive. You may publish several reports, each under a different slug. Repeating a path",
     "   returns its existing immutable archive; use a new slug for a revised report.",
     "   Publication does not finish the session. Continue until the requested work is complete.",
@@ -101,11 +102,11 @@ function supportingLines(slots: readonly ArchiveRepoSlot[]): string[] {
   if (slots.length === 1) {
     const only = slots[0]!;
     return [
-      `   An additional file is \`{ repoSlot: "${only.slot}", path: "<path relative to your checkout>" }\`.`,
+      `   Each selected file is \`{ repoSlot: "${only.slot}", path: "<path relative to your checkout>" }\`.`,
     ];
   }
   return [
-    "   An additional file is `{ repoSlot, path }`, where the slot names one of your checkouts:",
+    "   Each selected file is `{ repoSlot, path }`, where the slot names one of your checkouts:",
     ...slots.map((slot) => {
       const where = slot.primary ? " (your working directory)" : "";
       return `   - \`${slot.slot}\` - ${slot.label ?? "unnamed repository"}${where}`;

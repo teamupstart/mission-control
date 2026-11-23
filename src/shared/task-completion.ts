@@ -103,9 +103,19 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
   ],
   // Plans need durable artifacts before scheduling. Commit/push are deliberately retained.
+  //
+  // The bound workflow's own result is deferred too, because Foreman's completion claim is
+  // what STARTS that workflow. A verifier that holds a plan for "validation has no result
+  // yet" is asking for the output of the run its hold prevents, and a held plan task has no
+  // recovery to break that cycle: the generation is spent and nothing starts the workflow.
   deferred: [
     ...SHIP_CONTRACT.deferred.filter((action) => !["commit", "push"].includes(action.id)),
     { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
+    {
+      id: "workflow-verdict",
+      imperative: "wait for the bound workflow's validation result",
+      noun: "running the bound workflow and producing its validation or review result, which starts only after this handoff",
+    },
   ],
 };
 
@@ -151,6 +161,7 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
   plan: null,
   pipeline: null,
   chat: null,
+  resident: null,
 };
 
 /**

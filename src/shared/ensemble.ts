@@ -344,6 +344,8 @@ export const ENSEMBLE_LIMITS = {
   stagePayloadJsonBytes: 200_000,
   evaluationResultJsonBytes: 200_000,
   decisionSelectionJsonBytes: 32_000,
+  /** Entries in any one array or object of a decision selection; that JSON is 32 KB at most. */
+  decisionSelectionEntries: 1_000,
   eventPayloadJsonBytes: 64_000,
   rationale: 8_000,
   errorText: 4_000,

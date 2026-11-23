@@ -33,6 +33,7 @@ const persona = (
   guidanceMarkdown: "# Code Risk Reviewer",
   runner: null,
   model: null,
+  effort: null,
   revision: builtin ? 1 : 3,
   archivedAt: null,
   createdAt: builtin ? 0 : 1,

@@ -160,6 +160,12 @@ export interface TerminalTargetView {
    * future self-hosting multiplexer from needing a UI edit.
    */
   needsTerminalApp?: boolean;
+  /**
+   * True on the one emulator row macOS hands a shell to - the operator's default terminal,
+   * as LaunchServices records it. Absent everywhere else, including on every row when the
+   * default is a terminal Mission Control cannot drive. Pickers start on it.
+   */
+  systemDefault?: boolean;
 }
 
 /**

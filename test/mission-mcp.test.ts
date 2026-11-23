@@ -38,6 +38,7 @@ process.env.HARNESS_MCP_SERVER = fakeBundle;
 const {
   MISSION_MCP_SERVER_NAME,
   MISSION_MCP_TOOLS,
+  kindMissionMcpRequirement,
   claudeMissionMcpArgs,
   codexMissionMcpArgs,
   missionMcpConfigJson,
@@ -229,6 +230,18 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!);
   assert.ok(registered.length > 0, "the scrape found nothing - has registerTool been renamed?");
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
+});
+
+test("retired tools stay retired", () => {
+  // `share_plan` offered the human reply controls on a call that never waited for them, so a
+  // typed note went nowhere; `request_plan_decisions` with no decisions shows a plan and
+  // returns the answer. `report_product_feedback` published a public issue with no dashboard
+  // confirmation; `report_product_issue` covers the same draft behind one.
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  for (const retired of ["share_plan", "report_product_feedback"]) {
+    assert.ok(!(MISSION_MCP_TOOLS as readonly string[]).includes(retired), `${retired} is still in the vocabulary`);
+    assert.ok(!source.includes(`"${retired}"`), `${retired} is still registered`);
+  }
 });
 
 test("create_task publishes bounded repository selectors and never falls back to legacy", () => {
@@ -795,6 +808,14 @@ test("a required tool is pre-approved beside the ask tool, on one registration",
 test("a dispatch that requires nothing pre-approves exactly what it always did", async () => {
   const args = await askChannelArgs("claude");
   assert.equal(flag(args, "--allowed-tools"), ASK_TOOL);
+});
+
+test("chat launches pre-approve task creation and dispatch on the shared MCP registration", async () => {
+  const requirement = kindMissionMcpRequirement({ kind: "chat", workflowId: null, planInputs: [] }, null);
+  const args = await askChannelArgs("claude", requirement);
+  assert.equal(args.filter((arg) => arg === "--mcp-config").length, 1);
+  assert.equal(flag(args, "--allowed-tools"),
+    [ASK_TOOL, missionMcpToolName("create_task"), missionMcpToolName("dispatch_task")].join(","));
 });
 
 test("a harness with no MCP client is not handed one", async () => {

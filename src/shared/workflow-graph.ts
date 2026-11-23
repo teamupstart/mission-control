@@ -17,6 +17,8 @@ import {
   SESSION_ACTION_COMPLETION_CAPABILITIES,
   WORKFLOW_LIMITS,
   WORKFLOW_MISSING_PR_ACTIONS,
+  personaEffortLevels,
+  sessionActionIsStage,
 } from "./workflow.ts";
 
 export interface WorkflowGraphValidationInput {
@@ -32,7 +34,7 @@ export interface WorkflowGraphValidationInput {
    * down. Without it the validator would have to assume, and assuming available is how a
    * version naming an unrunnable adapter gets published.
    */
-  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion">[];
+  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion" | "workflowStage">[];
   completionPolicy?: WorkflowCompletionPolicy;
   /**
    * Which completion adapters the CALLER's build can execute. Defaults to this build's answer.
@@ -344,6 +346,20 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
     }
   }
 
+  // Structural, so it needs no catalog: the override names its own provider and model, and an
+  // effort they do not offer is refused at publish rather than passed to a CLI that rejects it.
+  for (const node of graph.nodes) {
+    if (node.kind !== "persona" || !node.executionOverride?.effort) continue;
+    const { runner, model, effort } = node.executionOverride;
+    if (!personaEffortLevels(runner, model).includes(effort)) {
+      diagnostics.push(diagnostic(
+        "unsupported_effort",
+        `${runner} · ${model} does not support ${effort} effort.`,
+        { nodeId: node.id },
+      ));
+    }
+  }
+
   if (input.personas) {
     const personas = new Map(input.personas.map((persona) => [persona.id, persona]));
     for (const node of graph.nodes) {
@@ -376,6 +392,13 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       }
       if (action.archivedAt !== null) {
         diagnostics.push(diagnostic("archived_session_action", "Archived session actions cannot be published in a new version.", { nodeId: node.id }));
+      }
+      if (!sessionActionIsStage(action)) {
+        diagnostics.push(diagnostic(
+          "session_action_not_a_stage",
+          "Grill runs ahead of a task through Grill me first, so it cannot be a Workflow stage.",
+          { nodeId: node.id },
+        ));
       }
       const capability = capabilities[action.completion.kind];
       if (capability && !capability.available) {

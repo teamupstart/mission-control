@@ -16,6 +16,10 @@ import {
 } from "../fixtures/conductor.ts";
 import { selectConductorRepo, toggleConductorObservation } from "../fixtures/conductor-panel.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 /**
  * A conductor-driven agent, carded - and told apart from an ordinary one.
  *
@@ -56,8 +60,12 @@ import { selectConductorRepo, toggleConductorObservation } from "../fixtures/con
  * Discovery on and brisk, and the engine's files read at the fastest cadence the daemon
  * allows. This file's daemon only - see the header for why that is safe, and
  * `settings-conductor.spec.ts` for why a shared override would be a cost fifty specs pay.
+ *
+ * `outsideSessions` is on because the control agent in the repository root is started by hand,
+ * so it is an outside session and has no card with the setting off. The pipeline worker would
+ * be shown either way; `test/discovery-admission.test.ts` covers that it is with the setting off.
  */
-test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_PIPELINE_TICK_MS: "1000" } });
+test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_PIPELINE_TICK_MS: "1000" }, outsideSessions: true });
 
 const EVIDENCE = artifactsDir("session-driven-by-engine");
 /** Long enough for two discovery sweeps and a watch pass, short enough to fail rather than hang. */
@@ -408,7 +416,11 @@ test.describe("a session an external engine is driving", () => {
     // about one of them. `e2e/specs/pipeline-controls.spec.ts` owns what pressing one does.
     await expect(row.getByRole("button", { name: "Unpark" })).toBeVisible();
     await expect(row.getByRole("button", { name: "Grant DECIDE re-entry" })).toBeVisible();
-    await expect(row.getByRole("button")).toHaveCount(2);
+    // Every inbox row also carries its own Dismiss, which hides the row and acts on nothing in
+    // the engine - so it is named and set aside, and the class's verbs are still exactly two.
+    const dismiss = row.getByRole("button", { name: "Dismiss fix-the-thing from the inbox" });
+    await expect(dismiss).toBeVisible();
+    await expect(row.getByRole("button").filter({ hasNotText: "Dismiss" })).toHaveCount(2);
     await shoot(dashboard, inbox, "04-halt-in-the-inbox");
 
     // The link lands on the run's own detail, which is where the evidence is - and it closes

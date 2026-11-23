@@ -148,7 +148,9 @@ Mission Control reports this itself rather than leaving you to read the stack. T
 it, the setup banner raises it as a required gap, and the Dispatch form repeats the note
 before an agent goes out on the machine.
 
-The fix is to re-run the installer from a checkout that still exists:
+In the desktop app, the fix is the row's **Install** button, which rewrites the hooks to the
+app's own satellite and re-checks the row. From a checkout, re-run the installer from one that
+still exists:
 
 ```sh
 cd <your durable clone> && npm run install-hooks
@@ -156,9 +158,8 @@ cd <your durable clone> && npm run install-hooks
 
 Run it from a durable clone rather than a pooled worktree. An install from a pool slot
 bakes a path the pool will reclaim, which is this same outage with a shorter fuse, and the
-installer refuses one outright for that reason. Packaged-app users press **Install Claude
-integrations** instead; either installer now replaces the other's entries rather than
-stacking a second bridge beside them.
+installer refuses one outright for that reason. Either installer replaces the other's
+entries rather than stacking a second bridge beside them.
 
 ## An MCP server I added is missing from a dispatched Claude session
 
@@ -308,6 +309,20 @@ to replace the existing destination without host Node. Preserve the state home, 
 recovery directories. A failure after receipt commitment needs forward recovery; do not manually
 launch an older app against potentially migrated state. Signed publication and real packaged
 qualification remain required before this route can be declared release-ready.
+
+### `update.log` says `invalid requirement specification`
+
+The banner reads **Binary verification failed**, and `update.log` shows `codesign ... -R anchor
+apple generic ...` failing with `No such file or directory` and `invalid requirement
+specification`. The installed app was built from `main` after #1216 and before #1225. Its
+updater passes the publisher requirement without the leading `=`, so `codesign` reads it as a
+file path and never checks the signature. The downloaded build is not at fault. **Retry** cannot
+succeed, because the updater that fails is part of the installed app.
+
+Quit Mission Control and run the installer command from the [README](../README.md#installation)
+once, with `--channel alpha` if you follow `main`. It replaces the app in the same folder and
+keeps the state home. Later in-app updates use the corrected check. Installs from before #1216
+update from source and are unaffected.
 
 ## Mission Control is not open anymore, or an update relaunch fails
 

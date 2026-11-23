@@ -1,0 +1,125 @@
+# Phase 2: Reusable CodeRabbit Command and optional No-Mistakes review
+
+## Outcome
+Repositories enable CodeRabbit through root `.coderabbit.yaml`; Library > Commands provides optional tuning, and the same Command works in any custom workflow and the new No-Mistakes stage. The session can retrieve every retained actionable finding, while incomplete reviews visibly block rather than request a code fix or pass.
+
+Repository: mission-control only. Direct prerequisites: the planning PR and Phase 1 PR have merged. Read plan.md, phased-plan.md and Phase 1's downstream handoff before editing. The implementation route below is adaptable where current repository evidence supports a better approach; record deviations in the PR.
+
+## Scope
+Own R1, R4-R7 and the reviewer-specific parts of R8/R9. Ship the catalog entry, repository configuration, executable Setup, comparison identity, streaming interpreter, repair behavior and No-Mistakes version in this phase. No separate reviewer workflow engine, arbitrary slot creation, PR-thread polling, remote review, automatic paid credits or uncommitted-content overlay.
+
+## Entry checks
+- Verify Phase 1's merged commit supplies bounded attempt artifacts, read_workflow_command_output, slot timeouts, skip/block policy and action-required blocking.
+- Run focused Phase 1 contract tests before changing their consumer seam. Do not implement parallel substitutes if the prerequisite is absent.
+- Inspect latest shipped built-in versions and helper transformations. No-Mistakes currently derives versions through appendGpt6Version and appendDocumentationGuidanceVersion; append a new version without accidentally changing hashes or guidance of earlier versions.
+- Re-read current CodeRabbit review help and the official CLI agent-mode contract. Installed version at planning was 0.9.1, which introduced severity exit gating. Do not use removed --plain/--prompt-only flags.
+- Resolve current auth/version behavior in fake contract fixtures first. A real review is not required to run automated tests.
+
+## Implementation sequence
+
+### 1. Extend the existing catalog and authoring surfaces
+Append coderabbit to WORKFLOW_CHECK_SLOTS. Add the exhaustive display purpose/default descriptor and update schema projections, seeding, imports/exports and all registry-driven command palettes. The persisted node kind remains check. Do not rename any prior node/slot ids.
+
+CodeRabbit stays in the existing CommandLibrary rail. Reuse its CAS/discard/SSE mechanics and repository picker. Its optional per-repository tuning rule has typed baseRef and severity settings; add a discriminated optional review configuration to the existing rule schema/store authority, rather than a second config blob. Keep existing slots' command argv shape backward-readable.
+
+Implement the root plan's [enablement and execution policy](plan.md#enablement-and-execution-policy) before generic missing-command resolution. A YAML-enabled repository gets effective typed defaults without a saved catalog override. Optional repository-root tuning changes options only; removing an override returns to defaults and does not disable review. Reject subdirectory-only rules and arbitrary global argv. Existing trust remains independently required.
+
+Capture repository-root `.coderabbit.yaml` with the submission's actual repository/content snapshot, before immutable evidence is frozen. Use safe bounded YAML parsing, not regex or truthiness: only `reviews.auto_review.enabled === true` enables review. Support the supplied schema-comment/inheritance example without remote inheritance fetches. Bound source bytes and alias expansion, reject duplicate critical keys, custom tags and multi-document ambiguity; prevent symlink/path escape. Capture missing/false/invalid/unreadable states and a sanitized diagnostic without copying secrets into fleet SSE. Invalid or unavailable configuration cannot establish explicit true, so it skips with warning and a visible error. Reuse the snapshot across retries; new submissions refresh it. Add this capture seam through the existing submission owner, not a new daemon watcher.
+
+Show a resolved argv preview derived from effective defaults and optional tuning. The CodeRabbit recipe owns required flags. Do not parse arbitrary shell strings or allow conflicting --remote, --uncommitted, --include-untracked, --show-prompts, --usage or paid-credit flags through this typed recipe. This is a specialized built-in Command recipe, not a separate workflow node.
+
+Use the defaults and policy precedence owned by the root plan. Derive unavailable behavior from captured YAML enablement and make exhaustion nonblocking. Show those policies as derived in the CodeRabbit editor; generic skip/block selectors must not override them. Default baseRef to an observed repository default only when reliable, otherwise require explicit input. Show the effective options, YAML source and run allowance; preserve tuning across reload, backup/restore and legacy config updates.
+
+Slot execution/result descriptors are the single place that selects exit-code versus CodeRabbit interpretation. Keep browser-safe descriptors in shared code and server interpreter functions in the workflow modules. No giant switch copied across routes/runtime/UI.
+
+### 2. Integrate executable resolution and noninteractive setup
+Append coderabbit to EXECUTABLE_IDS and add its spec to src/server/executables/catalog.ts. Use the established prefixed binary override, supported install candidates including the local-bin location, and shared locator provenance. Detection and execution use the same resolved absolute executable and child environment.
+
+Add Setup diagnostics reporting presence, version compatibility and selected path/source without signing in or starting a review. Require >=0.9.1; an older or missing binary is a correctable block only when captured YAML enables review and allowance remains. Every YAML-enabled block exposes a direct link using the existing navigation action for Settings > Setup; auth/install problems show actionable diagnostics there. Use bounded version/auth-status probes. Authentication needs the daemon's actual effective HOME; never infer it from the interactive shell.
+
+Preserve check-env credential stripping. Do not allow --api-key in the visible stored command or log credentials. Recommend stored CLI authentication and expose an actionable authentication-needed state; installation/login is an operator setup action outside the workflow. Disable auto-update for managed review launches through the documented CLI environment policy, while preserving relevant proxy/locale settings. Do not add a new subprocess supervision mechanism.
+
+The adapter's version/auth probes and review launch must respect the executable-contracts test registry and all scoped environment exclusions. Do not use which, command -v, a private PATH scanner or a new login-shell probe in production.
+
+### 3. Capture the exact reviewed comparison
+Extend attempt execution context additively with CodeRabbit-specific comparison metadata. Use the run/binding's repository, never the session's primary repository by assumption. Resolve captured abbreviated heads with the existing resolveCapturedCommit helper; record a full oid.
+
+Resolve the configured baseRef to a commit and compute merge-base with that head using bounded safe Git argv helpers in the correct repository. Reject unknown/ambiguous refs and unsupported comparisons before review. Persist configured ref, resolved base tip, merge-base oid, full head, interpreter version, optional command rule revision and captured YAML source/digest/enablement before allowing the review child to start.
+
+Freeze identity across retry of the same submission. New repair submissions capture their own comparison identity. Repository refs moving later cannot rewrite past evidence. Do not update remote refs automatically. Record the comparison prominently enough to diagnose stale local refs.
+
+Capture dirty state from the submission's actual checkout/content identity, not the lease. After YAML/allowance gating, if uncommitted changes would make the reviewed snapshot differ from the submission, block and explain that a commit and new submission are needed. Do not secretly commit the user's work, review the prior HEAD as if current, or apply an overlay in this phase.
+
+Invoke the recipe through check-runtime/check-spawn in the lease at the pinned head:
+review --agent --gate <severity> --committed --base-commit <merge-base-oid>
+Freeze the effective timeout and policy already introduced in Phase 1. If expected comparison is empty, retain explicit no-change provenance; disagreement with a nonempty diff blocks.
+
+### 4. Parse and retain structured findings
+Add a focused server interpreter module, proposed coderabbit-result.ts, with pure parsing/state-transition tests. Receive stdout chunks before generic tail/raw retention clipping. Never parse merged stderr as NDJSON. Decode incrementally across chunk boundaries; cap records at 256 KiB, findings at 1,000 and normalized findings bytes at 4 MiB. These are additive to the raw 2 MiB attempt cap and share Phase 1's 64 MiB run quota.
+
+Validate finding severity and required fields; retain title/comment/codegenInstructions/suggestions/path/line range as untrusted text. Validate paths for display, but never execute suggested commands or use paths as artifact filesystem locators. Tolerate optional fields and unknown additive event types. Malformed JSON or invalid critical known events makes the result incomplete, not an empty clean review.
+
+Give retained findings stable per-attempt ids. Persist normalized findings through Phase 1's artifact service with a new findings kind and machine-readable content; do not copy them into a second mutable findings ledger. Reserve storage before success, publish the complete artifact atomically, and include a compact counts/identity manifest in the attempt outcome. Persistence failure blocks CodeRabbit because lost review findings cannot support a successful review.
+
+Use the official terminal-event contract:
+- no pass before a terminal complete event and process exit;
+- exit 0 with successful passed gate and complete coverage passes;
+- exit 2 with complete blocked gate produces a review-finding failure;
+- exit 1, missing completion, failed outcome, positive unreviewedFileCount, contradictory gate/exit, gate-incomplete reused review, malformed semantic stream or semantic capacity overflow blocks;
+- completed_with_warnings without unreviewed files can pass only if other completeness/gate checks agree;
+- review_skipped is only a successful explicit skip when consistent with an empty pinned comparison.
+
+Heartbeat events update observable progress if supported, but never extend a fixed hard timeout without a separate explicit policy. Keep the 45-minute default bounded; record expectedDuration as diagnostic. An error/action_required/auth/usage/rate-limit event cannot be cleared by a later superficial summary. Do not automatically use credits or retry before a known vendor wait expires.
+
+Continue consuming/draining safely after parsing fails, preserve bounded diagnostics, and let existing teardown/recovery finish. A full raw log is not required when the complete independent findings artifact and terminal result are retained. Conversely, a raw tail with a success sentence is never enough.
+
+### 5. Integrate outcomes, repair and retry
+Return a typed interpreter result through the existing Command outcome path. Distinguish warning skip, completed pass, completed review-finding fail and action-required incomplete block. Enforce YAML/allowance gating before version/auth probes or review launch. Every skipped result carries an explicit warning; every observed availability failure carries a visible error. YAML-enabled blocks include a Settings > Setup action alongside the specific remedy, and no false/missing/invalid YAML state can produce a CodeRabbit unavailable block. Keep generic slots' exit behavior unchanged. The confidence of an observed exit must not be presented as certainty that a CodeRabbit claim is true.
+
+Failure summaries include comparison identity, threshold, counts and a bounded selection of finding titles/locations, plus exact output-reader arguments for the full retained findings. Preserve every retained finding including advisory severities. Run detail and get_workflow_run expose compact metadata, not multi-megabyte output. Downstream Personas receive the summary/provenance through upstream command evidence, within existing model budgets; do not imply they fetched an artifact they cannot access.
+
+Repair instructions tell the session to inspect all retained actionable findings and verify them before modifying code. Valid findings are fixed on the task branch. A false-positive explanation does not silently alter the gate: the session surfaces it for an explicit operator decision and the existing node-disable/recovery controls record the bypass. No automatic clearing of CodeRabbit history, hidden severity change or extra review-thread mutation.
+
+Ordinary repair resubmission reviews the new captured commit. Keep Phase 1 slot-level accounting shared by duplicate CodeRabbit nodes. Use the root plan's run allowance across all CodeRabbit nodes; repeated nodes can spend it sooner. Exhaustion skips with a visible warning, does not check CLI availability, and does not block or silently pass. Do not automatically extend the allowance to match the workflow repair-round count. An incomplete retry uses frozen comparison identity and existing bounded attempt machinery. Auth/config/usage blocks do not consume repair rounds or create automatic retry storms. Preserve max repair-round handling, operator grants and full-restart behavior.
+
+### 6. Add optional No-Mistakes stage without coupling custom workflows
+Append the next immutable built-in No-Mistakes version through the existing version-generation owners. Add stable new CodeRabbit node/join ids once. Insert one evaluation stage after the existing typecheck/test/lint join and before Intent/Coverage Personas. Preserve subsequent Persona execution settings, evidence readiness, PR action and Inspector policy.
+
+The same Command must work in a freshly created custom workflow and in a custom stage group. Do not branch execution on a workflow slug or require a No-Mistakes binding. Use the root plan's YAML-driven gate even when no catalog override exists. A repository without explicit YAML enablement skips with a warning and never launches the binary. Only an enabled review with remaining allowance can block on unavailability; exhausted allowance skips regardless of enablement. Operator-disabled nodes remain distinguishable from earned approval.
+
+Pin regression tests for all previous built-in version graphs/hashes and prove that existing bindings stay on their version. A user explicitly upgrades a binding to receive the new stage; no background rebinding. Do not add CodeRabbit to unrelated built-ins.
+
+### 7. Finish UI, docs and evidence
+CodeRabbit fields live within CommandLibrary. Run details show YAML enablement source/digest, threshold, reviewed head/base, severity counts, remaining allowance, complete/incomplete/skipped status, warning/error diagnostics and retained findings access using Phase 1 readers. Surface these diagnostics in compact session evidence too. Existing blocked recovery actions include a working Settings > Setup navigation link for every YAML-enabled block, plus any trust, base-ref, commit or vendor-limit remedy. Do not turn warnings into earned approval. Use the shared code/text display and scrolling components; no raw HTML rendering or new navigation section.
+
+Update docs/workflows.md, library-and-line.md, configuration.md, worktrees-and-checks.md and Setup documentation for installation/auth prerequisites, committed-only scope, YAML enablement, warning skips and Setup-linked error blocks, output access, usage limits, rerun cost and false-positive handling. Keep CLI local reviews separate from existing GitHub CodeRabbit thread follow-up. Do not hand-edit generated outputs or CHANGELOG.md.
+
+## Verification
+Parser tests use vendor-shaped fake fixtures with provenance and the installed help/official documented field contract. Cover every table row above, partial stdout chunks, UTF-8 boundaries, stderr noise, oversized records, advisory-only findings, unknown additive fields, duplicate/contradictory completion and semantic-output retention failure.
+
+Runtime/integration tests cover:
+- YAML true with no catalog override runs; optional tuning and its removal do not change enablement;
+- absent file/key, false, string "true", malformed/duplicate/multi-document/oversized YAML, unreadable source and attempted path escape skip with warning and no version/auth/review subprocess; invalid/unreadable states also surface an error;
+- the supplied schema-comment/inheritance example enables locally; remote inheritance/defaults cannot enable a missing key;
+- YAML-enabled absent/old/unauthenticated tool or denied trust blocks with visible error and Setup link, without code-fix packet; non-enabled unavailable states never block;
+- captured YAML is stable across retry and refreshed for a new submission, including changed/uncommitted YAML; repository attribution remains isolated;
+- timeout, rate-limit delay, credit request, cancelled group and restart do not pass;
+- exact head/base with dirty worktree refusal, moved base ref during retry, empty diff, ambiguous base and two repositories;
+- findings before an early raw-output truncation remain retrievable through MCP;
+- repair at a new head, the last permitted execution and the next skipped attempt, exhausted shared budget with missing CLI, duplicate nodes and explicit operator disable; each skip warns and exhaustion never blocks;
+- compatibility with Phase 1 generic slots, old rows, CAS/legacy writes and old graph versions.
+
+Playwright must cover Library tuning/save/reload and derived policy display, YAML-enabled execution without a saved override, missing/false/invalid YAML warnings, Setup path/version/auth state, and clicking an enabled block's Setup link through to Settings > Setup. Also cover arbitrary custom workflows, grouped-stage behavior, No-Mistakes YAML gating, exhaustion warnings even with a missing CLI, failed-findings repair presentation and reader access, incomplete-review block/retry and old-binding stability. Add e2e/fixtures/fake-coderabbit.mjs with an explicit binary override through the executable registry, isolated HOME and deterministic NDJSON scripts. Fake agents and GitHub calls remain enabled. No paid or network CodeRabbit review is used.
+
+Use AGENTS.md's isolated node:test loader for focused files. Run typecheck, lint, npm test, build, smoke and test:e2e. Extend executable-contracts and MCP tool registration/smoke checks. Validate UI geometry and modal insets if a modal is introduced. Evidence is gitignored and attached to the PR.
+
+## Exit and merge criteria
+One mission-control PR delivers the complete optional feature. All R1/R4-R7 and reviewer-specific R8/R9 acceptance cases pass; Phase 1 regressions remain green. An operator can enable CodeRabbit in YAML without extra Library configuration, place it in a custom workflow, inspect/retrieve findings, repair, and obtain a fresh result. Disabled/not-enabled, budget-exhausted and incomplete states are accurately distinguished; warnings/errors and Setup navigation are observable.
+
+No-Mistakes upgrades are explicit. No GitHub/release/CI policy is changed and no automatic model spend occurs in tests. Real-account smoke validation, if not performed, is reported precisely rather than claimed.
+
+## Downstream handoff
+No later phase is needed. Preserve artifact identity/retention and append-only command/built-in version contracts for future integrations. A future provider can reuse the generic command surfaces but must define its own completion semantics.
+
+## Cross-phase audit
+2026-10-30: Re-read root and Phase 1 contracts. Findings use the same retained-output quota, authorization and paging service; interpreter input is the pre-truncation stdout stream, not the 4 KB tail. Typed tuning stays in catalog CAS while captured repository YAML alone owns enablement; generic old slots retain argv. The root plan owns CodeRabbit allowance and conditional blocking, with execution-budget exhaustion always nonblocking. Block states use Phase 1 engine ownership. Comparison metadata is reviewer-specific and introduced here without changing generic capture semantics. No temporary external service, future cleanup phase or extra workflow engine is required.

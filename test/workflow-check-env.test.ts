@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
@@ -12,6 +15,7 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 // whose name merely looks like one. Both directions are asserted, because a deny-list that is
 // too eager breaks a build with no legible reason and a deny-list that is too shy leaks.
 
+const goCache = join(tmpdir(), `mission-control-go-build-${userInfo().uid}`);
 /** A realistic minted token: 24 random bytes as hex, which is what `ensureToken` produces. */
 const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
 
@@ -35,6 +39,7 @@ const CASES: ReadonlyArray<{ name: string; value?: string; kept: boolean; why: s
   { name: "HTTP_PROXY", kept: true, why: "a dependency fetch behind a proxy needs it" },
   { name: "HTTPS_PROXY", kept: true, why: "same" },
   { name: "NO_PROXY", kept: true, why: "same" },
+  { name: "GOCACHE", kept: true, why: "explicit cache settings survive credential scrubbing" },
   { name: "CI", kept: true, why: "ordinary build switch" },
   { name: "NODE_ENV", kept: true, why: "ordinary build switch" },
   { name: "SSH_AUTH_SOCK", kept: true, why: "a git fetch over ssh needs the agent, and the rule is deliberately not 'auth'" },
@@ -102,7 +107,7 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
   );
   assert.deepEqual(
     Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"),
-    ["KEPT", "PATH"],
+    ["KEPT", "PATH", "GOCACHE"],
   );
   assert.ok(scrubbed.PATH, "workflow checks inherit the shared executable search path");
 });
@@ -117,7 +122,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   );
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 
   // Down to a single character, which is where the collateral is worst and the ordering is
@@ -125,7 +130,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   const single = scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a");
   assert.deepEqual(
     { ...single, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -135,7 +140,7 @@ test("a whitespace-only token scrubs nothing, like an unminted one", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), SPACED: "a b", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), SPACED: "a b", GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -146,7 +151,7 @@ test("an unminted token scrubs no values, rather than every value", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me" }, "");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), HOME: "/home/me", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), HOME: "/home/me", GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -161,7 +166,7 @@ test("an undefined value is dropped rather than passed through as undefined", ()
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", EMPTY: undefined }, TOKEN);
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -170,4 +175,57 @@ test("credentialShapedName is the name rule on its own", () => {
   assert.equal(credentialShapedName("PATH"), false);
   // The one that matters most: a variable this repository has never heard of.
   assert.equal(credentialShapedName("SOME_FUTURE_TOOL_TOKEN"), true);
+});
+
+test("git's GIT_CONFIG family never reaches a Command, whatever shape it arrives in", () => {
+  // Never forwarded: a config key can carry a secret in its URL subsection, and a value can carry
+  // one too, neither of them name-shaped. And always whole: git refuses to start at all under a
+  // partial family, which is what the name rule used to leave behind by taking KEY_<n> alone.
+  const shapes: Record<string, NodeJS.ProcessEnv> = {
+    "complete": { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "credential in a key": {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "url.https://user:secret-in-key@example.invalid/.insteadOf",
+      GIT_CONFIG_VALUE_0: "https://example.invalid/",
+    },
+    "credential in a value": {
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: "Authorization: Bearer secret-in-value",
+    },
+    "daemon token in a value": { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: TOKEN },
+    "missing a promised entry": { GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "an unreadable count": { GIT_CONFIG_COUNT: "0.0", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "an oversized count": { GIT_CONFIG_COUNT: "9".repeat(400), GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "entries without a count": { GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+  };
+  for (const [shape, family] of Object.entries(shapes)) {
+    const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8", ...family }, TOKEN);
+    for (const name of Object.keys(family)) assert.equal(scrubbed[name], undefined, `${shape}: ${name} survived`);
+    assert.equal(scrubbed.HOME, "/home/me", shape);
+    assert.equal(scrubbed.LANG, "en_US.UTF-8", shape);
+    assert.ok(!JSON.stringify(scrubbed).includes("secret-in-"), shape);
+    const listed = spawnSync("git", ["config", "--list"], { env: scrubbed, encoding: "utf8" });
+    assert.equal(listed.status, 0, `${shape}: git reads its config under what remains: ${listed.stderr}`);
+  }
+});
+
+test("the family has to go whole: git refuses to start under the half the name rule would leave", () => {
+  // The premise for removing all of it, asserted: COUNT without its KEY is fatal to every git.
+  const half = { PATH: process.env.PATH, GIT_CONFIG_COUNT: "1", GIT_CONFIG_VALUE_0: "true" };
+  assert.equal(credentialShapedName("GIT_CONFIG_KEY_0"), true, "the name rule alone would take the key");
+  assert.equal(spawnSync("git", ["config", "--list"], { env: half, encoding: "utf8" }).status, 128);
+});
+
+test("a Command never inherits make's recursion state from whatever launched the daemon", () => {
+  // Under `make start` or `make test` the daemon carries MAKELEVEL, so a configured `make test`
+  // would speak as `make[1]:` - read as a sub-make inside a recipe that ran - and a repository
+  // with no `test` target would be reported as a code failure instead of a missing Command.
+  const scrubbed = scrubCheckEnv({
+    PATH: "/usr/bin", HOME: "/home/me", MAKELEVEL: "1", MAKEFLAGS: " -j4 --jobserver-auth=3,4",
+    MFLAGS: "-j4", MAKEOVERRIDES: "${-*-command-variables-*-}", MAKE_CONFIG: "kept",
+  }, TOKEN);
+  for (const name of ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"]) {
+    assert.equal(scrubbed[name], undefined, name);
+  }
+  assert.equal(scrubbed.HOME, "/home/me");
+  assert.equal(scrubbed.MAKE_CONFIG, "kept", "only make's own recursion variables are removed");
 });

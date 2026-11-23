@@ -44,8 +44,63 @@ import { locateExecutable } from "../executables/locator.ts";
 // working in. `--no-optional-locks` (see `gitArgs`) declines that write, so observation can
 // never contend with, or mutate, the checkout it is observing.
 
-/** The dominant timeout for a local git read in this daemon (diff, actions, pool all use it). */
-const GIT_READ_TIMEOUT_MS = 15_000;
+/**
+ * The dominant timeout for a local git read in this daemon (diff, actions, pool all use it).
+ *
+ * Counted in time this process could actually RUN - see `awakeTimeout` - never in wall time.
+ */
+export const GIT_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * The longest an in-flight read waits between checks of its budget. A check charges at most two
+ * ticks, so the tick is also what bounds how much of a suspension can be mistaken for running.
+ */
+const BUDGET_TICK_MS = 1_000;
+
+/**
+ * Call `onExpire` once THIS PROCESS has been running for `budgetMs` - not once `budgetMs` of wall
+ * time has gone by. Returns a canceller.
+ *
+ * The difference is not academic. A read's budget exists to bound a HUNG git, but a single
+ * `setTimeout` measures wall time, and on macOS Node's timer clock keeps counting while the
+ * machine is asleep: on this host `process.hrtime` matches wall time since boot to within
+ * seconds across ~67 hours of recorded sleep. So a Mac that idle-sleeps with a read in flight -
+ * the observed case slept 451s, and the probe's test took 449s - wakes with that timer hundreds
+ * of seconds overdue. libuv's poll returns on the expired timeout before the resumed git has
+ * produced any output, the timers phase runs first, and a read needing milliseconds is
+ * SIGKILLed and reported as `git rev-parse did not complete`. Nothing was hung; the whole
+ * machine had stopped.
+ *
+ * So the budget is spent in ticks, and one tick charges at most two ticks' worth. A gap far
+ * longer than that is time this process did not run at all - the machine asleep, the process
+ * stopped, the event loop blocked - and it is not charged. A genuinely hung read still runs out
+ * after `budgetMs` of running, to within one tick, so this bounds exactly what it always meant
+ * to and no more: it is not a larger budget.
+ *
+ * The tick defaults to a tenth of the budget, capped at `BUDGET_TICK_MS`, so the two-tick charge
+ * stays small RELATIVE to the budget at every scale. A fixed tick longer than a short budget
+ * would let one check charge more than the whole budget, which is a wall clock again. For the
+ * production 15s budget the tick is the full second either way.
+ */
+export function awakeTimeout(
+  budgetMs: number,
+  onExpire: () => void,
+  tickMs: number = Math.min(BUDGET_TICK_MS, Math.max(1, budgetMs / 10)),
+): () => void {
+  let spent = 0;
+  let last = performance.now();
+  const timer = setInterval(() => {
+    const at = performance.now();
+    spent += Math.min(at - last, tickMs * 2);
+    last = at;
+    if (spent < budgetMs) return;
+    clearInterval(timer);
+    onExpire();
+  }, tickMs);
+  // Never the reason a process stays alive, as the single timeout before it was not either.
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 /**
  * Bytes of a single git command's stdout we are willing to take.
@@ -220,10 +275,12 @@ function gitArgs(args: string[]): string[] {
   return ["--no-optional-locks", ...args];
 }
 
-async function gitStream(
+export async function gitStream(
   cwd: string,
   args: string[],
   onChunk: (chunk: Buffer) => void,
+  // A test seam only: production always takes the module's budget.
+  budgetMs: number = GIT_READ_TIMEOUT_MS,
 ): Promise<GitStreamResult> {
   const executable = await locateExecutable("git");
   if (!executable) return { code: null, overflowed: false, died: true };
@@ -232,17 +289,18 @@ async function gitStream(
     let overflowed = false;
     let settled = false;
     let child: ReturnType<typeof spawn>;
+    let cancelBudget = (): void => {};
     const finish = (result: GitStreamResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cancelBudget();
       resolve(result);
     };
-    const timer = setTimeout(() => {
+    // Spent only while this process runs - see `awakeTimeout`.
+    cancelBudget = awakeTimeout(budgetMs, () => {
       child?.kill("SIGKILL");
       finish({ code: null, overflowed, died: true });
-    }, GIT_READ_TIMEOUT_MS);
-    timer.unref?.();
+    });
     try {
       child = spawn(executable.path, gitArgs(args), {
         cwd,

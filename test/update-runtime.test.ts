@@ -1,10 +1,55 @@
 import assert from "node:assert/strict";
+import childProcess, { type ExecFileException, type ExecFileOptionsWithStringEncoding } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { checkUpdateRuntime, inspectUpdateRuntime, updateNodeProblem } from "../src/main/update-runtime.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
+
+// Canned probe replies need no Node startup. Under suite contention that startup
+// can exhaust the real five-second probe deadline before the fixture prints JSON.
+// Keep actual Node execution for the PATH/child-runtime and npm-shebang checks.
+async function probeOutput(path: string, output: string) {
+  await writeFile(path, `#!/bin/sh\nprintf '%s\\n' '${output.replace(/'/g, "'\\''")}'\n`, { mode: 0o755 });
+}
+
+type ExecFileCallback = (error: ExecFileException | null, stdout: string, stderr: string) => void;
+type ProbeStub = (
+  executable: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+  callback: ExecFileCallback,
+) => childProcess.ChildProcess | null;
+
+/**
+ * Run the runtime probes for real, under a deadline a contended host can meet.
+ *
+ * The child-PATH and npm-shebang probes really start Node, which is the point of them.
+ * Their production deadline is five seconds, and a Node startup slower than that under
+ * `npm test` contention is the host being busy, not a runtime the probe should refuse: it
+ * failed "then recover" with `ok: false` and would fail the refusal cases on their message.
+ * Only a call carrying exactly the production probe deadline is relaxed, so anything else
+ * reaching `execFile` behaves as it always did. `stub` answers a probe without starting a
+ * process, for the selected-runtime replies that need no Node at all.
+ */
+function realProbesWithRelaxedDeadline(t: TestContext, stub?: ProbeStub): void {
+  const realExecFile = childProcess.execFile;
+  const probes = t.mock.method(childProcess, "execFile", ((
+    executable: string,
+    args: string[],
+    options: ExecFileOptionsWithStringEncoding,
+    callback: ExecFileCallback,
+  ) => {
+    if (options?.timeout !== 5_000) return realExecFile(executable, args, options, callback);
+    const stubbed = stub?.(executable, args, options, callback);
+    if (stubbed) return stubbed;
+    return realExecFile(executable, args, { ...options, timeout: 60_000 }, callback);
+  }) as typeof childProcess.execFile);
+  syncBuiltinESMExports();
+  t.after(() => { probes.mock.restore(); syncBuiltinESMExports(); });
+}
 
 test("Node runtime policy shares the installer's minimum and gives actionable copy", () => {
   for (const version of ["18.20.0", "22.0.0", "23.11.0", "unknown"]) {
@@ -16,18 +61,30 @@ test("Node runtime policy shares the installer's minimum and gives actionable co
   for (const version of ["24.0.0", "26.7.0"]) assert.equal(updateNodeProblem(version), null);
 });
 
-test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async () => {
+test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-preflight-"));
   try {
     const selected = join(cwd, "selected-node");
     const npm = join(cwd, "npm");
     const node = { path: selected, env: { ...process.env, PATH: "/usr/bin:/bin" } };
-    const identity = async (version: string) => writeFile(selected, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version, execPath: process.execPath }))});\n`, { mode: 0o755 });
+    // Even a shell printing canned JSON can miss the production deadline on a busy host.
+    // Double only this selected-runtime reply; child PATH and npm shebang probes stay real.
+    let selectedOutput = "";
+    let selectedError: ExecFileException | null = null;
+    realProbesWithRelaxedDeadline(t, (executable, _args, options, callback) => {
+      if (executable !== selected) return null;
+      assert.equal(options.timeout, 5_000, "production probes remain bounded");
+      queueMicrotask(() => callback(selectedError, selectedOutput, ""));
+      return new childProcess.ChildProcess();
+    });
+    const identity = (version: string) => {
+      selectedOutput = JSON.stringify({ version, execPath: process.execPath });
+    };
     // npm fails unless the real runtime's directory was placed ahead of the inherited PATH.
     await writeFile(npm, `#!/usr/bin/env node\nif(process.execPath!==${JSON.stringify(process.execPath)}) process.exit(9); console.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
-    await identity("22.0.0");
+    identity("22.0.0");
     assert.deepEqual(await inspectUpdateRuntime(node, { path: "/missing/npm" }, cwd), { ok: false, message: updateNodeProblem("22.0.0") });
-    await identity(process.versions.node);
+    identity(process.versions.node);
     const runtime = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(runtime.ok, true);
     if (runtime.ok) {
@@ -41,35 +98,40 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
     });
     assert.equal((await inspectUpdateRuntime(node, null, cwd)).ok, false);
     assert.equal((await inspectUpdateRuntime(node, null, cwd, false)).ok, true, "installing an already staged bundle does not require npm");
-    await writeFile(selected, `#!${process.execPath}\nconsole.log("not-json");\n`, { mode: 0o755 });
+    selectedOutput = "not-json";
     const malformed = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(malformed.ok, false);
     if (!malformed.ok) assert.match(malformed.message, /could not verify/);
+    identity(process.versions.node);
+    selectedError = Object.assign(new Error("probe deadline exceeded"), { killed: true, signal: "SIGTERM" as const });
+    assert.deepEqual(await inspectUpdateRuntime(node, { path: npm }, cwd), malformed,
+      "a failed probe still refuses preparation with verification guidance");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test("an npm failure or mismatched child Node refuses preparation", async () => {
+test("an npm failure or mismatched child Node refuses preparation", async (t) => {
+  realProbesWithRelaxedDeadline(t);
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-mismatch-"));
   try {
     const npm = join(cwd, "npm");
-    await writeFile(npm, `#!${process.execPath}\nprocess.exit(1);\n`, { mode: 0o755 });
+    await writeFile(npm, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const node = { path: process.execPath, env: process.env };
     assert.equal((await inspectUpdateRuntime(node, { path: npm }, cwd)).ok, false);
-    await writeFile(npm, `#!${process.execPath}\nconsole.log(JSON.stringify({npm:"11.0.0",node:"22.0.0"}));\n`, { mode: 0o755 });
+    await probeOutput(npm, JSON.stringify({ npm: "11.0.0", node: "22.0.0" }));
     const oldNpmNode = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(oldNpmNode.ok, false);
     if (!oldNpmNode.ok) assert.match(oldNpmNode.message, /npm is using an incompatible.*found 22.0.0/);
     const differentSupportedVersion = `${Number(process.versions.node.split(".")[0]) + 1}.0.0`;
-    await writeFile(npm, `#!${process.execPath}\nconsole.log(JSON.stringify({npm:"11.0.0",node:${JSON.stringify(differentSupportedVersion)}}));\n`, { mode: 0o755 });
+    await probeOutput(npm, JSON.stringify({ npm: "11.0.0", node: differentSupportedVersion }));
     const differentNpmNode = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(differentNpmNode.ok, false);
     if (!differentNpmNode.ok) assert.match(differentNpmNode.message, /npm is using a different Node.js version/);
     const bin = join(cwd, "bin");
     await mkdir(bin);
     const shim = join(cwd, "shim");
-    await writeFile(shim, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version: process.versions.node, execPath: join(bin, "other-node") }))});\n`, { mode: 0o755 });
+    await probeOutput(shim, JSON.stringify({ version: process.versions.node, execPath: join(bin, "other-node") }));
     const mismatch = await inspectUpdateRuntime({ ...node, path: shim }, { path: npm }, cwd);
     assert.equal(mismatch.ok, false);
     if (!mismatch.ok) assert.match(mismatch.message, /does not match/);
@@ -83,6 +145,7 @@ test("checking again forces discovery refresh and uses its replacement runtime",
   const node = join(cwd, "selected-node");
   const npm = join(cwd, "selected-npm");
   const calls: string[] = [];
+  realProbesWithRelaxedDeadline(t);
   // Only discovery is doubled. The selected programs and all runtime checks run for real.
   t.mock.method(executableLocator, "refresh", async (options: { force?: boolean }) => {
     assert.deepEqual(options, { force: true });
@@ -93,12 +156,12 @@ test("checking again forces discovery refresh and uses its replacement runtime",
     return { path: spec.id === "node" ? node : npm, env: process.env };
   });
   try {
-    await writeFile(node, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version: "22.0.0", execPath: process.execPath }))});\n`, { mode: 0o755 });
+    await probeOutput(node, JSON.stringify({ version: "22.0.0", execPath: process.execPath }));
     await writeFile(npm, `#!/usr/bin/env node\nconsole.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
     const first = await checkUpdateRuntime(cwd);
     assert.equal(first.ok, false);
     if (!first.ok) assert.match(first.message, /found 22.0.0/);
-    await writeFile(node, `#!${process.execPath}\nconsole.log(JSON.stringify({version:process.versions.node,execPath:process.execPath}));\n`, { mode: 0o755 });
+    await probeOutput(node, JSON.stringify({ version: process.versions.node, execPath: process.execPath }));
     const second = await checkUpdateRuntime(cwd);
     assert.equal(second.ok, true);
     if (second.ok) assert.equal(second.env.MISSION_NPM_BIN, npm);

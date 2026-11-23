@@ -113,6 +113,14 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     detail: asJson({ nodeId: "check-1", attempts: 2, error: "lease unresolved" }),
     kind: "check_cleanup",
   },
+  command_action_required: {
+    detail: asJson({
+      nodeId: "check-1",
+      attempts: 1,
+      error: "Command requires operator action",
+    }),
+    kind: "command_action_required",
+  },
   round_limit: {
     detail: asJson({ maxRepairRounds: 5, parkedPhase: "pr_handoff" }),
     kind: "round_limit",
@@ -136,6 +144,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   inspector_review_backoff: { detail: asJson(gate), kind: "none" },
   inspector_review_error: { detail: asJson(gate), kind: "none" },
   inspector_unadopted_pr: { detail: asJson(gate), kind: "none" },
+  inspector_reviewed_tree_changed: { detail: asJson({ ...gate, waitReason: "reviewed_tree_changed" }), kind: "none" },
   inspector_working_tree_not_pushed: { detail: asJson(gate), kind: "none" },
   pr_handoff: { detail: asJson(gate), kind: "none" },
 
@@ -1115,7 +1124,7 @@ test("every blocked-capable phase has a clause that beats the fallback", () => {
   // from the registry cannot quietly shrink what this test walks.
   const blockedCapable = WORKFLOW_RUN_PHASES
     .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
-  assert.equal(blockedCapable.length, 29);
+  assert.equal(blockedCapable.length, 30);
 
   // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
   // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.

@@ -1,4 +1,4 @@
-import type { WorktreesConfig } from "./protocol.ts";
+import type { WorktreeClaim, WorktreesConfig } from "./protocol.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
 export const WORKTREE_INVENTORY_LIMITS = {
@@ -26,10 +26,26 @@ export type WorktreeRiskKey =
   | "quarantined"
   | "over-capacity"
   | "legacy-unverifiable"
-  | "foreign";
+  | "foreign"
+  /** Git no longer recognizes the slot, so nothing in it can be checked before deletion. */
+  | "unverifiable";
+
+/**
+ * Who may hold a native slot's lease: the one list the allocator validates against, the slot
+ * row's owner is read back through, and Settings names. `warm` is maintenance holding the slot
+ * for a moment, such as a seed copying from it, and is never a task.
+ */
+export const WORKTREE_OWNER_KINDS = ["task", "check", "manual", "warm"] as const;
+export type WorktreeOwnerKind = (typeof WORKTREE_OWNER_KINDS)[number];
+
+export function isWorktreeOwnerKind(value: unknown): value is WorktreeOwnerKind {
+  return typeof value === "string" && (WORKTREE_OWNER_KINDS as readonly string[]).includes(value);
+}
 
 export interface WorktreeOwnerView {
-  kind: "task" | "check" | "manual";
+  /** Persisted task retention deadline, when a matching activity clock exists. */
+  cleanupDueAt?: number;
+  kind: WorktreeOwnerKind;
   key: string;
   label: string;
 }
@@ -41,6 +57,95 @@ export interface WorktreeProcessSummary {
 }
 
 export type WorktreeDefaultRelation = "merged" | "unmerged" | "unknown";
+
+/**
+ * Where a claim variable's value would come from for a step that names it. Never the value.
+ */
+export type WorktreeClaimVariableSource = "daemon" | "loginShell";
+
+export interface WorktreeClaimVariableView {
+  name: string;
+  present: boolean;
+  /** Null when missing: unset or empty in both, or carrying the daemon's own token. */
+  source: WorktreeClaimVariableSource | null;
+}
+
+/**
+ * A slot's dependency state as Settings shows it.
+ *
+ * - `never`: no claim has run in this slot.
+ * - `current`: the last claim succeeded and its fingerprint matches the default branch's (or
+ *   the default could not be read, or the claim lists no fingerprint paths).
+ * - `stale`: the last claim succeeded, but at a fingerprint the last fetched default branch no
+ *   longer has. The next lease runs the steps again.
+ * - `installing`: a claim is running in this slot right now.
+ * - `failed`: the last claim failed, timed out or was stopped.
+ * - `interrupted`: a claim was cut off by a restart. The next claim starts cold.
+ */
+export type WorktreeSlotDependencyState =
+  | "never"
+  | "current"
+  | "stale"
+  | "installing"
+  | "failed"
+  | "interrupted";
+
+/** What every dependency state carries. */
+interface WorktreeSlotDependenciesBase {
+  /** The commit the slot's recorded fingerprint was taken at. */
+  fingerprintSha: string | null;
+  /** When the last claim settled. */
+  claimedAt: number | null;
+}
+
+/**
+ * A failed claim, field by field. The daemon decodes its own record; the browser never parses
+ * prose. Claim variable values are removed from `reason` and `tail` before they are stored.
+ */
+export interface WorktreeClaimFailureView {
+  /** Null, with `stepCount` and `command`, only for a failure an earlier build recorded as text. */
+  step: number | null;
+  stepCount: number | null;
+  command: string | null;
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+  /**
+   * An earlier build stored this failure's output before values were redacted from it, so the
+   * daemon does not send it at all. `tail` is then empty.
+   */
+  tailWithheld: boolean;
+}
+
+/**
+ * A slot's dependency state. Each state carries exactly its own facts, so a reader switches on
+ * `state` and never has to know which other fields happen to be null alongside it.
+ */
+export type WorktreeSlotDependenciesView =
+  | (WorktreeSlotDependenciesBase & { state: "never" })
+  | (WorktreeSlotDependenciesBase & {
+      state: "current";
+      /** The default-branch commit it was judged against; null when none could be. */
+      defaultSha: string | null;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "stale";
+      /** The fetched default-branch commit whose dependencies differ. */
+      defaultSha: string;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "installing";
+      /** The running claim's own id, which Stop names so it can only ever stop this claim. */
+      claimId: string;
+      /** When this claim began, for its elapsed time. */
+      startedAt: number;
+      /** Null until the first step starts: the fingerprint is still being read. */
+      step: { step: number; stepCount: number; command: string; startedAt: number } | null;
+    })
+  | (WorktreeSlotDependenciesBase & { state: "failed"; failure: WorktreeClaimFailureView })
+  | (WorktreeSlotDependenciesBase & { state: "interrupted" });
 
 export interface NativeWorktreeSlotView {
   id: string;
@@ -58,8 +163,30 @@ export interface NativeWorktreeSlotView {
   processes: WorktreeProcessSummary;
   diskBytes: number | null;
   quarantineReason: string | null;
+  /**
+   * When the slot entered quarantine. Null when it is not quarantined, or when it was
+   * quarantined by a build that did not record the time.
+   */
+  quarantinedAt: number | null;
+  /**
+   * Whether Reconcile returns this quarantined slot to available once every safety fact is
+   * proven again (a failed observation, holding no lease), or it stays until an operator acts:
+   * a positively bad fact, an unproven mutation, or any quarantine that still holds a lease,
+   * which recovery never releases. Null when the slot is not quarantined.
+   */
+  quarantineRecoverable: boolean | null;
   diagnostic: string | null;
-  actions: Array<"return" | "destroy">;
+  /**
+   * Git no longer recognizes this slot: the repository's worktree list does not name it, and
+   * what is on disk is provably not a worktree (or nothing is). A re-cloned or moved main
+   * checkout leaves every slot like this. Recovery can never prove such a slot through Git,
+   * so Destroy is its only way out, and its preview asks the operator to accept that the
+   * files cannot be checked first.
+   */
+  orphaned: boolean;
+  actions: Array<"return" | "destroy" | "recover">;
+  /** Null when the pool has no dependency claim configured. */
+  dependencies: WorktreeSlotDependenciesView | null;
 }
 
 export interface WorktreeRepositoryView {
@@ -68,7 +195,17 @@ export interface WorktreeRepositoryView {
   root: string;
   commonDirectory: string;
   poolPath: string;
-  policy: { enabled: boolean; maxSlots: number; setupArgv: string[] | null };
+  policy: {
+    enabled: boolean;
+    maxSlots: number;
+    setupArgv: string[] | null;
+    claim: WorktreeClaim | null;
+  };
+  /**
+   * Every variable name the pool's claim lists, once, with whether a step would receive it.
+   * Empty when there is no claim. Values never leave the daemon.
+   */
+  claimVariables: WorktreeClaimVariableView[];
   counts: {
     total: number;
     leased: number;
@@ -125,6 +262,7 @@ export interface WorktreeInventory {
 }
 
 export type WorktreeActionRequest =
+  | { action: "recover"; slotId: string }
   | { action: "return"; slotId: string }
   | { action: "prune"; poolId: string; mode: "safe" | "rightSize" }
   | { action: "reconcile"; poolId: string }
@@ -138,7 +276,13 @@ export type WorktreeActionRequest =
   | {
       action: "legacyReturn";
       owner: { kind: "task" | "check"; id: string; position?: number };
-    };
+    }
+  /**
+   * Remove exactly these idle slots, the set Settings > Storage's idle-cache budget chose.
+   * Every one must still be a safe prune candidate when the preview is built and again when
+   * it runs; one that is not blocks the preview rather than being dropped from it.
+   */
+  | { action: "trimIdle"; slotIds: string[] };
 
 export interface WorktreeActionRisk {
   key: WorktreeRiskKey;
@@ -157,7 +301,19 @@ export interface WorktreeActionAffected {
   diskBytes: number | null;
 }
 
+export interface WorktreeRecoveryCheck {
+  label: string;
+  status: "passed" | "failed" | "unavailable";
+  detail: string;
+}
+
 export interface WorktreeActionPreview {
+  recovery?: {
+    reason: string | null;
+    category: string | null;
+    quarantinedAt: number | null;
+    checks: WorktreeRecoveryCheck[];
+  };
   token: string;
   request: WorktreeActionRequest;
   inventoryRevision: string;
@@ -218,8 +374,12 @@ export interface WorktreeOperationView {
  */
 export function worktreeRetryRequest(operation: WorktreeOperationView): WorktreeActionRequest | null {
   const request = operation.request;
-  if (request.action !== "destroy") return request;
   const removed = new Set(operation.completed.map((target) => target.id));
+  if (request.action === "trimIdle") {
+    const remaining = request.slotIds.filter((id) => !removed.has(id));
+    return remaining.length === 0 ? null : { action: "trimIdle", slotIds: remaining };
+  }
+  if (request.action !== "destroy") return request;
   if (request.target.kind === "slot") return removed.has(request.target.slotId) ? null : request;
   const original = request.target.kind === "slots"
     ? request.target.slotIds

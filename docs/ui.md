@@ -1,16 +1,29 @@
+# Dialog keyboard actions
+
+**Cmd+Enter** (or **Ctrl+Enter**) performs the topmost dialog's default action, such as
+Dispatch now, Send answer, Submit decisions, Save, or a confirmation. It works from any
+control in the dialog. Disabled actions stay disabled, including incomplete questions and
+actions already in flight. Plain Enter and Shift+Enter keep their normal field behavior.
+
+When a review queue contains several questions, the question holding keyboard focus owns
+the shortcut. With focus outside the questions, the first question is next. An incomplete
+question never falls through to a different question's enabled action. Covered dialogs
+cannot act on the shortcut.
+
 # The Line (the pipeline strip above the fleet)
 
-A permanent strip sits above every fleet layout: **intake → backlog → working → review
-→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
-sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
-it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+Unless you switch it off, a strip sits above every fleet layout: **intake → backlog →
+working → review → decide → shipped**. Six stages, wired left to right, each carrying a
+glyph, a count and one sentence - the fleet's whole pipeline in one glance, in the order work
+actually moves through it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
 
-It draws at one of two **densities**, and the shipped default is the shorter one:
+It draws at one of two **densities**, or not at all, and the shipped default is the shorter one:
 
 | Density | Band | What it draws |
 |---------|------|---------------|
 | **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
 | **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
+| **Disabled** | none | No strip. The fleet starts directly under the top bar, except in a **Console** with no session rail to show (an empty fleet, or a filter that matches no session), where the stage dock sits there first. The **Board** keeps its Backlog column, and the **Console** carries the stage drawers in its rail instead (see [With the Line off](#with-the-line-off)). |
 
 The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
 two is handed straight to the conversation pane below - about 11% more of the window on a
@@ -18,8 +31,18 @@ two is handed straight to the conversation pane below - about 11% more of the wi
 and each stage's sentence stays in its tooltip and in its accessible name.
 
 Fold it with the **caret at the right of the strip**, with <kbd>Shift+L</kbd> from the fleet,
-or from **Settings → Display → The Line**. All three write one per-machine preference
+or from **Settings → Display → Top bar → The Line**. All three write one per-machine preference
 (`app_config.ui.lineDensity`), so it survives a reload and cannot disagree with itself.
+The settings section draws a live preview of the strip at the selected density above the
+choices, so you can see what each one changes before leaving the page.
+
+**Disabled** is chosen only in Settings. The caret goes with the strip, and <kbd>Shift+L</kbd>
+neither switches the Line off nor back on, so a stray keypress on the fleet cannot undo the
+choice. It is stored as its own preference (`app_config.ui.lineHidden`) beside the density,
+so switching the Line back on returns to the density it was switched off from, and an older
+build reading the same state simply draws the strip rather than failing to load your display
+preferences. The See work tour still shows the strip, condensed, for its first stop while the tour
+runs, without changing the stored preference.
 
 | Stage | The count is | The sentence says | Amber when |
 |-------|--------------|-------------------|------------|
@@ -73,11 +96,42 @@ a workflow name getting longer or a stage going quiet. The flowing dots on the w
 `prefers-reduced-motion`: with it set, the wires stay and the dots go - condensed draws no
 wires at all, so the setting does not arise there.
 
+### With the Line off
+
+Disabling the Line removes the strip, and the strip is the door to the stage drawers. The
+**Board** still draws a Backlog column. The **Console** has no column for the queue, so while
+the Line is Disabled its session rail carries the drawer stages instead: a row of five buttons
+under the rail's **All sessions** head - ⇊ **Intake**, ☰ **Backlog**, ⌁ **Review**, ⧉ **Decide**
+and ⚑ **Shipped**, each with its count. Working is left out, because the rail is the Working
+stage.
+
+- **They are the strip's buttons, not a copy of them.** Each reads the same `line_summary`
+  fold, keeps the stage's colour (amber when it is waiting on you), carries the same tooltip
+  and accessible name, and opens the same drawer, where a strip-less fleet puts it: under the
+  top bar (and under the dock, when the dock sits there), above the console. A second press closes it, a different stage swaps it, <kbd>esc</kbd> closes it
+  while the keyboard is in the drawer or on the dock, and every close hands the keyboard back
+  to the button that opened it. <kbd>Tab</kbd> and <kbd>⇧</kbd><kbd>Tab</kbd> move along the
+  row like any other buttons, rather than stepping into the reader or cycling the selected
+  session's permission mode as they do on a rail row.
+- **They follow the rail.** The row sits under the head, outside the scrolling rows, so it is
+  never scrolled away. [Folded](#folding-the-session-rail), the rail stacks the five buttons
+  at the foot of its 40px strip, glyph over count. A rail dragged near its narrowest width
+  drops the stage names and keeps every glyph and count. Below 760px, where the Console hides
+  its rail, the rail stays as a band holding only the stage buttons, above the session.
+- **A Console with no rail still has them.** When the fleet is empty, or the filter matches no
+  session, there is no rail to carry the row, so it sits where the strip would have been.
+- **Only while the strip is not drawn.** Switch the Line back on and the dock goes; the strip
+  is the door again. The See work tour borrows the strip while the Line is off, and the dock
+  stands down for that stretch, so there is never a second button for one drawer.
+
 ### The stage drawers
 
 A drawer opens **between the strip and the board**, pushing the board down; closing it hands
-the space straight back. It is not an overlay and it is not inside a layout. The supported
-session layouts keep their geometry in every drawer state, which the geometry tests measure.
+the space straight back. With the Line Disabled there is no strip, so a drawer opened from the
+Console's [stage dock](#with-the-line-off) opens directly under the top bar, above the
+console (below the dock, when the dock sits there). It is not an overlay and it is not inside
+a layout. The supported session layouts keep their geometry in every drawer state, which the
+geometry tests measure.
 
 - **Toggle.** A second click on the same stage closes it. So does <kbd>esc</kbd>, and so does
   the **✕** in its header. Clicking a *different* stage swaps the content in place rather than
@@ -264,7 +318,7 @@ screenshot locators, never repository metadata or filesystem paths. See
 environment line and image locators may contain and what they never contain.
 
 **Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
-has its trusted control click captured by the isolated desktop preload, authorizes that exact
+or Cmd+Enter / Ctrl+Enter has its trusted input event captured by the isolated desktop preload, authorizes that exact
 preview through the desktop shell, and files it without a warning dialog or
 a second button press. The button stays busy through the internal authorization, confirmation,
 and submission requests, so another press cannot race the first one. If the derived content
@@ -321,7 +375,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 
 | Group | Kinds | The second line says |
 | --- | --- | --- |
-| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission`, `resident` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows; a live resident's label and state, found by its name or label, opening its full detail in either [resident placement](residents.md#finding-a-resident) |
 | **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), browse tours, or start a guided tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
@@ -354,7 +408,9 @@ The `page` kind has exactly one member, and that is a statement about the app ra
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
-<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app. While
+the Line is Disabled, the Console's [stage dock](#with-the-line-off) keeps the ⚑ Shipped drawer
+one click away; on the Board, the palette is the only way.
 Fleet, the Library, Runs and Scouts are one press of the segmented control away, and a
 palette row beside a visible door would only be a second door. Scouts has one anyway,
 because the words an operator reaches for - investigation, findings, evidence, research -
@@ -420,6 +476,33 @@ reports the error inline, or in a dashboard banner after dismissal once other di
 close. The banner's **Browse tours** action lets you retry. Already-open windows do not live-sync
 this preference. The legacy one-time orientation flag does not opt anyone out of this picker.
 
+**A new tour is announced once.** A tour listed in `ANNOUNCED_TOURS` (`src/shared/protocol.ts`)
+that a profile has not yet been shown opens the picker one more time, even with **Show tours
+when Mission Control opens** unchecked, with that tour preselected, focused, and tagged **New**
+and the header opening with **New tour:** and its name. The checkbox still shows the saved opt-out. That
+opening, automatic or through **Browse tours**, records the announcement in `announcedTours`, so
+the next window honors the preference again; a refused write simply announces it again next
+time. A fresh profile is born with every announced tour already seen, so it gets the ordinary
+picker with **Set up this machine** previewed. A profile saved by a build before
+`announcedTours` existed is owed every announced tour, which is how **Meet your residents**
+reaches operators who dismissed the picker and opted out before it shipped. Dismissing **Meet
+your residents** midway - Exit before its last stop, however it was started - makes it owed
+again, so the next window's picker features it once more; reaching **Pin it open** is seeing it
+through, and Finish or Exit there leaves the record alone. That debt lives only in this browser,
+under `mission.tourAnnouncementsOwed` in `localStorage`, written at the moment of the midway Exit.
+The daemon is never asked to take the tour back off `announcedTours`: that list is written whole,
+so a re-arm landing late could undo an announcement another window had already shown. The debt
+is settled once any window's picker opening saves its record write, or the tour is seen through;
+a record write settles only the reminders that existed when it began, so a midway Exit made while
+it was still in flight stays owed. Every picker opening reads the debt afresh, including the automatic
+one at startup when it had to wait behind another dialog, so a tour another window has already
+announced and settled is not featured, recorded, or opened past an opt-out a second time. An
+automatic opening on account of an announcement also re-reads `announcedTours` from the daemon
+just before it opens, because preferences do not live-sync between windows and another window
+may have announced the tour meanwhile.
+It can only make a tour owed again, never mark one as seen, and a different browser does not
+see it.
+
 **Dismiss**, the close button, Escape, or the backdrop closes the picker for the current
 document. Refocusing, navigating, or reconnecting does not reopen it. **Browse tours** in
 **Settings > Help & tours** or the command palette reopens it regardless of the saved preference.
@@ -427,16 +510,17 @@ The existing direct tour shortcuts remain. A dirty draft keeps the picker beneat
 leave dialog: Cancel keeps the draft; Discard and leave changes route, then **Start this tour**
 must be pressed again.
 
-Four tours are registered, and none stores progress or resumes. Exiting a tour restores the
+Five tours are registered, and none stores progress or resumes. Exiting a tour restores the
 page, asset, and control it started from, unless its entry declares an exit route because
-handing that page over is the point; see **Follow the review** and **Set up this machine**
-below. Finishing or exiting a
+handing that page over is the point; see **Follow the review**, **Set up this machine** and
+**Meet your residents** below. Finishing or exiting a
 tour does not reopen the picker. Each tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md),
-[`tours/library.md`](../tours/library.md), [`tours/workflows.md`](../tours/workflows.md), and
-[`tours/setup.md`](../tours/setup.md). Their H1 is
+[`tours/library.md`](../tours/library.md), [`tours/workflows.md`](../tours/workflows.md),
+[`tours/setup.md`](../tours/setup.md), and [`tours/residents.md`](../tours/residents.md). Their
+H1 is
 the tour name, each H2 is a stage title,
 and the prose below it is the stage description. Edit those Markdown files and run
 `npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
@@ -450,7 +534,8 @@ work tour** in the palette's **Do** group. It teaches
 the operating half of the product and runs an isolated evaluation of `driver.js@1.8.0`. It has
 no resume state, new top-bar control, or chapter beyond this one guided sequence:
 
-1. **Fleet and the Line** spotlights the permanent pipeline strip.
+1. **Fleet and the Line** spotlights the pipeline strip, drawing it condensed for the tour
+   when the Line is Disabled.
 2. **Board View** switches through the existing layout owner and spotlights the real Board.
 3. **Session detail** opens an existing session's Board drill-in and describes Conversation,
    Work queue, Workflows, Diff, and Files as one desk. When the tour starts on an empty fleet,
@@ -537,7 +622,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    and node palette.
 10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
     Publish button - the draft-versus-published lesson without a draft existing.
-11. **No-Mistakes Review** walks the five stages on the authored pipeline strip.
+11. **No-Mistakes Review** walks the six stages on the authored pipeline strip, including optional CodeRabbit.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
 13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
     pipeline strip, then its review worklist.
@@ -554,7 +639,7 @@ model call. Terminal means any of the three ends a run can reach - `completed`, 
 moving, which all three share; a cancelled run draws the same pipeline strip, worklist and stage
 ladder that a completed one does, and the selector rejects only a run that is still open. The
 workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a run
-of another workflow need not carry any of the five stages stop 11 just walked.
+of another workflow need not carry the stages stop 11 just walked.
 
 **The version has to agree too.** Published versions are immutable and older ones are kept, so
 the newest terminal run on a machine can easily be a run of version 9 while the built-in has
@@ -678,8 +763,9 @@ The last three are what Mission Control MAY do on the operator's behalf, and whe
 6. **One table, four grants** selects Trust and spotlights the whole matrix - a row per
    repository, a column per grant - rather than a cell or a column, because which grants a
    machine needs depends on which repositories it works in.
-7. **Add a repository, then grant it** spotlights the add row and finishes, on the same
-   "adding is configuration; enabling is consent" line the panel itself draws.
+7. **Add the repositories you work in** spotlights the add pane and finishes. It says what an
+   add grants - Foreman, Workflows and GitHub Inspector, with YOLO merges left off - and
+   that every grant is one click to revoke.
 
 **It ends on Trust and stays there.** Every other tour replays the route it snapshotted;
 this one declares an `exit` route on its entry and hands the panel over instead, because
@@ -688,8 +774,9 @@ selection, Board drill-in, filter, and the open Line drawer are still restored, 
 route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
 the control that started the tour when it survived the move, and to the **Trust** rail row
 when it did not, which includes a startup-picker launch without an invoker. The rail row rather than the add
-field: a spotlight may be any element, but a landing control has to be focusable, and the add
-field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
+pane: a spotlight may be any element, but a landing control has to be focusable, and the add
+pane's first focusable control is its search field, which would put the caret in a box the
+operator never asked to type in. Those two never compete:
 the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
 non-focusable area leaves, so it is not started at all when the invoker took focus back.
 
@@ -702,6 +789,51 @@ the whole point: an operator who has never opened Setup or Trust has to be shown
 one is before its rows mean anything. Both halves live in the `setup`
 target namespace, because a namespace is owned by the tour that spotlights a target rather
 than by the panel that renders it.
+
+#### Meet your residents
+
+**Meet your residents** starts from the Settings rail's **Help & tours** footer, **Start Meet your
+residents tour** in the palette, or the startup picker, which announces it once to profiles that
+predate it. It advertises the built-in **Agent Shepherd**, shows how a resident is made your own,
+then where running residents live. Ten stops, in two halves. The first seven stand on the
+Residents page with Agent Shepherd's read-only profile open:
+
+1. **Agents that stay on the job** is a centered card over that page: what a resident is.
+2. **Agent Shepherd ships ready to launch** spotlights its row under **Built-in** in the rail,
+   with what it does as a definition list.
+3. **A profile is the resident's role** spotlights the editor's head and lists what a profile
+   decides.
+4. **Make Agent Shepherd your own** spotlights **Duplicate to edit**.
+5. **Or author one from scratch** spotlights the rail's **New**.
+6. **How a resident keeps working** spotlights the profile's **Loop and guardrails** section.
+7. **Launch it** spotlights **Launch**.
+
+The last three are the drawer:
+
+8. **Open the Residents sidebar** opens the fleet and spotlights the top bar's **Residents**
+   button. Its Next reads **Open the sidebar**. The button is drawn in every top-bar layout:
+   **Settings > Display > Top bar** can minimize it to its ⌂ but cannot hide it. The stop's
+   copy also names Shift+H, the palette and the edge tab, and says that under **Board and
+   Console** placement the button and Shift+H open the Residents dock instead.
+9. **Every resident at a glance** opens the drawer and spotlights it. Back puts away a drawer
+   the tour opened.
+10. **Pin it open** spotlights the drawer's **Pin** and finishes.
+
+**It shows the drawer in either placement.** Under **Board and Console** the tour borrows the
+drawer for its length, the way See the work borrows a switched-off Line, and the drawer goes
+away with the tour. The stored placement and pin are never written. The tour opens the drawer
+without moving focus onto a card, because the tour's popover owns the keyboard.
+
+**It ends on the fleet.** Its entry declares an `exit` route, so Finish or Exit lands on the
+fleet, with the drawer still open in **Drawer** placement when the tour opened it, and focus on
+the top bar's **Residents** button. That button exists in both placements, after an early Exit,
+and in every top-bar layout, minimized or not, so the landing always has a target.
+The tour is read-only: no profile is duplicated or saved, nothing launches, and Pin is the
+operator's to press. Its one write is giving its announcement back when it is dismissed midway,
+so the startup picker shows it again in the next window. Agent Shepherd's row and the Loop section resolve inside the registered
+rail and editor; the **Residents** button is registered by App rather than by the dock that draws
+it, because **Settings > Display** draws a preview top bar whose dock would take the
+registration over.
 
 **A spotlight is framed by Driver's class or its `aria-controls` wiring, whichever survives.**
 Driver adds both to the active element and clears both on the same transition. React owns
@@ -744,6 +876,53 @@ on **Board**; an install that already stored a layout keeps it:
 | **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 
+### Folding the session rail
+
+The session rail beside an open session folds down to a 40px strip, so the conversation, the
+terminal and the reply box take the width it held. Fold it with the **«** at the right of the
+rail's head, or press <kbd>[</kbd>. The strip is the same one a
+collapsed Board column draws (see the three column widths below): a **»**, one count per state group in that
+group's colour, and the rail's name set vertically. Click anywhere on it, or press <kbd>[</kbd>
+again, to unfold.
+
+- It applies to every rail beside a detail: the **Console**'s, and the **Board** drill-in's
+  in both shapes (the clicked column, or every state group when **Show all sessions in
+  sidebar** is on). They are one rail, so they fold together. The Board overview's own
+  columns fold separately, with their width control.
+- The fold persists per machine, like the layout itself.
+- On a **Board** drill-in, the strip has no head, so the **‹** back to the board moves to the
+  leading edge of the session's detail head while the rail is folded.
+- <kbd>↑</kbd>/<kbd>↓</kbd> still walk the sessions while it is folded, and
+  <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> out of the reader hands the keyboard to the
+  strip.
+- A folded strip counts sessions but does not list them. When a session starts waiting on
+  you, the **Needs you** count appears or goes up and pulses, so the fold never hides it.
+
+**Settings → Display → Residents → Where residents live** sits beside it. **Drawer**, the
+default, keeps residents off the Board columns and the Console rail, in a drawer on the right
+edge; **Board and Console** draws them in the fleet with every other session. It applies live and
+persists per machine. See [Finding a resident](residents.md#finding-a-resident).
+
+**Settings → Display → Blocked sessions** sits beside Residents and decides where the Board draws
+idle sessions standing on a [blocker](sessions.md#blocked-sessions). It applies live and
+persists per machine:
+
+| Choice | What it draws |
+|--------|---------------|
+| **In Needs you** (default) | The Needs you column splits into two lanes, each with its own head and its own scroll. Needs you takes the remaining height; the red **Blocked** lane sits at the bottom, sized to its cards between one card and 45% of the column, so it always shows at least one whole card. Either lane leaves when it is empty, and the column leaves the board only when both are. Collapsed, the column's strip carries both counts, amber over red. |
+| **At the top of Idle** | A red frame shaped like a repository frame, headed **Blocked 3 · oldest 2d**, above the idle cards. Its head folds and unfolds it, and the fold persists per machine. A folded frame hides its cards from the arrow keys and the <kbd>⌘</kbd>-numbers too. |
+| **Own column** | A red **Blocked** column between Needs you and Working. Like every other column it is drawn only while it has a card, and it takes the usual width and collapse controls. |
+
+The placement only moves idle and unconfirmed blocked sessions. A blocked session that is asking
+you stays in Needs you, and one that is working stays in Working; both keep the red card. A
+blocked session that a workflow run holds sits in the Blocked group, not under Idle's **held**
+rule, and keeps its **held** tag. Inside the group a session whose reply was flagged comes first,
+then the oldest blocker. The **Console** rail draws the same group under a red **Blocked**
+heading in the same relative place: after Needs you for **In Needs you** and **Own column**, at
+the top of Idle for **At the top of Idle**. The arrow keys and the <kbd>⌘</kbd>-numbers follow
+that order, and a lane follows the lane above it, so <kbd>↓</kbd> from the last Needs you card
+lands on the first Blocked card.
+
 Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
@@ -764,7 +943,10 @@ available:
   spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
-  The **Board** drills into that same detail when you open a tile. In Console and Board, the
+  The **Board** drills into that same detail when you open a tile. Its outer tracks animate,
+  while the conversation lays out at its final reading width so opening a task does not
+  rewrap its history and displace the initial position at the bottom. New output still
+  leaves intentional scrollback alone. In Console and Board, the
   Diff tab contains the complete checkout diff reader; the tab itself and
   <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
@@ -819,17 +1001,18 @@ available:
   restores it. Any column can be collapsed, including **Backlog** and **needs you**, and
   several at once. Only one column is expanded at a time, and expanding one returns the
   previous one to normal. Double-clicking a header still expands or restores it. A collapsed
-  column stays collapsed after a reload; an expanded one returns to normal. An empty **needs
-  you** is already the slim all-clear rail, so it has no width control until something needs
-  you. A **needs you** you collapsed stays a strip when it empties, and when a session starts
-  waiting on you the strip stays collapsed and its count pulses. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
+  column stays collapsed after a reload; an expanded one returns to normal. An empty column is not on
+  the board at all, so it has nothing to collapse. A collapsed **needs you** that still holds
+  a card stays a strip when another session starts waiting on you, and its count pulses; one
+  that empties leaves the board like any empty column. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
   collapsed column is hiding. Opening a session from a collapsed column (from the Line or a
   notification, say) shows that column as the drill-in rail in full, and it is collapsed
   again when you come back to the board.
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
-  reasoning effort, permission mode, cost, branch, worktree and last seen - and unchecking
+  reasoning effort, permission mode, cost, branch, worktree, last seen and the resident
+  marker - and unchecking
   one applies to every card in every column immediately. A live preview card sits in the
   panel and redraws as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
@@ -850,6 +1033,48 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **Background sub-agents hang beneath their card.** A session that launched sub-agents in
+  the background keeps them on the board after its own turn ends: small rows hang under the
+  card on a spine, outside its border, so the card itself keeps its height and its click. A
+  header line, **▾ 3 sub-agents · 2 running**, folds the group. Each row gives the agent's
+  type, its description, how long it has run, how many tools it has used and the last one.
+  Past three agents the rest collapse behind **+N more**. A session's list holds at most twelve
+  agents; when all twelve are still running, more may be, so the counts read **12+** rather
+  than claim a number smaller than what is running. A finished agent stays listed,
+  dimmed and marked **done**, **failed** or **stopped**, until you send the session its next
+  turn, which folds it into an **N finished** count. The one exception is a full list: when
+  the list would hold more than twelve agents, the oldest finished ones fold into that count
+  straight away to make room, without waiting for your turn. A parent that is idle, or waiting on you,
+  while agents still run reads **idle · 2 agents still running** on its activity line, so it
+  is not mistaken for finished. For Claude, only background agents appear: a foreground agent
+  blocks the turn, so the card already reads as working, and Claude's ambient housekeeping tasks
+  never count. A Codex terminal session shows every child from its `SubagentStart` to its
+  `SubagentStop`, because every Codex child runs asynchronously and its hooks do not report
+  whether the parent is waiting on one; while the parent waits, its own card reads as working.
+  A value the source did not report is left out rather than drawn as zero. A session with no
+  background agents draws nothing extra. Like the attention flags these rows are not
+  on the Session display checklist. This covers sessions on the Claude Agent SDK runtime,
+  which includes dispatched tasks and residents, and Claude and Codex terminal sessions. A
+  terminal session's rows come from its hooks, which carry no tool or token counters and no
+  last tool, so they give the type, description where Claude sent one, state and elapsed time;
+  see
+  [Background sub-agents](sessions.md#background-sub-agents). The open conversation lists the
+  same agents in its [Background agents tray](#background-agents-in-a-conversation). This is
+  the default treatment, **Nested sub-cards**; **Settings → Display → Board card → Background
+  sub-agents** offers **Chip and popover** instead, which keeps every card at its own height
+  (see [Chip and popover](#chip-and-popover)).
+- **A blocked session is red.** A session waiting on someone other than you records a
+  [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
+  and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,
+  the tone and the flag are the card's state and cannot be switched off. Five Board card items
+  say what it is blocked on, all on by default: **Blocker kind** (Question, Dependency,
+  Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
+  the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
+  saw a likely answer). Where a blocked idle session is drawn is the
+  [Blocked sessions](#layout-console-or-board-in-settings) setting. The Conversation tab
+  opens with a red band: one row with the kind, reason, age, **Flag reply** and **Clear
+  blocker**, which expands in place to every other field and the collapsible details. Any
+  flagged reply prints under the row.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
@@ -887,7 +1112,10 @@ available:
   scheduled task and a multi-repo task each keep it. The panel says so where you choose.
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
-  places, or have it in neither.
+  places, or have it in neither. The group has a preview of its own beside it, a console
+  header for the same sample session, which redraws as you pick a **Task type** style or
+  toggle either cell. Where Settings is too narrow to hold a preview beside its checklist,
+  each group's preview moves under the group's heading instead, above its controls.
 - **And the working indicator.** Under **Working indicator**, with a preview of its own beside
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
@@ -932,14 +1160,19 @@ available:
   and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
   Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
   every column returns to one flat, tone-ordered list.
-- **Empty columns get out of the way.** An empty **needs you** keeps its place but narrows to
-  a slim rail: its swatch, its name turned on end, a green tick and a `0`. Hover the rail for
-  "All clear. Nothing is waiting on you." The moment a session needs you, the rail widens back
-  into a full column in the same spot, so it keeps its place in the column order. Every other
-  empty column leaves the board and becomes a chip in the **empty** stash beside the last column;
-  click a chip to bring that column back. Uncheck **Show the empty-column stash** in
-  Settings → Display → Layout to hide the stash entirely, so empty columns simply leave. The
-  needs you rail is not in the stash and stays either way.
+- **Empty columns get out of the way.** Every column exists, but it is drawn only while it
+  has a card in it. An empty column leaves the board and leaves nothing behind - no slim
+  rail and no chip - and the columns that remain widen into the space. That holds for every
+  column: **needs you**, **working**, **idle**, **unconfirmed**, **gone**, and the
+  **Backlog**. When nothing is waiting on you, **needs you** takes no room at all, and the
+  moment a session needs you it comes back in its place in the column order. With no tasks
+  queued the Backlog leaves, and the first task you save to it brings it back. An empty
+  Backlog has nothing to drag, so hiding it takes no drop target away. Opening a session
+  keeps the same rule: the drill-in rail is the open session's column, and no empty column
+  is mounted beside it, even for the morph. When the open session's own column has no card
+  to list - a resident opened from the Residents drawer, or a session a fleet filter hides -
+  no rail is drawn at all: the conversation takes the whole board, and a back button at the
+  front of its header returns you to the board, as <kbd>Esc</kbd> does.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they
@@ -980,6 +1213,29 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **The idle column groups agents awaiting a background process.** While the **Awaiting
+  background work** preview is on, a session that
+  [declared a wait](sessions.md#sessions-awaiting-a-background-process-preview) on its own CI, build,
+  monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
+  due first, after pinned residents and before free and held agents. The section keeps that
+  order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
+  (**1 awaiting**) and counts the rest as free (**2 free**) rather than drawing the column total,
+  whether or not a workflow holds any, in the **Console** rail's head as well. A pinned resident
+  that is waiting keeps its pinned place, ahead of the other pinned residents and above the Free
+  rule, and is counted as awaiting, never as free. In the Conversation tab, Tab from the
+  conversation reaches the band's **Open**, **Clear** and **Details** before the tab strip; a link
+  inside a closed Details is not on that path. Its card draws a deadline track: what it waits
+  for, the due time, and a bar from when it declared the wait to when it is due. Once the
+  deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
+  never moves to **needs you**. The **Console** rail draws the same rule and a short track beside
+  the row's state.
+- **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
+  has an outline and soft glow in its profile's color and a short label chip, and, when its
+  profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
+  draws the same chip and leads with the same sessions, and a resident's Console header gains a
+  band naming its profile and the revision it launched from. The tone spine is untouched: the
+  glow says *which* agent, the spine still says *what state*. The **Residents** button beside
+  Foreman in the top bar opens a dock of live residents and the profiles you can launch.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, and the console empties its pane. The session reads **stopping** during that drain, then **exited** until its ordinary
@@ -995,9 +1251,20 @@ available:
   minimum width, so widening the Backlog never squeezes the column holding the live agents
   down to nothing. It's a gesture rather than a setting: it isn't persisted, and opening a
   session drills in exactly as it did before.
-- **The filter box (<kbd>/</kbd>) narrows the whole board, backlog included.** A query is a
-  case-insensitive substring match against a session's title, status and agent - and, on the
-  board, against a backlog task's title, status, agent and labels. So `ghostty` finds the
+- **The filter box (<kbd>/</kbd>) narrows the fleet, including backlog and resident cards.** A query is a
+  case-insensitive match against everything a card says: for a session, its title, goal,
+  status, agent, runtime (such as **Agent SDK**), repository and checkout (by name and by full
+  path), branch, model, reasoning effort, permission mode, context meter, cost, last-seen time,
+  task kind, blocker and pull request; for a backlog task, its title, intent, labels,
+  repositories, agent, kind, priority, model, effort, status, autopilot switch and
+  "autopilot will skip this" line, and added time. Resident cards on the Board also match
+  their chip, activity, loop status, and the labels and alerts in Resident controls.
+  The [Residents drawer](residents.md#the-residents-drawer)
+  matches live cards by their text, including the latest message and pending questions. A fact is
+  searched even while its card item is hidden in **Settings → Display**. Other session cards
+  exclude the live activity ticker ("running Bash"). Every word of the query must appear, each in
+  any field, so `codex mission-control`
+  finds Codex cards in that repository. Because the backlog is searched too, `ghostty` finds the
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
   the board stays on screen to show it. Console draws no tasks, so there a query
   matching only backlog items correctly reads as "nothing matches".
@@ -1120,6 +1387,109 @@ same transcript, so find, the Observed activity rail, scroll-back, attachments a
 reply box behave identically in either. See
 [Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
 
+## Background agents in a conversation
+
+Under the default **Nested sub-cards** treatment, a session that launched sub-agents in the
+background docks a **Background agents** tray above its reply box. The tray sits between the
+conversation and the box, outside both, so it stays in view whatever the rail beside the log
+is showing and wherever the log is scrolled. The tray is the conversation half of the
+sub-agents that [hang beneath the board card](#layout-console-or-board-in-settings), and it
+reads the same summary, so the two never disagree.
+
+Under **Chip and popover** there is no tray: the same agents are listed on the rail's
+**Agents** tab instead, from the same summary (see [Chip and popover](#chip-and-popover)).
+The rest of this section describes the tray.
+
+The header, **⑂ Background agents · 2 running · 1 done**, folds the list. Each row gives the
+agent's state, type and description, how long it has run, how many tools it has used and the
+last one. A finished agent stays listed, dimmed, until you send the session its next turn,
+which folds it into an **N finished** line. A value the source did not report is left out
+rather than drawn as zero. The list scrolls on its own past a few rows, so a full list of
+twelve costs the log a band rather than the pane. Residents get the tray too: a resident is
+an ordinary Agent SDK session in the same conversation panel.
+
+**Jump to launch** on a row scrolls the log to the turn that launched that agent and flashes
+it, the same way a row in the **Yours** rail does. The launch is found by the id of the tool
+call that made it. Claude Code writes each tool call as its own transcript record, so a launch
+is usually one of several calls folded into one **executed** row; the jump lands on that row.
+When the launch is older than the loaded part of the conversation, the tray loads older
+messages until it finds the turn. If it reaches the start of the transcript without finding
+it, the link reads **Launch not in transcript** and its tooltip says why. Every agent has the
+link, and it only ever lands on a launch it can identify. When the source did not name the
+launching call, the dashboard asks the daemon which **Agent** call the transcript records as
+launching this agent: Claude Code writes the agent's id into that call's result when the agent
+goes to the background. That result is written a moment after the agent appears, so a click in
+that gap reads **Launch not in transcript**; click again once it is written and the link lands,
+including in a conversation that was open while the agent launched. A description is never used: agents can share one, and a finished agent folded out
+of the tray leaves its call behind, so a description could land on another agent's launch. An agent no call in the transcript is
+recorded as launching reads **Launch not in transcript**. A search reads as far back as the
+transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
+
+## Chip and popover
+
+**Settings → Display → Board card → Background sub-agents** chooses how a session shows the
+sub-agents it launched in the background, and the one choice switches the board card and the
+conversation together. It has exactly two values. **Nested sub-cards**, the default for a new
+install and for one upgrading with nothing stored, hangs the agents under the card and docks
+the [Background agents tray](#background-agents-in-a-conversation) above the reply box. **Chip
+and popover** keeps both surfaces at their own size:
+
+- **On the card**, one chip joins the attention flags beside the pull request: **⑂ 3 agents**,
+  with a status pip per agent in the board's own hues (running blue, done green, failed red,
+  stopped grey). It reads **12+ agents** when a full list may have been cut short. Clicking it
+  opens a **Background agents** popover over the board with the same rows the sub-cards draw,
+  and does not open the session. Escape, a click outside it or the chip again closes it, and
+  Escape hands focus back to the chip. The card gains no height and nothing hangs beneath it.
+  A resident that needs you, standing in **Needs you** as a visitor card while the Residents
+  drawer is closed, carries the same chip; under Nested sub-cards its agents hang beneath that
+  card instead.
+- **In the conversation**, the rail beside the log gains a third tab, **Agents 3**, beside
+  **Activity** and **Yours**, and there is no tray. Each row gives the agent's state, type and
+  description, how long it has run, its last tool and its tokens; a value the source did not
+  report is left out, so a terminal-hook agent reads its elapsed time alone. With three tabs
+  the head drops the count it prints for Activity and Yours, because the three need the
+  rail's width; the folded strip still counts whichever tab is up.
+
+The Agents tab exists only while the session has background agents to list, exactly as the
+tray does. Switching to **Nested sub-cards** while the rail is on Agents puts it back on
+Activity. Either way, a session with no background agents looks exactly as it did before. The
+panel's preview card carries sample agents, so switching the radio redraws its sub-cards or its
+chip before you leave Settings. The choice applies to every card and the open conversation at
+once, with no reload, and is stored through the daemon like every Display preference; an
+unknown stored value reads as Nested sub-cards.
+
+## Skins
+
+**Settings → Display → Appearance → Skin** chooses how the whole dashboard is painted. Each
+tile shows a small preview in that skin's own colours. Picking one repaints everything at
+once, including the dashboard behind the settings page, with no Save button and no reload.
+The choice persists per machine, not per browser, and the next load paints in
+it from the first frame, in any browser or desktop window, because the daemon serves the page
+with the skin already applied. The desktop app opens in the skin's background, including its
+"Starting Mission Control" page, so a light skin opens without a dark flash. That holds even
+when the skin was chosen in a browser tab and the desktop app has never run.
+
+| Skin | Scheme | What it is |
+|------|--------|-----------|
+| **Default** | dark | The original dark theme: graphite surfaces and bright state colours. It stays the default for every install. |
+| **Daylight** | light | A clean, neutral light theme for bright rooms and daytime work. Its state colours are deepened so each still reads on white. |
+| **Paper** | light | Warm cream and ink, tuned for long reading. Headings, card titles and the Line's stage names are set in a serif. |
+| **Blueprint** | dark | An engineering drawing: deep cobalt surfaces with a faint 20px drafting grid behind the panels, crisp light linework, and headings in upper-case monospace. |
+| **Neon Dusk** | dark | A late-night synth palette: violet surfaces on a violet-to-indigo backdrop, and a magenta glow on the board's keyboard cursor, on a session tile or Line stage that needs you, and on a focused text field. Some tiles keep what they already draw in place of it: a resident's tile its own marker glow, selected or not; an expanded workflow tile that needs you its ring; and the tile a drag is aimed at its drop highlight. The Dispatch button is a magenta-to-cyan gradient. Foreman, cost and held sessions read magenta. |
+
+A skin is CSS only. It changes how the dashboard looks, never what it shows: no skin adds,
+hides or reorders a control, and every session-state colour keeps its meaning. A skin never
+changes a size, a padding or a line height either, so the fixed chrome - the top bar, the Line
+and the Dispatch button - keeps Default's geometry exactly in every skin. A skin that changes
+the face of titles can still reflow the text inside them: Blueprint's monospace is wider than
+the default face, so a long backlog card title can wrap onto one more line and make that card
+taller. Agent brand
+colours and repository colours are the same in every skin. The OS light or dark setting is
+not followed; a skin is always an explicit choice. A skin chosen in one browser tab reaches
+another open tab on its next reload. Every skin's text and state colours meet WCAG contrast
+on the surfaces they are drawn on; [Adding a skin](agent-guides/change-contracts.md#adding-a-skin)
+states the contract.
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced
@@ -1157,6 +1527,34 @@ typing or while an overlay is open. HTML preview
 remains inert: its document renders immediately, then a bounded set of checkout-local
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
+
+A turn that **presents** an HTML page or a browser image also previews it inline, in a card at
+the foot of the turn. Presenting means the path stands on its own line, alone or after a short
+label of letters and spaces and a colon (`Report: docs/reports/x/report.html`,
+`Mockup: docs/mockups/x/screen.png`), or is the destination of a Markdown link. A path mentioned
+mid-sentence stays an ordinary link, and a turn previews at most three files. The card reserves
+a fixed 420px, arrives expanded, and remembers a collapse while the tab stays open. A page
+renders in the same sandbox as Files; an image is scaled down to fit and never enlarged.
+**Refresh** re-reads the file, **View** opens it in Files, and **Comment** opens it in Files with
+comment mode on. Comment is offered for pages only, because an image has no lines to comment on.
+A file that has gone, is over 5 MiB, or cannot be decoded says so in the card instead of drawing
+nothing.
+
+The checkout listing behind these links and previews is read when the conversation opens and
+again whenever a new message lands while the session is between turns, so a file the agent writes
+while you watch is linked and previewed in the turn that names it. A turn that is still running
+reads it once more when one of its recent messages names an HTML page or image the listing does
+not hold yet. That covers an agent that presents mock-ups and then waits on a `request_input`
+question about them: the previews appear while the question is open, not after it is answered.
+The same listing links checkout paths named in a `request_input` question's text, so the review
+card opens each option in Files and leaves the question pending. The listing holds the
+checkout's tracked and untracked files, leaving out what git ignores, with one exception. HTML
+pages and browser images that git ignores under `docs/mockups/` are listed anyway, because that
+is where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+keeps mock-ups git-ignored so they are never committed. The exception covers only those two
+formats: an ignored `.env` or other file there, or anything under a dot-named folder, stays out
+of the list. A file under `docs/mockups/` that git does not ignore is listed like any other
+checkout file.
 
 The boundary beside the Files list is draggable, so a long document can take space back from
 the list or a deeply nested checkout can give the list more room. The Diff tab uses the same
@@ -1352,6 +1750,10 @@ tab loaded, so clicking a line re-reads the file first and the comment anchors t
 is on disk now. If the agent has rewritten that line since, the click says so instead of opening
 the box, and the line stops being clickable until you reload the diff. There is no Preview here;
 a diff is source, so every comment made from it is a line comment.
+
+Diff loading runs independent Git reads together and reads untracked files in batches of
+at most eight. The list keeps Git's file order, and each tab entry reads fresh checkout
+contents. The existing patch-size and untracked-file limits still apply.
 
 The control says why when a file takes no comment, and stays focusable so the reason is
 reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
@@ -1670,6 +2072,10 @@ names the layouts where a shortcut's target exists:
 | <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
+| <kbd>[</kbd> | [Fold or unfold the session rail](#folding-the-session-rail) beside the open session, giving its width to the conversation and terminal | Console, or a Board drill-in |
+| <kbd>⇧</kbd><kbd>A</kbd> | Open the **Residents** page | Anywhere |
+| <kbd>⇧</kbd><kbd>H</kbd> | Open or close the [Residents drawer](residents.md#the-residents-drawer), going to Fleet to show it; closing a pinned drawer unpins it. With **Board and Console** placement it opens the Residents dock instead | Anywhere |
+| <kbd>⌥</kbd><kbd>1</kbd>…<kbd>⌥</kbd><kbd>9</kbd> | Open live resident 1 to 9's full detail, in the order the drawer and the dock list them: the drill-in on the **Board**, the detail pane in **Console**. Matched on the physical digit key, so it works where Option+digit types a symbol; ignored while a text field has focus, and reserved from rebinding | Anywhere, both resident placements |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
 | <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
@@ -1678,10 +2084,10 @@ names the layouts where a shortcut's target exists:
 | <kbd>1</kbd>…<kbd>9</kbd> | Take that position in Kind, Harness or After work. Digits type into the filter during Repo | Guided dispatch |
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
-| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
-| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
+| <kbd>/</kbd> | Focus the filter box (sessions, resident cards, and the Board's backlog), or **Scouts** search while on that page | Anywhere |
+| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
+| <kbd>e</kbd> | Open the [attention inbox](attention-and-alerts.md) from the Board when **to answer** is shown. From an open conversation, start at its first pending question in the inbox, or open the inbox at the top if that conversation has no question there. When the inbox shortcut is unavailable, the key still reaches the session review queue or a resident in the drawer that needs you. | Board with items to answer, a conversation with inbox items available, or a session or resident waiting for input |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |
@@ -1801,7 +2207,7 @@ editor's four rows above, the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</
 and the Diff reader's <kbd>m</kbd> are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
-are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
+are looking at keeps its own letter. Rebind **Open attention inbox** to use a different key.
 Comment mode takes <kbd>m</kbd> and shadows nothing. The mnemonic letter was <kbd>c</kbd>, which
 completes the selected session's task - and while shadowing a fleet chord in a surface is exactly
 what <kbd>p</kbd> and <kbd>e</kbd> already do, both of those shadow actions you can take again a

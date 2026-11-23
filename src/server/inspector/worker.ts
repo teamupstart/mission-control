@@ -1,3 +1,6 @@
+import { codeRabbitEnabled } from "../shipping/config.ts";
+import { observeCodeRabbit } from "./code-rabbit.ts";
+import { recordCodeRabbit, failCodeRabbit } from "../db.ts";
 import { recordAutomationTransition } from "../telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -5,12 +8,14 @@ import { envVar } from "../config.ts";
 import {
   adoptInspectorPr,
   getInspectorPr,
+  inTransaction,
   loadInspectorComments,
   loadOpenInspectorPrs,
+  revokeInspectorPrStack,
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
+import { createLimiter, runStructured, parseModelReply } from "../llm/structured.ts";
 import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
@@ -34,37 +39,50 @@ import type { InspectorConfig } from "@shared/protocol.ts";
 import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
-import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
+import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
 import {
   CLEAN_REVIEW_FINGERPRINT,
   formatMarker,
   isOurs,
   parseMarker,
+  reviewHeader,
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
+import { reviewBaseChanged } from "@shared/shipping.ts";
+import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
+import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
+import { observeClosedStackChildren, observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
+  classifyReviewRefusal,
   cleanReviewExists,
   configuredGitHubRepositories,
   hasBodyOnlyFindings,
   fetchDiff,
+  fetchHeadSha,
   fetchPr,
+  fetchReviewPage,
+  fetchThreadPage,
+  findingUrls,
   ourThreads,
   ownedThreadsResolved,
   parsePrUrl,
   postReview,
+  refusalReason,
   renderCleanReview,
   renderComment,
   replyToComment,
   resolveThread,
+  snapshotLinkSources,
   wasRefused,
 } from "./github.ts";
 import type {
   GhResult,
   GitHubRepositoryIdentity,
+  LinkSources,
   PrSnapshot,
   ThreadSnapshot,
 } from "./github.ts";
@@ -336,6 +354,24 @@ export const DENY_SETTINGS = JSON.stringify({
  * of the repo. Every `gh` call here is owner/repo-explicit, so the directory only ever
  * supplies credentials and the reviewer's read scope, never the identity of the PR.
  */
+/** The GitHub seam stacking reads through. Replaced only by tests. */
+export function useInspectorStackGitHub(github: StackGitHub): () => void {
+  return useStackGitHub(github);
+}
+
+/**
+ * What the stack lifecycle reads from the Registry (tasks and work episodes). Set when the
+ * Inspector starts; a test sets its own. Without one, no lifecycle observation runs.
+ */
+let stackLifecycle: StackLifecycleContext | null = null;
+export function useInspectorStackLifecycle(context: StackLifecycleContext | null): () => void {
+  const previous = stackLifecycle;
+  stackLifecycle = context;
+  return () => {
+    stackLifecycle = previous;
+  };
+}
+
 function liveDir(pr: InspectorPr): string | null {
   if (pr.cwd && existsSync(pr.cwd)) return pr.cwd;
   if (pr.repoRoot && existsSync(pr.repoRoot)) return pr.repoRoot;
@@ -394,12 +430,47 @@ function noteFailure(
 }
 
 /**
+ * Adopt a pull request a session just opened, and - in the SAME synchronous turn - record its
+ * stack lineage when that session runs a stacked task. Nothing can inspect the row between
+ * the two writes, so the merge gate never sees a stacked child without its lineage.
+ */
+export function adoptOpenedPr(
+  registry: Pick<Registry, "taskForSession" | "workEpisodeForSession">,
+  e: Pick<PrOpened, "url" | "sessionId" | "cwd" | "repoRoot"> & Partial<Pick<PrOpened, "noteKey">>,
+  now: number,
+): boolean {
+  const source = {
+    task: registry.taskForSession(e.sessionId, e.cwd),
+    episodeId: registry.workEpisodeForSession(e.sessionId)?.episodeId ?? null,
+  };
+  // One transaction: a lineage write that fails takes the adoption with it. The pull request
+  // is then simply not ours to review or merge, which fails closed, rather than adopted as an
+  // ordinary pull request that the stacking gates would never evaluate.
+  try {
+    return inTransaction(() => {
+      const adopted = adoptPr(
+        e.url,
+        { sessionId: e.sessionId, noteKey: e.noteKey, cwd: e.cwd, repoRoot: e.repoRoot },
+        "hook",
+        now,
+      );
+      const parsed = adopted ? parsePrUrl(e.url) : null;
+      if (parsed) adoptStackLineage(parsed.key, source, now);
+      return adopted;
+    });
+  } catch (error) {
+    console.error("[inspector] could not adopt the pull request:", e.url, error);
+    return false;
+  }
+}
+
+/**
  * Record a PR as ours to review. Idempotent - the DB's `DO NOTHING` is the dedup, so
  * both adoption signals can call this freely.
  */
 export function adoptPr(
   url: string,
-  ctx: { sessionId: string | null; cwd: string | null; repoRoot: string | null },
+  ctx: { sessionId: string | null; noteKey?: string | null; cwd: string | null; repoRoot: string | null },
   source: InspectorSource,
   now: number,
 ): boolean {
@@ -414,6 +485,7 @@ export function adoptPr(
     repoRoot: ctx.repoRoot,
     cwd: ctx.cwd,
     sessionId: ctx.sessionId,
+    noteKey: ctx.noteKey ?? null,
     source,
     state: "open",
     headSha: null,
@@ -512,13 +584,16 @@ function threadsAwaitingUs(
     newest: { databaseId: number | null; body: string; author: string };
   }[] = [];
   for (const t of snapshot.threads) {
-    if (t.isResolved) continue;
     const first = t.comments[0];
     if (!first) continue;
     if (!isOurs(first, login)) continue; // not our thread
     const marker = parseMarker(first.body)!;
     const row = rows.get(marker.fingerprint);
     if (!row) continue;
+    // Authors often reply and resolve together. Their resolution is not Inspector's
+    // verdict: still evaluate the new reply while our finding remains open. Once both
+    // sides are resolved, leave the closed conversation alone.
+    if (t.isResolved && row.status === "resolved") continue;
     if (row.replies >= MAX_REPLIES_PER_THREAD) continue;
 
     const newest = t.comments[t.comments.length - 1]!;
@@ -553,6 +628,68 @@ function diffOncePerTick(dir: string, pr: InspectorPr): TickDiff {
   return () => (fetched ??= fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES));
 }
 
+/**
+ * Record what one GitHub read said about a pull request, on its ledger row.
+ *
+ * `reopen` un-retires a row GitHub now reports open. Only `reobserveInspectorPr` asks for it:
+ * the sweep never reads a retired row, so it has nothing to reopen.
+ */
+function recordPrObservation(key: string, s: PrSnapshot, now: number, reopen = false): void {
+  updateInspectorPr(
+    key,
+    {
+      observedHeadSha: s.headSha || null,
+      observedState: s.state,
+      observedAt: now,
+      headRefName: s.headRefName || null,
+      baseRefName: s.baseRefName || null,
+      mergeCommitSha: s.mergeCommitSha ?? null,
+      // Re-recorded on every read rather than written once, because a pull request gets
+      // renamed - most often from the placeholder its author opened it with. The empty
+      // string `normalizePr` yields for a missing title collapses to null so the ledger
+      // has one reading of "we do not know what this is called", and the renderers'
+      // branch fallback covers it either way.
+      title: s.title || null,
+      ...(reopen && s.state === "OPEN" ? { state: "open" as const } : {}),
+    },
+    now,
+  );
+}
+
+/** What an on-demand read of one adopted pull request found. */
+export type InspectorReobservation =
+  | { ok: true; state: PrSnapshot["state"] }
+  | { ok: false; error: string };
+
+/**
+ * Read one adopted pull request from GitHub now, outside the sweep, and report what it said.
+ *
+ * The sweep reads only open rows, so a row it retired on a closed read is never read again -
+ * and a workflow gate blocked as closed on such a row had no way to learn that the pull request
+ * is open. This is that way: an operator's recheck of a closed-PR block calls it. A row GitHub
+ * reports open is un-retired, so the sweep owns it again from its next pass. A closed or merged
+ * answer is recorded and changes nothing else; the sweep retires an open row on its own read.
+ *
+ * Either answer is signalled like a sweep observation, so the gate evaluates it the same way. A
+ * failed read records nothing and signals nothing, because it observed nothing.
+ */
+export async function reobserveInspectorPr(
+  registry: Registry,
+  prKey: string,
+  now = Date.now(),
+): Promise<InspectorReobservation> {
+  const pr = getInspectorPr(prKey);
+  if (!pr) return { ok: false, error: "the pull request is not adopted" };
+  const snap = await fetchPr(liveDir(pr), pr.owner, pr.repo, pr.number);
+  if (!snap.ok || !snap.value) {
+    return { ok: false, error: snap.error ?? "could not read the pull request" };
+  }
+  recordPrObservation(prKey, snap.value, now, true);
+  registry.refreshInspections();
+  notifyInspection(registry, prKey, snap.value.headSha || null, snap.value.state, now);
+  return { ok: true, state: snap.value.state };
+}
+
 /** Run one PR through the whole cycle. Returns true when it did something. */
 async function processPr(
   cfg: InspectorConfig,
@@ -566,6 +703,8 @@ async function processPr(
 
   const dir = liveDir(pr);
   if (!dir) {
+    if (codeRabbitEnabled()) failCodeRabbit(pr.key, "The owning checkout is unavailable", now);
+    if (!cfg.enabled) return false;
     if (backedOff) return false;
     return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
   }
@@ -575,12 +714,21 @@ async function processPr(
   // and it is the only way a parked PR can notice that its input changed. A failure of
   // this probe does not extend the wait, or the cheap check would inflate a penalty it
   // was not the cause of.
-  const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
+  const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number, codeRabbitEnabled());
   if (!snap.ok || !snap.value) {
+    if (codeRabbitEnabled()) failCodeRabbit(pr.key, snap.error ?? "Could not read PR", now);
+    if (!cfg.enabled) return false;
     if (backedOff) return false;
     return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
+  if (codeRabbitEnabled()) {
+    const observation = await observeCodeRabbit({ cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: s, startedAt: now });
+    if (observation.ok && observation.value) recordCodeRabbit(pr.key, {
+      headSha: s.headSha, state: s.state, draft: s.isDraft, findings: observation.value,
+    }, Date.now());
+    else failCodeRabbit(pr.key, observation.error ?? "Incomplete CodeRabbit observation", Date.now());
+  }
   // Write the sighting down BEFORE anything decides what to do about it.
   //
   // `onObserved` is a wakeup - transient, and only for whoever happens to be subscribed when
@@ -589,23 +737,23 @@ async function processPr(
   // beside the fetch that produced it, means every path below - retire the row, take the
   // backoff, run a review, sit the tick out - has already told the truth about what GitHub
   // said, rather than only the paths that happen to run to completion.
-  updateInspectorPr(
-    pr.key,
-    {
-      observedHeadSha: s.headSha || null,
-      observedState: s.state,
-      observedAt: now,
-      headRefName: s.headRefName || null,
-      // Re-recorded on every tick rather than written once, because a pull request gets
-      // renamed - most often from the placeholder its author opened it with. The empty
-      // string `normalizePr` yields for a missing title collapses to null so the ledger
-      // has one reading of "we do not know what this is called", and the renderers'
-      // branch fallback covers it either way.
-      title: s.title || null,
-    },
-    now,
-  );
+  recordPrObservation(pr.key, s, now);
   onObserved?.(s, now);
+
+  // Stacked pull requests: observe the child and its current parent, reconcile the child's
+  // base with the branch it belongs on, and run the replacement-parent transition the operator
+  // asked for - before the row is retired, so a child GitHub closed is recorded as a broken
+  // stack, and whatever the Inspector's own switches say, because a stacked child keeps its
+  // lifecycle with the Inspector, the Shipping setting and its session all gone. Re-read
+  // afterwards: a transition changes the current parent and withdraws the release.
+  if (pr.stack && stackLifecycle) {
+    try {
+      await observeStackLifecycle(pr, s, dir, activeStackGitHub(), stackLifecycle, now);
+    } catch (error) {
+      console.error("[inspector] stack lifecycle observation failed:", pr.key, error);
+    }
+    pr = getInspectorPr(pr.key) ?? pr;
+  }
 
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
@@ -623,6 +771,13 @@ async function processPr(
     );
     return true;
   }
+
+  // Observation consent never grants Inspector review, posting, or merge authority.
+  // Both the config this sweep started with AND the one true now: a sweep that started with
+  // the Inspector off ran only to observe stacked rows, and its snapshot predates whatever the
+  // operator did since, so it must not go on to review or merge if the Inspector is switched
+  // on mid-sweep. The next sweep reads afresh.
+  if (!cfg.enabled || !getInspectorConfig().enabled) return true;
 
   // A push is new evidence, and `pushEndsTheWait` decides whether it is the kind of
   // evidence that ends the wait its predecessor earned - always, for the six-hour park
@@ -665,6 +820,7 @@ async function processPr(
   }
 
   const rows = existingByFingerprint(pr.key);
+  recordFindingUrls(rows, snapshotLinkSources(s), login);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
   const readDiff = diffOncePerTick(dir, pr);
@@ -720,8 +876,44 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
+  // Stacked pull requests: run the release check for a row with lineage BEFORE the merge
+  // gate reads it, so a restack verified on this tick can merge on this tick. Read only from
+  // GitHub (the compare API), never by running git here.
+  // A release already recorded for this head is checked again too: a parent closed without
+  // merging can be reopened, and then the child is stacked on an open prerequisite again.
+  let gated = pr;
+  if (pr.stack) {
+    try {
+      await refreshStackRelease(pr, s, dir, activeStackGitHub(), now);
+    } catch (error) {
+      // A release that could not be checked is not trusted.
+      revokeInspectorPrStack(pr.key, now);
+      console.error("[inspector] stack release check failed:", pr.key, error);
+    }
+    // Re-read either way: the check may have recorded a release or withdrawn one.
+    gated = getInspectorPr(pr.key) ?? pr;
+  }
+  // Stacked pull requests: the same head on the same base NAME can still be a different diff,
+  // when the parent was rebased underneath it. Judged by GitHub's merge base before the
+  // merge gate and the review reuse below may trust the recorded review.
+  let baseReview: "current" | "changed" | "unknown" = "current";
+  try {
+    baseReview = await reviewedStackBase(gated, s, dir, activeStackGitHub(), now);
+  } catch (error) {
+    baseReview = "unknown";
+    console.error("[inspector] stacked review base check failed:", pr.key, error);
+  }
+  if (baseReview === "unknown") {
+    // Neither merge on a review that may describe another diff nor spend a review on a
+    // question GitHub did not answer: try again on a later tick.
+    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", now, tick) || acted;
+  }
   // Incomplete provenance must recover before it can authorize Shipping too.
-  if (pr.reviewComplete !== false && await maybeMerge(cfg, pr, dir, s, rows, now, workflowGate)) return true;
+  if (
+    baseReview === "current" &&
+    gated.reviewComplete !== false &&
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+  ) return true;
 
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
@@ -737,6 +929,11 @@ async function processPr(
   if (
     s.headSha &&
     s.headSha === pr.headSha &&
+    // The same head against a different base is a different diff: a stacked pull request
+    // retargeted without a restack must be reviewed again, never reuse the old verdict.
+    !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
+    // ...and the same base name over a moved merge base is a different diff too.
+    baseReview === "current" &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -808,7 +1005,7 @@ async function answerFollowUp(
   const result = await runStructured<typeof InspectorReplySchema>(
     (p) => run.runner.run(p, run.options),
     prompt,
-    (raw) => parseModelJson(raw, InspectorReplySchema),
+    (raw) => parseModelReply(raw, InspectorReplySchema),
     "The inspector",
   );
   if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, now, tick);
@@ -848,7 +1045,7 @@ async function answerFollowUp(
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
   if (answer.resolved) {
-    const resolved = await resolveThread(dir, w.thread.id);
+    const resolved = w.thread.isResolved ? { ok: true } : await resolveThread(dir, w.thread.id);
     if (resolved.ok) {
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);
@@ -882,13 +1079,14 @@ async function publishCleanReview(
   if (fresh.value.state !== "OPEN" || fresh.value.headSha !== snapshot.headSha) return false;
   const input = { cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: fresh.value, login,
     headSha: snapshot.headSha, resolvedThreadIds };
-  const threads = await ownedThreadsResolved(input);
+  const pages = linkCapturingLoaders(dir, pr, fresh.value, rows, login);
+  const threads = await ownedThreadsResolved(input, pages.threads);
   if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", now, tick);
   if (!threads.value) return false;
-  const bodyOnly = await hasBodyOnlyFindings(input);
+  const bodyOnly = await hasBodyOnlyFindings(input, pages.reviews);
   if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", now, tick);
   if (bodyOnly.value) return false;
-  const existing = await cleanReviewExists(input);
+  const existing = await cleanReviewExists(input, pages.reviews);
   if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", now, tick);
   if (!existing.value) {
     const body = renderCleanReview(formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round: pr.round }), pr.round);
@@ -943,6 +1141,8 @@ async function reviewRound(
       pr.key,
       {
         headSha: s.headSha,
+        reviewedBaseRef: s.baseRefName || null,
+        reviewedBaseSha: s.baseSha || null,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
         lastReviewedAt: now,
         reviewComplete: false,
@@ -980,7 +1180,7 @@ async function reviewRound(
   const result = await runStructured<typeof InspectorVerdictSchema>(
     (p) => run.runner.run(p, run.options),
     prompt,
-    (raw) => parseModelJson(raw, InspectorVerdictSchema),
+    (raw) => parseModelReply(raw, InspectorVerdictSchema),
     "The inspector",
   );
   if (result.kind !== "ok") {
@@ -992,6 +1192,8 @@ async function reviewRound(
   const round = pr.round + 1;
   const plan = planReview({
     mode: cfg.mode,
+    live: post,
+    prompted: new Set(promptedOpenRows(open).map((c) => c.fingerprint)),
     maxComments: cfg.maxCommentsPerRound,
     round,
     verdict: result.value as InspectorVerdict,
@@ -1025,14 +1227,14 @@ async function reviewRound(
   // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
   for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
 
-  const inline = plan.inline.map((c) => ({
+  const comments = new Map(plan.inline.map((c) => [c.fingerprint, {
     path: c.path,
     line: c.line!,
     body: renderComment(
       formatMarker({ id: c.id, fingerprint: c.fingerprint, round }),
       c,
     ),
-  }));
+  }]));
 
   // Write the ledger BEFORE the POST, not after.
   //
@@ -1064,48 +1266,45 @@ async function reviewRound(
       // by the issue coming back.
       replies: prior?.replies ?? 0,
       answeredCommentId: prior?.answeredCommentId ?? null,
+      // Carried, never reset: a finding raised again keeps the record of its earlier post
+      // until this post is confirmed and re-stamps it.
+      postedAt: prior?.postedAt ?? null,
+      githubUrl: prior?.githubUrl ?? null,
+      // Carried like `replies`: a draft offered again keeps the refusals already pinned on
+      // it, which is what lets the cap stop offering it.
+      postRefusals: prior?.postRefusals ?? 0,
+      lastPostError: prior?.lastPostError ?? null,
       createdAt: prior?.createdAt ?? now,
       updatedAt: now,
     };
   });
   for (const row of planned) upsertInspectorComment(row);
 
-  if (post && (inline.length > 0 || plan.demoted.length > 0)) {
-    const res = await postReview(
+  if (post && (comments.size > 0 || plan.demoted.length > 0)) {
+    const published = await publishRound({
+      pr,
       dir,
-      pr.owner,
-      pr.repo,
-      pr.number,
-      plan.body,
-      inline,
-      s.headSha,
-    );
-    if (!res.ok) {
-      // The head sha stays where it is, so this push is reviewed again.
-      //
-      // What happens to the rows turns on WHY the post failed, and `wasRefused` is the
-      // one place that decides it. Only a refusal frees the round to be re-planned,
-      // which matters most for the demoted findings: they live in the review body and
-      // leave no thread for the next round's reconciliation to find, so left in
-      // `posting` they would be promoted to `open` and never actually said. Everything
-      // else stays in `posting` for the live thread read to adjudicate.
-      if (wasRefused(res)) {
-        for (const row of planned) {
-          const reverted: InspectorComment = { ...row, status: "drafted" };
-          rows.set(row.fingerprint, reverted);
-          upsertInspectorComment(reverted);
-        }
-      }
-      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
-    }
-    // Published. Promote every row this review carried out of `posting`.
-    for (const row of planned) upsertInspectorComment({ ...row, status: "open" });
+      headSha: s.headSha,
+      round,
+      body: plan.body,
+      planned,
+      comments,
+      carried: new Set(plan.inline.filter((c) => c.carried).map((c) => c.fingerprint)),
+      rows,
+      now,
+      tick,
+    });
+    if (!published) return false;
   }
 
   updateInspectorPr(
     pr.key,
     {
       headSha: s.headSha,
+      // The base this diff was taken against. A later base change under the same head is
+      // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).
+      reviewedBaseRef: s.baseRefName || null,
+      reviewedBaseSha: s.baseSha || null,
       reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
       round,
       reviewComplete: plan.droppedOffDiff === 0 && plan.droppedOverCap === 0,
@@ -1123,6 +1322,260 @@ async function reviewRound(
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
+}
+
+/** One live round's publication: the review, and what each refusal of it leads to. */
+interface RoundPublication {
+  pr: InspectorPr;
+  dir: string;
+  headSha: string;
+  round: number;
+  /** The review's top-level body, from the plan. */
+  body: string;
+  /** Every row this review carries, already written in `posting`. */
+  planned: InspectorComment[];
+  /** The rendered inline comment for each planned row that has one, by fingerprint. */
+  comments: Map<string, { path: string; line: number; body: string }>;
+  /** Fingerprints of the drafts the planner carried, as against new findings. */
+  carried: Set<string>;
+  /** This tick's ledger, kept in step with every row written here. */
+  rows: Map<string, InspectorComment>;
+  now: number;
+  tick: TickState;
+}
+
+/**
+ * Post a live round, and decide what a refusal of it means for each row it carried.
+ *
+ * Returns true when the round may finish: the head advances and `reviewPosture` is
+ * recorded. Returns false after `noteFailure`, when the head must be reviewed again.
+ *
+ * The cases, in the order they are checked:
+ *
+ *  - **Accepted.** Every row goes to `open`, stamped posted.
+ *  - **Response lost** (`wasRefused` is false). Today's path: the rows stay in `posting` for
+ *    the next round's reconciliation, and nothing counts as a refusal.
+ *  - **Whole-review refusal**, or any refusal of a review that carried no draft. Today's
+ *    path: every row back to `drafted`, the head not advanced, backoff. No retry is sent, so
+ *    a rate limit never triggers one, and no row records a refusal.
+ *  - **Validation refusal of a review that also carried new findings.** One retry
+ *    straight away, without the carried drafts. Refused again, nothing is counted and the
+ *    round fails as above. Accepted, the new findings are `open` and the drafts are pinned.
+ *  - **Validation refusal of a drafts-only review.** The drafts are pinned; there is no
+ *    review without them to send.
+ *
+ * Pinning is in `pinRefusal`, and once it is done the round finishes, so a draft
+ * GitHub refused does not make the model review the same head again on every backoff. It
+ * stays `drafted`, and is next offered on the next push's round.
+ *
+ * Every retry and isolated review reuses this round's verdict and plan. None calls the model.
+ */
+async function publishRound(p: RoundPublication): Promise<boolean> {
+  const { pr, dir, headSha, now, tick } = p;
+  const first = await postReview(dir, pr.owner, pr.repo, pr.number, p.body, [...p.comments.values()], headSha);
+  if (first.ok) {
+    writeRows(p, p.planned, confirmedPost(now));
+    return true;
+  }
+  // The head sha stays where it is, so this push is reviewed again.
+  //
+  // What happens to the rows turns on WHY the post failed, and `wasRefused` is the one place
+  // that decides it. Only a refusal frees the round to be re-planned, which matters most for
+  // the demoted findings: they live in the review body and leave no thread for the next
+  // round's reconciliation to find, so left in `posting` they would be promoted to `open` and
+  // never actually said. Everything else stays in `posting` for the live thread read to
+  // adjudicate.
+  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+
+  const carried = p.planned.filter((row) => p.carried.has(row.fingerprint));
+  const fresh = p.planned.filter((row) => !p.carried.has(row.fingerprint));
+  if (carried.length === 0 || (await classifyReviewRefusal(first, headUnmoved(p))) === "whole-review") {
+    writeRows(p, p.planned, { status: "drafted" });
+    return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+  }
+
+  if (fresh.length > 0) {
+    const freshComments = fresh.flatMap((row) => p.comments.get(row.fingerprint) ?? []);
+    const retry = await postReview(dir, pr.owner, pr.repo, pr.number, p.body, freshComments, headSha);
+    if (!retry.ok) {
+      // The first review was refused, so nothing it carried landed: the drafts are drafts
+      // again either way. The new findings follow `wasRefused`, exactly as above.
+      writeRows(p, carried, { status: "drafted" });
+      if (wasRefused(retry)) writeRows(p, fresh, { status: "drafted" });
+      return noteFailure(pr, retry.error ?? "could not post the review", now, tick);
+    }
+    writeRows(p, fresh, confirmedPost(now));
+  }
+  return pinRefusal(p, carried, first);
+}
+
+/**
+ * Attribute a validation refusal to the exact draft that caused it.
+ *
+ * Exactly one carried draft: it is the cause, since the refusal named a comment that could
+ * not be anchored and it was the only comment the refused review carried with a location
+ * GitHub could not place. It records one refusal with GitHub's reason.
+ *
+ * Several: each is posted in its own review, so a valid draft never counts toward the cap
+ * because of a bad sibling. Accepted, it is `open`. A validation refusal is charged to that
+ * draft alone, but only once some isolated post was accepted. When every one is refused,
+ * nothing is counted, since a refusal they all share cannot be pinned on one of them, but the
+ * round still finishes: each refusal named a comment GitHub could not anchor on an unmoved
+ * head, so reviewing the same head again would only repeat it. The drafts are offered again on
+ * the next push. A whole-review refusal or a lost response stops isolation and fails the round
+ * the usual way, with nothing counted for the drafts not yet tried. The cost is one
+ * review, and so one notification, per carried draft, at most `maxCommentsPerRound`; it
+ * happens only after a validation refusal, which a snapped line makes rare.
+ */
+async function pinRefusal(
+  p: RoundPublication,
+  carried: InspectorComment[],
+  refused: GhResult<void>,
+): Promise<boolean> {
+  const { pr, dir, headSha, now, tick } = p;
+  if (carried.length === 1) {
+    recordRefusal(p, carried[0]!, refused);
+    return true;
+  }
+  const body = [
+    reviewHeader(p.round),
+    "",
+    "GitHub refused this finding in a review with others, so it is posted on its own.",
+  ].join("\n");
+  const charged: Array<[InspectorComment, GhResult<void>]> = [];
+  let accepted = 0;
+  const settleCharges = (): void => {
+    if (accepted > 0) {
+      for (const [row, res] of charged) recordRefusal(p, row, res);
+    } else {
+      writeRows(p, charged.map(([row]) => row), { status: "drafted" });
+    }
+  };
+  for (const [i, row] of carried.entries()) {
+    const comment = p.comments.get(row.fingerprint)!;
+    const res = await postReview(dir, pr.owner, pr.repo, pr.number, body, [comment], headSha);
+    if (res.ok) {
+      writeRows(p, [row], confirmedPost(now));
+      accepted += 1;
+      continue;
+    }
+    const untried = carried.slice(i + 1);
+    if (!wasRefused(res)) {
+      settleCharges();
+      // This draft may have landed and stays `posting`, for its thread to answer.
+      writeRows(p, untried, { status: "drafted" });
+      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+    }
+    if ((await classifyReviewRefusal(res, headUnmoved(p))) === "validation") {
+      charged.push([row, res]);
+      continue;
+    }
+    settleCharges();
+    writeRows(p, [row, ...untried], { status: "drafted" });
+    return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+  }
+  settleCharges();
+  return true;
+}
+
+/** The moved-head check: one head read, made only after GitHub refused a review with a 422. */
+function headUnmoved(p: RoundPublication): () => Promise<boolean> {
+  return async () => {
+    const head = await fetchHeadSha(p.dir, p.pr.owner, p.pr.repo, p.pr.number);
+    return head.ok && head.value === p.headSha;
+  };
+}
+
+/**
+ * A post GitHub confirmed. It clears the refusal pair: those refusals were about a draft
+ * GitHub has now accepted, and carried forward they would retire a later version of it early.
+ */
+function confirmedPost(now: number): Pick<InspectorComment, "status" | "postedAt" | "postRefusals" | "lastPostError"> {
+  return { status: "open", postedAt: now, postRefusals: 0, lastPostError: null };
+}
+
+/** One counted refusal on one draft: back to `drafted`, with the count and GitHub's reason. */
+function recordRefusal(p: RoundPublication, row: InspectorComment, refused: GhResult<void>): void {
+  writeRows(p, [row], {
+    status: "drafted",
+    postRefusals: (row.postRefusals ?? 0) + 1,
+    lastPostError: refusalReason(refused),
+  });
+}
+
+/** Write rows through the one upsert, keeping this tick's ledger map in step. */
+function writeRows(p: RoundPublication, rows: InspectorComment[], patch: Partial<InspectorComment>): void {
+  for (const row of rows) {
+    const next: InspectorComment = { ...row, ...patch };
+    p.rows.set(row.fingerprint, next);
+    upsertInspectorComment(next);
+  }
+}
+
+/**
+ * Write each finding's GitHub link, read from the snapshot this tick already fetched.
+ *
+ * Runs on every tick that knows its login, before reconciliation and before any write
+ * below, so that the map those writes copy from already holds the link. That matters for
+ * a round that raises a finding again: its row is built from `prior.githubUrl`, so the
+ * earlier comment's link survives as the "posted earlier" link.
+ *
+ * A review posted later in this same tick is not in this snapshot, so its links land on
+ * the next tick. Until then the finding reads as posted, without a link.
+ *
+ * `updatedAt` is left alone on purpose. Learning where a finding lives on GitHub does not
+ * change the finding, and the Completion pane's "Last change" and the prompt's ordering
+ * both read that field.
+ */
+function recordFindingUrls(rows: Map<string, InspectorComment>, sources: LinkSources, login: string): void {
+  for (const [fp, url] of findingUrls(sources, login, rows.values())) {
+    const next: InspectorComment = { ...rows.get(fp)!, githubUrl: url };
+    rows.set(fp, next);
+    upsertInspectorComment(next);
+  }
+}
+
+/**
+ * Page loaders for the clean-review traversals that also take the links on every page.
+ *
+ * The traversals already read past the snapshot's first page, and each loader calls the
+ * same fetcher with the same arguments as the default one, so no call is added. What each
+ * page adds is a link for a finding whose thread or review the first page did not hold.
+ * Every page read is pooled with the re-read snapshot, so `findingUrls` judges the whole of
+ * what this tick has seen, and a page that ends its traversal marks that kind complete.
+ */
+function linkCapturingLoaders(
+  dir: string,
+  pr: InspectorPr,
+  fresh: PrSnapshot,
+  rows: Map<string, InspectorComment>,
+  login: string,
+): {
+  threads: (after: string) => ReturnType<typeof fetchThreadPage>;
+  reviews: (before: string) => ReturnType<typeof fetchReviewPage>;
+} {
+  const seen = snapshotLinkSources(fresh);
+  recordFindingUrls(rows, seen, login);
+  return {
+    threads: async (after) => {
+      const page = await fetchThreadPage(dir, pr.owner, pr.repo, pr.number, after);
+      if (page.ok && page.value) {
+        seen.threads = [...seen.threads, ...page.value.threads];
+        if (!page.value.pageInfo.hasNextPage) seen.threadsComplete = true;
+        recordFindingUrls(rows, seen, login);
+      }
+      return page;
+    },
+    reviews: async (before) => {
+      const page = await fetchReviewPage(dir, pr.owner, pr.repo, pr.number, before);
+      if (page.ok && page.value) {
+        seen.reviews = [...seen.reviews, ...page.value.reviews];
+        if (!page.value.pageInfo.hasPreviousPage) seen.reviewsComplete = true;
+        recordFindingUrls(rows, seen, login);
+      }
+      return page;
+    },
+  };
 }
 
 /** Close one ledger row, in the map we are working from as well as in the DB. */
@@ -1162,7 +1615,9 @@ function reconcilePosting(
     const published = row.line === null || threads.has(fp);
     const next: InspectorComment = {
       ...row,
-      status: published ? "open" : "drafted",
+      // Confirmed now, so stamped now. An unpublished row keeps whatever an earlier post of
+      // the same finding recorded.
+      ...(published ? confirmedPost(now) : { status: "drafted" as const }),
       updatedAt: now,
     };
     rows.set(fp, next);
@@ -1197,13 +1652,9 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // insert. Gating it would mean a user who opens pull requests first and turns the
   // Inspector on afterwards can never review any of them, because the proof they were
   // ours went by while nobody was listening and cannot be recovered.
+  useInspectorStackLifecycle(registry);
   const offPrOpened = registry.onPrOpened((e: PrOpened) => {
-    const adopted = adoptPr(
-      e.url,
-      { sessionId: e.sessionId, cwd: e.cwd, repoRoot: e.repoRoot },
-      "hook",
-      Date.now(),
-    );
+    const adopted = adoptOpenedPr(registry, e, Date.now());
     // Refresh NOW rather than waiting for the next tick. The chip is how anyone knows the
     // PR was adopted at all, and a card that shows a PR with no inspector chip means
     // something specific - "we didn't open this one" - so leaving it in that state for up
@@ -1211,7 +1662,16 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     if (adopted) {
       registry.refreshInspections();
       const parsed = parsePrUrl(e.url);
-      if (parsed) notifyInspection(registry, parsed.key, null, null);
+      if (parsed) {
+        notifyInspection(registry, parsed.key, null, null);
+        // Stacked pull requests: the lineage is already on the row (`adoptOpenedPr`). The
+        // base check reads GitHub, so it runs off the hook's path.
+        if (getInspectorPr(parsed.key)?.stack) {
+          void correctStackBase(parsed.key, activeStackGitHub(), Date.now())
+            .then(() => registry.refreshInspections())
+            .catch((error) => console.error("[inspector] could not check the stacked base:", parsed.key, error));
+        }
+      }
     }
   });
   const offPipelineRun = registry.onPipelineRun((run) => {
@@ -1233,12 +1693,19 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     if (stopped) return;
     try {
       const cfg = getInspectorConfig();
-      if (cfg.enabled) {
-        for (const pr of loadOpenInspectorPrs()) {
+      // Stacked children are observed even with both review sources off: a child keeps its
+      // lifecycle (base reconciliation, broken-stack detection, the prompts it needs) whatever
+      // any setting says. Only rows with lineage, so the Inspector being off still costs
+      // nothing for every other pull request.
+      const reviewing = (): boolean => getInspectorConfig().enabled || codeRabbitEnabled();
+      const sweeping = reviewing();
+      const due = sweeping ? loadOpenInspectorPrs() : loadOpenInspectorPrs().filter((row) => row.stack);
+      if (sweeping || due.length > 0) {
+        for (const pr of due) {
           if (stopped) break;
           // Re-read per PR so turning the feature off mid-sweep is honoured now rather
           // than after everything already queued has posted.
-          if (!getInspectorConfig().enabled) break;
+          if (!reviewing() && !pr.stack) break;
           // The row may have been written by an earlier PR in this same sweep.
           const fresh = getInspectorPr(pr.key) ?? pr;
           const observed: {
@@ -1251,6 +1718,9 @@ export function startInspector(registry: Registry, options: InspectorStartOption
             (snapshot, observedAt) => {
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
+              // CodeRabbit may be delivered while a model review is still running.
+              // With this source off, retain Inspector's once-per-sweep refresh.
+              if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
           ));
@@ -1270,6 +1740,17 @@ export function startInspector(registry: Registry, options: InspectorStartOption
         // stop claiming the last good result. One grouped query per 90s, and it emits
         // only for sessions whose summary actually changed.
         registry.refreshInspections();
+      }
+      // Stacked children already retired as closed: their recovery action depends on a parent
+      // that can still merge or close, so its state is read again every sweep (GitHub reads
+      // only). Its own guard, so one failure cannot cost the open rows' sweep above.
+      if (stackLifecycle && !stopped) {
+        try {
+          await observeClosedStackChildren(activeStackGitHub(), stackLifecycle, liveDir, Date.now());
+          registry.refreshInspections();
+        } catch (error) {
+          console.error("[inspector] closed stacked children could not be observed:", error);
+        }
       }
     } catch (err) {
       console.error("[inspector] tick failed:", err);

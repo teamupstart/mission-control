@@ -442,7 +442,7 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
   if (context.relativeTargets && !context.relativeTargets.has(resolved)) {
     return {
       code: "missing_companion",
-      message: "a relative link names a file that is not in the report directory",
+      message: `a relative link names a file that is not in the report directory: ${resolved.slice(0, 1024)} (not selected for capture)`,
     };
   }
   return null;

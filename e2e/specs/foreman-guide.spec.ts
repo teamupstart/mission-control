@@ -164,7 +164,7 @@ for (const surface of ["dropdown", "settings"] as const) {
   });
 }
 
-test("session Foreman pane keeps its place when the guide closes and links to the same profile", async ({ dashboard, daemon }) => {
+test("Cmd+Enter closes the Foreman guide without disturbing its session pane", async ({ dashboard, daemon }) => {
   await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
   const dispatch = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dispatch.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -206,6 +206,13 @@ test("session Foreman pane keeps its place when the guide closes and links to th
   await expect(drawer).toBeVisible();
   await expect(info).toBeFocused();
   await capture(dashboard, "session-guide-dismissed");
+  await info.click();
+  await expectGuide(dashboard);
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(guide(dashboard)).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+  await expect(info).toBeFocused();
+  await capture(dashboard, "session-guide-cmd-enter-dismissed");
   await info.click();
   await profileLink(guide(dashboard)).click();
   await expect(dashboard).toHaveURL(/#\/library\/personas\/foreman$/);

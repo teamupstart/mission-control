@@ -26,33 +26,43 @@ test("the E2E worker ceiling rejects a CLI override above four", () => {
 
 test("a second E2E suite waits until the host lease is released", async () => {
   const { root, metadataPath } = await fixture();
+  let first: E2eHostLease | null = null;
+  let secondPromise: Promise<E2eHostLease> | null = null;
   try {
-    const first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
     let secondSettled = false;
-    let observedOwnerPid: number | null = null;
-    const secondPromise = acquireE2eHostLease({
+    let observeOwner!: (pid: number) => void;
+    const ownerObserved = new Promise<number>((resolve) => { observeOwner = resolve; });
+    secondPromise = acquireE2eHostLease({
       metadataPath,
       port: first.owner.port,
       workers: 2,
       pollMs: 10,
       waitTimeoutMs: 2_000,
       onWait: (owner) => {
-        observedOwnerPid = owner?.pid ?? null;
+        if (owner) observeOwner(owner.pid);
       },
     }).then((lease) => {
       secondSettled = true;
       return lease;
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Acquisition also bounds this wait if owner observation fails or the lease is not exclusive.
+    const observedOwnerPid = await Promise.race([
+      ownerObserved,
+      secondPromise.then(() => assert.fail("The second suite acquired the unreleased host lease")),
+    ]);
     assert.equal(secondSettled, false);
     assert.equal(observedOwnerPid, process.pid);
 
     await first.release();
-    const second = await secondPromise;
+    await secondPromise;
     assert.equal(secondSettled, true);
-    await second.release();
   } finally {
+    await first?.release();
+    // Drain the pending acquisition after freeing the port, even when an assertion failed.
+    const second = await secondPromise?.catch(() => null);
+    await second?.release();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -75,6 +85,30 @@ test("a crashed owner leaves no kernel lease to reclaim", async () => {
     assert.notEqual(lease.owner.token, "dead-owner");
     await lease.release();
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("repeated release is harmless and preserves a successor's owner metadata", async () => {
+  const { root, metadataPath } = await fixture();
+  let first: E2eHostLease | null = null;
+  let second: E2eHostLease | null = null;
+  try {
+    first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    await first.release();
+    second = await acquireE2eHostLease({ metadataPath, port: first.owner.port, workers: 4 });
+
+    // The first lease's finally cleanup must not touch the new owner's metadata.
+    await assert.doesNotReject(first.release());
+    const current = JSON.parse(await readFile(metadataPath, "utf8")) as { token: string };
+    assert.equal(current.token, second.owner.token);
+
+    await second.release();
+    await assert.doesNotReject(second.release());
+    await assert.rejects(readFile(metadataPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await first?.release();
+    await second?.release();
     await rm(root, { recursive: true, force: true });
   }
 });

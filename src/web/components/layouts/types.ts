@@ -1,3 +1,5 @@
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../../lib/sessionReports.ts";
 import type {
   BacklogPlan,
   FileCommentReview,
@@ -19,7 +21,9 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
+import type { BacklogTrustView, StackShipping } from "../../lib/backlog-copy.ts";
+import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
+import type { ResidentLoopFeedbackBinding } from "../../residents/ResidentLoopControls.tsx";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -54,6 +58,12 @@ export interface SessionViewProps {
    * silently skip the Backlog column.
    */
   backlog: Task[];
+  /**
+   * Hibernated tasks (`@shared/hibernation.ts`), narrowed by the same filter as `backlog`. The
+   * Backlog column draws them as their own section; they are not backlog work. Optional so a
+   * layout rendered in isolation needs no hibernation to exist.
+   */
+  hibernated?: Task[];
   /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
   onEditTask: (taskId: string) => void;
   /**
@@ -69,6 +79,8 @@ export interface SessionViewProps {
   backlogTrust?: BacklogTrustView | null;
   /** Route task-local trust explanations to the existing Trust matrix. */
   onManageForemanTrust?: () => void;
+  /** The Shipping stacking default and depth cap, for blocked stack cards. Absent: unknown. */
+  stackShipping?: StackShipping;
   /** Every workflow summary; the backlog bulk edit offers the published ones as After work. */
   workflowSummaries?: WorkflowSummary[];
   selectedId: string | null;
@@ -95,6 +107,19 @@ export interface SessionViewProps {
   onDeselect: () => void;
   /** Open detail id: the Console selection or the Board's drill-in. */
   detailId: string | null;
+  /**
+   * The session whose detail is open, from App's one `detailSession` lookup: the fleet list
+   * first, then an open resident that the Drawer placement keeps out of `sessions`. Absent in a
+   * static rendering, where the view falls back to finding `detailId` in `sessions`.
+   */
+  detailSession?: Session | null;
+  /**
+   * Residents drawn as visitor cards: they need you while the Residents drawer is closed. In
+   * `sessions` like any fleet member, but a view draws them as `ResidentVisitorCard`, which
+   * opens the resident's conversation through `onOpenResident`.
+   */
+  residentVisitors?: ReadonlySet<string>;
+  onOpenResident?: (sessionId: string) => void;
   onOpenReviews: (id: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
   diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;
@@ -206,6 +231,13 @@ export interface SessionViewProps {
    */
   reviews: ReviewItem[];
   /**
+   * The agent reports this window has been told about (`inbox` flag; empty while it is off), the
+   * live half of a conversation's report entries (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening a report entry and marking it read: App's, shared with the inbox. */
+  reportControls?: ReportEntryControls;
+  /**
    * App-owned join from compact run SSE summaries to each live session: EVERY run the session
    * carries, one per repository a multi-repo task changed.
    *
@@ -289,6 +321,37 @@ export interface SessionViewProps {
    * switched off. A layout arranges; it does not decide which sessions get keys.
    */
   cardShortcutBySession?: ReadonlyMap<string, string>;
+  /**
+   * App-owned join from each resident's session to its live run (`residentMarksBySession`):
+   * the marker, label and pin from the run's pinned revision. Absent entries are ordinary -
+   * every session that is not a resident. Read by the card, the rail row, the Console band
+   * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
+   */
+  residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /** Feedback for a Board resident's controls, shared with the fleet filter. */
+  residentLoopFeedbackFor?: (runId: string) => ResidentLoopFeedbackBinding;
+  /**
+   * The sessions under Idle's Awaiting rule, computed once by App on one clock
+   * (`awaitingSessionIds`) so the views draw the same order the arrow keys walk. A wait's
+   * membership changes at its deadline, and two views reading their own clocks could disagree
+   * for a tick. Absent means none.
+   */
+  awaitingIds?: ReadonlySet<string>;
+  /**
+   * App-owned join from each session Restart on new profile replaced to its replacement
+   * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no
+   * `residentBySession` entry; the Console offers Complete and the new session from this.
+   */
+  residentReplacementBySession?: ReadonlyMap<string, ResidentReplacement>;
+  /**
+   * Bring a session forward from wherever the operator is - App's `focusSession`, which clears
+   * the fleet filter before selecting. Unlike `onSelect`, it can reach a session the current
+   * filter hides, which a replacement often is: its name or status can differ from the session
+   * it replaced, and selecting a hidden id would close the detail instead of opening it.
+   */
+  onFocusSession?: (id: string) => void;
+  /** Open a resident's profile on `#/residents`, from its Console band. */
+  onOpenResidentProfile?: (profileId: string) => void;
 }
 
 /** The run summary behind this session's member link, when both are on hand. */

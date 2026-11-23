@@ -48,6 +48,7 @@ const { freezeWorkflowRunIntent, workflowRunIntentFingerprint } =
 const { WorkflowContextSnapshotSchema, WorkflowRunIntentSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { classifyWorkflowGoalProvenance } = await import("../src/server/workflows/goal-provenance.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 
 const repositoryRoot = process.cwd();
@@ -273,6 +274,7 @@ async function repairHarness(
   const goal = { prompt: HUMAN_ASK };
   /** Flipped by a test to stand in for a binding whose conversation cannot be read. */
   const intentAvailable = { value: true };
+  const rounds = { n: 1 };
   const manager = new WorkflowManager(registry, store, {
     inject: (async (
       _session: Session,
@@ -297,6 +299,11 @@ async function repairHarness(
             frozenAt: now,
           })
         : null,
+    readEvidenceProbe: async () => ({
+      headSha: `head-${rounds.n}`,
+      diffFingerprint: `diff-${rounds.n}`,
+      workingTreeStatus: [],
+    }),
     readContextRaw: async (_registry, binding, _feedback, _anchors, frozenIntent) => {
       await beforeReadContext?.();
       const raw = {
@@ -348,8 +355,6 @@ async function repairHarness(
       }),
     },
   });
-  /** Bumped by the caller so each round captures genuinely different work. */
-  const rounds = { n: 1 };
   manager.start();
   t.after(() => manager.stop());
   const binding = manager.createBinding({ workflowVersionId: published.version.id, sessionId: id });
@@ -513,8 +518,11 @@ test("a failed first compaction freezes nothing and the next round retries it", 
  */
 test("a capture that started before the run's criteria were frozen still reuses them", async (t) => {
   let compactions = 0;
-  let releaseHold: (() => void) | null = null;
-  let held: Promise<void> | null = null;
+  let holdContextRead = false;
+  let markContextRead!: () => void;
+  let releaseContextRead!: () => void;
+  const contextEntered = new Promise<void>((resolve) => { markContextRead = resolve; });
+  const contextHeld = new Promise<void>((resolve) => { releaseContextRead = resolve; });
   const h = await repairHarness(
     t,
     "stale-read-intent",
@@ -528,7 +536,11 @@ test("a capture that started before the run's criteria were frozen still reuses 
         reconcile: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
       });
     },
-    () => held ?? Promise.resolve(),
+    async () => {
+      if (!holdContextRead) return;
+      markContextRead();
+      await contextHeld;
+    },
   );
 
   const submitted = await h.manager.submit(h.binding.id, { requestId: "stale-1" });
@@ -544,37 +556,40 @@ test("a capture that started before the run's criteria were frozen still reuses 
 
   // Round 2 enters capture and is held inside its context read. Its view of the run - taken
   // before the hold - says this run has no criteria. That view is about to go stale.
-  held = new Promise<void>((resolve) => { releaseHold = resolve; });
+  holdContextRead = true;
   h.rounds.n = 2;
   const repairing = h.manager.resubmit(runId, { requestId: "stale-2" });
-  await waitFor(
-    () => h.store.latestSubmission(runId)?.round === 2 && releaseHold !== null,
-    "round 2 never reached its context read",
-  );
-  // The concurrent winner, through the store's own write-once door.
-  const raced = h.store.freezeRunCriteria(runId, {
-    intentFingerprint: h.store.getRun(runId)!.intent!.fingerprint,
-    constraints: [],
-    acceptanceCriteria: ["The winning capture's criteria"],
-    canonicalCriteria: [{
-      id: "criterion-1-raced",
-      text: "The winning capture's criteria",
-      material: true,
-      suggestedProofClass: null,
-    }],
-    compaction: {
-      status: "model",
-      runner: "claude",
-      model: "fake",
-      error: null,
-      reusedFromSubmissionId: null,
-    },
-    compactedFromSubmissionId: h.store.listSubmissions(runId)[0]!.id,
-    compactedAt: 20,
-  });
-  assert.ok(raced, "the racing writer froze the run's criteria");
-  releaseHold!();
-  held = null;
+  let raced: ReturnType<typeof h.store.freezeRunCriteria>;
+  try {
+    const premature = await Promise.race([contextEntered, repairing]);
+    if (premature) assert.fail(`round 2 finished before reading context: ${JSON.stringify(premature)}`);
+    assert.equal(h.store.latestSubmission(runId)?.round, 2);
+    // The concurrent winner, through the store's own write-once door.
+    raced = h.store.freezeRunCriteria(runId, {
+      intentFingerprint: h.store.getRun(runId)!.intent!.fingerprint,
+      constraints: [],
+      acceptanceCriteria: ["The winning capture's criteria"],
+      canonicalCriteria: [{
+        id: "criterion-1-raced",
+        text: "The winning capture's criteria",
+        material: true,
+        suggestedProofClass: null,
+      }],
+      compaction: {
+        status: "model",
+        runner: "claude",
+        model: "fake",
+        error: null,
+        reusedFromSubmissionId: null,
+      },
+      compactedFromSubmissionId: h.store.listSubmissions(runId)[0]!.id,
+      compactedAt: 20,
+    });
+    assert.ok(raced, "the racing writer froze the run's criteria");
+  } finally {
+    holdContextRead = false;
+    releaseContextRead();
+  }
   const repaired = await repairing;
   assert.equal(repaired.ok, true);
   await waitFor(
@@ -906,7 +921,7 @@ test("run criteria freeze once, and a second writer adopts the first", () => {
       ...first,
       compaction: { ...first.compaction, status: "fallback" as unknown as "model" },
     }),
-    /invalid_literal/,
+    /invalid_value/,
     "a fallback compaction must never become durable run criteria",
   );
   assert.deepEqual(store.getRun("intent-run")?.criteria, first, "the refusal wrote nothing");
@@ -1176,6 +1191,41 @@ test("Persona intent reports an unresolved relationship for a captured pending i
   assert.ok(intentSection.includes(HUMAN_ASK));
   assert.match(intentSection, /Captured objective version 1; prompt revision 2; resolved revision 1; relationship unresolved\./);
   assert.doesNotMatch(intentSection, /relationship (?:null|undefined|initial|steer)/);
+});
+
+test("a run frozen after the objective is accepted as is carries the former pending asks as steering", () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("accepted-objective")]);
+  const { session, binding } = bindingFor(registry, "accepted-objective");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  registry.captureAcceptedPrompt(session.id, "B", binding.noteKey);
+  registry.captureAcceptedPrompt(session.id, "B, but rename the heading to Advisor Overrides", binding.noteKey);
+  // Stalled exactly as the incident was: the head was latched `unclear` and left pending.
+  registry.upsertGoal(session.id, { relationship: "unclear", rationale: "latched" });
+
+  const stalled = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(classifyWorkflowGoalProvenance({ rawGoal: stalled.rawGoal, intentSource: stalled.intentSource, now: 1 }).verdict,
+    "unreconciled", "a run frozen around the stall is labelled, not blocked");
+  assert.deepEqual(stalled.steering, []);
+
+  const result = registry.acceptGoalObjective(session.id, 42);
+  assert.ok(result && result.accepted);
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(frozen.rawGoal, HUMAN_ASK, "the contract was confirmed, not rewritten");
+  assert.deepEqual(frozen.intentSource, {
+    objectiveVersion: 1, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer",
+  });
+  assert.equal(frozen.steeringResolvedRevision, 3);
+  assert.deepEqual(frozen.steering?.map((n) => [n.revision, n.instruction, n.relationship]), [
+    [2, "B", "steer"],
+    [3, "B, but rename the heading to Advisor Overrides", "steer"],
+  ]);
+  assert.ok(frozen.steering?.every((n) => n.rationale.startsWith("Accepted by you:")));
+  assert.equal(
+    classifyWorkflowGoalProvenance({ rawGoal: frozen.rawGoal, intentSource: frozen.intentSource, now: 1 }).verdict,
+    "objective",
+  );
 });
 
 test("a session without an objective falls back to its prompt without inventing provenance", () => {

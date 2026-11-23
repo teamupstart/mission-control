@@ -1,4 +1,4 @@
-import { APP_BUNDLE_NAME, binaryBundleName } from '../src/shared/app-naming.mjs';
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME, binaryBundleName } from '../src/shared/app-naming.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream, lstatSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -6,6 +6,10 @@ import { BINARY_MANIFEST_PROTOCOL, BINARY_RECEIPT_SCHEMA, BINARY_REPO, BINARY_BU
   INSTALL_HELPER_PROTOCOL, MAX_BINARY_ASSET_BYTES, validateBinaryBuildMetadata, validateBinaryManifest } from '../src/shared/binary-distribution.mjs';
 import { MINIMUM_DISTRIBUTION_MACOS, MAX_BINARY_MANIFEST_BYTES } from '../src/shared/binary-publisher-policy.mjs';
 import { releaseVersionProblem } from './assert-release-version.mjs';
+
+// Where `package:distribution` writes qualified bytes, relative to the checkout root. The
+// publisher reads it and `distribution.yml` retains it, so all three name this one value.
+export const DISTRIBUTION_OUTPUT = 'release/distribution';
 
 export function distributionMetadata({channel, tag, commit, versions}) {
   const problem = releaseVersionProblem({tag: channel === 'stable' ? tag : `v${versions.packageVersion}`, ...versions});
@@ -24,11 +28,23 @@ export function assertBuildMetadata(metadata) {
   if (problem) throw new Error(problem);
 }
 
+// Every bundle name a shipped contract produced keeps its asset prefix, so a
+// release published before a rename can still be recognized and retired.
+const ASSET_PREFIXES = new Map([[APP_BUNDLE_NAME, 'Agent-Mission-Control'], [LEGACY_APP_BUNDLE_NAME, 'Mission-Control']]);
+
+function assetNames(bundleName, identity) {
+  const stem = `${ASSET_PREFIXES.get(bundleName)}-${identity}-darwin-arm64`;
+  return {'app-zip': `${stem}.zip`, dmg: `${stem}.dmg`};
+}
+
 export function distributionNames(metadata) {
   assertBuildMetadata(metadata);
-  const identity = metadata.channel === 'stable' ? metadata.releaseTag : `alpha-${metadata.commit}`;
-  const stem = `${binaryBundleName(metadata) === APP_BUNDLE_NAME ? "Agent-Mission-Control" : "Mission-Control"}-${identity}-darwin-arm64`;
-  return {'app-zip': `${stem}.zip`, dmg: `${stem}.dmg`};
+  return assetNames(binaryBundleName(metadata), metadata.channel === 'stable' ? metadata.releaseTag : `alpha-${metadata.commit}`);
+}
+
+/** Archive names any shipped contract could have published under this release tag. */
+export function publishedAssetNames(tag) {
+  return [...ASSET_PREFIXES.keys()].flatMap((bundleName) => Object.values(assetNames(bundleName, tag)));
 }
 
 export function distributionManifest(metadata, assets) {

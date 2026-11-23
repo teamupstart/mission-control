@@ -3,19 +3,35 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
+import { announceShaperFolder } from "./shaping/discovery.ts";
+import { wireShapingConfigEvents } from "./shaping/events.ts";
+import { wireVoiceStateEvents } from "./voice/state.ts";
+import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { renderDashboardDocument } from "./dashboard-document.ts";
+import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { existsSync } from "node:fs";
+import type { Server } from "node:http";
+import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
+import type { Context } from "hono";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
+import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, openDb, setAppConfig } from "./db.ts";
+import { PauseManager } from "./pause/manager.ts";
+import { processFreezer } from "./pause/freezer.ts";
+import { StoredPauseStateSchema } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery, onPersonDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
@@ -34,7 +50,7 @@ import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
-import { TaskManager } from "./tasks.ts";
+import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
@@ -46,13 +62,15 @@ import {
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
+import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
-import { startInspector } from "./inspector/worker.ts";
-import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { reobserveInspectorPr, startInspector } from "./inspector/worker.ts";
+import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
 import { setLlmSpendSink } from "./llm/spend.ts";
@@ -80,6 +98,10 @@ import {
 import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
+import { ResidentManager } from "./residents/manager.ts";
+import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
+import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
+import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
@@ -91,7 +113,7 @@ import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
-import { WorktreeManager } from "./worktrees/manager.ts";
+import { WorktreeManager, type NativePoolStatus } from "./worktrees/manager.ts";
 import {
   LegacyTreehouseService,
   warnRetiredTreehouseCadence,
@@ -99,6 +121,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { ReportManager } from "./reports.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
@@ -109,6 +132,10 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
+import { StorageHealthService } from "./storage-health.ts";
+import { getStorageAlertState, getStorageLimitsConfig, setStorageAlertState } from "./storage-limits.ts";
+import { remeasureGrowthFor, StorageUsageMonitor } from "./storage-usage.ts";
+import { idleCacheSelection } from "./storage-pools.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
@@ -118,7 +145,7 @@ import {
   observeSessionOperation,
   recheckOrganization,
   registerBuiltinTelemetry,
-  retainPrObservation,
+  attachPrObservationTelemetry,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
@@ -133,6 +160,8 @@ await initializeExecutableEnvironment();
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
 const database = openDb();
+// The desktop window's launch colour follows the stored skin, whoever stored it.
+syncWindowBackground();
 for (const problem of pendingPlanWriteWarnings()) console.warn("Plan write recovery:", problem);
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
@@ -191,7 +220,37 @@ const reconcileManagedResumeResources = () => {
 };
 reconcileManagedResumeResources();
 setInterval(reconcileManagedResumeResources, 30_000).unref();
+// Install this build's built-in residents before the Registry reads the profile catalog, so the
+// first snapshot already carries them and an upgrade's new revision. A failure costs the
+// built-ins, never startup: operator profiles are untouched by it.
+try {
+  reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+} catch (error) {
+  console.error("[residents] could not install the built-in resident profiles:", error);
+}
 const registry = new Registry();
+// One bridge for every writer, including settings restore and daemon listeners.
+const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// A declared wait holds idle automation, so it must not outlive the preview that draws it on the
+// card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
+const endAwaitingsWhenOff = (): void => {
+  if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) registry.clearAllAwaitings("flag");
+};
+endAwaitingsWhenOff();
+const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
+// Mission Control's own deliveries, stored on a waiting session's wait as they are claimed, so
+// the turn one starts is never taken for the session's wake, even across a restart.
+const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
+  registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+// And a person's own words, so an automated delivery of the same words cannot pass off the
+// person's turn as Mission Control's nudge.
+const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
+// Task shaping's config reaches open windows the same way, behind its flag.
+const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// The voice state reaches open windows and the shell the same way, behind its flag.
+const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+// The shapers folder is read at start, and again at every shaping run: never watched.
+if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
@@ -218,7 +277,26 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 maintainScoutSessionCredentials(registry);
-const sdkSessions = new SdkSupervisor(registry);
+// The one owner of pausing: a session, Pause all, and the priority session. Constructed before
+// the SDK supervisor and the task manager, which take it as an explicit dependency for the
+// thaw every stop and reset starts with. Its freezer reads the supervisor's driver pids through
+// a closure, called only once a pause is asked for - long after both exist. `start()` publishes
+// what the last daemon left and freezes the sessions that come back once the first sweep has
+// observed them.
+const pauses: PauseManager = new PauseManager({
+  registry,
+  freezer: processFreezer({ sdkDriverPid: (id): number | null => sdkSessions.driverProcessId(id) }),
+  store: {
+    load: () => {
+      const stored = getAppConfig(APP_CONFIG_ENTRIES.pauseState);
+      const parsed = stored === undefined ? null : StoredPauseStateSchema.safeParse(stored);
+      return parsed?.success ? parsed.data : undefined;
+    },
+    save: (state) => setAppConfig(APP_CONFIG_ENTRIES.pauseState, state),
+  },
+});
+pauses.start();
+const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
@@ -236,8 +314,12 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The watcher is a latency hint; the recurring scan is the authority. Both live inside the
 // manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
 // per batch, no history in the snapshot, no browser polling.
+// Bound once the report manager exists below: a pass that prunes vanished bundles hands their
+// keys over, so only reports published under exactly those archives are re-checked.
+let onArchivesPruned: (keys: readonly string[]) => void = () => undefined;
 const archives = new ArchiveManager({
   onChanged: () => registry.emitArchiveChanged(),
+  onPruned: (keys) => onArchivesPruned(keys),
   watch: true,
   tasks: new RegistryArchiveTaskGateway(registry),
 });
@@ -257,8 +339,30 @@ const tasks = new TaskManager(
   {},
   worktrees,
   legacyWorktrees,
+  pauses,
 );
+// A merge completes the task even with a question open; this closes those questions with the
+// reason `merged` as a condition of that completion (`async-input`). The flag is read per merge.
+tasks.useMergeQuestions({
+  closure: (sessionId) => {
+    const closure = reviews.mergeClosure(sessionId, featureEnabled(ASYNC_INPUT_FLAG));
+    return { persist: closure.persist, publish: () => { closure.publish(); } };
+  },
+  blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
+});
 const queues = new QueueManager(registry);
+// Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
+// or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
+// which is what releases a prompt held behind it. Delivered through the one outbox.
+const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
+  registry,
+  outbox: pendingTurns,
+  // `workflows` is constructed below; this is read only when a prompt is written, long after.
+  workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+  // Read at start and when task shaping is turned on again, after `workflows` exists.
+  owedSessions: () => workflows.afterWorkOwedSessions(),
+});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
@@ -300,12 +404,19 @@ const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
-const checkRuntime = new CheckRuntime(checkLeases);
+const commandArtifacts = new WorkflowCommandArtifactService();
+const checkRuntime = new CheckRuntime(checkLeases, { artifacts: commandArtifacts });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+// Assigned once Settings > Storage's measurer exists, below: a cleanup that removed slots
+// lowers its totals at once instead of at the next measurement.
+let onWorktreesChanged = () => {};
+// Likewise: the slots the saved idle-cache budget removes, which a `trimIdle` removal is checked
+// against when it is previewed and again, on the daemon, when it is executed.
+let currentIdleSelection: (status: NativePoolStatus[]) => ReadonlySet<string> = () => new Set();
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -339,7 +450,11 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   },
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
-  notifyChanged: () => registry.emitWorktreesChanged(),
+  notifyChanged: () => {
+    registry.emitWorktreesChanged();
+    onWorktreesChanged();
+  },
+  trimIdleSelection: (status) => currentIdleSelection(status),
 });
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
@@ -349,9 +464,11 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  afterWorkSkills,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  commandArtifacts,
   // The gate stops being a formality here. A configured, allowlisted check now leases a
   // pooled worktree pinned to the captured commit, runs the operator's argv in it, and a
   // non-zero exit FAILS the submission - where before it recorded "not run" and passed.
@@ -361,6 +478,9 @@ const workflows = new WorkflowManager(registry, personas.store, {
   unresolvedCheckLease: (submissionId, nodeId) =>
     checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
   inject: runtimePromptInjector(sdkSessions),
+  // A recheck of a closed-PR block asks GitHub again, because the Inspector sweep never reads
+  // a row it retired as closed.
+  reobservePullRequest: (prKey) => reobserveInspectorPr(registry, prKey),
   // How often the resumption observer and the session action sweep look, in ms.
   //
   // Overridable for the reason `INSPECTOR_POLL_MS` and `MISSION_POLL_MS` are: both loops ask
@@ -383,6 +503,29 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+tasks.registerWorkflowNames((workflowId) => workflows.workflowName(workflowId));
+// A task's dispatch Persona: creation, editing and launch all read the Library through this.
+tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
+// Resident profiles and the one resident launch path. It creates its tasks through
+// `TaskManager.create` with the resident capability, and the dispatcher asks it for each
+// resident's standing instructions, so both directions are installed here, after both exist.
+// Its startup reconciliation writes durable rows and starts after the port is won, below.
+const residents = new ResidentManager({
+  registry,
+  createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+  persona: (id) => personas.store.getPersona(id),
+  launchResponseWaitMs: residentLaunchWaitMs(),
+  hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
+  // The real harness configuration, read only - never written.
+  mcpCatalog: new ResidentMcpCatalogCache(readGlobalMcp),
+});
+const residentLoop = new ResidentLoop({ registry, sdk: sdkSessions, refreshSession: (session) => refreshRuntimeMeta(registry, session) });
+tasks.registerResidentLaunch(
+  (task, repository, runtime) => residents.composeLaunch(task, repository, runtime),
+  (task) => residents.mcpLaunchForTask(task),
+);
+// A resumed resident renders its MCP servers from its run's snapshot, through the same reader.
+sdkSessions.registerResidentMcp((task) => residents.mcpLaunchForTask(task));
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.
@@ -392,6 +535,42 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
+// and the backup loop's startup prune seeds it.
+// The state directory's measured size and its volume's free space. `storageHealth` is assigned
+// on the next line, before any measurement or volume check can finish and call back.
+const storageUsage: StorageUsageMonitor = new StorageUsageMonitor({
+  root: STATE_DIR,
+  onChange: () => storageHealth.recompute(),
+  // While a storage limit is set, losing as much free space as is left before the next threshold
+  // (at most a GiB) starts an early walk, so the limit warning does not wait for the six-hourly one.
+  remeasureGrowthBytes: (measured) => remeasureGrowthFor(getStorageLimitsConfig(), measured),
+  // The floor is judged on every free-space check, not only once the reading moves 64 MiB.
+  volumeThresholds: () => {
+    const floor = getStorageLimitsConfig().freeFloorBytes;
+    return floor === null ? [] : [floor];
+  },
+});
+const storageHealth: StorageHealthService = new StorageHealthService({
+  backups: databaseBackups,
+  usage: storageUsage,
+  limits: getStorageLimitsConfig,
+  alerts: { read: getStorageAlertState, write: setStorageAlertState },
+  publish: (health) => registry.setStorageHealth(health),
+});
+databaseBackups.onChange(() => storageHealth.recompute());
+onWorktreesChanged = () => storageUsage.forgetRemovedSlots();
+currentIdleSelection = (status) => {
+  const limits = getStorageLimitsConfig();
+  return idleCacheSelection({
+    status,
+    slotBytes: (path) => storageUsage.slotBytes(path),
+    sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+    budgetBytes: limits.poolIdleBudgetBytes,
+    keepWarm: limits.poolKeepWarm,
+  });
+};
+let stopStorageUsage = () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -456,10 +635,14 @@ ensembles = new EnsembleManager(registry, undefined, {
     workflows,
     sdk: sdkSessions,
     pendingTurns,
+    pause: pauses,
   }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
+  // Pause all with launches held, or a priority session: later member launches and the winner's
+  // replacement Task wait it out.
+  launchHold: () => pauses.launchHoldReason(),
 });
 // Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
 // real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so
@@ -590,22 +773,7 @@ registry.onTurnDelivered((e) => {
 // is what makes this a VERIFIED association rather than an agent's claim - and it is the last
 // moment at which the task's repository and kind can still be read, because
 // `invalidateTaskOwnershipInTransaction` may delete the binding at any point after it.
-registry.onTaskPrLinked((e) => {
-  const task = registry.getTask(e.taskId);
-  if (!task) return;
-  retainPrObservation({
-    taskId: e.taskId,
-    taskKind: task.kind,
-    repoRoot: e.repoRoot,
-    primaryRepoRoot: task.repoRoot,
-    prUrl: e.prUrl,
-    sessionId: task.sessionId,
-    // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
-    // carries no task. Here the honest claim is the weaker one.
-    creationVerified: false,
-    now: e.observedAt,
-  });
-});
+attachPrObservationTelemetry(registry);
 tasks.registerWritebackEnqueuer(writebackEnqueuer);
 const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has
@@ -635,6 +803,7 @@ const schedules = new ScheduleManager({
   },
 });
 let stopSchedules = () => {};
+let stopSnoozeClock = () => {};
 
 // The transient Keep Awake owner. Constructed before the app so the routes never see a
 // daemon without it, and SEEDED into the registry before the server accepts traffic so
@@ -644,6 +813,7 @@ const keepAwake = new KeepAwakeManager({
   onStatus: (status) => registry.setKeepAwakeStatus(status),
 });
 registry.setKeepAwakeStatus(keepAwake.status());
+
 
 // One in-memory owner for live Pi discovery, freshness, and last-success fallback. It is
 // deliberately not persisted and is shared by every dashboard request through the route.
@@ -667,6 +837,15 @@ fileComments.start();
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
+// Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
+// read to the registry now, so the first snapshot after a restart carries them. It subscribes to
+// no session event: a report outlives the session that posted it.
+const reports = new ReportManager(registry);
+onArchivesPruned = (keys) => {
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key), keys).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile reports for pruned archives:", error);
+  });
+};
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -686,11 +865,14 @@ const app = buildApp({
   personas,
   workflows,
   schedules,
+  residents,
+  residentLoop,
   ensembles,
   sdkSessions,
   sessionActions,
   pendingTurns,
   keepAwake,
+  pauses,
   archives,
   workflowCommands,
   worktrees,
@@ -699,7 +881,11 @@ const app = buildApp({
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  reports,
   settingsBackups,
+  databaseBackups,
+  storageHealth,
+  storageUsage,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -714,8 +900,17 @@ const webDir =
   process.env.MISSION_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
 const hasDist = existsSync(webDir);
 if (hasDist) {
+  // The document itself carries the stored skin, so a profile with no local cache - a first
+  // desktop launch after a skin was chosen in a browser - paints it from the first frame. Read
+  // per request: a rebuild replaces the file, and the skin can change between loads.
+  // `storedSkin()`: serving a page never writes the config, and a malformed field elsewhere in
+  // the record cannot fail the page.
+  const dashboardDocument = (c: Context) =>
+    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), storedSkin()));
+  app.get("/", dashboardDocument);
+  app.get("/index.html", dashboardDocument);
   app.use("/*", serveStatic({ root: webDir }));
-  app.get("*", serveStatic({ path: join(webDir, "index.html") }));
+  app.get("*", dashboardDocument);
 }
 
 let shutdownStarted = false;
@@ -727,7 +922,11 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // so it cannot launch a driver.
   void startDiscoveryAfterSdkRestore(
     sdkSessions.restore(),
-    () => startPoller(registry),
+    () => {
+      // Every native session must be restored before claim reconciliation reads its transcript.
+      residentLoop.start();
+      return startPoller(registry);
+    },
     () => shutdownStarted,
     (err) => console.error("[sdk] could not restore embedded sessions:", err),
   ).then((stop) => {
@@ -736,8 +935,25 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // After the outbox: a delivery it confirms settles the prompt row it was queued as.
+  afterWorkSkills.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
+  // temporary files can be removed safely.
+  try {
+    databaseBackups.removeLeftoverTemporaries();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
+  }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // The first walk waits out startup's own disk work; then one every six hours, and the free
+  // space every minute, which is cheap and is what a low-space warning needs to be timely.
+  stopStorageUsage = storageUsage.start({
+    firstMeasureMs: 2 * 60 * 1_000,
+    measureEveryMs: 6 * 60 * 60 * 1_000,
+    volumeEveryMs: 60 * 1_000,
+  });
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -748,18 +964,31 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // own - are sent too, once the first completed sweep has put every live session back in the
   // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
   adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
-  reviews.startContinuationRecovery((review, text) =>
-    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
+  reviews.startContinuationRecovery((review, text, kind) =>
+    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
   );
+  // Snoozed questions come back on time from here, including any that fell due while the
+  // daemon was down. After the port, like every other writer, and after continuation recovery,
+  // so a question woken now is one whose earlier answers have already been handed on.
+  stopSnoozeClock = reviews.startSnoozeClock();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
+  // Settle resident runs a previous process left pending, from session-start evidence, then
+  // follow run ends. After the port for the reason the schedules above are: it writes rows.
+  residents.start();
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
+  // Every published report's archive, checked once at startup: a report whose bundle is gone (a
+  // delete interrupted between removing the bundle and clearing the key) goes back to
+  // unpublished. Later removals reach a report only through `onArchivesPruned`, above.
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key)).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile published reports:", error);
+  });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
@@ -864,6 +1093,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  const shutdownStartedAt = Date.now();
   // Before anything tears a session down, so the departures that follow are attributed to the
   // daemon stopping rather than reported as endings with no known reason.
   //
@@ -872,7 +1102,16 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  stopFeatureFlags();
+  stopAwaitingFlag();
+  stopAutomatedDeliveries();
+  stopPersonDeliveries();
+  stopShapingConfig();
+  stopVoiceState();
+  const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
+  await databaseBackups.stop();
+  stopStorageUsage();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();
@@ -898,16 +1137,26 @@ async function shutdown(): Promise<void> {
   // Kill before awaiting workflow workers, or a 120s Persona timeout becomes a 120s
   // daemon shutdown.
   killLiveLlmRuns();
+  // The same reason, for dependency claims: a claim may run for hours inside a dispatch nobody
+  // awaits, so it is killed here, long before `worktrees.stop()`, and no lease is granted
+  // after this point. Startup marks its slot interrupted.
+  worktrees.stopClaims();
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
+  afterWorkSkills.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  reports.stop();
+  // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
+  // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
+  await pauses.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.
-  await workflows.stop();
+  await stoppingWorkflows;
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
@@ -926,6 +1175,9 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  stopSnoozeClock();
+  await stoppingResidentLoop;
+  await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
@@ -939,15 +1191,26 @@ async function shutdown(): Promise<void> {
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+  // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
+  // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
+  // See `http-shutdown.ts`.
+  const { forced } = await closeHttpServer(server as Server);
   // No subsystem or request can reach SQLite now. Close it before dropping ownership so a
   // replacement daemon cannot acquire the state home while this process still has an open
   // connection. A crash skips these lines but still closes both descriptors in the kernel.
   closeDb();
   stateOwnership.release();
+  // After the last cleanup step, so the figure is the whole shutdown the shell waited for.
+  console.log(
+    `[mission-control] shutdown finished in ${Date.now() - shutdownStartedAt}ms` +
+      (forced ? ` (requests still open after ${HTTP_CLOSE_GRACE_MS}ms were closed)` : ""),
+  );
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+
+// Request the existing shutdown lifecycle before the Electron shell exits.
+process.parentPort?.on("message", ({data}) => {
+  if (data?.type === "mission:shutdown") process.emit("SIGTERM");
+});

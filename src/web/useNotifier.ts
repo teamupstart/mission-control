@@ -8,7 +8,7 @@ import {
   withKnownStalls,
 } from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
-import { playChime, unlockAudio } from "./lib/chime.ts";
+import { playChime, recordFallbackSound, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
   return typeof Notification !== "undefined" && Notification.permission === "granted";
@@ -18,13 +18,14 @@ function notify(
   title: string,
   body: string,
   tag: string,
+  silent: boolean,
   deepLink?: { workflowRunId?: string | null; ensembleId?: string | null },
-): void {
+): boolean {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
   try {
-    const n = new Notification(title, { body, tag });
+    const n = new Notification(title, { body, tag, silent });
     n.onclick = () => {
       window.focus();
       // One deep link per toast, the same hash routes the dashboard already owns: a
@@ -36,8 +37,10 @@ function notify(
       }
       n.close();
     };
+    return true;
   } catch {
-    /* notifications unavailable on this platform - sound still plays */
+    // No desktop delivery to record in the sound rate gate.
+    return false;
   }
 }
 
@@ -103,10 +106,11 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
       const missed = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
       if (missed.length === 0) return;
+      const fallbackSound = settings.sound && playChime("attention") === "unavailable";
       if (settings.notifications && canNotify()) {
-        notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup");
+        const delivered = notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
+        if (delivered && fallbackSound) recordFallbackSound("attention");
       }
-      if (settings.sound) playChime("attention");
       return;
     }
 
@@ -115,13 +119,18 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
 
     const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
     if (alerts.length === 0) return;
+    // One chime per batch, at its most urgent severity. The OS is a fallback only
+    // for unavailable audio, never for Sound off or an intentionally throttled chime.
+    const severity = batchSeverity(alerts);
+    const fallbackSound = settings.sound && playChime(severity) === "unavailable";
     if (settings.notifications && canNotify()) {
-      for (const a of alerts) {
-        notify(a.title, a.body, a.id, { workflowRunId: a.workflowRunId, ensembleId: a.ensembleId });
+      for (const [index, a] of alerts.entries()) {
+        const audible = fallbackSound && index === 0;
+        const delivered = notify(a.title, a.body, a.id, !audible, {
+          workflowRunId: a.workflowRunId, ensembleId: a.ensembleId,
+        });
+        if (delivered && audible) recordFallbackSound(severity);
       }
     }
-    // One chime per batch at the most urgent severity, so a same-tick "info" alert
-    // can't swallow the "attention" tone via the chime's rate limit.
-    if (settings.sound) playChime(batchSeverity(alerts));
   }, [scope, settings, ready]);
 }

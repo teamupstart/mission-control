@@ -73,7 +73,7 @@ test("a Mac actively enrolled in Upstart's Jamf tenant is recognized", async () 
   assert.equal(found?.endpoint, "https://corp-otel-staging-1.upstart.com");
   assert.equal(
     found?.evidence,
-    "This Mac is enrolled in Upstart's device management (upstart.jamfcloud.com).",
+    "This Mac is enrolled in your organization's device management (upstart.jamfcloud.com).",
   );
   assert.deepEqual(h.calls, [{ bin: "profiles", args: ["status", "-type", "enrollment"] }]);
 });

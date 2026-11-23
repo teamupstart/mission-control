@@ -1,6 +1,7 @@
 import type { StartupScreen } from "./window-startup.ts";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import type { BinaryEnrollment } from "../shared/binary-enrollment.ts";
+import { WINDOW_BACKGROUND_FALLBACK, parseWindowBackground, windowSchemeFor } from "../server/window-background.ts";
 
 // Handled by this window's navigation guard only. The page needs no script or extra IPC.
 export const STARTUP_RETRY_URL = `${BASE_URL}/__mission-startup-retry`;
@@ -22,13 +23,24 @@ const COPY: Record<StartupScreen, { title: string; description: string }> = {
   },
 };
 
-/** Built into the shell: it must render before the daemon can serve any assets. */
-export function startupPage(screen: StartupScreen, launchWarning: string | null = null): string {
+/**
+ * Built into the shell: it must render before the daemon can serve any assets.
+ *
+ * `background` is the remembered launch colour (`window-background.ts`), so the page a
+ * Daylight operator waits on is Daylight's background with dark text rather than a dark slab
+ * between a light window and a light dashboard. Anything that is not a `#rrggbb` colour is the
+ * original dark page.
+ */
+export function startupPage(
+  screen: StartupScreen,
+  launchWarning: string | null = null,
+  background: string = WINDOW_BACKGROUND_FALLBACK,
+): string {
   const warning = launchWarning ? escapeText(launchWarning) : null;
   const { title, description } = COPY[screen];
   return localShellPage(`<div class="mark" aria-hidden="true"></div><div role="status"><h1>${title}</h1><p>${description}</p></div>
 ${warning ? `<p class="warning" role="alert">${warning}</p>` : ""}
-${screen === "starting" ? "" : `<a href="${STARTUP_RETRY_URL}">Retry now</a><p class="hint">If this continues, quit and reopen Mission Control.</p>`}`);
+${screen === "starting" ? "" : `<a href="${STARTUP_RETRY_URL}">Retry now</a><p class="hint">If this continues, quit and reopen Mission Control.</p>`}`, false, background);
 }
 
 /** An installation choice cannot start the daemon just to draw its confirmation. */
@@ -45,7 +57,18 @@ function escapeText(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function localShellPage(content: string, installation = false): string {
+/** The light palette over the dark page's rules, on the remembered background itself. */
+function lightShell(background: string): string {
+  return `:root{color-scheme:light;color:#141a22;background:${background}}header{border-bottom-color:#d3d9e1}header span,.hint{color:#4a5564}
+p{color:#3d4756}.mark{border-color:#9fd3bb;color:#0f7f56;background:#e3f4ec}a{color:#0b4f37;background:#d8efe4;border-color:#8cc9ad}a:hover{background:#c6e6d6}
+a:focus-visible{outline-color:#0f7f56}.warning{color:#b42318}`;
+}
+
+function localShellPage(content: string, installation = false, background: string = WINDOW_BACKGROUND_FALLBACK): string {
+  const color = parseWindowBackground(background);
+  const theme = color && windowSchemeFor(color) === "light"
+    ? lightShell(color)
+    : `:root{background:${color ?? WINDOW_BACKGROUND_FALLBACK}}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
@@ -61,6 +84,7 @@ p{margin:0;color:#acb8c8;line-height:1.65;font-size:15px}a{display:inline-block;
 a:hover{background:#2a5040}a:focus-visible{outline:2px solid #86e4bc;outline-offset:4px}.warning{white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb4ab;margin-top:24px}.hint{font-size:13px;margin-top:24px;color:#98a8bb}
 main.installation{width:min(100%,536px);padding:28px;border:1px solid #232b35;border-radius:14px;background:#12171e}.mark.idle:after{content:"↓";animation:none;border:0;width:auto;height:auto;font-size:26px}.destination{margin-top:20px;overflow-wrap:anywhere;color:#e6edf3}.actions{display:flex;gap:12px;flex-wrap:wrap}.secondary{background:transparent;border-color:#384352;color:#acb8c8}
 @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.mark:after{animation:none}}
+${theme}
 </style></head><body><header><span>MISSION CONTROL</span></header><main${installation ? ' class="installation" role="dialog" aria-labelledby="installation-title"' : ""}>
 ${content}
 </main></body></html>`;

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { UiConfig, UiConfigPatch } from "@shared/protocol.ts";
+import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { api, fetchUiConfig } from "./api.ts";
+import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
 /**
@@ -23,7 +24,26 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * bad trade. Reconciling tabs live is a `ui_config` ServerEvent, noted as follow-up.
  */
 
-let current: UiConfig = readCache();
+/**
+ * The skin the daemon served this document with (`src/server/dashboard-document.ts`), or null
+ * where nothing served one - the Vite dev server, a test. It is the daemon's stored answer at
+ * load time, so it beats a cache that a new profile does not have or another browser made stale:
+ * without it `lib/skin.ts` would apply the cache's Default over the document's Daylight before
+ * the fetch below put it back, which is a dark frame.
+ */
+function servedSkin(): UiConfig["skin"] | null {
+  if (typeof document === "undefined") return null;
+  const value = document.querySelector?.('meta[name="mission-skin"]')?.getAttribute("content");
+  return isSkinId(value) ? value : null;
+}
+
+function firstPaintConfig(): UiConfig {
+  const cached = readCache();
+  const served = servedSkin();
+  return served === null ? cached : { ...cached, skin: served };
+}
+
+let current: UiConfig = firstPaintConfig();
 const listeners = new Set<() => void>();
 let hydrated = false;
 let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -42,6 +62,15 @@ function commit(next: UiConfig): void {
   current = next;
   writeCache(next);
   emit();
+}
+
+/**
+ * The daemon's config as this window keeps it. `voice` is withheld while the `voice` flag is off
+ * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
+ * so the record it draws from stays whole.
+ */
+function withHeldFields(config: UiConfigView["config"]): UiConfig {
+  return { ...config, voice: config.voice ?? current.voice };
 }
 
 /** The live config. Safe to read at module load and outside React. */
@@ -87,16 +116,20 @@ export async function hydrateUiConfig(): Promise<void> {
     const legacy = readLegacySettings();
     if (legacy) {
       // Retain the old one-time flag's upgrade behavior for compatible clients.
-      // The independent startup-picker preference keeps its default-on value.
-      if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
+      // The independent startup-picker preference keeps its default-on value, and an
+      // adopted profile predates every announced tour, so it is owed each of them once.
+      // Legacy storage never held `voice`: `coerce` filled its default, and a patch naming it is
+      // refused while the voice flag is off, which would fail the whole adoption.
+      const { voice: _filledDefault, ...adopted } = legacy;
+      if (!await updateUiConfig({ ...adopted, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }
     } else {
-      commit(view.config);
+      commit(withHeldFields(view.config));
     }
   } else {
-    commit(view.config);
+    commit(withHeldFields(view.config));
   }
   hydrated = true;
   emit();
@@ -131,6 +164,26 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     }
     commit(rollback);
     return false;
+  }
+  return true;
+}
+
+/**
+ * Re-read `announcedTours` from the daemon and adopt it, for the one automatic decision that
+ * must not act on a stale copy: opening the startup picker on account of a new-tour
+ * announcement. Preferences do not live-sync between windows, so a window that waited behind a
+ * dialog can still hold a record another window has since announced the tour into.
+ *
+ * Only this field is adopted, and not when a write of it from this window began meanwhile -
+ * that write is newer than the read. Resolves to whether the daemon answered.
+ */
+export async function refreshAnnouncedTours(): Promise<boolean> {
+  const generation = writeGeneration.get("announcedTours") ?? 0;
+  const view = await fetchUiConfig();
+  if (!view) return false;
+  if ((writeGeneration.get("announcedTours") ?? 0) !== generation) return true;
+  if (!Object.is(current.announcedTours, view.config.announcedTours)) {
+    commit({ ...current, announcedTours: view.config.announcedTours });
   }
   return true;
 }

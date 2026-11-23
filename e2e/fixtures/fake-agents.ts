@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeNativeTerminalProbe } from "./native-terminal-probes.ts";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
@@ -40,6 +41,7 @@ export interface FakeAgents {
     keepAwake: string;
     gh: string;
     jira: string;
+    acli: string;
   };
 }
 
@@ -105,6 +107,21 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
  * the fake decides who a `pr list` is answering for. See the fake's header.
  */
 export interface FakePullRequest {
+  headRefName?: string;
+  /** The branch it targets. Defaults to `main`, the fixture repository's default branch. */
+  baseRefName?: string;
+  /**
+   * The base branch's tip, which a review records so a rebased parent under an unchanged
+   * head is reviewed again. Defaults to one fixed commit: the base never moves unless a
+   * spec says so.
+   */
+  baseRefOid?: string;
+  isDraft?: boolean;
+  /** The merge commit once merged, for the stack release check. */
+  mergeCommit?: string | null;
+  reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  issueComments?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  reviewError?: boolean;
   /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
   cwd: string;
   url: string;
@@ -114,11 +131,33 @@ export interface FakePullRequest {
   createdAt: string;
   mergedAt: string | null;
   headRefOid: string;
+  /**
+   * The head commit's checks, in the shape `gh pr list --json statusCheckRollup` prints: one
+   * entry per check RUN, so a check that ran twice on one commit appears twice. Omitted means
+   * none reported.
+   */
+  statusCheckRollup?: unknown[];
+  /**
+   * The same runs as GraphQL's `statusCheckRollup.contexts` nodes, which carry each run's app
+   * and triggering event. The branch poller reads these before it lets a later run clear a
+   * failure. Omitted means that read finds no pull request, and the failure stands.
+   */
+  checkContexts?: unknown[];
+  branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
 export function ghPullRequestsPath(home: string): string {
   return join(home, "gh-prs.json");
+}
+
+/**
+ * Script GitHub's compare API: `"<ancestor>...<head>"` to the `status` it reports (`ahead`,
+ * `identical`, `behind`, `diverged`). An unscripted pair fails the call, which the stack
+ * release check reads as unknown and holds on.
+ */
+export function writeGhCompare(home: string, statuses: Record<string, string>): void {
+  writeFileSync(join(home, "gh-prs-compare.json"), JSON.stringify(statuses, null, 2));
 }
 
 /** Script what `gh` reports, for this daemon, from now on. Re-read by the fake per call. */
@@ -260,33 +299,13 @@ export function writeGhWritebackScript(home: string, script: FakeGhWritebackScri
  * command the workspace would run, which is where a resumed conversation's argv - and the
  * permission mode it must carry - either shows up or provably does not.
  *
- * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
- * and an `import` here would crash the fake at spawn time in a way that reads as a
- * launch failure rather than a broken fixture.
+ * The runtime is explicit CommonJS. Its extension-less shell entry answers native health
+ * probes without booting Node, then execs this runtime for recorded terminal commands.
  */
 const FAKE_CMUX = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
-
-// Answered BEFORE the record is written, and deliberately not recorded. Setup probes the
-// control socket every time the panel is read, so recording this would turn "how many
-// commands did a click run" - which several specs count - into a function of how often a
-// browser looked at a page. \`MC_E2E_CMUX_CONTROL\` reproduces the two states that stand
-// between an installed cmux and a working one, in cmux's own words.
-if (argv[0] === "capabilities") {
-  const control = process.env.MC_E2E_CMUX_CONTROL;
-  if (control === "stopped") {
-    process.stderr.write("Error: Socket not found at " + join(process.env.MISSION_HOME || "/tmp", "cmux.sock") + "\\n");
-    process.exit(1);
-  }
-  if (control === "refused") {
-    process.stderr.write("Error: ERROR: Access denied - only processes started inside cmux can connect\\n");
-    process.exit(1);
-  }
-  process.stdout.write(JSON.stringify({ access_mode: "allowAll", methods: [] }) + "\\n");
-  process.exit(0);
-}
 
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
@@ -324,12 +343,12 @@ const argv = process.argv.slice(2);
 const home = process.env.MISSION_HOME;
 const socketPath = join(home, "fake-herdr.sock");
 const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
-const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
 // "newer" is a Herdr past the supported floor on both axes, which is what a real 0.9.0 is.
 // Mission Control pins a minimum, not an equality, so this must be as ordinary as the floor.
 const newer = process.env.MC_E2E_HERDR_MODE === "newer";
-const VERSION = newer ? "0.9.0" : "0.8.2";
-const PROTOCOL = newer ? 22 : 20;
+const { version: VERSION, protocol: PROTOCOL } = JSON.parse(readFileSync(
+  join(__dirname, "herdr-" + (newer ? "newer" : "stable") + "-true.json"), "utf8",
+));
 // 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
 // without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
 // it quietly stops standing in for the server it names.
@@ -339,15 +358,6 @@ const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
 // answering with its login shell and nothing else, so a launch has something to actually fail
 // against rather than only a passing path to confirm.
 const stuck = process.env.MC_E2E_HERDR_MODE === "stuck";
-if (argv[0] === "status" && argv[1] === "server") {
-  if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
-    status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
-  } else {
-    const running = existsSync(socketPath);
-    status({ status: running ? "running" : "not_running", running, version: running ? VERSION : null, protocol: running ? PROTOCOL : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
-  }
-  process.exit(0);
-}
 if (argv[0] === "server") {
   if (!existsSync(socketPath)) {
     const child = spawn(process.execPath, [__filename, "serve", String(process.ppid)], {
@@ -533,31 +543,45 @@ setInterval(() => {
 server.listen(socketPath);
 `;
 
-const FAKE_WEZTERM = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
-const { createConnection } = require("node:net");
-const { join } = require("node:path");
-const dir = process.env.MC_E2E_RECORD_DIR;
-if (dir) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
-}
-const args = process.argv.slice(2);
-if (args.includes("cli")) {
-  const socket = process.env.WEZTERM_UNIX_SOCKET || process.env.MC_E2E_WEZTERM_SOCKET;
-  if (!socket) process.exit(1);
-  const client = createConnection(socket);
-  client.once("error", () => { process.exitCode = 1; });
-  client.once("connect", () => {
-    if (process.env.WEZTERM_LOG === "wezterm_client::client=trace") {
-      process.stderr.write("TRACE wezterm_client::client > connect to Socket(" + JSON.stringify(socket) + ")\\n");
-    }
-    if (args.includes("list")) process.stdout.write("[]\\n");
-    if (args.includes("spawn")) process.stdout.write("0\\n");
-    client.end();
-  });
-}
-`;
+/**
+ * The stand-in `wezterm` CLI. It records each argv, and for `cli` it identifies the fixture's
+ * socket the way the real client does - the trace line Mission Control reads to find and pin
+ * it - then answers `list` with no panes and `spawn` with pane 0.
+ *
+ * Bash rather than Node, for speed. Every WezTerm operation first runs `wezterm cli list` to
+ * locate the socket, under a 2.5 s budget sized for a real CLI; a fake that was itself a cold
+ * Node start overran it under four browser workers, so a Herdr launch failed as "pane identity
+ * is stale" and a focus opened no window, at random. `[ -S ]` stands in for the connect: the
+ * fixture's listener lives as long as the daemon, so a socket of the right type is exactly what
+ * a connect would prove. Bash, not `/bin/sh`, for the string substitution the escaping needs -
+ * Linux CI's `/bin/sh` is dash.
+ */
+const FAKE_WEZTERM = [
+  "#!/usr/bin/env bash",
+  "# One JSON string, escaped without a subprocess: an argv here carries paths and titles.",
+  // Quoted pattern and replacement are literal in every bash this runs under (3.2 on macOS,
+  // 5.x on Linux CI); an unquoted backslash in a replacement is not.
+  "bs='\\'; q='\"'",
+  "json() { local s=${1//\"$bs\"/\"$bs$bs\"}; s=${s//\"$q\"/\"$bs$q\"}; out=\"$q$s$q\"; }",
+  "has() { local want=$1; shift; for a in \"$@\"; do [ \"$a\" = \"$want\" ] && return 0; done; return 1; }",
+  "if [ -n \"$MC_E2E_RECORD_DIR\" ]; then",
+  "  mkdir -p \"$MC_E2E_RECORD_DIR\"",
+  "  record='{\"argv\":['; sep=",
+  "  for arg in \"$@\"; do json \"$arg\"; record+=\"$sep$out\"; sep=,; done",
+  "  printf '%s]}\\n' \"$record\" > \"$MC_E2E_RECORD_DIR/wezterm-$$-$RANDOM.json\"",
+  "fi",
+  "has cli \"$@\" || exit 0",
+  "socket=${WEZTERM_UNIX_SOCKET:-$MC_E2E_WEZTERM_SOCKET}",
+  "[ -n \"$socket\" ] && [ -S \"$socket\" ] || exit 1",
+  "if [ \"$WEZTERM_LOG\" = \"wezterm_client::client=trace\" ]; then",
+  "  json \"$socket\"",
+  "  printf 'TRACE wezterm_client::client > connect to Socket(%s)\\n' \"$out\" >&2",
+  "fi",
+  "has list \"$@\" && printf '[]\\n'",
+  "has spawn \"$@\" && printf '0\\n'",
+  "exit 0",
+  "",
+].join("\n");
 
 /**
  * The stand-in `gh`, so a spec can watch what the daemon asks GitHub to do - and so that it
@@ -592,16 +616,16 @@ if (args.includes("cli")) {
  * missing `gh` rather than as a broken fixture.
  */
 const FAKE_GH = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { mkdirSync, writeFileSync, renameSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, \`gh-\${Date.now()}-\${process.pid}.json\`),
-    JSON.stringify({ argv, cwd: process.cwd() }, null, 2),
-  );
+  const stamp = \`\${Date.now()}-\${process.pid}\`;
+  const pending = join(dir, \`.pending-gh-\${stamp}\`);
+  writeFileSync(pending, JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+  renameSync(pending, join(dir, \`gh-\${stamp}.json\`));
 }
 const command = argv.join(" ");
 /** Whatever the spec last scripted, re-read per call. Absent or unreadable means none. */
@@ -707,6 +731,86 @@ if (argv[0] === "--version") {
   const parts = requested.split("/");
   const host = parts.length === 3 ? parts.shift() : "github.com";
   process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/123\\n");
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("reviewThreads"))) {
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
+  else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
+    state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
+    repository: { defaultBranchRef: { name: "main" } },
+    isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
+    reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+  } : null } } }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeCommit"))) {
+  // The small pull-request refs read Stacked pull requests makes (state, draft, head, base,
+  // merge commit). Answered by number from ANY checkout: the daemon asks from the
+  // prerequisite's repository root, not from the worktree that opened the pull request.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
+    state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
+    repository: { defaultBranchRef: { name: "main" } },
+  } : null } } }));
+ } else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeStateStatus"))) {
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr?.branchUpdate ? {
+    state: pr.state, isDraft: pr.branchUpdate.isDraft ?? false, headRefOid: pr.headRefOid,
+    baseRefOid: pr.branchUpdate.baseRefOid, baseRefName: "main", mergeable: "MERGEABLE",
+    mergeStateStatus: pr.branchUpdate.mergeStateStatus, reviewDecision: pr.branchUpdate.reviewDecision ?? null,
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts ?? [] } } } }] },
+  } : null } } }));
+} else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").endsWith("/update-branch")) {
+  const number = argv[3].split("/").at(-2);
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === number);
+  if (pr?.branchUpdate?.refusal) { process.stderr.write(pr.branchUpdate.refusal); process.exitCode = 1; }
+  else process.stdout.write(JSON.stringify({ message: "Updating pull request branch." }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("statusCheckRollup"))) {
+  // The branch poller confirming a re-run before it clears a failure: the head commit's checks
+  // with their app and event. Answered for the checkout it was run in, like \`pr list\`.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr && pr.checkContexts ? {
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } } } }] },
+  } : null } } }));
+} else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {
+  let statuses = {};
+  try { statuses = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_PRS.slice(0, -".json".length) + "-compare.json", "utf8")); } catch {}
+  const pair = (argv[1] || "").split("/compare/")[1];
+  if (statuses[pair]) process.stdout.write(statuses[pair] + "\\n");
+  else { process.stderr.write("HTTP 404: No common ancestor (fake)\\n"); process.exitCode = 1; }
+} else if (argv[0] === "api" && argv[1] === "user") {
+  // The Inspector's identity check (\`gh api user --jq .login\`): a fixed bot login, so a
+  // spec that arms the Inspector reaches its merge gate instead of abstaining.
+  process.stdout.write("mission-e2e-bot\\n");
+} else if (argv[0] === "api" && argv[1] === "--method" && argv[2] === "PATCH" && (argv[3] || "").split("/").at(-2) === "pulls") {
+  // A pull request base edit. The body is recorded beside the argv so a spec can read WHICH
+  // base the daemon asked for; nothing is published.
+  let input = "";
+  try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
+  if (dir) {
+    writeFileSync(join(dir, \`gh-patch-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
+  }
+  // GitHub applies the edit: the scripted pull request reads the new base from now on, so a
+  // daemon that reconciles the base every tick sees it settled rather than asking again.
+  try {
+    const base = JSON.parse(input).base;
+    const number = (argv[3] || "").split("/").at(-1);
+    const path = process.env.MC_E2E_GH_PRS;
+    if (typeof base === "string" && path) {
+      const prs = scriptedPrs().map((p) => (String(p.number) === number ? { ...p, baseRefName: base } : p));
+      writeFileSync(path, JSON.stringify(prs, null, 2));
+    }
+  } catch {}
+  process.stdout.write("{}\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);
@@ -771,6 +875,75 @@ if (command.startsWith("issue list")) {
 }
 `;
 
+/** Read-only acli contract. Mutable canned state lets specs model a profile switch. */
+const FAKE_ACLI = `#!/usr/bin/env node
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`acli-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+}
+const file = dir && join(dir, "fake-acli-state.json");
+const state = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+const command = argv.slice(0, 3).join(" ");
+if (argv[0] === "--version") {
+  process.stdout.write("acli version 0.0.0 (fake)\\n");
+} else if (state.unauthorized) {
+  process.stderr.write("✗ Error: unauthorized: use 'acli jira auth login' to authenticate\\n");
+  process.exitCode = 1;
+} else if (command === "jira auth status") {
+  process.stdout.write(\`✓ Authenticated\\n  Site: \${state.site || "example.atlassian.net"}\\n  Email: operator@example.invalid\\n  Authentication Type: oauth\\n\`);
+} else if (command === "jira workitem search") {
+  if (state.searchError) {
+    process.stderr.write("✗ Error: " + state.searchError + "\\n");
+    process.exitCode = 1;
+  } else {
+    const limit = Number(argv[argv.indexOf("--limit") + 1]);
+    process.stdout.write(JSON.stringify((state.issues || []).slice(0, limit)) + "\\n");
+    if (file && state.afterSearchSite) {
+      writeFileSync(file, JSON.stringify({ ...state, site: state.afterSearchSite }));
+    }
+  }
+} else if (command === "jira workitem view") {
+  if (state.viewError || (state.transitioned && state.confirmError)) {
+    process.stderr.write("✗ Error: cannot read issue (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(JSON.stringify({
+      key: argv[3], self: state.self || "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/1",
+      fields: { status: { name: state.status || "In Review" } }, transitions: state.transitions ?? null,
+    }) + "\\n");
+  }
+} else if (command === "jira workitem comment" || command === "jira workitem transition") {
+  const transition = command.endsWith("transition");
+  const mode = transition ? state.transition : state.comment;
+  if (mode === "no-answer") {
+    process.kill(process.pid, "SIGKILL");
+  } else if (mode === "refused") {
+    process.stderr.write("✗ Error: " + (state.reason || "Not allowed from this status (fake)") + "\\n");
+    process.exitCode = 1;
+  } else {
+    const key = argv[argv.indexOf("--key") + 1];
+    const result = mode === "json-failure" ? [{ key, success: false, error: state.reason || "Workflow refused (fake)" }]
+      : mode === "unrecognized" ? { message: "Operation processed (fake)" }
+      : { key, success: true, ...(state.writeSelf ? { self: state.writeSelf } : {}) };
+    process.stdout.write(JSON.stringify(state.writeEnvelope ? { [state.writeEnvelope]: result } : result) + "\\n");
+    if (file) writeFileSync(file, JSON.stringify({ ...state,
+      ...(transition ? { transitioned: true,
+        status: mode === "json-failure" || mode === "unchanged" ? state.status || "In Review" : argv[argv.indexOf("--status") + 1],
+      } : {}),
+      ...(state.afterWriteSite ? { site: state.afterWriteSite } : {}),
+    }));
+  }
+} else {
+  process.stderr.write("fake acli refuses unsupported commands\\n");
+  process.exitCode = 1;
+}
+`;
+
 /**
  * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
  * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
@@ -816,7 +989,7 @@ setInterval(() => {
 `;
 
 /**
- * Write the three fakes into `home` and return their paths.
+ * Write the recording fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
  * place, because the vendored Agent SDK spawns `node <path>` for anything ending in
@@ -849,13 +1022,8 @@ export function writeFakeAgents(home: string): FakeAgents {
   // so a spec can widen it without restarting the daemon.
   writeFileSync(piSdkModelsPath(home), JSON.stringify(FAKE_PI_SDK_MODELS, null, 2));
 
-  const cmux = join(binDir, "fake-cmux");
-  writeFileSync(cmux, FAKE_CMUX);
-  chmodSync(cmux, 0o755);
-
-  const herdr = join(binDir, "fake-herdr");
-  writeFileSync(herdr, FAKE_HERDR);
-  chmodSync(herdr, 0o755);
+  const cmux = writeNativeTerminalProbe(binDir, "cmux", FAKE_CMUX);
+  const herdr = writeNativeTerminalProbe(binDir, "herdr", FAKE_HERDR);
 
   const wezterm = join(binDir, "fake-wezterm");
   writeFileSync(wezterm, FAKE_WEZTERM);
@@ -873,5 +1041,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(jira, FAKE_JIRA);
   chmodSync(jira, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
+  const acli = join(binDir, "fake-acli");
+  writeFileSync(acli, FAKE_ACLI);
+  chmodSync(acli, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira, acli } };
 }

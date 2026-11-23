@@ -17,6 +17,7 @@
  * browser-eligible catalog entries rather than by adding a second endpoint.
  */
 import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import {
   TELEMETRY_ACTOR_KINDS,
   type TelemetryActor,
@@ -147,6 +148,12 @@ export function resolveOperationContext(
 export const TELEMETRY_INGRESS_LIMITS = {
   /** Records one request may carry. The dashboard sends one at a time; a batch is still bounded. */
   maxRecordsPerRequest: 8,
+  /**
+   * Facts one record may carry, counted before any is parsed. The widest browser event declares
+   * seven, and each event's own strict schema still refuses an undeclared one; this only stops
+   * an oversized object from being walked key by key on its way to that refusal.
+   */
+  maxFactsPerRecord: 32,
   /** Largest request body admitted, before parsing. */
   maxRequestBytes: 8 * 1024,
   /** Records admitted per rolling minute, across every browser talking to this daemon. */
@@ -172,7 +179,7 @@ export const TelemetryIngressRecordSchema = z
     /** When it happened in the page. Clamped to the daemon's clock; see `maxClockSkewMs`. */
     occurredAt: z.number().int().optional(),
     /** Validated by that entry's own strict schema, not by this one. */
-    facts: z.record(z.unknown()).default({}),
+    facts: boundedRecord(z.string(), z.unknown(), TELEMETRY_INGRESS_LIMITS.maxFactsPerRecord).default({}),
   })
   .strict();
 export type TelemetryIngressRecord = z.infer<typeof TelemetryIngressRecordSchema>;

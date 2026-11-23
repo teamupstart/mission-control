@@ -1,10 +1,17 @@
-import { lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
+import { isolatedGitEnvironment } from "../git/worktree-tree.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run, type RunResult } from "../util/exec.ts";
+import {
+  bothAttempts,
+  OBSERVATION_RETRY_DELAY_MS,
+  OBSERVATION_RETRY_TIMEOUT_SCALE,
+  pauseFor,
+} from "./observation-retry.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import {
   worktreeRepositoryIdentity,
@@ -54,19 +61,19 @@ export interface WorktreeGit {
   reset(path: string, commit: string): Promise<GitResult<void>>;
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
-  mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
+  mergedInto(path: string, targetSha: string, commitSha?: string): Promise<GitResult<boolean>>;
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
 }
 
-function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResult<never> {
+function failure(step: string, result: RunResult): GitResult<never> {
   return {
     ok: false,
-    reason: `${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+    reason: describeCommandFailure(step, result),
     outcomeUnknown: result.outcomeUnknown,
   };
 }
 
-function commandFailed(result: Awaited<ReturnType<typeof run>>): boolean {
+function commandFailed(result: RunResult): boolean {
   return result.code !== 0 || result.outcomeUnknown || result.overflowed;
 }
 
@@ -105,24 +112,91 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
   return registrations;
 }
 
+/** Where a reftable repository's HEAD file points, whatever HEAD really is. */
+const REFTABLE_HEAD_TARGET = "refs/heads/.invalid";
+
+/** `headFile`'s answer for a HEAD that is a symbolic link: its contents say nothing either. */
+const SYMLINK_HEAD = "(symbolic link)";
+
+/**
+ * The trimmed contents of the checkout's own HEAD file, or null when it cannot be read. A
+ * linked worktree's `.git` is a file naming its private git dir, relative paths included.
+ */
+async function headFile(path: string): Promise<string | null> {
+  try {
+    const dotGit = join(path, ".git");
+    let gitDir = dotGit;
+    // `stat`, not `lstat`: git accepts a `.git` that is a symbolic link to a gitfile, and reads
+    // through it as a gitfile.
+    if ((await stat(dotGit)).isFile()) {
+      const pointer = (await readFile(dotGit, "utf8")).trim();
+      if (!pointer.startsWith("gitdir: ")) return null;
+      gitDir = resolve(path, pointer.slice("gitdir: ".length));
+    }
+    const head = join(gitDir, "HEAD");
+    // Git's symbolic-link form of HEAD (`core.preferSymlinkRefs`) names a branch by linking to
+    // it, and reading through the link yields that branch's commit - a detached HEAD's shape.
+    if ((await lstat(head)).isSymbolicLink()) return SYMLINK_HEAD;
+    return (await readFile(head, "utf8")).trim();
+  } catch {
+    return null;
+  }
+}
+
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
   private readonly execute: typeof run;
+  private readonly pause: (ms: number) => Promise<void>;
 
-  /** Every command is recorded while it runs, so occupancy never counts our own Git. */
-  constructor(execute: typeof run = run) {
+  /**
+   * Every command is recorded while it runs, so occupancy never counts our own Git. `pause`
+   * is the wait before an observation read's one retry, injected so a test need not wait.
+   */
+  constructor(execute: typeof run = run, pause: (ms: number) => Promise<void> = pauseFor) {
     this.execute = (bin, args, opts = {}) =>
       trackOwnWorktreeProcess((onSpawn) => execute(bin, args, { ...opts, onSpawn }));
+    this.pause = pause;
+  }
+
+  /**
+   * One observation read, retried once (see `observation-retry.ts`). `interpret` turns a
+   * command result into the read's answer. Only a failure whose outcome is unknown - a child
+   * killed at its timeout or by a signal, or a malformed HEAD - is retried. A Git that
+   * exited with its own error ("not a git repository", a corrupt index) is answered at
+   * once rather than adding 2 s to every status read of a broken slot. One that fails twice
+   * names both attempts. Mutations never come through here.
+   */
+  private async observe<T>(
+    args: string[],
+    timeoutMs: number,
+    interpret: (result: RunResult) => GitResult<T> | Promise<GitResult<T>>,
+  ): Promise<GitResult<T>> {
+    // -C does not override inherited repository selectors. Every observation must read
+    // the checkout named by the allocator, including both attempts of a retry.
+    const env = isolatedGitEnvironment();
+    const first = await interpret(await this.execute("git", args, { timeoutMs, env }));
+    if (first.ok || !first.outcomeUnknown) return first;
+    await this.pause(OBSERVATION_RETRY_DELAY_MS);
+    const second = await interpret(
+      await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE, env }),
+    );
+    if (second.ok) return second;
+    return {
+      ok: false,
+      reason: bothAttempts(first.reason, second.reason),
+      outcomeUnknown: first.outcomeUnknown || second.outcomeUnknown,
+    };
   }
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
-    const result = await this.execute(
-      "git",
+    const listed = await this.observe(
       ["-C", identity.mainCheckoutRoot, "worktree", "list", "--porcelain"],
-      { timeoutMs: 30_000 },
+      30_000,
+      (result): GitResult<string> =>
+        commandFailed(result) ? failure("git worktree list", result) : { ok: true, value: result.stdout },
     );
-    if (commandFailed(result)) return failure("git worktree list", result);
-    const parsed = parseWorktreePorcelain(result.stdout);
+    if (!listed.ok) return listed;
+    const parsed = parseWorktreePorcelain(listed.value);
     for (const registration of parsed) registration.path = await canonical(registration.path);
     return { ok: true, value: parsed };
   }
@@ -139,34 +213,54 @@ export class NativeWorktreeGit implements WorktreeGit {
    * transition and "we did not find out" must not read as "detached".
    */
   private async detachedAt(path: string): Promise<GitResult<boolean>> {
-    const probe = await this.execute("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], {
-      timeoutMs: 15_000,
+    return this.observe(["-C", path, "symbolic-ref", "--quiet", "HEAD"], 15_000, (probe) => {
+      if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
+      if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
+      if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
+        return { ok: true, value: true };
+      }
+      return failure("git symbolic-ref HEAD", probe);
     });
-    if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
-    if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
-      return { ok: true, value: true };
-    }
-    return failure("git symbolic-ref HEAD", probe);
   }
 
   private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
-    const status = await this.execute(
-      "git", ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { timeoutMs: 15_000 },
+    return this.observe(
+      ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      15_000,
+      (status) => commandFailed(status) ? failure("git status", status) : this.statusOf(path, status),
     );
-    if (commandFailed(status)) return failure("git status", status);
-    const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
-      ok: true, value: { dirty: true, scratch: [] },
-    };
+  }
+
+  private async statusOf(
+    path: string,
+    status: RunResult,
+  ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
     if (status.stdout === "") return { ok: true, value: { dirty: false, scratch: [] } };
     // NUL records keep quoted, non-ASCII and newline-bearing filenames unambiguous.
     // Any tracked record (including a rename's first record) blocks before path filtering.
-    if (!status.stdout.endsWith("\0")) return dirty;
-    const scratch: string[] = [];
+    if (!status.stdout.endsWith("\0")) return { ok: true, value: { dirty: true, scratch: [] } };
+    const untracked: string[] = [];
     for (const record of status.stdout.slice(0, -1).split("\0")) {
-      const relative = record.slice(3);
-      if (!record.startsWith("?? ") || !isConductorScratchPath(relative)) return dirty;
+      if (!record.startsWith("?? ")) return { ok: true, value: { dirty: true, scratch: [] } };
+      untracked.push(record.slice(3));
+    }
+    return this.scratchOnly(path, untracked);
+  }
+
+  /**
+   * Clean unless an untracked path is anything but disposable scratch. Every path listed is
+   * untracked; the caller has already answered "dirty" for any tracked change.
+   */
+  private async scratchOnly(
+    path: string,
+    untracked: readonly string[],
+  ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
+    const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
+      ok: true, value: { dirty: true, scratch: [] },
+    };
+    const scratch: string[] = [];
+    for (const relative of untracked) {
+      if (!isConductorScratchPath(relative)) return dirty;
       // Never treat symlinks, directories named like files, or unreadable entries as scratch.
       const parts = relative.split("/");
       let current = path;
@@ -189,24 +283,100 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (!identity) {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
-    const [head, status, detached] = await Promise.all([
-      this.execute("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
-      this.status(path),
-      this.detachedAt(path),
-    ]);
-    if (commandFailed(head)) return failure("git rev-parse HEAD", head);
-    if (!status.ok) return status;
-    if (!detached.ok) return detached;
+    // One read answers all three questions. Every pool observation inspects every slot, so
+    // this used to be three git processes per slot per refresh - `rev-parse HEAD`,
+    // `symbolic-ref --quiet HEAD` and `status` - for answers `status --branch` already carries.
+    // `--no-ahead-behind` keeps it from walking history toward an upstream it does not need.
+    const read = await this.observe(
+      ["-C", path, "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--untracked-files=all"],
+      15_000,
+      (status) => commandFailed(status) ? failure("git status", status) : this.inspectionOf(path, status.stdout),
+    );
+    if (!read.ok) return read;
     return {
       ok: true,
       value: {
         path: await canonical(path),
-        head: head.stdout.trim(),
-        dirty: status.value.dirty,
+        head: read.value.head,
+        dirty: read.value.dirty,
         commonDirectory: identity.gitCommonDirectory,
-        detached: detached.value,
+        detached: read.value.detached,
       },
     };
+  }
+
+  /**
+   * HEAD's commit, whether HEAD is detached, and whether the tree is dirty, from one
+   * `status --porcelain=v2 --branch -z`.
+   *
+   * The headers carry what the two separate probes used to: `# branch.oid` is the commit
+   * (`(initial)` on an unborn branch, which names none - a refusal, as `rev-parse HEAD`
+   * was), and `# branch.head` is the branch or `(detached)`. Both gate a destructive or
+   * granting transition, so a header that is missing or malformed is Git not having
+   * answered - unknown, never read as "detached" or as a commit - exactly the line the
+   * symbolic-ref probe drew. Entries follow: `?` is untracked; any other record (`1`, `2`,
+   * `u`) is a tracked change and makes the tree dirty before any path is considered.
+   */
+  private async inspectionOf(
+    path: string,
+    stdout: string,
+  ): Promise<GitResult<{ head: string; detached: boolean; dirty: boolean }>> {
+    const unanswered = (what: string): GitResult<never> => ({
+      ok: false,
+      reason: `git status --branch did not report ${what}`,
+      outcomeUnknown: true,
+    });
+    if (!stdout.endsWith("\0")) return unanswered("a complete record");
+    let oid: string | null = null;
+    let branch: string | null = null;
+    let tracked = false;
+    const untracked: string[] = [];
+    const records = stdout.slice(0, -1).split("\0");
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index]!;
+      if (record.startsWith("# branch.oid ")) oid = record.slice("# branch.oid ".length);
+      else if (record.startsWith("# branch.head ")) branch = record.slice("# branch.head ".length);
+      else if (record.startsWith("# ")) continue;
+      else if (record.startsWith("? ")) untracked.push(record.slice(2));
+      else {
+        tracked = true;
+        // A rename's original path is the record after it; it is not an entry of its own.
+        if (record.startsWith("2 ")) index++;
+      }
+    }
+    if (oid === null) return unanswered("HEAD's commit");
+    if (branch === null || branch === "") return unanswered("whether HEAD is detached");
+    if (oid === "(initial)") {
+      return { ok: false, reason: "git status: HEAD names no commit yet", outcomeUnknown: false };
+    }
+    if (!/^[0-9a-f]{40}$/.test(oid)) return unanswered("HEAD as a full commit id");
+    // `(detached)` is also a legal branch name, and status prints it identically. With the
+    // files ref backend the HEAD file settles it without another process: a detached HEAD
+    // holds a commit, a branch a ref. A reftable repository keeps only a fixed stub there
+    // (`ref: refs/heads/.invalid`), and a symbolic-link HEAD reads as its branch's commit;
+    // neither says anything, so both ask git instead.
+    if (branch === "(detached)") {
+      const head = await headFile(path);
+      if (head === null) return unanswered("whether HEAD is detached");
+      // Git reads `ref:` followed by any ASCII whitespace as a symbolic ref, not just one space.
+      const symbolic = /^ref:[ \t\n\v\f\r]*(.+)$/.exec(head);
+      if (head === SYMLINK_HEAD || symbolic?.[1] === REFTABLE_HEAD_TARGET) {
+        const detached = await this.detachedAt(path);
+        if (!detached.ok) return detached;
+        if (!detached.value) branch = "(a branch named (detached))";
+      } else if (symbolic) {
+        branch = symbolic[1]!;
+      } else if (head !== oid) {
+        // A direct HEAD is the commit itself. One that is not the commit status just reported
+        // means HEAD moved between the two reads, and neither answer can be trusted alone.
+        return unanswered("one HEAD: it moved during the inspection");
+      }
+    }
+    const status = tracked
+      ? { ok: true as const, value: { dirty: true, scratch: [] } }
+      : await this.scratchOnly(path, untracked);
+    if (!status.ok) return status;
+    return { ok: true, value: { head: oid, detached: branch === "(detached)", dirty: status.value.dirty } };
   }
 
   async add(
@@ -271,7 +441,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (commandFailed(detach)) {
       return {
         ok: false,
-        reason: `git checkout --force --detach failed: ${detach.stderr.trim() || `exit ${detach.code}`}`,
+        reason: describeCommandFailure("git checkout --force --detach", detach),
         // A checkout that died mid-flight may have moved HEAD, replaced working files, or
         // done neither, and an overflowed one never reported which. Either way the slot is
         // quarantined for reconciliation rather than reset again in place.
@@ -337,10 +507,10 @@ export class NativeWorktreeGit implements WorktreeGit {
     return freshRemoteDefaultSha(identity.mainCheckoutRoot, this.execute);
   }
 
-  async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
+  async mergedInto(path: string, targetSha: string, commitSha = "HEAD"): Promise<GitResult<boolean>> {
     const result = await this.execute(
       "git",
-      ["-C", path, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      ["-C", path, "merge-base", "--is-ancestor", commitSha, targetSha],
       { timeoutMs: 15_000 },
     );
     if (result.outcomeUnknown || result.overflowed) {

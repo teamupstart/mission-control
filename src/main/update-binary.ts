@@ -52,8 +52,10 @@ export function cleanupBinaryDownloads(stateDirectory: string): boolean {
             !Number.isSafeInteger(owner.helper?.pid) || owner.helper.pid < 1 || typeof owner.helper.identity !== "string" || !owner.helper.identity) continue;
         // The helper releases the transaction lock before writing its completion
         // marker and exiting. Startup must retry this short interval, never delete
-        // a live helper's candidate just because its journal is terminal.
-        if (claimIsLive(owner.helper) || claimIsLive(journal.owner)) { waitingForHelper = true; continue; }
+        // a live helper's candidate just because its journal is terminal. A recovery
+        // owner is different: it wrote the terminal stage under the lock this cleanup
+        // now holds, and it is usually the running app itself, alive all session.
+        if (claimIsLive(owner.helper) || (journal.ownerRole === "helper" && claimIsLive(journal.owner))) { waitingForHelper = true; continue; }
         const finished = readMigrationJson(join(runtime, "finished.json"));
         if (finished.nonce !== nonce ||
             finished.pid !== owner.helper.pid || finished.identity !== owner.helper.identity) continue;

@@ -6,6 +6,7 @@ import type { DistributionToolResult } from './distribution-diagnostics.mjs';
 type PublisherPolicy = ReturnType<typeof binaryPublisherPolicy>;
 export function verifyDistributionApp(app: string, metadata: BinaryBuildMetadata, policy: PublisherPolicy): Promise<void>;
 export function verifyDistributionDmg(dmg: string, policy: PublisherPolicy): Promise<void>;
+export function verifyDistributionDmgRoot(mount: string, appBundleName: string): void;
 export function validateDistributionTicket(path: string, options?: {
   run?: (command: string, args: string[]) => DistributionToolResult;
   wait?: (ms: number) => Promise<void>;

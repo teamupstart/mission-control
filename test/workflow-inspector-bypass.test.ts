@@ -382,7 +382,7 @@ test("PR switching blocks, and full restart requires confirmation before abandon
     transcriptPath: null,
     env: { tmuxPane: "%44" },
     prUrl: "https://github.com/owner/repo/pull/45",
-    prCreated: false,
+    prCreated: true,
   });
   const manager = new WorkflowManager(registry, store, {
     readContextRaw: async (_registry, activeBinding) => {

@@ -86,9 +86,14 @@ test("authorship is announced once per session per PR, on either evidence path",
   } as DiscoveredSession;
   r.applyDiscovery([discovered]);
   const hook = { agent: "claude" as const, event: "PostToolUse", sessionId: null, cwd: null, transcriptPath: null, env: { tmuxPane: "%77" }, prUrl: URL_1, prCreated: true };
+  const noteKeys: Array<string | null> = [];
+  r.onPrOpened((e) => noteKeys.push(e.noteKey));
   r.applyHook(hook);
   r.applyHook(hook);
   assert.deepEqual(opened, [{ url: URL_1, sessionId: "proc:ttys7:900:0" }], "a repeated hook is not news");
+  // No agent id is bound yet. The synthetic id is not recorded as the key: it stops matching
+  // the moment the agent id binds, so the row matches on the session id alone.
+  assert.deepEqual(noteKeys, [null]);
 
   // The driver path: the same claim, from a session with no pane at all.
   const sdkId = `${SDK_SESSION_ID_PREFIX}22222222-2222-4222-8222-222222222222`;
@@ -118,6 +123,18 @@ test("adopting records the PR under a key that survives clones and worktrees", (
   // rather than deciding it has already seen this head.
   assert.equal(row?.headSha, null);
   assert.equal(row?.round, 0);
+});
+
+test("adopting records the opening session's note key, which outlives its synthetic id", () => {
+  const withKey = "https://github.com/mancej/ai-harness/pull/71";
+  const without = "https://github.com/mancej/ai-harness/pull/72";
+  assert.equal(adoptPr(withKey, { ...CTX, noteKey: "agent-71" }, "hook", 1000), true);
+  assert.equal(adoptPr(without, CTX, "hook", 1000), true);
+  assert.equal(getInspectorPr("mancej/ai-harness#71")?.noteKey, "agent-71");
+  assert.equal(getInspectorPr("mancej/ai-harness#72")?.noteKey, null);
+  // Adoption is a fact about the past: a later sighting cannot re-point it.
+  assert.equal(adoptPr(withKey, { ...CTX, noteKey: "agent-other" }, "hook", 2000), false);
+  assert.equal(getInspectorPr("mancej/ai-harness#71")?.noteKey, "agent-71");
 });
 
 test("inspection tallies distinguish posted findings from pending rows", () => {
@@ -280,18 +297,9 @@ test("workflow PR hints can look up provenance but have no adoption path", () =>
 
 // ---- config ----
 
-// Every default is the off position, and that is not caution theatre: this is the only
-// subsystem that publishes under the operator's GitHub identity. If a future refactor
-// flips any of these three, it flips them for everyone on upgrade, silently.
-test("the Inspector ships off, in dry run, trusting no repo", () => {
-  const cfg = getInspectorConfig();
-  assert.equal(cfg.enabled, false);
-  assert.equal(cfg.mode, "dry-run");
-  assert.deepEqual(cfg.repoAllowlist, []);
-});
-
 test("a patch merges over what is stored rather than replacing it", () => {
-  setInspectorConfig({ repoAllowlist: ["/repo/a"] });
+  setInspectorConfig({ enabled: false, mode: "dry-run", repoAllowlist: ["/repo/a"] });
+  assert.equal(getInspectorConfig().enabled, false);
   setInspectorConfig({ enabled: true });
   const cfg = getInspectorConfig();
   assert.equal(cfg.enabled, true);
@@ -305,10 +313,11 @@ test("a patch merges over what is stored rather than replacing it", () => {
 test("a stored blob from another version still reads", () => {
   openDb()
     .prepare(`INSERT INTO app_config (key, value) VALUES ('inspector', ?)`)
-    .run(JSON.stringify({ enabled: true, somethingFromTheFuture: 7 }));
+    .run(JSON.stringify({ repoAllowlist: ["/repo/a"], somethingFromTheFuture: 7 }));
   const cfg = getInspectorConfig();
-  assert.equal(cfg.enabled, true);
-  assert.equal(cfg.mode, "dry-run", "a key the old blob lacked gets its default");
+  assert.equal(cfg.enabled, false, "a key the old blob lacked keeps its original default");
+  assert.equal(cfg.mode, "dry-run");
+  assert.deepEqual(cfg.repoAllowlist, ["/repo/a"]);
   assert.equal(cfg.maxCommentsPerRound, 8);
 });
 

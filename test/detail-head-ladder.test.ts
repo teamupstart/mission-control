@@ -466,6 +466,7 @@ test("the pickers only go once the readouts have, and they go last", () => {
     [/\.cost-chip$/, "the cost chip"],
     [/\.rt-ctx$/, "the context meter"],
     [/\.rt-model$/, "the model pill"],
+    [/\.rt-advisor$/, "the advisor pill"],
   ] as const) {
     assert.ok(
       hiddenAt(pattern) < controls,

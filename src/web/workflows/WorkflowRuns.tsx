@@ -1,3 +1,6 @@
+import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
@@ -8,6 +11,8 @@ import type {
   WorkflowDelivery,
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
+  WorkflowCommandArtifactDescriptor,
+  WorkflowCommandOutputPage,
   WorkflowExternalSource,
   WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
@@ -43,6 +48,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { InspectorFindingsTable } from "../components/InspectorFindingsTable.tsx";
 import { captureFocusBookmark, restoreFocusBookmark } from "../tour/focus-containment.ts";
 import type { FocusBookmark } from "../tour/focus-containment.ts";
 import { workflowRunTone } from "../components/session-bits.tsx";
@@ -94,10 +100,6 @@ import {
   gateWaitSentence,
   inheritedAttempts,
   inheritedPasses,
-  inspectorFindingBody,
-  inspectorFindingLocation,
-  inspectorFindingSeverityStatus,
-  inspectorFindingStatusStatus,
   inspectorGateSentence,
   inspectorFooterStatus,
   latestAttemptsFor,
@@ -144,6 +146,7 @@ import {
   spentInspectorGateCondition,
   spentInspectorGateStatus,
   verdictMeta,
+  recordedRoutingLabel,
   verdictOf,
   workflowCallCost,
   workflowFeedbackText,
@@ -327,28 +330,168 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
 const checkChip = (outcome: WorkflowCheckOutcome): PipelineStatus =>
   checkStatus(outcome.status === "failed" ? "fail" : "pass", outcome.status);
 
+interface RetainedOutputState {
+  text: string;
+  nextCursor: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function RetainedCommandOutput({
+  runId,
+  attemptId,
+  artifacts,
+}: {
+  runId: string;
+  attemptId: string;
+  artifacts: readonly WorkflowCommandArtifactDescriptor[];
+}): React.JSX.Element | null {
+  const [pages, setPages] = useState<Record<string, RetainedOutputState>>({});
+
+  async function load(artifact: WorkflowCommandArtifactDescriptor): Promise<void> {
+    const current = pages[artifact.id];
+    setPages((value) => ({
+      ...value,
+      [artifact.id]: {
+        text: value[artifact.id]?.text ?? "",
+        nextCursor: value[artifact.id]?.nextCursor ?? null,
+        loading: true,
+        error: null,
+      },
+    }));
+    const query = current?.nextCursor
+      ? `?cursor=${encodeURIComponent(current.nextCursor)}`
+      : "";
+    try {
+      const page = await workflowRequest<WorkflowCommandOutputPage>(
+        `/api/workflow-runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}`
+        + `/command-output/${encodeURIComponent(artifact.id)}${query}`,
+      );
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: `${value[artifact.id]?.text ?? ""}${page.text}`,
+          nextCursor: page.nextCursor,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (caught) {
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: value[artifact.id]?.text ?? "",
+          nextCursor: value[artifact.id]?.nextCursor ?? null,
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not read retained output",
+        },
+      }));
+    }
+  }
+
+  if (artifacts.length === 0) return null;
+  return (
+    <div className="wf-run-command-artifacts">
+      <h5>Retained command output</h5>
+      {artifacts.map((artifact) => {
+        const page = pages[artifact.id];
+        const label = `${artifact.kind} · ${formatBytes(artifact.retainedBytes)}`;
+        if (artifact.availability !== "retained") {
+          return (
+            <p className="wf-run-meta" key={artifact.id}>
+              {label} · {artifact.availability}
+              {artifact.unavailableReason ? `: ${artifact.unavailableReason}` : ""}
+            </p>
+          );
+        }
+        const actionLabel = page?.loading
+          ? "Loading…"
+          : page?.error
+            ? page.text ? "Retry load more" : `Retry ${artifact.kind}`
+            : page ? "Load more" : `Load ${artifact.kind}`;
+        const finished = page !== undefined && page.error === null && page.nextCursor === null;
+        return (
+          <div className="wf-run-command-artifact" key={artifact.id}>
+            <div className="wf-run-command-artifact-head">
+              <strong>{label}</strong>
+              <Tooltip label={finished
+                ? "All retained output has been loaded"
+                : page?.error
+                  ? "Retry reading retained output from the last cursor"
+                  : `Read the next page of retained ${artifact.kind}`}>
+                <button
+                  className="btn btn-ghost"
+                  disabled={page?.loading || finished}
+                  onClick={() => void load(artifact)}
+                >
+                  {actionLabel}
+                </button>
+              </Tooltip>
+            </div>
+            {page?.text && <pre className="wf-run-check-output">{page.text}</pre>}
+            {page?.error && <p className="wf-error" role="alert">{page.error}</p>}
+            {(artifact.droppedBytes > 0 || artifact.captureState === "partial") && (
+              <p className="wf-run-meta">
+                {artifact.droppedBytes > 0
+                  ? `${formatBytes(artifact.droppedBytes)} exceeded the retained limit. `
+                  : ""}
+                {artifact.captureState === "partial" ? "Capture ended before the attempt settled." : ""}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CodeRabbitBlockedReview({ value }: { value: unknown }): React.JSX.Element | null {
+  const parsed = CodeRabbitReviewSummarySchema.safeParse(value);
+  return parsed.success ? <CodeRabbitReview summary={parsed.data} /> : null;
+}
+
+function CodeRabbitReview({ summary }: { summary: import("@shared/workflow.ts").CodeRabbitReviewSummary }): React.JSX.Element {
+  const { comparison } = summary;
+  return <div className="wf-run-card-body">
+    <p>CodeRabbit: {summary.status} · threshold {comparison.severity}{summary.remainingRuns === undefined ? "" : ` · ${summary.remainingRuns} executions remaining`}</p>
+    <p>{summary.diagnostic}</p>
+    {summary.expectedDuration && <p className="wf-run-meta">Expected vendor duration: {summary.expectedDuration}. The hard timeout remains fixed.</p>}
+    {summary.retryAt && <p className="wf-command-hint">Do not retry before {new Date(summary.retryAt).toLocaleString()}.</p>}
+    <p className="wf-run-meta">YAML {comparison.yaml.source}: {comparison.yaml.state} · digest {comparison.yaml.digest ?? "unavailable"}</p>
+    <p className="wf-run-meta">Head {comparison.head} · base {comparison.baseRef} at {comparison.baseTip} · merge-base {comparison.mergeBase}</p>
+    <p>{Object.entries(summary.counts).map(([severity, count]) => `${severity}: ${count}`).join(" · ")}</p>
+  </div>;
+}
+
 function CheckCard({
+  runId,
   attempt,
   outcome,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   outcome: WorkflowCheckOutcome;
 }): React.JSX.Element {
   const view = checkStatusView(outcome.status);
   const chip = checkChip(outcome);
   const parts = [
-    outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
+    outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
+    outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
   ].filter((part): part is string => part !== null);
+  const artifacts = attempt.commandArtifacts ?? outcome.artifacts;
   return (
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
         <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
         <strong>Command · {outcome.slot}</strong>
       </header>
-      <p className="wf-run-summary">{outcome.note}</p>
-      <p className="wf-run-check-sentence">{view.sentence}</p>
+      <p className="wf-run-summary" role={outcome.warning ? "status" : undefined}>{outcome.note}</p>
+      {outcome.diagnosticError && <p role="alert" className="wf-error">Error: {outcome.diagnosticError}</p>}
+      {outcome.review && <CodeRabbitReview summary={outcome.review} />}
+
+      <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>
       {outcome.output && (
         <div className="wf-run-card-body">
           <h5>Command output</h5>
@@ -363,6 +506,15 @@ function CheckCard({
           )}
         </div>
       )}
+      {outcome.exitCode !== null && artifacts.length === 0
+        ? <p className="wf-run-meta">Extended output was not captured for this historical attempt.</p>
+        : (
+          <RetainedCommandOutput
+            runId={runId}
+            attemptId={attempt.id}
+            artifacts={artifacts}
+          />
+        )}
       <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
   );
@@ -422,7 +574,9 @@ function SessionActionCard({
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
-              ? warnings.length > 0
+              ? state.expectation?.kind === "no_change"
+                ? `No changes to publish. The checkout is clean and its HEAD is already contained in ${state.expectation.baseRef}. No pull request was needed.`
+                : warnings.length > 0
                 ? "The pull request was opened and the workflow continued with a warning."
                 : verifiedShipping
                 ? "The pull request was verified open at the captured commit, its content matched the prior review, and the workflow reached End."
@@ -488,6 +642,7 @@ function SessionActionCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+
     </article>
   );
 }
@@ -502,7 +657,7 @@ function VerdictCard({
   meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
   const parts = [
-    meta.runner && meta.model ? `${meta.runner} · ${meta.model}` : null,
+    recordedRoutingLabel(meta),
     meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
     meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
     `attempt ${attempt.attempt}`,
@@ -561,9 +716,11 @@ function PersonaReadinessInput({ attempt }: { attempt: WorkflowNodeAttempt }): R
 }
 
 function AttemptCard({
+  runId,
   attempt,
   name,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   name: string;
 }): React.JSX.Element {
@@ -575,7 +732,7 @@ function AttemptCard({
       </header>
       <p className="wf-run-meta">
         {[
-          attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
+          recordedRoutingLabel(attempt),
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
       </p>
@@ -589,6 +746,13 @@ function AttemptCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.setup === true && <Tooltip label="Inspect CodeRabbit installation, version and stored authentication"><a href="#/settings/setup">Settings &gt; Setup</a></Tooltip>}
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.review && <CodeRabbitBlockedReview value={attempt.output.review} />}
+      <RetainedCommandOutput
+        runId={runId}
+        attemptId={attempt.id}
+        artifacts={attempt.commandArtifacts ?? []}
+      />
     </article>
   );
 }
@@ -840,7 +1004,7 @@ function WorklistRailRow({
           lines: [
             item.outcome.command
               ? formatCheckCommand(item.outcome.command)
-              : "no command configured",
+              : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
             ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
           ],
         };
@@ -1322,7 +1486,11 @@ function RunWorklist({
           <>
             <div className="wf-run-worklist-detail-body">
               {selected.kind === "check" && (
-                <CheckCard attempt={selected.attempt} outcome={selected.outcome} />
+                <CheckCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  outcome={selected.outcome}
+                />
               )}
               {selected.kind === "verdict" && (
                 <VerdictCard
@@ -1332,7 +1500,11 @@ function RunWorklist({
                 />
               )}
               {selected.kind === "attempt" && (
-                <AttemptCard attempt={selected.attempt} name={selected.name} />
+                <AttemptCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  name={selected.name}
+                />
               )}
               {selected.kind === "change" && (
                 <ChangeDetail
@@ -1436,7 +1608,7 @@ function ChangeDetail({
         <strong>{row.personaName}</strong>
         <span className="wf-run-confidence">{Math.round(row.confidence * 100)}% confident</span>
         {meta?.runner && meta.model && (
-          <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
+          <span className="wf-run-meta">{recordedRoutingLabel(meta)}</span>
         )}
       </header>
       {attempt && <PersonaReadinessInput attempt={attempt} />}
@@ -2949,11 +3121,29 @@ function IntentPane({
                 {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
               </dd>
             </div>
+            {context.evidence.publication && <div><dt>Publication</dt><dd>
+              {workflowHasUnpublishedChanges(context.evidence)
+                ? "Required changes still need to be committed and pushed"
+                : "Required changes are committed; the PR must match this content"}
+            </dd></div>}
             <div><dt>Fingerprint</dt><dd><code>{evidenceFingerprint}</code></dd></div>
             <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
             <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
             <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
           </dl>
+          {context.evidence.publication && (
+            <>
+              <p>{workflowPublicationRetained(context.evidence)
+                ? `${context.evidence.publication.localArtifacts.length} local report artifact${context.evidence.publication.localArtifacts.length === 1 ? "" : "s"} retained outside Git`
+                : "Local artifact retention is incomplete; publication exemptions cannot be used"}</p>
+              {context.evidence.publication.unpublishedPaths.length > 0 && (
+                <div><p>Required publication paths</p><pre>{context.evidence.publication.unpublishedPaths.join("\n")}</pre></div>
+              )}
+              {(context.evidence.publication.artifactProblems?.length ?? 0) > 0 && (
+                <div><p>Correct these reports before resubmitting</p><pre>{context.evidence.publication.artifactProblems!.join("\n")}</pre></div>
+              )}
+            </>
+          )}
           {context.evidence.retention?.state === "pruned" ? (
             <p>
               Raw diff, transcript, status paths, and standards bodies were pruned.
@@ -3005,7 +3195,6 @@ function CompletionPane({
   version: WorkflowVersion | null;
   onOpenInspectorSettings: () => void;
 }): React.JSX.Element {
-  const [openFinding, setOpenFinding] = useState<string | null>(null);
   const gate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
   return (
@@ -3054,91 +3243,12 @@ function CompletionPane({
               ? "No pull request is adopted yet, so no findings are recorded."
               : "No findings are recorded for this adopted pull request."}</p>
           ) : (
-            <div className="wf-run-table wf-run-ledger">
-              <table>
-                <caption className="sr-only">
-                  {spentGateCondition
-                    ? "Current Inspector findings"
-                    : "GitHub Inspector findings on the adopted pull request"}
-                </caption>
-                <thead>
-                  <tr>
-                    <th>Severity</th>
-                    <th>Finding</th>
-                    <th>Where</th>
-                    <th>Round</th>
-                    <th>Status</th>
-                    <th>Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {gate.findings.map((finding) => {
-                    const severity = inspectorFindingSeverityStatus(finding.severity);
-                    const status = inspectorFindingStatusStatus(finding.status);
-                    const open = openFinding === finding.id;
-                    // An UNRESOLVED finding is why the gate has not passed, so its body is
-                    // never behind a disclosure - the same rule the delivery ledger applies to
-                    // a refused packet, and for the same reason: a reader should not have to go
-                    // looking for the thing that stopped the run.
-                    const unresolved = finding.status !== "resolved";
-                    return (
-                      <Fragment key={finding.id}>
-                        <tr className={`wf-run-ledger-row wf-run-finding-row is-${finding.severity}`}>
-                          <td>
-                            <span className={`workflow-chip workflow-${severity.tone}`}>
-                              {severity.label}
-                            </span>
-                          </td>
-                          <td>{finding.title}</td>
-                          <td><code>{inspectorFindingLocation(finding)}</code></td>
-                          <td>{finding.round}</td>
-                          <td>
-                            <span className={`workflow-chip workflow-${status.tone}`}>
-                              {status.label}
-                            </span>
-                          </td>
-                          <td>
-                            <Tooltip label={open
-                              ? "Hide this finding's fingerprint and its timestamps"
-                              : "Show the fingerprint the gate tracks this finding by, and when it moved"}>
-                              <button
-                                className="btn btn-ghost wf-run-ledger-toggle"
-                                aria-expanded={open}
-                                aria-controls={`wf-run-finding-${finding.id}`}
-                                onClick={() => setOpenFinding(open ? null : finding.id)}
-                              >
-                                {open ? "Hide finding" : "Show finding"}
-                              </button>
-                            </Tooltip>
-                          </td>
-                        </tr>
-                        {unresolved && (
-                          <tr className="wf-run-ledger-alert">
-                            <td colSpan={6}>
-                              <p className="wf-run-sentence">{inspectorFindingBody(finding)}</p>
-                            </td>
-                          </tr>
-                        )}
-                        {open && (
-                          <tr className="wf-run-ledger-detail" id={`wf-run-finding-${finding.id}`}>
-                            <td colSpan={6}>
-                              {/* A resolved finding's body opens here; an unresolved one is
-                                  already printed above rather than twice. */}
-                              {!unresolved && <p>{inspectorFindingBody(finding)}</p>}
-                              <dl className="wf-run-facts-list">
-                                <div><dt>Fingerprint</dt><dd><code>{finding.fingerprint}</code></dd></div>
-                                <div><dt>Recorded</dt><dd>{when(finding.createdAt)}</dd></div>
-                                <div><dt>Last change</dt><dd>{when(finding.updatedAt)}</dd></div>
-                              </dl>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <InspectorFindingsTable
+              findings={gate.findings}
+              caption={spentGateCondition
+                ? "Current Inspector findings"
+                : "GitHub Inspector findings on the adopted pull request"}
+            />
           )}
           <p className="wf-run-meta">
             Findings are not in the Review worklist - that list is built from Persona verdicts
@@ -4028,7 +4138,7 @@ export function WorkflowRunView({
             // provider again, so the first attempt's runner and model describe a call that is
             // over.
             const attempt = latestAttemptByNode.get(nodeId);
-            return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
+            return attempt ? recordedRoutingLabel(attempt) : null;
           }}
           checkOutcomeFor={(nodeId) => {
             // Read from the attempt's recorded outcome, never inferred from its verdict: a
@@ -4358,7 +4468,7 @@ export function WorkflowRunView({
                 {calls.map((call) => (
                   <tr key={call.id}>
                     <td>{call.purpose.replaceAll("_", " ")}</td>
-                    <td>{call.runner} / {call.model}</td>
+                    <td>{call.runner} / {call.model}{call.effort ? ` · ${call.effort} effort` : ""}</td>
                     <td>{call.attempt}</td>
                     <td>{call.state}</td>
                     <td>{call.errorCode ?? "none"}</td>
@@ -4566,6 +4676,7 @@ export function WorkflowRuns({
   onFilters = () => {},
   onOpenSession = () => {},
   onOpenSessionPath,
+  isOverlayOpen = () => false,
   onOpenInspectorSettings = () => {},
   onBindWorkflow,
 }: {
@@ -4595,6 +4706,7 @@ export function WorkflowRuns({
   onPane?: (pane: RunRecordPane, runId: string) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
+  isOverlayOpen?: () => boolean;
   /**
    * Reveal a path in the bound session's Files surface, for the worklist's "Open file".
    *
@@ -4636,8 +4748,17 @@ export function WorkflowRuns({
   const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
-  const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
+  useLibraryEscape({
+    isOverlayOpen,
+    onLeave: () => {
+      // Refuse stale detail and bindings whose session has left the live list.
+      if (detail?.run.id === selected && evidenceSession) {
+        onOpenSession(evidenceSession.id);
+      }
+    },
+  });
+  const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceScopeSet = useMemo(
     () => workflowEvidenceScopes(evidenceSession, detail?.summary.repoRoot),
     [evidenceSession, detail?.summary.repoRoot],

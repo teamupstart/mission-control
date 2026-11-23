@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { askChannelPrompt } from "../src/server/ask-channel.ts";
+import { DECISION_CONTEXT_RULE } from "../src/shared/decision-asks.ts";
 import {
   claudeSdkRateLimits,
   claudeSdkSpec,
@@ -7,9 +10,10 @@ import {
   permissionPrompt,
   sdkPermissionMode,
 } from "../src/server/harness/claude/sdk.ts";
-import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
+import { defaultClaudeSdkDeps, sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
+import { askChannelRedirect } from "../src/server/ask-channel-prompt.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkInterruptReceipt,
@@ -21,6 +25,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
+import { CompactionError } from "../src/server/harness/compaction.ts";
 
 // What is at stake: this adapter is the only thing standing between the vendor's message
 // stream and every surface in the app. If a permission callback is projected wrongly, a
@@ -168,6 +173,8 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
   model: "claude-opus-5",
 });
 
+const MISSION_MCP = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
 function launchOpts(over: Record<string, unknown> = {}) {
   return {
     cwd: "/wt/one",
@@ -176,7 +183,8 @@ function launchOpts(over: Record<string, unknown> = {}) {
     model: null,
     effort: null,
     permissionMode: null,
-    mcp: null,
+    // Every Claude SDK launch is handed Mission Control's server; one without it is refused.
+    mcp: MISSION_MCP,
     extraDirs: [],
     standingInstructions: "",
     standingInstructionsPrompt: "",
@@ -184,6 +192,62 @@ function launchOpts(over: Record<string, unknown> = {}) {
     ...over,
   } as Parameters<ReturnType<typeof claudeSdkSpec>["launch"]>[0];
 }
+
+test("resident compaction waits for the observed native boundary and result", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  const operation = handle.compact!("Keep the current objective");
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(turns[0]?.message.content, "/compact Keep the current objective");
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
+  for (const frame of fixture) query.emit(frame);
+  assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  // The boundary is also announced, so the resident loop owes its next wake a restatement.
+  assert.ok((await collect(handle.events, e => e.kind === "compacted")).some(e => e.kind === "compacted"));
+  await handle.stop();
+});
+
+test("a compaction nobody requested is announced the same way: the CLI's own auto-compact", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  query.emit({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 900_000, post_tokens: 12_000 } } as ClaudeSdkMessage);
+  const seen = await collect(handle.events, e => e.kind === "compacted");
+  assert.equal(seen.at(-1)?.kind, "compacted");
+  await handle.stop();
+});
+
+test("a stalled resident compaction interrupts the CLI's /compact turn instead of leaving it open", async (t) => {
+  // Read when the driver is built, so set before launch and restore after.
+  process.env.MISSION_RESIDENT_COMPACTION_STALL_MS = "30";
+  t.after(() => { delete process.env.MISSION_RESIDENT_COMPACTION_STALL_MS; });
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  // The CLI accepts `/compact` and then never answers, as it did behind a dead network.
+  await assert.rejects(handle.compact!(""), (error: unknown) => error instanceof CompactionError && error.retryable &&
+    /no progress for 1 second and was interrupted/.test(error.message));
+  assert.equal(turns[0]?.message.content, "/compact");
+  assert.deepEqual(query.control.filter(c => c === "interrupt"), ["interrupt"]);
+  await handle.stop();
+});
+
+test("resident compaction without a measured boundary refuses rather than accepting a completed command", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query } = await started;
+  const operation = handle.compact!("");
+  const refused = assert.rejects(operation, /without a measured context boundary/);
+  query.emit({ type: "result", subtype: "success" });
+  await refused; await handle.stop();
+});
 
 test("standing instructions APPEND to the Claude Code preset, and are omitted when empty", async () => {
   // The preset object is the only non-destructive form. A bare `systemPrompt: string`
@@ -196,14 +260,65 @@ test("standing instructions APPEND to the Claude Code preset, and are omitted wh
   assert.deepEqual((await withText.started).options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
-    append: "Never run E2E locally.",
+    append: `${askChannelPrompt}\n\nNever run E2E locally.`,
   });
 
   // And with nothing to send the key is absent entirely - not an empty `append`. An
   // ordinary session's options object stays exactly what it always was.
   const without = fakeDeps();
   await claudeSdkSpec(without.deps).launch(launchOpts());
-  assert.equal("systemPrompt" in (await without.started).options, false);
+  assert.equal(
+    (await without.started).options.systemPrompt?.append,
+    askChannelPrompt,
+    "with no standing instructions the append is the ask redirect alone, never an empty value",
+  );
+});
+
+test("every Claude SDK launch asks decisions through request_input: allow, disallow and redirect ride together", async () => {
+  const launched = fakeDeps();
+  await claudeSdkSpec(launched.deps).launch(launchOpts({ standingInstructions: "Never run E2E locally." }));
+  const options = (await launched.started).options;
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"], "calling it raises no permission card");
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"], "the built-in is removed");
+  const append = String(options.systemPrompt?.append);
+  assert.ok(append.startsWith(askChannelPrompt), "the redirect leads the append");
+  assert.ok(append.includes(DECISION_CONTEXT_RULE), "and says a decision carries its context and tradeoffs");
+  assert.ok(append.endsWith("\n\nNever run E2E locally."), "and the operator's own words still follow");
+});
+
+test("a Claude SDK launch without Mission Control's server is refused before anything starts", async () => {
+  // Starting it anyway would mean one of two failures: keep AskUserQuestion, and a decision is
+  // asked with no room for its context; remove it, and the agent has no way to ask at all.
+  const { deps, started } = fakeDeps();
+  let queried = false;
+  void started.then(() => (queried = true));
+  await assert.rejects(
+    claudeSdkSpec(deps).launch(launchOpts({ mcp: null })),
+    /ask every decision through Mission Control's request_input tool/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(queried, false, "no Claude process was started for a refused launch");
+});
+
+test("a task's SDK session asks through request_input, never the built-in AskUserQuestion", async () => {
+  const mcp = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
+  // With Mission MCP registered: the built-in is removed, `request_input` is pre-approved,
+  // and the redirect leads one append that also carries the standing instructions.
+  const withMcp = fakeDeps();
+  await claudeSdkSpec(withMcp.deps).launch(
+    launchOpts({ mcp, standingInstructions: "Never run E2E locally." }),
+  );
+  const options = (await withMcp.started).options;
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"]);
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: `${askChannelRedirect("mission-control")}\n\nNever run E2E locally.`,
+  });
+  // Without Mission MCP the launch is refused rather than started with the built-in - see
+  // "a Claude SDK launch without Mission Control's server is refused before anything starts".
 });
 
 test("the launch pins the binary, seeds turn one, and binds on init", async () => {
@@ -219,9 +334,8 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal(options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(options.cwd, "/wt/one");
   assert.equal(options.permissionMode, "auto");
-  // The ask channel's disallow and redirect are deliberately NOT rendered: an embedded
-  // session's questions are answered on the card, which is what the redirect approximated.
-  assert.ok(!("disallowedTools" in options), "AskUserQuestion must stay available");
+  // Every decision goes through request_input, so the built-in is gone on every launch.
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
 
   query.emit(INIT("agent-1"));
   const events = await collect(handle.events, (e) => e.kind === "bound");
@@ -318,7 +432,7 @@ test("SDK usage repopulates both Claude plan windows on init and refreshes after
 
 test("the driver emits turn deltas from Claude's cumulative result snapshots", async () => {
   const { deps, started } = fakeDeps();
-  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: "agent-cumulative-spend" }));
   const { query } = await started;
   query.emit(INIT("agent-cumulative-spend"));
   await collect(handle.events, (event) => event.kind === "bound");
@@ -349,6 +463,7 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
   const first = (await collect(handle.events, (event) => event.kind === "turn_done"))
     .find((event) => event.kind === "turn_done");
   assert.equal(first?.kind === "turn_done" && first.usage?.costUsd, 10);
+  assert.equal(first?.kind === "turn_done" && first.usageSnapshot?.resumed, true);
   assert.equal(first?.kind === "turn_done" && first.usage?.input, 1_000);
 
   query.emit(result("result-2", 13, 1_250, 140));
@@ -409,6 +524,8 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
     .find((event) => event.kind === "turn_done");
   assert.equal(rebound?.kind === "turn_done" && rebound.usage?.costUsd, 30);
   assert.equal(rebound?.kind === "turn_done" && rebound.usage?.input, 3_000);
+  assert.equal(rebound?.kind === "turn_done" && rebound.usageSnapshot?.resumed, false,
+    "a changed conversation must not inherit the legacy resume gap policy");
 
   query.end();
 });
@@ -432,10 +549,20 @@ test("SDK usage refuses unavailable, incomplete, or out-of-range plan windows", 
       seven_day: { utilization: 101, resets_at: "2026-08-02T04:00:00.000Z" },
     },
   }), null);
-  assert.deepEqual(claudeSdkRateLimits({
+  // A malformed five-hour window is not evidence the limit is gone: a seven-day-only
+  // reading would clear the saved five-hour bar, so the whole reading is rejected.
+  assert.equal(claudeSdkRateLimits({
     rate_limits_available: true,
     rate_limits: {
       five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }, 123), null);
+  // An absent five-hour window is that evidence, and keeps the seven-day reading.
+  assert.deepEqual(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: null,
       seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
     },
   }, 123), {
@@ -605,6 +732,44 @@ test("an authentication failure before binding exits as unresumable", async () =
   }
 });
 
+for (const initialModel of [null, "claude-opus-5"]) {
+  test(`authentication recovery preserves an accepted model upgrade from ${initialModel ?? "default"}`, async (t) => {
+    const starts: Harnessed[] = [];
+    const deps: ClaudeSdkDeps = {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({}),
+      query: async ({ prompt, options }) => {
+        const query = new FakeQuery();
+        const turns: ClaudeSdkUserMessage[] = [];
+        starts.push({ query, options, turns });
+        void (async () => {
+          for await (const turn of prompt) turns.push(turn);
+          query.end();
+        })();
+        return query;
+      },
+    };
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ model: initialModel }));
+    t.after(() => handle.stop());
+    const first = starts[0]!;
+    first.query.emit(INIT("model-recovery"));
+    await collect(handle.events, event => event.kind === "bound");
+    await handle.setModel!("claude-opus-5-5");
+    first.query.setModel = async () => { throw new Error("model unavailable"); };
+    await assert.rejects(handle.setModel!("refused-model"), /model unavailable/);
+
+    first.query.emit({ type: "assistant", session_id: "model-recovery", error: "authentication_failed" });
+    first.query.emit({ type: "result", session_id: "model-recovery", subtype: "error_during_execution" });
+    await collect(handle.events, event => event.kind === "turn_done");
+    await handle.send({ text: "continue after login" });
+
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1]!.options.resume, "model-recovery");
+    assert.equal(starts[1]!.options.model, "claude-opus-5-5", "recovery must not restore the original model");
+    assert.equal(starts[0]!.options.model, initialModel ?? undefined, "the first launch remains an unchanged snapshot");
+  });
+}
+
 test("an authentication failure reloads credentials by resuming on the next turn", async () => {
   const starts: Harnessed[] = [];
   const deps: ClaudeSdkDeps = {
@@ -691,8 +856,8 @@ test("an authentication failure reloads credentials by resuming on the next turn
   } as ClaudeSdkMessage);
   const recovered = (await collect(handle.events, (event) => event.kind === "turn_done"))
     .find((event) => event.kind === "turn_done");
-  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.costUsd, 20);
-  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.input, 2_000);
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.costUsd, 10);
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.input, 1_000);
   await handle.stop();
 });
 
@@ -913,6 +1078,231 @@ test("a stop racing authentication relaunch disposes the fresh query before atta
     starts[1]?.query.end();
     await handle.stop();
   }
+});
+
+/**
+ * The shape of the AP - PR Shepherd hang: credentials expired during a long tool call, the
+ * CLI folded a background-task notification into the running turn, its API call failed, and
+ * it emitted the synthetic "Not logged in" frame with NO `result` after it. The process stayed
+ * alive and silent, so the turn never closed, the resident never went idle, and the recovery
+ * that runs on the next send never got a next send.
+ */
+function wedgedAuthDeps(opts: { staleIgnoresInputClose: boolean }) {
+  const starts: Harnessed[] = [];
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        // A wedged CLI does not act on its input closing; only `return()` ends it.
+        if (!(opts.staleIgnoresInputClose && launchIndex === 0)) query.end();
+      })();
+      return query;
+    },
+  };
+  return { starts, deps };
+}
+
+const NOT_LOGGED_IN = (sessionId: string): ClaudeSdkMessage => ({
+  type: "assistant",
+  session_id: sessionId,
+  error: "authentication_failed",
+  message: { role: "assistant", content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+} as ClaudeSdkMessage);
+
+test("an authentication failure the CLI never closes still ends the turn and recovers on the next send", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.emit(INIT("agent-auth-wedged"));
+  await collect(handle.events, (event) => event.kind === "bound");
+
+  stale.emit(NOT_LOGGED_IN("agent-auth-wedged"));
+  // No `result` follows. Before the fix nothing ever left `working` from here.
+  const closing = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(closing.some((event) => event.kind === "exited"), false, "the session must stay resumable");
+  const done = closing.find((event) => event.kind === "turn_done");
+  assert.equal(done?.kind === "turn_done" && done.usage, null, "the driver invents no usage");
+
+  // The resident loop's next wake (or a human message) goes through sendIfIdle.
+  assert.equal(await handle.sendIfIdle({ text: "continue after claude login" }), "started");
+  assert.deepEqual(stale.control, ["return"], "a stale process that ignores its closed input is stopped");
+  assert.equal(starts.length, 2, "the stale SDK process is replaced exactly once");
+  assert.equal(starts[1]!.options.resume, "agent-auth-wedged");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts[1]!.turns[0]?.message.content, "continue after claude login");
+});
+
+test("authentication recovery resumes even when the stale process never drains after return()", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  // Neither the closed input nor the SDK's own stop ends this process: `return()` never
+  // settles and the stale query's stream never finishes.
+  let returnCalls = 0;
+  stale.return = () => {
+    returnCalls += 1;
+    return new Promise<never>(() => {});
+  };
+  stale.emit(INIT("agent-auth-undrained"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-undrained"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sent = await Promise.race([
+    handle.sendIfIdle({ text: "continue after claude login" }),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2_000).unref()),
+  ]);
+  assert.equal(sent, "started", "recovery must not wait on a stale process forever");
+  assert.equal(returnCalls, 1, "the SDK was asked once to stop the stale process");
+  assert.equal(starts.length, 2, "a replacement was launched anyway");
+  assert.equal(starts[1]!.options.resume, "agent-auth-undrained");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts[1]!.turns.map((turn) => turn.message.content), ["continue after claude login"]);
+
+  starts[1]!.query.emit(INIT("agent-auth-undrained"));
+  starts[1]!.query.emit({ type: "result", subtype: "success", session_id: "agent-auth-undrained" } as ClaudeSdkMessage);
+  const done = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(done.some((event) => event.kind === "exited"), false, "the resumed session stays live");
+});
+
+test("authentication recovery resumes when stopping the stale process throws synchronously", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  // A transport that is already torn down may refuse the stop outright rather than reject.
+  stale.return = () => {
+    throw new Error("transport already closed");
+  };
+  stale.emit(INIT("agent-auth-throwing-stop"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-throwing-stop"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  assert.equal(await handle.sendIfIdle({ text: "continue after claude login" }), "started");
+  assert.equal(starts.length, 2, "the replacement is launched despite the refused stop");
+  assert.equal(starts[1]!.options.resume, "agent-auth-throwing-stop");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts[1]!.turns.map((turn) => turn.message.content), ["continue after claude login"]);
+});
+
+test("an undrained stale process can neither steer nor end the resumed session", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "first resumed turn" }), "started");
+  const fresh = starts[1]!.query;
+  fresh.emit(INIT("agent-auth-superseded"));
+  fresh.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // The stale process finally speaks: none of it may reach the live conversation.
+  stale.emit({
+    type: "assistant",
+    session_id: "agent-auth-superseded",
+    message: { role: "assistant", content: [{ type: "text", text: "stale frame" }] },
+  } as ClaudeSdkMessage);
+  stale.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await handle.sendIfIdle({ text: "fresh is idle" }), "started", "a stale frame must not mark the fresh turn busy");
+  fresh.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // A second recovery replaces `recoveringQuery` while the first stale pump is still open.
+  fresh.emit(NOT_LOGGED_IN("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "second resumed turn" }), "started");
+  assert.equal(starts.length, 3);
+
+  const ended = collect(handle.events, (event) => event.kind === "exited" || event.kind === "turn_done");
+  stale.end();
+  await new Promise((resolve) => setImmediate(resolve));
+  starts[2]!.query.emit(INIT("agent-auth-superseded"));
+  starts[2]!.query.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  const events = await ended;
+  assert.equal(events.some((event) => event.kind === "exited"), false, "the first stale process ending must not end the session");
+  assert.equal(events.at(-1)?.kind, "turn_done");
+});
+
+test("a turn the CLI resumes after the driver closed it still reports its completion", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-resumed"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-resumed"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // Past the grace, the CLI turns out to be working after all.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-auth-resumed",
+    message: { role: "assistant", content: [{ type: "text", text: "continuing" }] },
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "state" && event.state === "working");
+  query.emit({ type: "result", subtype: "success", session_id: "agent-auth-resumed" } as ClaudeSdkMessage);
+  const done = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(done.at(-1)?.kind, "turn_done", "the reopened turn's result is its real completion");
+  assert.equal(await handle.sendIfIdle({ text: "next turn" }), "started");
+  assert.equal(starts.length, 1, "working credentials need no relaunch");
+});
+
+test("a late result for an auth-failed turn the driver already closed is not reported twice", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-late"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-late"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  query.emit({ type: "result", subtype: "error_during_execution", session_id: "agent-auth-late" } as ClaudeSdkMessage);
+  query.emit({ type: "system", subtype: "status", session_id: "agent-auth-late" } as ClaudeSdkMessage);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const stopped = collect(handle.events, (event) => event.kind === "exited");
+  await handle.stop();
+  const after = await stopped;
+  assert.equal(after.filter((event) => event.kind === "turn_done").length, 0, "the late result is absorbed");
+});
+
+test("an auth-failed turn the CLI goes on to finish is not cut short or relaunched", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-healed"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-healed"));
+  query.emit({
+    type: "assistant",
+    session_id: "agent-auth-healed",
+    message: { role: "assistant", content: [{ type: "text", text: "refreshed and continuing" }] },
+  } as ClaudeSdkMessage);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await handle.sendIfIdle({ text: "must not join a running turn" }), null, "the turn is still running");
+
+  query.emit({ type: "result", subtype: "success", session_id: "agent-auth-healed" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "next turn" }), "started");
+  assert.equal(starts.length, 1, "working credentials need no relaunch");
 });
 
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {
@@ -1388,4 +1778,476 @@ test("the adapter refuses a duplicated question too, against its own request", a
       }),
     /answered twice/,
   );
+});
+
+// ---- managed telemetry stays the agent's own --------------------------------------------
+
+/**
+ * Anything that would change where or whether Claude Code's OpenTelemetry is exported:
+ * exporter routing, protocol, headers, export cadence, the SDK and enable switches, and the
+ * capture switches. On a managed Mac the organization's policy sets these; Mission Control
+ * must never contribute one. Trace-context propagation (`TRACEPARENT`) is not routing.
+ */
+const CLAUDE_OTEL_ROUTING =
+  /\bOTEL_(?:EXPORTER_|BSP_|LOGS_|METRICS?_|TRACES_|LOG_|SDK_DISABLED)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
+
+test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async (t) => {
+  // MDM is read by Claude itself. Remove inherited routing keys for this assertion so any
+  // match came from Mission Control, including its shipped environment callback.
+  const inherited = Object.entries(process.env).filter(([name]) => CLAUDE_OTEL_ROUTING.test(name));
+  t.after(() => {
+    for (const [name, value] of inherited) process.env[name] = value;
+  });
+  for (const [name] of inherited) delete process.env[name];
+  // Every Claude SDK launch carries the Mission server (one without it is refused), so the
+  // default options are the only launch shape there is to check.
+  const { deps, started } = fakeDeps();
+  deps.env = defaultClaudeSdkDeps.env;
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  try {
+    const { options } = await started;
+    const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+    assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+  } finally {
+    await handle.stop();
+  }
+});
+
+test("the SDK subprocess env adds no OpenTelemetry routing of its own", () => {
+  const env = sdkSubprocessEnv({ PATH: "/bin", HOME: "/home/op" }, "/wt/one", "/tmp/mission-sdk-state");
+  assert.deepEqual(Object.keys(env).filter((name) => CLAUDE_OTEL_ROUTING.test(name)), []);
+});
+
+test("a turn Claude ended at capacity reports the failure on turn_done; other API errors do not", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  const repeated529 = "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
+
+  // Claude Code tags its exhausted-529 message `server_error`, so the wording decides.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: repeated529 }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const first = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(first?.kind === "turn_done" && first.failure, { kind: "capacity", message: repeated529 });
+
+  // A server error that is not about capacity, and a subagent's overload, end nothing early.
+  assert.equal(await handle.sendIfIdle({ text: "again" }), "started");
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: "toolu_1",
+    error: "overloaded",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 529 Overloaded" }] },
+  });
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 500 Internal server error" }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: "API Error: 500 Internal server error", session_id: "agent-1" });
+  const second = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.equal(second?.kind === "turn_done" && second.failure, undefined);
+
+  // A stream with no assistant error frame: the error result alone still names the capacity.
+  assert.equal(await handle.sendIfIdle({ text: "once more" }), "started");
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const third = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(third?.kind === "turn_done" && third.failure, { kind: "capacity", message: repeated529 });
+
+  // The other two tags Claude Code ends a capacity turn with: `overloaded` is trusted whatever
+  // the text says, and `rate_limit` only when the text names capacity, never a usage limit.
+  const turnEndingWith = async (error: string, text: string) => {
+    assert.equal(await handle.sendIfIdle({ text: `try ${error}` }), "started");
+    query.emit({
+      type: "assistant",
+      session_id: "agent-1",
+      parent_tool_use_id: null,
+      error,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+    // A result with no text, so the verdict can only come from the tagged frame above and
+    // the result-only fallback cannot mask a tag the classifier stopped accepting.
+    query.emit({ type: "result", subtype: "success", is_error: true, session_id: "agent-1" });
+    const done = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+    return done?.kind === "turn_done" ? done.failure : null;
+  };
+  assert.deepEqual(
+    await turnEndingWith("overloaded", "API Error: 529"),
+    { kind: "capacity", message: "API Error: 529" },
+  );
+  const highLoad = "Opus is experiencing high load, please use /model to switch to Sonnet";
+  assert.deepEqual(await turnEndingWith("rate_limit", highLoad), { kind: "capacity", message: highLoad });
+  assert.equal(
+    await turnEndingWith("rate_limit", "You've hit your usage limit. Try again later."),
+    undefined,
+    "a usage limit is not capacity: waiting minutes does not refill a plan",
+  );
+  query.end();
+});
+
+// A new adapter instance has no in-memory baseline. The Registry must still subtract
+// the committed conversation snapshot, including an auxiliary model that ran only once.
+test("resumed Claude adapters record only new spend across driver and database restarts", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { closeDb, sessionCostFor, fleetEstimatedCostSince, openDb } = await import("../src/server/db.ts");
+  const conversation = "resume-ledger-regression";
+  const fleetBefore = fleetEstimatedCostSince(0) ?? 0;
+  async function run(resume: boolean, totals: number[], model = "claude-opus-5") {
+    const registry = new Registry();
+    const id = `sdk:resume-ledger-${resume}`;
+    registry.registerSdkSession({ id, agent: "claude", name: "resume", cwd: "/wt/one" });
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: resume ? conversation : null, model }));
+    const { query } = await started;
+    query.emit({ ...INIT(conversation), model });
+    for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+    for (const total of totals) {
+      if (total === 13) assert.equal(await handle.sendIfIdle({ text: "capacity retry" }), "started");
+      query.emit({ type: "result", subtype: "success", session_id: conversation,
+        uuid: `resume-result-${total}`, total_cost_usd: total + 1,
+        ...(total === 10 ? { is_error: true, result: "API Error: Repeated 529 Overloaded errors. The API is at capacity" } : {}),
+        modelUsage: {
+          "claude-opus-5": { inputTokens: Math.min(total, 25) * 10, outputTokens: Math.min(total, 25) * 20,
+            cacheReadInputTokens: Math.min(total, 25) * 100, cacheCreationInputTokens: Math.min(total, 25) * 5, costUSD: Math.min(total, 25) },
+          ...(model === "claude-sonnet-5" ? { "claude-sonnet-5": {
+            inputTokens: (total - 25) * 10, outputTokens: (total - 25) * 20,
+            cacheReadInputTokens: (total - 25) * 100, costUSD: total - 25,
+          } } : {}),
+          "claude-haiku-5": { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 635, costUSD: 1 },
+        },
+      } as ClaudeSdkMessage);
+      for (const event of await collect(handle.events, e => e.kind === "turn_done")) {
+        if (total === 10 && event.kind === "turn_done") assert.equal(event.failure?.kind, "capacity");
+        registry.applyDriverEvent(id, event);
+      }
+    }
+    assert.equal(registry.getSession(id)?.cost?.costUsd, totals.at(-1)! + 1);
+    await handle.stop();
+  }
+  await run(false, [10, 13]);
+  closeDb();
+  await run(true, [20, 25]);
+  assert.equal(sessionCostFor(conversation)?.costUsd, 26);
+  assert.equal(sessionCostFor(conversation)?.cacheRead, 3135);
+  assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 26);
+  const row = openDb().prepare("SELECT cost_usd, cache_read FROM usage_ledger WHERE note_key = ? AND window_end_ns = ? AND model_id = ?")
+    .get(conversation, "resume-result-20", "claude-opus-5");
+  assert.deepEqual({ ...row }, { cost_usd: 7, cache_read: 700 });
+  await run(true, [30], "claude-sonnet-5");
+  assert.equal(sessionCostFor(conversation)?.costUsd, 31, "model relaunch keeps the conversation baseline");
+  assert.equal(sessionCostFor(conversation)?.cacheRead, 3635);
+});
+
+// Unlike a replacement driver on the same conversation, /clear must book the entire
+// first result under the new note key, even if its counters exceed the old baseline.
+test("a changed Claude conversation ID books its first result into session and fleet totals", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { sessionCostFor, fleetEstimatedCostSince, openDb } = await import("../src/server/db.ts");
+  const oldConversation = "clear-ledger-old";
+  const newConversation = "clear-ledger-new";
+  const id = "sdk:clear-ledger";
+  const registry = new Registry();
+  registry.registerSdkSession({ id, agent: "claude", name: "clear", cwd: "/wt/one" });
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: oldConversation }));
+  const { query } = await started;
+  const fleetBefore = fleetEstimatedCostSince(0) ?? 0;
+  try {
+    query.emit(INIT(oldConversation));
+    for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+    async function result(conversation: string, total: number) {
+      query.emit({ type: "result", subtype: "success", session_id: conversation,
+        uuid: `${conversation}-${total}`, total_cost_usd: total,
+        modelUsage: { "claude-opus-5": {
+          inputTokens: total * 10, outputTokens: total * 2,
+          cacheReadInputTokens: total * 100, cacheCreationInputTokens: total, costUSD: total,
+        } },
+      } as ClaudeSdkMessage);
+      for (const event of await collect(handle.events, e => e.kind === "turn_done")) registry.applyDriverEvent(id, event);
+    }
+    await result(oldConversation, 20); // Approved legacy baseline-only transition.
+    await result(oldConversation, 23);
+    assert.equal(sessionCostFor(oldConversation)?.costUsd, 3);
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 3);
+
+    // Claude can announce /clear's changed identity on an ordinary result, without init.
+    await result(newConversation, 40);
+    assert.equal(registry.getSession(id)?.agentSessionId, newConversation);
+    assert.equal(registry.getSession(id)?.cost?.costUsd, 40, "the card follows the new conversation");
+    assert.equal(sessionCostFor(newConversation)?.costUsd, 40);
+    assert.equal(sessionCostFor(newConversation)?.cacheRead, 4000);
+    assert.equal(sessionCostFor(oldConversation)?.costUsd, 3, "the old conversation is unchanged");
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 43);
+    const row = openDb().prepare(`SELECT cost_usd, input, output, cache_read, cache_write
+      FROM usage_ledger WHERE note_key = ? AND window_end_ns = ?`)
+      .get(newConversation, `${newConversation}-40`);
+    assert.deepEqual({ ...row }, { cost_usd: 40, input: 400, output: 80, cache_read: 4000, cache_write: 40 });
+
+    await result(newConversation, 40);
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 43, "replaying that first result adds nothing");
+  } finally {
+    await handle.stop();
+  }
+});
+
+// This reference comes from per-request transcript usage and pinned list rates, not
+// from the cumulative SDK cost fields that the adapter consumes. See the fixture README.
+test("resumed Claude ledger, session and fleet reconcile with transcript requests at list rates", async (t) => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { closeDb, openDb, sessionCostFor, fleetEstimatedCostSince, fleetTokensSince } = await import("../src/server/db.ts");
+  type TranscriptRequest = {
+    requestId: string;
+    message: {
+      id: string;
+      model: string;
+      usage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens: number;
+        cache_creation_input_tokens: number;
+        cache_creation: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number };
+      };
+    };
+  };
+  const transcript: TranscriptRequest[] = readFileSync(
+    new URL("./fixtures/claude-resume-usage/transcript.jsonl", import.meta.url), "utf8",
+  ).trim().split("\n").map(line => JSON.parse(line));
+  // A response can have several content blocks, each repeating the same usage object.
+  const requests = [...new Map(transcript.map(row => [
+    `${row.message.id}:${row.requestId}`, row,
+  ])).values()];
+  assert.equal(transcript.length, 5);
+  assert.equal(requests.length, 4);
+  // USD/MTok, Sonnet 4.6 standard global API rates, verified 2026-11-05:
+  // https://platform.claude.com/docs/en/about-claude/pricing
+  const rates = { input: 3, output: 15, cacheRead: 0.30, write5m: 3.75, write1h: 6 };
+  const pricedRequests = requests.map(({ message }) => {
+    assert.equal(message.model, "claude-sonnet-4-6");
+    const u = message.usage;
+    const write5m = u.cache_creation.ephemeral_5m_input_tokens;
+    const write1h = u.cache_creation.ephemeral_1h_input_tokens;
+    assert.equal(u.cache_creation_input_tokens, write5m + write1h);
+    return {
+      input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens,
+      cacheWrite: write5m + write1h,
+      cost: (u.input_tokens * rates.input + u.output_tokens * rates.output
+        + u.cache_read_input_tokens * rates.cacheRead + write5m * rates.write5m
+        + write1h * rates.write1h) / 1_000_000,
+    };
+  });
+  const expected = pricedRequests.reduce((a, r) => ({
+    input: a.input + r.input, output: a.output + r.output,
+    cacheRead: a.cacheRead + r.cacheRead, cacheWrite: a.cacheWrite + r.cacheWrite,
+    cost: a.cost + r.cost,
+  }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const near = (actual: number | null | undefined, expectedCost: number, label: string) => {
+    assert.equal(typeof actual, "number", `${label} must be priced`);
+    assert.ok(Math.abs(actual! - expectedCost) < 1e-9, `${label}: ${actual} vs ${expectedCost}`);
+  };
+  const tokens = (value: { input: number; output: number; cacheRead: number; cacheWrite: number }) => ({
+    input: value.input, output: value.output, cacheRead: value.cacheRead, cacheWrite: value.cacheWrite,
+  });
+  const frames: ClaudeSdkMessage[] = JSON.parse(readFileSync(
+    new URL("./fixtures/claude-resume-usage/results.json", import.meta.url), "utf8",
+  ));
+  const conversation = "00000000-0000-4000-8000-000000001356";
+  const costBefore = fleetEstimatedCostSince(0) ?? 0;
+  const tokensBefore = fleetTokensSince(0);
+  async function replay(resume: boolean, results: ClaudeSdkMessage[]) {
+    const id = `sdk:transcript-reconciliation-${resume}`;
+    const registry = new Registry();
+    registry.registerSdkSession({ id, agent: "claude", name: "reconciliation", cwd: "/wt/one" });
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({
+      resume: resume ? conversation : null, model: "claude-sonnet-4-6",
+    }));
+    const { query } = await started;
+    try {
+      query.emit({ ...INIT(conversation), model: "claude-sonnet-4-6" });
+      for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+      for (const frame of results) {
+        query.emit(frame);
+        for (const event of await collect(handle.events, e => e.kind === "turn_done")) registry.applyDriverEvent(id, event);
+      }
+      return registry.getSession(id)?.cost;
+    } finally {
+      await handle.stop();
+    }
+  }
+  await replay(false, frames.slice(0, 2));
+  closeDb();
+  const card = await replay(true, frames.slice(2));
+  const session = sessionCostFor(conversation);
+  assert.ok(card && session);
+  near(card.costUsd, expected.cost, "card cost");
+  near(session.costUsd, expected.cost, "session cost");
+  assert.deepEqual(tokens(card), tokens(expected));
+  assert.deepEqual(tokens(session), tokens(expected));
+  const ledger = openDb().prepare(`SELECT SUM(cost_usd) AS cost,
+    SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cacheRead,
+    SUM(cache_write) AS cacheWrite, COUNT(*) AS rows FROM usage_ledger WHERE note_key = ?`)
+    .get(conversation) as typeof expected & { rows: number };
+  near(ledger.cost, expected.cost, "ledger cost");
+  assert.deepEqual(tokens(ledger), tokens(expected));
+  assert.equal(ledger.rows, 3, "one row per completed turn, across both query instances");
+  const resumedTurn = openDb().prepare(`SELECT cost_usd AS cost, input, output,
+    cache_read AS cacheRead, cache_write AS cacheWrite FROM usage_ledger
+    WHERE note_key = ? AND window_end_ns = 'fixture-result-3'`).get(conversation) as typeof expected;
+  near(resumedTurn.cost, pricedRequests[3]!.cost, "resumed turn cost");
+  assert.deepEqual(tokens(resumedTurn), tokens(pricedRequests[3]!));
+  near((fleetEstimatedCostSince(0) ?? 0) - costBefore, expected.cost, "fleet cost contribution");
+  assert.equal(fleetTokensSince(0) - tokensBefore,
+    expected.input + expected.output + expected.cacheRead + expected.cacheWrite);
+  t.diagnostic(`4 deduplicated transcript requests; list-rate cost $${expected.cost.toFixed(5)}; `
+    + `${expected.input} input, ${expected.output} output, ${expected.cacheRead} cache-read, `
+    + `${expected.cacheWrite} cache-write tokens reconcile with ledger, card/session and fleet after resume`);
+});
+
+test("resident durable memory uses flag settings and the same directory on resume", async () => {
+  for (const resume of [null, "previous-conversation"]) {
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ residentStateDir: "/state/profile", resume }));
+    const { options } = await started;
+    assert.equal(options.settings?.autoMemoryDirectory, "/state/profile");
+    assert.equal(options.settings?.autoMemoryEnabled, true);
+    assert.equal(options.env.RESIDENT_STATE_DIR, "/state/profile");
+    assert.ok(options.additionalDirectories?.includes("/state/profile"));
+    await handle.stop();
+  }
+});
+
+test("background sub-agents become one coalesced summary, and their frames never re-arm the parent", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagents"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-subagents", ...body });
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "launching" }] } });
+  query.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "a", task_type: "local_agent", subagent_type: "Explore", description: "Map call sites" },
+    { task_id: "sh", task_type: "local_bash", description: "watch" },
+  ] }));
+  query.emit(sys("task_started", { task_id: "a", task_type: "local_agent", subagent_type: "Explore",
+    description: "Map call sites", is_backgrounded: true, tool_use_id: "toolu_a" }));
+  // Counter-only, inside the interval: held rather than sent.
+  query.emit(sys("task_progress", { task_id: "a", description: "Map call sites", last_tool_name: "Grep",
+    usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1 } }));
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagents" });
+  const turn = await collect(handle.events, (e) => e.kind === "turn_done");
+  const summaries = turn.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.equal(summaries.length, 2, "the level, then task_started's launch id; progress is held");
+  assert.deepEqual(summaries[1]?.agents.map((a) => [a.id, a.type, a.state, a.launchTurnId, a.toolUses]), [
+    ["a", "Explore", "running", "toolu_a", null],
+  ]);
+
+  // After the turn: a sub-agent's own frame, then its end.
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: "toolu_a",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  query.emit(sys("task_notification", { task_id: "a", status: "completed", summary: "found 4",
+    usage: { total_tokens: 20, tool_uses: 3, duration_ms: 1 } }));
+  const after = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(after.map((e) => e.kind), ["subagents"], "the sub-agent frame did not flip the parent to working");
+  const done = after[0]!.kind === "subagents" ? after[0]!.subagents : null;
+  assert.deepEqual(done?.agents.map((a) => [a.state, a.toolUses, a.summary]), [["completed", 3, "found 4"]]);
+
+  // The operator's next turn folds the finished agent; nothing runs, so nothing is left.
+  await handle.send({ text: "next" });
+  const next = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(next.map((e) => e.kind), ["state", "subagents"]);
+  assert.equal(next[1]!.kind === "subagents" && next[1]!.subagents, null);
+  await handle.stop();
+});
+
+test("task frames the stale process sends while its replacement launches do not survive the relaunch", async (t) => {
+  // The first process ignores its closed input; the relaunch is held open until the test says.
+  const starts: Harnessed[] = [];
+  let requested!: () => void;
+  const relaunchRequested = new Promise<void>((resolve) => { requested = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        if (launchIndex !== 0) query.end();
+      })();
+      if (launchIndex === 1) {
+        requested();
+        await released;
+      }
+      return query;
+    },
+  };
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sending = handle.sendIfIdle({ text: "continue after login" });
+  await relaunchRequested;
+  // The stale process is still the attached query while the replacement launches.
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-auth-subagents", ...body });
+  stale.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore", description: "from the replaced process" },
+  ] }));
+  stale.emit(sys("task_started", { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore",
+    description: "from the replaced process", is_backgrounded: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await sending, "started");
+
+  const events = await collect(handle.events, (e) => e.kind === "state" && e.state === "working");
+  const summaries = events.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
+  assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
+});
+
+test("a sub-agent's frame during the parent's turn updates its activity without opening another turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagent-active"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  // The parent's own turn is running (the launch seeded it); a foreground sub-agent reports.
+  query.emit({ type: "assistant", session_id: "agent-subagent-active", parent_tool_use_id: "toolu_sub",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  // Bounded, so a frame that never reports fails here instead of hanging the suite.
+  const during = await Promise.race([
+    collect(handle.events, (e) => e.kind === "state"),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the sub-agent frame reported no activity")), 2_000)),
+  ]);
+  assert.deepEqual(during.at(-1), { kind: "state", state: "working", activity: "Grep" });
+
+  // One result closes the one turn: the sub-agent frame opened nothing of its own.
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagent-active" });
+  const closed = await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(closed.filter((e) => e.kind === "turn_done").length, 1);
+  assert.equal(await handle.sendIfIdle({ text: "next" }), "started", "the session is idle once its turn ends");
+  await handle.stop();
 });

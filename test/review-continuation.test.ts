@@ -153,3 +153,14 @@ test("a pending review restored after restart is treated as detached", () => {
   assert.ok(row.continuation_queued_at);
   pendingTurns.stop();
 });
+
+test("a dismissed detached wait is described as dismissed in its continuation", () => {
+  const f = fixture("dismissed");
+  const review = f.reviews.create(f.id, "input", "Continue?", "Continue?");
+  f.reviews.detachWait(review.id, f.id);
+  f.reviews.resolve(review.id, "dismiss", "", "human");
+  const text = f.registry.getSession(f.id)?.pendingTurns[0]?.text ?? "";
+  assert.match(text, /was dismissed after its MCP wait ended/);
+  assert.doesNotMatch(text, /was answered/);
+  f.pendingTurns.stop();
+});

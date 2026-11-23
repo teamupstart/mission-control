@@ -78,7 +78,7 @@ function harness(options: {
     deleteRow: deleteTaskWorktreeRetention,
     now: () => state.now,
     intervalMs: RETENTION_OBSERVE_INTERVAL_MS,
-    retentionMs: RETENTION_WINDOW_MS,
+    retentionMs: () => RETENTION_WINDOW_MS,
     concurrency: options.concurrency ?? 4,
     schedule: (fn, ms) => {
       state.scheduled.push({ fn, ms });
@@ -231,7 +231,7 @@ test("a re-dispatch between the observer's check and the write is refused by the
     deleteRow: deleteTaskWorktreeRetention,
     now: () => NOW,
     intervalMs: RETENTION_OBSERVE_INTERVAL_MS,
-    retentionMs: RETENTION_WINDOW_MS,
+    retentionMs: () => RETENTION_WINDOW_MS,
     concurrency: 1,
     schedule: () => () => {},
   });
@@ -392,4 +392,13 @@ test("an observer built without cleanup deps still reclaims nothing", async () =
   const row = getTaskWorktreeRetention("o-no-cleanup");
   assert.equal(row?.cleanupState, "observing");
   assert.equal(row?.claimToken, null);
+});
+
+test("repo-less residents never enter retention observation or cleanup, even with stale resource fields", async () => {
+  const task = baseTask({ id: "resident-no-repo", kind: "resident", workspaceKind: "resident-workspace", status: "done", worktreePath: "/run/workspace", homeName: "stale-home" });
+  const { observer, state } = harness({ tasks: [task], probe: async () => assert.fail("resident workspace must never be probed as Git") });
+  const result = await observer.runPass();
+  assert.equal(result.observed, 0);
+  assert.deepEqual(state.probes, []);
+  assert.equal(getTaskWorktreeRetention(task.id), null);
 });

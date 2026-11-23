@@ -113,7 +113,9 @@ test("launcher chords focus directly or reveal Conversation for a chooser", () =
     /pendingLauncherAction\.current = \{ id: sel\.id, run \};[\s\S]*?requestConversationTab\(sel\.id\)/,
   );
   assert.match(app, /handle\[pending\.run\]\(\)/);
-  assert.match(app, /className="launch-flash is-error" role="status"/);
+  // The flash is drawn by the topbar, which `App` hands the error it holds.
+  assert.match(app, /launcherFocusError=\{launcherFocusError\}/);
+  assert.match(src("components/Topbar.tsx"), /className="launch-flash is-error" role="status"/);
 });
 
 test("the board's drill-in is the selection, not a second id that can drift from it", () => {

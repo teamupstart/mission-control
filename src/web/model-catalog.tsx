@@ -270,17 +270,24 @@ function optionText(
 export function ModelCatalogOptions({
   catalog,
   includeHints = true,
+  optionSuffix,
 }: {
   catalog: ResolvedHarnessModelCatalog;
   includeHints?: boolean;
+  /** Surface-specific availability, without changing catalog membership or selection. */
+  optionSuffix?: (choice: HarnessModelCatalogChoice) => string | null;
 }): React.JSX.Element {
   const retainedId = catalog.retained?.id ?? null;
+  const text = (choice: HarnessModelCatalogChoice): string => {
+    const suffix = optionSuffix?.(choice);
+    return optionText(choice, includeHints, retainedId) + (suffix ? ` · ${suffix}` : "");
+  };
   if (catalog.groups.length === 0) {
     return (
       <>
         {catalog.choices.map((choice) => (
           <option key={choice.id} value={choice.id}>
-            {optionText(choice, includeHints, retainedId)}
+            {text(choice)}
           </option>
         ))}
       </>
@@ -292,14 +299,14 @@ export function ModelCatalogOptions({
         <optgroup key={group.provider} label={group.provider}>
           {group.choices.map((choice) => (
             <option key={choice.id} value={choice.id}>
-              {optionText(choice, includeHints, retainedId)}
+              {text(choice)}
             </option>
           ))}
         </optgroup>
       ))}
       {catalog.ungrouped.map((choice) => (
         <option key={choice.id} value={choice.id}>
-          {optionText(choice, includeHints, retainedId)}
+          {text(choice)}
         </option>
       ))}
     </>

@@ -46,6 +46,8 @@ export const SCOUT_SUBMISSION_LIMITS = {
   tags: ARCHIVE_TEXT_LIMITS.tags,
   /** How many additional supporting files one submission may name. */
   supportingFiles: 64,
+  /** Explicit selection, including the primary report and all desired evidence. */
+  selectedFiles: 512,
   /** One checkout-relative source path. */
   sourcePathChars: 1_024,
 } as const;
@@ -110,4 +112,6 @@ export interface ScoutSubmissionInput {
   summary: string;
   tags: string[];
   supporting: ScoutSupportingLocator[];
+  /** When present, capture only these files, even when Git ignores them. Includes reportPath. */
+  files?: ScoutSupportingLocator[];
 }

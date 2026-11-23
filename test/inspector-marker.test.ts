@@ -80,6 +80,7 @@ test("body-only recovery accepts both historical and GitHub Inspector review hea
       number: 7,
       snapshot: {
         reviews: [{
+          url: null,
           body: `${header}\n\nReview summary\n\n---\nOne body-only finding`,
           author: US,
           headSha: "head",
@@ -107,7 +108,7 @@ test("clean review recovery traverses older pages until the matching head is fou
       repo: "control",
       number: 7,
       snapshot: {
-        reviews: [{ body: marker, author: US, headSha: "older-head" }],
+        reviews: [{ url: null, body: marker, author: US, headSha: "older-head" }],
         reviewsPageInfo: { hasPreviousPage: true, startCursor: "page-2" },
       },
       login: US,
@@ -119,7 +120,7 @@ test("clean review recovery traverses older pages until the matching head is fou
         return {
           ok: true,
           value: {
-            reviews: [{ body: "ordinary review", author: US, headSha: "target-head" }],
+            reviews: [{ url: null, body: "ordinary review", author: US, headSha: "target-head" }],
             pageInfo: { hasPreviousPage: true, startCursor: "page-3" },
           },
         };
@@ -127,7 +128,7 @@ test("clean review recovery traverses older pages until the matching head is fou
       return {
         ok: true,
         value: {
-          reviews: [{ body: marker, author: US, headSha: "target-head" }],
+          reviews: [{ url: null, body: marker, author: US, headSha: "target-head" }],
           pageInfo: { hasPreviousPage: false, startCursor: null },
         },
       };
@@ -264,7 +265,7 @@ function thread(id: string, comments: { body: string; author: string }[]): Threa
     id,
     isResolved: false,
     path: "src/a.ts",
-    comments: comments.map((c) => ({ ...c, databaseId: 1, createdAt: "2026-01-01" })),
+    comments: comments.map((c) => ({ ...c, databaseId: 1, url: null, createdAt: "2026-01-01" })),
   };
 }
 

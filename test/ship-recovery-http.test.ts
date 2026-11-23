@@ -48,7 +48,7 @@ const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function seed(
   suffix = "",
   decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
-  kind: "ship" | "bugfix" | "document" = "ship",
+  kind: "ship" | "bugfix" | "document" | "plan" = "ship",
 ): { sessionId: string; noteKey: string; taskId: string } {
   const sessionId = `ship-recovery-session${suffix}`;
   const noteKey = `ship-recovery-conversation${suffix}`;
@@ -473,4 +473,207 @@ test("held-round accounting is episode-scoped and legacy predecessors reset safe
   });
   assert.equal(getQueueRow(noteKey)?.promptedDecision?.heldRound, 1);
   assert.equal(getQueueRow(noteKey)?.promptedDecision?.episodeKey, "intent:1:2");
+});
+
+test("a blocked session's ship-recovery claim is refused at the route and at the registry write", async () => {
+  const { sessionId, noteKey, taskId } = seed("-blocked");
+  const identity = {
+    taskId, logicalKey: noteKey, generation: 1, decisionGeneration: null, decisionOutcome: null,
+    reason: "idle_empty" as const, attempt: 1,
+  };
+  const claim = { ...identity, marker: shipRecoveryMarker(identity), payloadSummary: "Resume the bounded implementation task." };
+  const reported = registry.reportBlocker(sessionId, {
+    kind: "dependency", reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  const refused = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST", headers, body: JSON.stringify(claim),
+  });
+  assert.equal(refused.status, 409);
+  // The write boundary reads the live session, which is what closes the window in which a
+  // blocker lands while the route awaits the checkout diff.
+  assert.equal(registry.claimPromptedRecovery(sessionId, claim), null, "the registry claimed for a blocked session");
+  assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+
+  registry.clearBlocker(sessionId, "operator");
+  const accepted = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST", headers, body: JSON.stringify(claim),
+  });
+  assert.equal(accepted.status, 200, await accepted.clone().text());
+});
+
+test("a session awaiting its own background process has its ship-recovery claim refused until the deadline, at the route and at the registry write", async () => {
+  const wait = (expectedBy: number) => ({
+    what: "CI checks on PR #7", wakeSource: "command" as const, expectedBy, referenceUrl: null, details: null,
+  });
+  const claimFor = (taskId: string, noteKey: string) => {
+    const identity = {
+      taskId, logicalKey: noteKey, generation: 1, decisionGeneration: null, decisionOutcome: null,
+      reason: "idle_empty" as const, attempt: 1,
+    };
+    return { ...identity, marker: shipRecoveryMarker(identity), payloadSummary: "Resume the bounded implementation task." };
+  };
+
+  // The route: refused inside the deadline, accepted once the wait is overdue.
+  {
+    const { sessionId, noteKey, taskId } = seed("-awaiting-route");
+    const claim = claimFor(taskId, noteKey);
+    assert.equal(registry.reportAwaiting(sessionId, wait(Date.now() + 20 * 60_000)).ok, true);
+    const refused = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+      method: "POST", headers, body: JSON.stringify(claim),
+    });
+    assert.equal(refused.status, 409);
+    assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+    // Declared twenty minutes ago with a ten-minute deadline: overdue now, so the hold has lifted.
+    const past = Date.now() - 20 * 60_000;
+    assert.equal(registry.reportAwaiting(sessionId, wait(past + 10 * 60_000), past).ok, true);
+    const accepted = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+      method: "POST", headers, body: JSON.stringify(claim),
+    });
+    assert.equal(accepted.status, 200, await accepted.clone().text());
+  }
+
+  // The registry write boundary, on its own clock: refused a millisecond before the deadline,
+  // claimed at it.
+  {
+    const { sessionId, noteKey, taskId } = seed("-awaiting-registry");
+    const claim = claimFor(taskId, noteKey);
+    const declared = registry.reportAwaiting(sessionId, wait(Date.now() + 20 * 60_000));
+    assert.ok(declared.ok);
+    const expectedBy = declared.awaiting.expectedBy;
+    assert.equal(registry.claimPromptedRecovery(sessionId, claim, expectedBy - 1), null, "the registry claimed for a session inside its wait");
+    assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+    assert.ok(registry.claimPromptedRecovery(sessionId, claim, expectedBy), "the deadline passing did not release the claim");
+  }
+});
+
+/** A published version and an active binding for one conversation, as the bind dialog writes them. */
+function bindPlan(sessionId: string, noteKey: string, triggerMode: "manual" | "foreman_complete"): void {
+  const versionId = `plan-validation-${sessionId}`;
+  const graph = JSON.stringify({ nodes: [
+    { id: "s", kind: "session", position: { x: 0, y: 0 } },
+    { id: "e", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+  ], edges: [{ id: "se", source: "s", sourcePort: "submitted", target: "e", targetPort: "terminal" }] });
+  const defaults = JSON.stringify({ triggerMode, deliveryMode: "live", maxRepairRounds: 1 });
+  const db = openDb();
+  db.prepare(`INSERT INTO workflow_definitions
+    (id,name,normalized_name,description,draft_graph_json,completion_policy_json,binding_defaults_json,
+     draft_revision,current_version_id,created_at,updated_at)
+    VALUES (?,?,?,'',?,'{"kind":"none"}',?,1,?,1,1)`)
+    .run(versionId, versionId, versionId, graph, defaults, versionId);
+  db.prepare(`INSERT INTO workflow_versions
+    (id,workflow_id,version,source_draft_revision,graph_json,completion_policy_json,binding_defaults_json,published_at)
+    VALUES (?,?,1,1,?,'{"kind":"none"}',?,1)`).run(versionId, versionId, graph, defaults);
+  workflows.store.insertBinding({
+    id: `binding-${sessionId}`, workflowVersionId: versionId, noteKey,
+    sessionId, sessionAgent: "claude", sessionName: "plan recovery",
+    sessionCwd: repo, sessionRepoRoot: repo, triggerMode, deliveryMode: "live", maxRepairRounds: 1, now: 10,
+  });
+}
+
+test("a held plan joins the recovery ledger only while its foreman_complete workflow waits on the claim", async () => {
+  // The reported stall: Plan Validation is started only by Foreman's completion claim, and
+  // a held verdict spends the cycle that claim needed, so the plan sat idle with no run.
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "The plan's rendered HTML was not verified.",
+    gaps: [{ id: "html", path: "docs/plans/x/plan.md", detail: "Verify the retained HTML revision." }],
+  };
+  const claimFor = (seeded: { noteKey: string; taskId: string }) => {
+    const identity = {
+      taskId: seeded.taskId,
+      logicalKey: seeded.noteKey,
+      generation: 1,
+      episodeKey: "intent:1:1",
+      decisionGeneration: 1,
+      decisionOutcome: "held" as const,
+      reason: "held_gaps" as const,
+      attempt: 1,
+    };
+    return {
+      ...identity,
+      marker: shipRecoveryMarker(identity),
+      payloadSummary: "Deliver the held plan gaps.",
+      deliveryRoute: "immediate-held" as const,
+    };
+  };
+  const post = (sessionId: string, body: unknown) => app.request(
+    `/api/sessions/${sessionId}/queue/ship-recovery/claim`,
+    { method: "POST", headers, body: JSON.stringify(body) },
+  );
+
+  const unbound = seed("-plan-unbound", heldDecision, "plan");
+  assert.equal(
+    (await post(unbound.sessionId, claimFor(unbound))).status,
+    409,
+    "an unbound plan's skill owns its own pull request",
+  );
+
+  const manual = seed("-plan-manual", heldDecision, "plan");
+  bindPlan(manual.sessionId, manual.noteKey, "manual");
+  assert.equal(
+    (await post(manual.sessionId, claimFor(manual))).status,
+    409,
+    "a Manual binding waits for the operator's submit",
+  );
+
+  const automatic = seed("-plan-automatic", heldDecision, "plan");
+  bindPlan(automatic.sessionId, automatic.noteKey, "foreman_complete");
+  const claimed = await post(automatic.sessionId, claimFor(automatic));
+  assert.equal(claimed.status, 200, await claimed.clone().text());
+  const queue = (await claimed.json()) as {
+    promptedRecovery: { reason: string; attempt: number; lastDelivery: string } | null;
+  };
+  assert.equal(queue.promptedRecovery?.reason, "held_gaps");
+  assert.equal(queue.promptedRecovery?.attempt, 1);
+});
+
+test("a plan binding switched to Manual while the claim reads the diff refuses that recovery", async () => {
+  // The route reads plan ownership, then awaits the checkout diff. A binding replaced or
+  // switched to Manual inside that await must not be authorized by the answer read before it.
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "The plan's phase dependencies are incomplete.",
+    gaps: [{ id: "phase-deps", path: "docs/plans/x/phase-3.md", detail: "Phase 3 must depend on phase 2." }],
+  };
+  const seeded = seed("-plan-race", heldDecision, "plan");
+  bindPlan(seeded.sessionId, seeded.noteKey, "foreman_complete");
+  const identity = {
+    taskId: seeded.taskId,
+    logicalKey: seeded.noteKey,
+    generation: 1,
+    episodeKey: "intent:1:1",
+    decisionGeneration: 1,
+    decisionOutcome: "held" as const,
+    reason: "held_gaps" as const,
+    attempt: 1,
+  };
+  const claim = {
+    ...identity,
+    marker: shipRecoveryMarker(identity),
+    payloadSummary: "Deliver the held plan gaps.",
+    deliveryRoute: "immediate-held" as const,
+  };
+
+  const original = workflows.planPublicationContext.bind(workflows);
+  let reads = 0;
+  workflows.planPublicationContext = (sessionId: string) => {
+    const live = original(sessionId);
+    reads += 1;
+    // The first read is the pre-diff gate; every later read sees the operator's switch.
+    return reads === 1 || live.owner !== "workflow" ? live : { ...live, triggerMode: "manual" };
+  };
+  try {
+    const refused = await app.request(`/api/sessions/${seeded.sessionId}/queue/ship-recovery/claim`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(claim),
+    });
+    assert.equal(refused.status, 409, await refused.clone().text());
+    assert.ok(reads >= 2, "plan ownership was not read again after the diff");
+    assert.equal(registry.getQueue(seeded.sessionId)?.promptedRecovery ?? null, null, "no attempt was claimed");
+  } finally {
+    workflows.planPublicationContext = original;
+  }
 });

@@ -21,6 +21,7 @@ import { AttentionInbox } from "../src/web/components/AttentionInbox.tsx";
 import { SessionWorkflowsPane } from "../src/web/components/SessionWorkflowsPane.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
+import { mkReportControls } from "./helpers/report-fixture.ts";
 
 // A halted pipeline as a first-class thing waiting on a person, and the ladder that reads one.
 //
@@ -264,8 +265,10 @@ test("the inbox row states the class, the reason, the runbook and a link to the 
       createElement(AttentionInbox, {
         fold: fold([mkRun()]),
         onClose: () => {},
+        onDismiss: async () => null,
         onOpenEnsemble: () => {},
         onOpenSession: () => {},
+        reports: mkReportControls().controls,
       }),
     ),
   );
@@ -290,8 +293,10 @@ test("a halt row offers the verbs its own class calls for, and no repository-wid
         createElement(AttentionInbox, {
           fold: fold([mkRun({ halt: { class: haltClass, reason: "stopped" } })]),
           onClose: () => {},
+          onDismiss: async () => null,
           onOpenEnsemble: () => {},
           onOpenSession: () => {},
+          reports: mkReportControls().controls,
         }),
       ),
     );

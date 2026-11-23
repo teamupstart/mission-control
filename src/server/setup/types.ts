@@ -4,6 +4,7 @@ import type { PipelineProbe } from "@shared/pipeline.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type { SetupBannerDismissal, SetupRemedy, SetupStatus, SetupRuntimeView } from "@shared/setup-catalog.ts";
 import type { ExecutableId } from "@shared/executables.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
 import type { CmuxControl } from "../terminal/cmux.ts";
@@ -25,6 +26,11 @@ export interface SetupProbeResult {
   remedy?: SetupRemedy;
 }
 
+export interface SetupRepositoryIndexRead {
+  repoCount: number;
+  directories: { path: string; status: string; repoCount: number | null }[];
+}
+
 export interface SetupSkillsRead {
   enabled: boolean;
   readable: boolean;
@@ -35,6 +41,7 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  mcpTrust?(agent: "claude" | "codex"): SetupStatus;
   runtime?(): SetupRuntimeView;
   canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
@@ -52,12 +59,28 @@ export interface SetupDeps {
   /** Whether the cmux app is open AND admitting the daemon, neither of which installation answers. */
   cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
+  /** Jira sites the configured acli task sources read, as bare hosts. */
+  acliSourceSites?(): string[];
   resolveBinPath(bin: string): Promise<string | null>;
-  runCommand(bin: string, argv: string[]): Promise<RunResult>;
+  /** `timeoutMs` overrides the unmanaged default, for a probe that shares another caller's budget. */
+  runCommand(bin: string, argv: string[], managedEnv?: NodeJS.ProcessEnv, timeoutMs?: number): Promise<RunResult>;
   installedPlugins(): Promise<InstalledPluginsRead>;
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;
+  /**
+   * Whether the hidden ai-conductor integration is reported. Defaults to the daemon's switch
+   * (`server/pipelines/availability.ts`); a test may answer for itself.
+   */
+  conductorIntegration?(): boolean;
+  /**
+   * Whether a preview flag resolves on. Defaults to the daemon's flag store; a test may answer
+   * for itself. A family that follows a flag (Voice) is probed and listed only while it is on,
+   * and the `voice-previews` probe reads the flags voice depends on through it.
+   */
+  flagEnabled?(id: FeatureFlagId): boolean;
   terminalTargets(): TerminalTargetView[];
+  /** The repository index this daemon walks: how many checkouts it found, and where it looked. */
+  repositoryIndex(): Promise<SetupRepositoryIndexRead>;
   environmentChecks(deps: EnvironmentDeps): Promise<EnvironmentCheckView[]>;
   readBannerDismissal(): SetupBannerDismissal;
   writeBannerDismissal(dismissal: SetupBannerDismissal): void;

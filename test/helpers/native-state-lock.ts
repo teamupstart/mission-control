@@ -38,7 +38,9 @@ export function ensureNativeStateLockAddon(): string {
       ["../../src/server/plans/native.ts", "validateNativePlanFilesBinding"],
     ];
     const probe = 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
-      + validators.map(([module, name]) => `import { ${name} } from ${JSON.stringify(new URL(module!, import.meta.url).href)}; ${name}(require(${JSON.stringify(addon)}));`).join("\n");
+      + validators.map(([module, name]) => `import { ${name} } from ${JSON.stringify(new URL(module!, import.meta.url).href)}; ${name}(require(${JSON.stringify(addon)}));`).join("\n")
+      // The updater's process-argument read (`scripts/mac-app-lifecycle.mjs`) has no server validator.
+      + `\nif (typeof require(${JSON.stringify(addon)}).processArguments !== "function") throw new Error("stale addon");`;
     execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", probe], { cwd: REPO_ROOT, stdio: "pipe" });
   } catch {
     delete require.cache[addon];

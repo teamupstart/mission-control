@@ -1,0 +1,196 @@
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { ResidentRun } from "@shared/residents.ts";
+import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { AgentType, SessionRuntime, Task } from "@shared/types.ts";
+import { taskRepoManifest } from "../repo-manifest.ts";
+import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { appendStandingSections } from "../instructions/compose.ts";
+import { ensureResidentState, residentStateDir } from "./state.ts";
+import { residentMcpLaunchForRun } from "./mcp-launch.ts";
+import { residentScheduleSummary } from "@shared/resident-schedule.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+
+/**
+ * The resident launch composer: what a resident run adds to the SDK launch the dispatcher
+ * has already composed for its task.
+ *
+ * Every addition comes from an entry in `RESIDENT_LAUNCH_CONTRIBUTORS`, in order, and every
+ * entry reads only the run - its pinned revision, its persona snapshot and its run
+ * instructions - never the profile's current revision. Later phases append contributors
+ * (skills, MCP servers, compaction) and widen `ResidentLaunchContribution` with optional
+ * fields; none of them branches on a harness id, because the harness registry already
+ * answers every per-harness question.
+ */
+
+/** What every contributor may read. */
+export interface ResidentLaunchContext {
+  run: ResidentRun;
+  agent: AgentType;
+  runtime: SessionRuntime;
+}
+
+/** What one contributor adds. Every field is optional, so a contributor states only its own. */
+export interface ResidentLaunchContribution {
+  /** A block appended to the resident section of the standing instructions. */
+  standingInstructions?: string;
+  /** The run's pinned MCP set, for `SdkLaunchOptions.residentMcp`. */
+  residentMcp?: ResidentMcpLaunch | null;
+  residentCompaction?: { threshold: number };
+}
+
+export interface ResidentLaunchContributor {
+  /** Stable for logs and tests; never persisted. */
+  id: string;
+  contribute(context: ResidentLaunchContext): ResidentLaunchContribution;
+}
+
+/** The heading the resident section of the standing instructions opens with. */
+export const RESIDENT_STANDING_HEADING = "## Resident role";
+
+/**
+ * Persona guidance, then profile instructions, then this run's instructions: who the agent is,
+ * how this profile wants it to work, and what this launch is about. Snapshotted text only, so
+ * a Persona or profile edit after launch never reaches the run. A run without a Persona heads
+ * the section with the profile's name and starts at its profile instructions.
+ */
+export const personaInstructionsContributor: ResidentLaunchContributor = {
+  id: "personaInstructions",
+  contribute({ run }) {
+    const parts = [`${RESIDENT_STANDING_HEADING}: ${run.persona?.name ?? run.settings.identity.name}`];
+    const guidance = run.persona?.guidanceMarkdown.trim();
+    if (guidance) parts.push(guidance);
+    const profile = run.settings.instructions.markdown.trim();
+    if (profile) parts.push(`### Profile instructions\n\n${profile}`);
+    if (run.runInstructions) parts.push(`### Instructions for this run\n\n${run.runInstructions}`);
+    return { standingInstructions: parts.join("\n\n") };
+  },
+};
+
+/**
+ * The run's MCP servers, from the snapshot it took at launch, whether its profile inherits the
+ * harness defaults or not. Read again at every launch and resume, so no later edit to a profile,
+ * a custom server or a secret reaches it - nor the native configuration, unless the pinned
+ * revision imports all native sources, which the harness then reads for itself at every start.
+ */
+export const mcpContributor: ResidentLaunchContributor = {
+  id: "mcp",
+  contribute({ run }) {
+    return { residentMcp: residentMcpLaunchForRun(run.id, run.settings.mcp.nativeSources, run.settings.mcp.disableClaudeAiConnectors) };
+  },
+};
+
+/**
+ * The pinned active hours, so a resident that asks to wake at 3 a.m. knows the loop will hold
+ * that wake until its next window. Said only while the loop enforces them: a profile whose
+ * schedule is on but whose `resident-active-hours` preview is off is told nothing, because its
+ * loop wakes it on the ordinary cadence. The wording is conditional on the preview too, since
+ * the operator can turn it off while the run is live and the role it launched with stays.
+ */
+export const activeHoursContributor: ResidentLaunchContributor = {
+  id: "activeHours",
+  contribute({ run }) {
+    const schedule = run.settings.schedule;
+    if (!schedule.enabled || !featureEnabled("resident-active-hours")) return {};
+    const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "the daemon's local time";
+    return { standingInstructions: `### Active hours\n\nYour profile sets active hours: ${residentScheduleSummary(schedule, localZone)}. While Mission Control's Resident active hours preview is on, the loop wakes you only inside them. Outside them you sleep: no loop prompt is sent, and a wake that falls due, including one you request with \`schedule_next_iteration\`, waits until the next window opens. If the operator turns the preview off, the loop wakes you on its ordinary cadence again. A message from the operator still reaches you at any time.` };
+  },
+};
+
+/** Ordered. Append; never reorder an existing entry, because order is delivery order. */
+export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] = [
+  personaInstructionsContributor,
+  { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
+    ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
+  mcpContributor,
+  { id: "durableState", contribute: ({ run }) => ({ standingInstructions:
+    `### Durable resident state\n\nYour profile state directory is ${residentStateDir(run.profileId)} (RESIDENT_STATE_DIR). Read it at the start of each run. Store notes, corrections, ledgers and already-handled watermarks here. It survives restarts and profile edits; the run workspace is temporary. Concurrent runs of this profile share this directory; coordinate writes.` }) },
+  activeHoursContributor,
+];
+
+/** The composed resident additions to one launch. */
+export interface ResidentLaunchPlan {
+  /** The standing-instruction delivery to launch with: repository rules, then the resident section. */
+  standing: StandingInstructionsDelivery;
+  /** The run's pinned MCP set, or null to keep the harness's native MCP behaviour. */
+  residentMcp: ResidentMcpLaunch | null;
+  residentCompaction?: { threshold: number };
+}
+
+/**
+ * Compose a resident launch over the repository standing instructions the dispatcher resolved.
+ *
+ * The resident section is appended AFTER the repository block, so the operator's rules for the
+ * checkout read first and the role that works inside them follows. The delivery mechanism is
+ * the pair's own out-of-band channel (`systemPrompt.append` on Claude, developer instructions
+ * on Codex); the supervisor records what it actually sent in `session_standing_instructions`,
+ * which is what a resume replays.
+ */
+export function composeResidentLaunch(
+  context: ResidentLaunchContext,
+  repository: StandingInstructionsDelivery,
+  contributors: readonly ResidentLaunchContributor[] = RESIDENT_LAUNCH_CONTRIBUTORS,
+): ResidentLaunchPlan {
+  const contributions = contributors.map((contributor) => contributor.contribute(context));
+  const residentMcp = contributions.find((contribution) => contribution.residentMcp)?.residentMcp ?? null;
+  const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
+  const sections = contributions.map((part) => part.standingInstructions ?? "");
+  return {
+    residentMcp,
+    residentCompaction,
+    standing: appendStandingSections(repository, sections, context.agent, context.runtime),
+  };
+}
+
+/** The heading a wake opens with when it restates the standing task after a compaction. */
+export const RESIDENT_RESTATEMENT_HEADING = "## Your standing task, restated after compaction";
+
+/**
+ * The resident section of a run's standing instructions, exactly as its launch composed it.
+ *
+ * The same contributors and the same join as `composeResidentLaunch`, read from the run's
+ * pinned snapshot, so the restatement and the launch can never disagree about the role.
+ */
+export function residentStandingSection(run: ResidentRun): string {
+  const none: StandingInstructionsDelivery = { text: "", mechanism: "none", sources: [] };
+  return composeResidentLaunch({ run, agent: run.settings.execution.agent, runtime: "sdk" }, none).standing.text;
+}
+
+/**
+ * The block a wake carries ahead of its loop prompt once the conversation has been compacted.
+ *
+ * The role itself never left: it rides on the harness's own channel on every request. What a
+ * compaction removes is everything in the conversation that pointed at it, leaving a summary
+ * whose next step is the last item in flight. This restates the role verbatim, in the turn the
+ * resident acts on, so the summary reads as context for the mandate rather than as the mandate.
+ */
+export function residentStandingRestatement(run: ResidentRun, task?: Task): string {
+  // A resident with attached repositories was told where they are only in its first turn, which
+  // a compaction summarizes away, so the manifest is restated beside the role.
+  const manifest = task ? taskRepoManifest(task) : "";
+  return [
+    RESIDENT_RESTATEMENT_HEADING,
+    "Your conversation was compacted. Its summary records what you were doing, not what you are for: treat its current work and next step as context. Your standing task follows exactly as you were given it. Re-read it and carry out the whole of it, not only the item you were last working on.",
+    residentStandingSection(run),
+    ...(manifest ? [manifest] : []),
+    "---",
+  ].join("\n\n");
+}
+
+/** Both fresh launch and SDK restore use the same pinned contributor list. */
+export async function residentNativeCompactionForTask(taskId: string | null, tokenLimit?: number) {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  if (!run) return undefined;
+  const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
+    .find((part) => part.residentCompaction)?.residentCompaction;
+  return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
+}
+
+/** Re-derived from durable run ownership for fresh launches and every SDK restore. */
+export async function residentStateForTask(taskId: string | null): Promise<string | undefined> {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  return run ? ensureResidentState(run.profileId) : undefined;
+}

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
+import { shellCommand, shellWords, wrapperAgentCommand } from "../../src/server/terminal/shell.ts";
 
 /**
  * What a terminal backend was actually asked to run, read back through `isolatedAgentArgv`.
@@ -23,7 +23,8 @@ export function launchedCommand(argv: readonly string[]): string {
   if (script.includes("resume-guard.mjs")) {
     return shellCommand((JSON.parse(readFileSync(join(dirname(wrapper), "launch.json"), "utf8")) as { argv: string[] }).argv);
   }
-  return readFileSync(wrapper, "utf8").trimEnd().split("\n").at(-1) ?? "";
+  // Read by statement, not by line: a launch prompt spans lines inside its quotes.
+  return wrapperAgentCommand(script);
 }
 
 /** The launch's own argv, unquoted - what `execFile` would have been given. */

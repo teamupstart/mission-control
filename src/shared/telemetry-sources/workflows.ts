@@ -6,6 +6,7 @@ import { WORKFLOW_FINDING_REASONS } from "../workflow-reasons.ts";
 import { WORKFLOW_BINDING_STATES, WORKFLOW_RUN_STATUSES, WORKFLOW_DELIVERY_KINDS, WORKFLOW_DELIVERY_STATES } from "../workflow.ts";
 import { THINKING_LEVELS } from "../types.ts";
 import { MODEL_CATALOG } from "../model.ts";
+import { WORK_UNIT_SPAN_ATTRIBUTE } from "../work-unit.ts";
 
 const models = new Set(Object.values(MODEL_CATALOG).flatMap((entries) => entries.map((m) => m.id)));
 export const workflowModel = (value: unknown): string =>
@@ -22,13 +23,15 @@ const common = {
 const refs = ["workflow_id", "version_id", "binding_id", "run_id", "submission_id", "node_id",
   "attempt_id", "persona_id", "persona_revision", "call_id", "delivery_id", "stage_id", "reuse_attempt_id",
   "session_id", "task_id", "segment_id", "conversation_id", "operation_id", "cause_attempt_id"];
+// Exported unhashed, so it is declared apart from the scoped refs above (`UNSCOPED_REF_KEYS`).
+const unscopedRefs = [WORK_UNIT_SPAN_ATTRIBUTE];
 function event<S extends z.ZodRawShape>(name: string, group: TelemetryEventDefinition["group"],
-  question: string, shape: S, duration: string | null = null): TelemetryEventDefinition<z.ZodObject<S & typeof common, "strict">> {
+  question: string, shape: S, duration: string | null = null): TelemetryEventDefinition<z.ZodObject<S & typeof common, z.core.$strict>> {
   const facts = z.object({ ...common, ...shape }).strict();
   return { name: `mission.workflow.${name}`, version: 1, group, priority: "core", question,
-    owner: "src/server/telemetry/workflows.ts", audience: AUDIENCE_ALL, facts, refKeys: refs,
+    owner: "src/server/telemetry/workflows.ts", audience: AUDIENCE_ALL, facts, refKeys: [...refs, ...unscopedRefs],
     ingress: null, span: { name: `mission.workflow.${name}`, kind: "internal", durationFactKey: duration,
-      attributes: Object.keys(facts.shape), refAttributes: refs, errorWhen: null } };
+      attributes: Object.keys(facts.shape), refAttributes: refs, unscopedRefAttributes: unscopedRefs, errorWhen: null } };
 }
 export const WORKFLOW_ASSET_EVENT = event("asset", "workflow_run", "Which immutable definitions and bindings are used?", {
   entity: z.enum(["definition", "version", "binding"]), revision: z.number().int().nonnegative(),

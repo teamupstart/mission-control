@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
+import { WORKFLOW_TEXT_EVIDENCE_LIMITS } from "../../src/shared/workflow.ts";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -545,3 +546,55 @@ test("an image body the route refuses shows why on its own card, and nothing els
   await expect(refusedThumb).toBeFocused();
   await dashboard.unroute(refused);
 });
+
+
+for (const scenario of ["source", "report-only", "invalid-report", "reserved-budget"] as const) {
+  test(`publication distinguishes required source from a retained local report: ${scenario}`, async ({ dashboard, daemon }) => {
+    test.setTimeout(180_000);
+    const sessionId = await dispatch(dashboard, daemon);
+    const session = (await api<Array<{ id: string; cwd: string; agentSessionId?: string }>>(daemon, "/api/sessions"))
+      .find((entry) => entry.id === sessionId)!;
+    const report = join(session.cwd, "docs/reports/publication/report.html");
+    mkdirSync(dirname(report), { recursive: true });
+    writeFileSync(report, "<!doctype html><title>Publication proof</title><p>Retained outside Git.</p>"
+      + (scenario === "invalid-report" ? "<script>alert(1)</script>" : ""));
+    if (scenario === "source") writeFileSync(join(session.cwd, "required-source.ts"), "export const required = true;\n");
+    if (scenario === "reserved-budget") {
+      // Fill the reserved text count before the daemon captures the report. As with the
+      // image fixture above, only staging is seeded; production capture decides publication.
+      withDaemonDb(daemon, (db) => {
+        const noteKey = session.agentSessionId ?? session.id;
+        const now = Date.now();
+        db.prepare(`INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at)
+          VALUES (?, 1, 1, ?)`).run(noteKey, now);
+        const insert = db.prepare(`INSERT INTO workflow_evidence_staging (
+          id, note_key, client_item_id, source_kind, evidence_kind, source_root,
+          source_locator, inline_content, command_exit_code, display_name, caption, repository_scope,
+          mime_type, bytes, sha256, generation, state, created_at, updated_at
+        ) VALUES (?, ?, ?, 'command', 'text', ?, 'focused-check', 'passed', 0, ?, 'Reserved check', 'all',
+          'text/plain', 6, ?, 1, 'staged', ?, ?)`);
+        for (let index = 0; index < WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount; index++) {
+          insert.run(`budget-${index}`, noteKey, `budget-${index}`, session.cwd, `check-${index}.txt`,
+            createHash("sha256").update("passed").digest("hex"), now, now);
+        }
+      });
+    }
+    const runId = await seedRun(daemon, sessionId);
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    await dashboard.getByRole("tab", { name: /^Intent/ }).click();
+    await dashboard.getByText("Evidence snapshot", { exact: true }).click();
+    await expect(dashboard.getByText(scenario === "report-only"
+      ? "Required changes are committed; the PR must match this content"
+      : "Required changes still need to be committed and pushed", { exact: true })).toBeVisible();
+    await expect(dashboard.getByText(scenario === "invalid-report" || scenario === "reserved-budget"
+      ? "0 local report artifacts retained outside Git"
+      : "1 local report artifact retained outside Git", { exact: true })).toBeVisible();
+    if (scenario === "source") await expect(dashboard.getByText("required-source.ts", { exact: true })).toBeVisible();
+    if (scenario === "invalid-report") await expect(dashboard.getByText("Correct these reports before resubmitting", { exact: true })).toBeVisible();
+    if (scenario === "reserved-budget") {
+      await expect(dashboard.getByText("docs/reports/publication/report.html", { exact: true })).toBeVisible();
+      await expect(dashboard.getByText("docs/reports/publication/report.html: too many report artifacts to retain", { exact: true })).toBeVisible();
+    }
+    await shoot(dashboard, dashboard.locator("section.wf-run-record"), `publication-${scenario}`);
+  });
+}

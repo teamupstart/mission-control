@@ -191,3 +191,97 @@ test("another session's departure moves nothing", () => {
 
   assert.equal(r.getTask("o-1")!.status, "running");
 });
+
+test("startup settles sessionless running ship and scout tasks after observation and retains resources", () => {
+  const r = new Registry();
+  for (const kind of ["ship", "scout"] as const) {
+    r.upsertTask(mkTask({ id: `null-${kind}`, kind, agent: "codex", status: "running", sessionId: null,
+      worktreePath: `/wt/null-${kind}`, branch: `work/${kind}`, provider: "git" }));
+  }
+  new TaskManager(r);
+  assert.equal(r.getTask("null-ship")!.status, "running", "absence before observation is not evidence");
+  r.applyDiscovery([]);
+  for (const kind of ["ship", "scout"] as const) {
+    const task = r.getTask(`null-${kind}`)!;
+    assert.equal(task.status, "failed");
+    assert.match(task.error!, /session ended with no outcome recorded/);
+    assert.equal(task.worktreePath, `/wt/null-${kind}`);
+    assert.equal(task.branch, `work/${kind}`);
+    assert.equal(task.provider, "git");
+  }
+});
+
+test("startup preserves a sessionless task when discovery rebinds its live agent", () => {
+  const r = wired([mkTask({ id: "null-live", status: "running", sessionId: null, worktreePath: "/wt/task-1" })]);
+  r.applyDiscovery([mkDiscovered()]);
+  assert.equal(r.getTask("null-live")!.status, "running");
+  assert.equal(r.getTask("null-live")!.sessionId, "sid-1");
+});
+
+test("startup leaves provider-owned and restoring SDK tasks without session pointers running", () => {
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "null-pipeline", kind: "pipeline", status: "running", sessionId: null }));
+  r.upsertTask(mkTask({ id: "null-sdk", status: "running", sessionId: null }));
+  const supervisor = { taskLiveness: (id: string) => id === "null-sdk" ? true : null } as
+    unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  new TaskManager(r, undefined, supervisor);
+  // A new launch can start while the first discovery sweep is still in flight.
+  r.upsertTask(mkTask({ id: "null-launch", status: "dispatching", sessionId: null }));
+  r.applyDiscovery([]);
+  assert.equal(r.getTask("null-launch")!.status, "dispatching");
+  assert.equal(r.getTask("null-pipeline")!.status, "running");
+  assert.equal(r.getTask("null-sdk")!.status, "running");
+});
+
+test("startup leaves a sessionless task reserved by a durable handoff running", async () => {
+  const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "null-transfer", status: "running", sessionId: null }));
+  reserveSessionTransfer({ sourceSessionId: "transfer-source", noteKey: "transfer-note", taskId: "null-transfer",
+    facts: { agent: "codex", nativeId: "conversation", sourceName: "Continue work", sourceRuntime: "sdk",
+      sourceEpisodeId: null, cwd: "/checkout", repoRoot: "/repo", taskIdentity: null, taskEpisodeId: null,
+      bindings: [], leaseRoot: "/private/managed-resumes", leaseId: "lease", backend: null, home: null,
+      sourceStopped: false, stopStarted: false, sourceProcess: null, launchAt: null,
+      launchOutcome: "not_started", canEnd: false } });
+  new TaskManager(r);
+  r.applyDiscovery([]);
+  assert.equal(r.getTask("null-transfer")!.status, "running");
+});
+
+
+test("startup null-binding recovery does not settle work created or rebound during restore", () => {
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "startup-rebound", status: "running", sessionId: null }));
+  new TaskManager(r);
+  r.upsertTask(mkTask({ id: "fresh-running", status: "running", sessionId: null }));
+  // A binding can move during restore, before the first observation callback. Its
+  // now-null pointer is not evidence that this daemon inherited a stranded attempt.
+  r.upsertTask({ ...r.getTask("startup-rebound")!, sessionId: "restoring-session" });
+  r.upsertTask({ ...r.getTask("startup-rebound")!, sessionId: null });
+  r.applyDiscovery([]);
+  assert.equal(r.getTask("fresh-running")!.status, "running");
+  assert.equal(r.getTask("startup-rebound")!.status, "running");
+});
+
+test("startup still settles a sessionless row that was only given its work unit id before the first sweep", async () => {
+  // A row the previous daemon left running with no session, filed before work unit ids. A
+  // dispatch or assign reaching it before discovery's first sweep gives it an id first, then
+  // leaves it alone: a dispatch of a running task is a no-op and an assign refuses it. That
+  // id-only write is not this daemon's lifecycle touching the row, so the restart
+  // reconciliation must still recognize and settle it.
+  for (const operation of ["dispatch", "assign"] as const) {
+    const id = `null-${operation}-work-unit`;
+    const r = new Registry();
+    r.upsertTask(mkTask({ id, status: "running", sessionId: null, workUnitId: null }));
+    const tasks = new TaskManager(r);
+    if (operation === "dispatch") await tasks.dispatch(id);
+    else assert.equal((await tasks.assign(id, "no-such-session")).ok, false);
+    assert.equal(r.getTask(id)!.status, "running", `${operation} left the row as it was`);
+    assert.match(String(r.getTask(id)!.workUnitId), /^wu_/, `${operation} gave it an id`);
+    r.applyDiscovery([]);
+    const task = r.getTask(id)!;
+    assert.equal(task.status, "failed", `${operation}: the inherited row is still reconciled`);
+    assert.match(task.error!, /session ended with no outcome recorded/);
+    assert.match(String(task.workUnitId), /^wu_/, `${operation}: and it keeps the id it was given`);
+  }
+});

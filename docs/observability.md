@@ -51,6 +51,10 @@ queue health, and the two irreversible operations (discard a queue, reset the in
 pseudonym). Both consent switches always open the panel rather than flipping from a search result,
 because the copy beside them is the substance of the decision.
 
+Both destination forms preserve unsaved endpoint and export-setting edits when configuration
+refreshes arrive. Edits made while a save is pending stay in the form for the next save; only
+the values submitted by the completed request are stored.
+
 Everything the panel does is also reachable over the loopback API:
 
 ```sh
@@ -181,6 +185,11 @@ multiplexer session name, window or tab title, or session and task names. Sessio
 conversations, repositories and pull requests are correlatable on traces through opaque
 per-destination identifiers derived with a profile salt, so the same session reaches two audiences
 under two unrelated ids and neither can be turned back into the thing it came from.
+
+One id is the deliberate exception: a session's work unit id, `work_unit_id`, is exported as it
+is and is the same in every lane, so one query finds a whole piece of work across sessions and
+services. It names work, not a person or content, and it is never a metric label. See
+[Work unit id](#work-unit-id).
 
 Every record carries a `deployment.environment.name` resource attribute, `local` by default and
 overridable with `MISSION_TELEMETRY_ENVIRONMENT`. On a Mac an organization manages, the
@@ -451,6 +460,103 @@ or a missing merge verdict counts as incomplete coverage at the late-outcome hor
 Changing collection consent retires retained PR observation windows in the same transaction.
 Re-enabling cannot resume their polling or pending capture across the gap. Previously captured
 facts and operational PR ownership remain intact; a fresh association starts a new window.
+
+
+### Trace context for embedded agents
+
+An embedded session's agent process is launched under a W3C trace context, so its own spans
+are children of Mission Control's span for that session. One parent span per session:
+`mission.session.start`. Both SDK runtimes keep one agent process per session, and the context
+is read from the process environment, so it is fixed for the session's lifetime.
+
+- **What is passed.** `TRACEPARENT` (`00-<trace id>-<span id>-01`) and nothing else. Mission
+  Control sets no `TRACESTATE`, no `OTEL_*` variable and no `-c otel.*` override: where the
+  agents' telemetry goes is the machine's own configuration, which on an Upstart Mac is device
+  management. Claude Code reads `TRACEPARENT` when it starts each `claude_code.interaction`
+  span in an Agent SDK session. `codex app-server` reads it once at startup and parents every
+  JSON-RPC request span that carries no per-request `trace` field under it.
+  `CLAUDE_CODE_PROPAGATE_TRACEPARENT` is deliberately not set. It controls the OUTBOUND
+  `traceparent` header (and the variable Claude Code hands its Bash tool) when
+  `ANTHROPIC_BASE_URL` points at a proxy, which has no bearing on inbound parenting.
+- **Which ids.** The ids `mission.session.start` is exported under to the organization's
+  **Product analytics** lane, after the per-profile translation every exported id receives.
+  That lane is the one that reaches the same backend the agents' device-managed telemetry
+  does. The raw ids are derived from the session id, so the context is known before the
+  session is registered, and a restored SDK session gets the same parent as its first launch.
+- **When nothing is passed.** With collection off, no organization recognized, or the managed
+  lane not exporting (paused, or not yet applied), the launch carries no trace context and the
+  agent starts its own root spans. An inherited `TRACEPARENT` or `TRACESTATE` in the daemon's
+  environment is always removed from the launch: it belongs to whatever started the daemon.
+- **Scope.** Claude and Codex SDK sessions only. Pi runs in the daemon's process, terminal
+  sessions are launched through the pane path (and interactive Claude Code ignores an inbound
+  `TRACEPARENT` anyway), and one-shot model calls are not sessions. If the session start fact was not captured (collection
+  refused it, say), the agent's spans still share a trace id, with a parent that was never
+  exported.
+
+`src/server/telemetry/session-trace.ts` owns both halves, and
+`test/agent-trace-propagation.test.ts` checks the header against the exported span.
+
+### Work unit id
+
+A work unit is one piece of work: a plan task and every phase task its session creates share one
+id, `wu_` and a ULID (see [Work units](work-units.md)). Every span Mission Control exports for a
+session that emits a work unit carries it as the span attribute `work_unit_id`, so one query on
+that attribute returns the session spans of a plan and all its phases.
+
+- **Unhashed, and the same everywhere.** It is the one exception to the per-destination hashing
+  above. The value is identical in the local, operator and product lanes, and identical to what
+  the agent sends on its own MCP calls (`x-work-unit-id` and `params._meta.work_unit_id`), so the
+  same query works in another service that records it. A hashed copy would match nothing. No
+  `mission.ref.work_unit_id` is ever exported.
+- **What it reveals.** That a set of spans belongs to one piece of work, and, because a ULID
+  starts with its time, roughly when that work began. Nothing about a person, a repository, a
+  branch or content.
+- **Which spans.** Every span of a session or a task: start, restore, segment, turn, end, kill,
+  effort selection, conversation operation, task outcome, pull request facts and the workflow
+  events. The catalog lint requires it on any span-bearing event with a session or task ref, so
+  a new one cannot be added without it.
+- **Which value.** The work unit the session's agent was started with, from the session's launch
+  record - never the preview flag and never the task, so a span never names an id the agent's
+  own MCP calls do not carry. It is there from the session's first event, before its task is
+  bound. A span that reports a launch attempt (`mission.dispatch`, `mission.session.restore`)
+  carries that attempt's decision whether or not an agent started. A pull request fact carries
+  the id frozen when the association was made, so a late merge has it too.
+- **Late task outcomes.** A task outcome carries the record of the session its task points to,
+  while the task has that id. If that session has already ended, even across a daemon restart,
+  the outcome reads a durable mirror of the session's record kept in telemetry's own source
+  state. The mirror is rewritten when the session is removed and at least daily while it runs,
+  so its retention counts from when the session was last seen, and a failed write is retried at
+  the session's next observation. After an unclean stop the removal is never observed, so the
+  last write can be up to a day older than the last observation and the retention can end up to
+  a day early. Writing on every observation would cost a database write per session update. A session relaunched without a record removes its mirror, and
+  a refused write of a new id withdraws the old one. If storage refuses the withdrawal as well,
+  that session's mirror is not read for the rest of the daemon's run.
+  - **The guarantee, and its one exception.** A late outcome never exports an id its agent no
+    longer carries, except in one storage failure: storage refuses both writing the new id and
+    withdrawing the old one, and the daemon then restarts. The old row can then be read again,
+    because nothing durable can change while every write fails. This is an accepted limit (the
+    operator kept it over a cross-check against Phase 2's record on 2026-11-23); within one
+    daemon run the in-process guard always holds.
+  - **Two documented limits,** both chosen over keeping the copy forever. A task that settles
+    more than 30 days after its session was last seen, or after collection was switched off and
+    on again, exports its outcome without `work_unit_id`. The consent limit is the rule that a
+    later opt-in cannot replay activity from before it. The 30 days match the late pull request
+    horizon, and outlive Phase 2's own record of an ended session, which is pruned after 7.
+- **When it is absent.** A session with no launch record: one Mission Control did not launch
+  (discovered in a pane), a resident's session (it has no work unit), and a session whose agent
+  was started with the **MCP call attribution** preview (`work-unit-id`) off. Absence follows the record, not the
+  session's reported origin: a runtime transfer target is reported as `discovered` and still
+  carries its record's id. Also absent: a span with no session or task, and a task outcome past
+  the two limits above. Such payloads are exactly what
+  they were before this attribute existed. A switch of the preview takes effect at each agent's
+  next start, as the agent's environment does.
+- **Never a metric dimension.** It is on `FORBIDDEN_METRIC_DIMENSIONS`: one series per piece of
+  work would grow without bound. Metric cardinality does not change.
+
+The one list of refs exported unhashed is `UNSCOPED_REF_KEYS` in `src/shared/telemetry.ts`, and
+the projection writes a listed ref only when its value passes that key's format check, here a
+well-formed `wu_` id. `test/telemetry-work-unit.test.ts` and `test/telemetry-contract.test.ts`
+hold both.
 
 ## The local reference stack
 

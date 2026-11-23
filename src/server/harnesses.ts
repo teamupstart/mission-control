@@ -4,6 +4,7 @@ import {
   type HarnessesConfigPatch,
 } from "@shared/protocol.ts";
 import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
+import { mergeAdvisor, resolveLaunchAdvisor } from "@shared/advisor.ts";
 import {
   launchEffortFor,
   resolveLaunchModel,
@@ -12,7 +13,7 @@ import {
   taskKindDefaultFor,
 } from "@shared/kind-defaults.ts";
 import type { TaskKindDefault } from "@shared/protocol.ts";
-import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
+import { AGENT_TYPES, type AdvisorChoice, type AgentType, type SessionRuntime, type Task, type TaskKind, type ThinkingLevel } from "@shared/types.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -97,9 +98,20 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
       );
     }
   }
+  const advisor = mergeAdvisor(cur.advisor, patch.advisor);
+  for (const agent of AGENT_TYPES) {
+    for (const model of Object.keys(patch.advisor?.[agent]?.overrides ?? {})) {
+      if (modelBelongsToAnotherHarness(agent, model)) {
+        throw new HarnessesConfigError(
+          `the model ${model} belongs to another harness, so ${agent} cannot carry an advisor override for it`,
+        );
+      }
+    }
+  }
   const next = HarnessesConfigSchema.parse({
     ...cur,
     ...patch,
+    advisor,
     defaultModel: { ...cur.defaultModel, ...patch.defaultModel },
     defaultEffort: { ...cur.defaultEffort, ...patch.defaultEffort },
     sessionRuntime: { ...cur.sessionRuntime, ...patch.sessionRuntime },
@@ -215,6 +227,19 @@ export function resolveDispatchEffort(
   model: string | null = null,
 ): ThinkingLevel | null {
   return launchEffortFor(getHarnessesConfig(), agent, kind, taskEffort, model);
+}
+
+/**
+ * The advisor a dispatch renders, or null to render nothing and let the operator's own
+ * Claude settings decide. Read from Settings -> Harnesses for the model this launch
+ * RESOLVED, so it has to be called after the model is; a pin a task stored before the
+ * advisor moved there still wins until the operator clears it. See `resolveLaunchAdvisor`.
+ */
+export function resolveDispatchAdvisor(
+  task: Pick<Task, "agent" | "advisorModel">,
+  model: string | null,
+): AdvisorChoice | null {
+  return resolveLaunchAdvisor(getHarnessesConfig(), task.agent, model, task.advisorModel).choice;
 }
 
 /** Which tier of the shared model resolution answered. */

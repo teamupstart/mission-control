@@ -1,18 +1,26 @@
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
+import { codeRabbitChangedPaths } from "./coderabbit.ts";
 import type { DatabaseSync } from "node:sqlite";
+import { WORKFLOW_COMMAND_INTERPRETERS, type WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
   CheckExecutionRequest,
   CheckExecutionResult,
   CheckExecutor,
+  CheckSlot,
 } from "./checks.ts";
+import { mergeBaseWithSource } from "../diff.ts";
+import { changedFingerprintInputs, readTreeBlobs, renderClaimArgv } from "../worktrees/claim.ts";
 import {
+  CheckDependencyClaimError,
   CheckLeaseStore,
+  type CheckClaimFailure,
   type CheckGroupRecovery,
   type CheckLeaseManager,
   type CheckLeaseRelease,
 } from "./check-lease.ts";
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
-import { resolveCapturedCommit } from "./commit-id.ts";
+import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import {
   createCheckGroupRecovery,
   DEFAULT_CHECK_TIMEOUT_MS,
@@ -20,6 +28,7 @@ import {
   type CheckSpawnOutcome,
   type CheckSupervisorLookup,
 } from "./check-supervisor.ts";
+import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 
 // The execution runtime a Check node reaches: the ONE place the worktree lease and the gated
 // process supervisor meet, and the change that makes a configured check gate stop passing
@@ -68,14 +77,52 @@ import {
  * nothing about the retry itself would collide with the lease it must not outrun.
  */
 export interface CheckAttemptRef {
+  runId?: string;
   attemptId: string;
   submissionId: string;
   nodeId: string;
+  /**
+   * The check-concurrency slot this attempt holds. Released while a dependency claim runs, and
+   * taken again before the Command spawns, so a long install never keeps another check queued.
+   * Absent means the attempt keeps whatever its caller holds throughout.
+   */
+  checkSlot?: CheckSlot;
+  /**
+   * Aborted when this attempt's run is cancelled. The dependency claim follows it, so a cancel
+   * stops a claim that is running and one that has not started yet alike.
+   */
+  signal?: AbortSignal;
+}
+
+/** Which of a claim's fingerprint inputs a change touched, or why that could not be read. */
+export type ClaimInputsChanged =
+  | { ok: true; changed: string[] }
+  | { ok: false; reason: string };
+
+/**
+ * The fingerprint inputs whose blob differs between `headSha` and its merge base with origin's
+ * default branch, read from objects in the main checkout, never from a worktree: the attempt's tree has
+ * already been handed back when this is asked.
+ */
+export async function claimInputsChangedSinceMergeBase(input: {
+  repoRoot: string;
+  headSha: string;
+  fingerprintPaths: readonly string[];
+}): Promise<ClaimInputsChanged> {
+  const base = await mergeBaseWithSource(input.repoRoot, input.headSha);
+  if (!base.ok) return base;
+  const [head, merged] = await Promise.all([
+    readTreeBlobs(input.repoRoot, input.headSha),
+    readTreeBlobs(input.repoRoot, base.base),
+  ]);
+  if (!head.ok) return { ok: false, reason: head.reason };
+  if (!merged.ok) return { ok: false, reason: merged.reason };
+  return { ok: true, changed: changedFingerprintInputs(input.fingerprintPaths, head.value, merged.value) };
 }
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
 export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): number {
-  return slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
+  return slot === "coderabbit" ? 45 * 60_000 : slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
 }
 
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */
@@ -102,6 +149,11 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
+  /** Defaults to asking git. See `codeRabbitChangedPaths`. */
+  changedPaths?: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
+  artifacts?: WorkflowCommandArtifactService;
+  /** Defaults to `claimInputsChangedSinceMergeBase`. Asked only after a failed dependency claim. */
+  claimInputsChanged?: typeof claimInputsChangedSinceMergeBase;
 }
 
 /**
@@ -116,6 +168,9 @@ export class CheckRuntime {
   private readonly timeoutMs: number | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
+  private readonly changedPaths: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
+  private readonly artifacts: WorkflowCommandArtifactService;
+  private readonly claimInputsChanged: typeof claimInputsChangedSinceMergeBase;
 
   /**
    * Phase 3's answer to the lease manager's open question, ready to inject.
@@ -137,6 +192,9 @@ export class CheckRuntime {
     this.timeoutMs = deps.timeoutMs;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
+    this.changedPaths = deps.changedPaths ?? codeRabbitChangedPaths;
+    this.artifacts = deps.artifacts ?? new WorkflowCommandArtifactService(deps.db);
+    this.claimInputsChanged = deps.claimInputsChanged ?? claimInputsChangedSinceMergeBase;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
       const row = store.get(attemptId);
@@ -164,6 +222,10 @@ export class CheckRuntime {
     attempt: CheckAttemptRef,
     request: CheckExecutionRequest,
   ): Promise<CheckExecutionResult> {
+    if (request.signal?.aborted) {
+      return {kind: "infrastructure", started: false,
+        reason: "check interrupted because Mission Control is shutting down"};
+    }
     // Asked before a tree is taken. `runSupervisedCheck` asks it again - it has to, since it
     // is reachable on its own - but an unsupported platform must never reach a pool at all:
     // leasing a worktree to decline a check would spend the resource the decline exists to
@@ -177,38 +239,115 @@ export class CheckRuntime {
       // some other commit as though it were about this submission.
       return {
         kind: "infrastructure",
+        started: false,
         reason:
           "this submission captured no commit, so there was nothing to pin a check worktree to",
       };
+    }
+
+    // Resolved before a tree is leased, so a failure costs nothing to unwind. A CLI that
+    // reports `reviewedFiles` is checked against these rather than trusted.
+    let changedPaths: CodeRabbitChangedPaths | null = null;
+    if (request.coderabbit) {
+      const { mergeBase, head } = request.coderabbit;
+      try {
+        if (!mergeBase || !head) throw new Error("the comparison is not pinned");
+        changedPaths = await this.changedPaths(request.repoRoot, mergeBase, head);
+      } catch (err) {
+        return { kind: "infrastructure", started: false,
+          reason: `the CodeRabbit comparison's changed files could not be listed: ${message(err)}` };
+      }
     }
 
     // `acquireForAttempt` verifies the commit BEFORE it leases, using the same full-40-hex
     // check the dispatcher uses, and unwinds its own lease on any pin failure - so a commit
     // this repository does not have costs an error rather than a pool slot. Every failure it
     // can produce is infrastructure and never a verdict.
+    //
+    // The repository's dependency claim runs inside that acquisition. While it runs, this
+    // attempt gives up its check slot: an install is not a build, and a claim may run for hours.
+    // The budget reservation was taken before any of this, so it does not move. The Command's
+    // own timeout starts at spawn, below, so claim time never
+    // counts against it: a slow install ends under the claim's own limit, as a dependency
+    // failure. A CodeRabbit review installs and runs nothing from the tree, so it takes its tree
+    // without a claim at all.
     let leasePath: string;
+    let headSha: string | null = null;
+    let slotReleased = false;
+    const slot = attempt.checkSlot;
     try {
+      // The capture records an abbreviation and a pin takes a full id, so this is the step
+      // that turns one into the other. See `resolveCapturedCommit`: without it every check on
+      // every real submission failed here, before a tree was ever leased.
+      headSha = await this.resolveCommit(request.repoRoot, request.headSha);
+      if (request.publicationTreeOid
+        && await resolveCommitTree(request.repoRoot, headSha) !== request.publicationTreeOid) {
+        return { kind: "infrastructure", reason: "Commit the required deliverables and resubmit: the check commit does not match the reviewed publication tree" };
+      }
       leasePath = await this.leases.acquireForAttempt({
         attemptId: attempt.attemptId,
         submissionId: attempt.submissionId,
         nodeId: attempt.nodeId,
         repoRoot: request.repoRoot,
-        // The capture records an abbreviation and a pin takes a full id, so this is the step
-        // that turns one into the other. See `resolveCapturedCommit`: without it every check on
-        // every real submission failed here, before a tree was ever leased.
-        headSha: await this.resolveCommit(request.repoRoot, request.headSha),
+        headSha,
+        runClaim: WORKFLOW_COMMAND_INTERPRETERS[request.slot] !== "coderabbit",
+        ...(attempt.signal ? { signal: attempt.signal } : {}),
+        ...(slot
+          ? {
+              onClaimStart: () => {
+                slotReleased = true;
+                slot.release();
+              },
+            }
+          : {}),
       });
     } catch (err) {
+      // The tree is already back: `acquireForAttempt` throws this only after its return is
+      // confirmed. Nothing ran, so this attempt never retakes the slot it gave up.
+      if (err instanceof CheckDependencyClaimError && headSha) {
+        return await this.dependencyFailure(request, headSha, err.failure);
+      }
       return {
         kind: "infrastructure",
+        started: false,
         reason: `a worktree for the ${request.slot} check could not be prepared: ${message(err)}`,
       };
     }
+    // Taken again before anything else runs in the tree, so the spawn runs under a check slot,
+    // exactly as it did before claims existed.
+    if (slotReleased && slot) await slot.reacquire();
+    // The reacquire can wait behind other checks, and a run cancelled meanwhile must not start
+    // a Command whose result nobody will read.
+    if (attempt.signal?.aborted) {
+      await this.settle(attempt.attemptId, "empty");
+      return {
+        kind: "infrastructure",
+        started: false,
+        reason: `the ${request.slot} check was cancelled before its Command started`,
+        ranNothing: true,
+      };
+    }
 
+    const parser = request.coderabbit ? new CodeRabbitResultParser(attempt.attemptId, request.coderabbit.severity, changedPaths) : null;
+    let capture: ReturnType<WorkflowCommandArtifactService["beginCapture"]> | undefined;
+    try {
+      capture = attempt.runId ? this.artifacts.beginCapture({
+        runId: attempt.runId,
+        submissionId: attempt.submissionId,
+        attemptId: attempt.attemptId,
+        semanticBytes: parser ? CODERABBIT_RESULT_LIMITS.findingsBytes : 0,
+      }) : undefined;
+    } catch (error) {
+      // No process has started. A metadata database failure stays fail-closed, but must
+      // first release the leased tree rather than leave it owned until daemon restart.
+      await this.settle(attempt.attemptId, "empty");
+      throw error;
+    }
     let outcome: CheckSpawnOutcome;
     try {
       outcome = await this.supervise(
         {
+          signal: request.signal,
           attemptId: attempt.attemptId,
           command: request.command,
           // THE LEASED TREE, joined with the subpath the winning command entry named. Never
@@ -217,29 +356,46 @@ export class CheckRuntime {
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
           workingSubpath: request.workingSubpath,
-          timeoutMs: this.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
+          timeoutMs: this.timeoutMs ?? request.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
+          capture: { push: (kind, chunk) => {
+            if (kind === "stdout") parser?.push(chunk);
+            capture?.push(kind, chunk);
+          } },
         },
         {
           registry: this.leases.processes,
+          env: request.env,
           teardown: this.teardown,
         },
       );
     } catch (err) {
-      // The supervisor is written not to throw, and a lease outliving one that did would be a
-      // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
-      // reading: the row and the pin are kept and reclamation asks about the group later.
-      await this.settle(attempt.attemptId, "unknown");
-      return {
-        kind: "infrastructure",
-        reason: `the ${request.slot} check runtime failed: ${message(err)}`,
-      };
+      let artifacts: WorkflowCommandArtifactDescriptor[];
+      let review: import("@shared/workflow.ts").CodeRabbitReviewSummary | undefined;
+      try {
+        artifacts = capture?.finalize(false) ?? [];
+        review = this.retainReview(attempt, request, parser, artifacts, false, 1);
+      } catch (captureError) {
+        throw new AggregateError([err, captureError], "Check supervision and artifact metadata failed");
+      } finally {
+        await this.settle(attempt.attemptId, "unknown");
+      }
+      return { kind: "infrastructure", reason: `the ${request.slot} check runtime failed: ${message(err)}`,
+        artifacts, ...(review ? { review } : {}) };
     }
 
     // BEFORE the result surfaces, always. An `infrastructure` result reaches
     // `handleInfrastructureFailure`, which finishes this attempt and creates a fresh one, and
     // the retry gate it consults can only be right if this lease has already reached its true
     // state by the time it is asked.
-    const cleanup = await this.settle(attempt.attemptId, outcome.emptiness);
+    let artifacts: WorkflowCommandArtifactDescriptor[];
+    let cleanup: CheckCleanup;
+    try {
+      artifacts = capture?.finalize(
+        outcome.result.kind === "exited" || outcome.result.kind === "unavailable",
+      ) ?? [];
+    } finally {
+      cleanup = await this.settle(attempt.attemptId, outcome.emptiness);
+    }
     // A cleanup that did not resolve is an INFRASTRUCTURE failure, and it outranks whatever the
     // command said. Two reasons, and the second is the one that makes this load-bearing rather
     // than fastidious:
@@ -256,15 +412,101 @@ export class CheckRuntime {
     //
     // The command's own outcome rides along in the reason rather than being dropped, so the
     // operator can still see what the build said before the lease went wrong.
+    const review = this.retainReview(attempt, request, parser, artifacts, cleanup.ok,
+      outcome.result.kind === "exited" ? outcome.result.exitCode : 1);
     if (!cleanup.ok) {
+      return { kind: "infrastructure",
+        reason: `the ${request.slot} check ran and ${describeResult(outcome.result)}, but its result is withheld because its pooled worktree could not be accounted for: ${cleanup.reason}`,
+        artifacts, review };
+    }
+    return outcome.result.kind === "exited" || outcome.result.kind === "infrastructure"
+      ? { ...outcome.result, artifacts, ...(review ? { review } : {}), ...(outcome.result.kind === "infrastructure" ? { started: outcome.supervisor !== null } : {}) }
+      : outcome.result;
+  }
+
+  /** Findings share the raw artifact lifecycle and quota, including partial failures. */
+  private retainReview(
+    attempt: CheckAttemptRef,
+    request: CheckExecutionRequest,
+    parser: CodeRabbitResultParser | null,
+    artifacts: WorkflowCommandArtifactDescriptor[],
+    cleanupComplete: boolean,
+    exitCode: number,
+  ): import("@shared/workflow.ts").CodeRabbitReviewSummary | undefined {
+    if (!parser || !request.coderabbit) return undefined;
+    const semantic = parser.finish(exitCode, request.coderabbit.empty);
+    const complete = cleanupComplete && semantic.status !== "incomplete";
+    const findings = attempt.runId ? this.artifacts.publishFindings({
+      runId: attempt.runId, submissionId: attempt.submissionId, attemptId: attempt.attemptId,
+    }, semantic.body, complete) : null;
+    if (findings) artifacts.push(findings);
+    const lost = !findings || findings.availability !== "retained";
+    return { comparison: request.coderabbit,
+      status: lost || !complete ? "incomplete" : semantic.status === "skipped" ? "skipped" : "complete",
+      counts: semantic.counts, titles: semantic.titles,
+      ...(!lost && cleanupComplete && semantic.retryableConnection ? { retryableConnection: true as const } : {}),
+      ...(semantic.retryAt ? { retryAt: semantic.retryAt } : {}),
+      ...(semantic.expectedDuration ? { expectedDuration: semantic.expectedDuration } : {}),
+      diagnostic: lost ? "CodeRabbit findings could not be durably retained" : semantic.diagnostic };
+  }
+
+  /**
+   * A failed dependency claim, as a check result. The Command did not run.
+   *
+   * The change owns the failure only when it changed one of the claim's fingerprint inputs
+   * against its merge base with the base branch: a lockfile the branch broke fails the check,
+   * with the claim's output tail as the check's output. Otherwise the failure is the machine's,
+   * a registry or a token, and it is infrastructure: the engine retries it as the same
+   * execution, up to its infrastructure cap, with the run budget handed back. A claim with no
+   * fingerprint paths cannot tell the two apart, and neither can a merge base that cannot be
+   * read, so both are infrastructure: a failure is never blamed on a change on a guess.
+   */
+  private async dependencyFailure(
+    request: CheckExecutionRequest,
+    headSha: string,
+    failure: CheckClaimFailure,
+  ): Promise<CheckExecutionResult> {
+    const { warning } = failure;
+    const what = `the dependency claim failed at step ${warning.step} of ${warning.stepCount} `
+      + `(${renderClaimArgv(warning.argv)}) ${warning.reason}`;
+    let changed: ClaimInputsChanged = { ok: true, changed: [] };
+    let why: string;
+    if (failure.fingerprintPaths.length === 0) {
+      why = "the claim lists no fingerprint paths, so the failure cannot be traced to this change";
+    } else {
+      try {
+        changed = await this.claimInputsChanged({
+          repoRoot: request.repoRoot,
+          headSha,
+          fingerprintPaths: failure.fingerprintPaths,
+        });
+      } catch (err) {
+        changed = { ok: false, reason: message(err) };
+      }
+      why = changed.ok
+        ? "none of its fingerprint inputs changed against the merge base"
+        : `whether this change touched its fingerprint inputs could not be read (${changed.reason})`;
+    }
+    if (changed.ok && changed.changed.length > 0) {
+      const named = changed.changed.slice(0, 5).join(", ")
+        + (changed.changed.length > 5 ? ` and ${changed.changed.length - 5} more` : "");
       return {
-        kind: "infrastructure",
-        reason:
-          `the ${request.slot} check ran and ${describeResult(outcome.result)}, but that result is `
-          + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
+        kind: "decided",
+        status: "failed",
+        note: `${capitalize(what)}, and this change modified its inputs (${named}), so the failure `
+          + `is the change's. The ${request.slot} Command did not run.`,
+        exitCode: null,
+        output: warning.tail,
+        truncatedBytes: warning.truncatedBytes,
       };
     }
-    return outcome.result;
+    return {
+      kind: "infrastructure",
+      reason: `${what}; ${why}, so it is treated as infrastructure and the ${request.slot} Command `
+        + "did not run."
+        + (warning.tail ? `\nClaim output:\n${warning.tail}` : ""),
+      ranNothing: true,
+    };
   }
 
   /**
@@ -330,7 +572,12 @@ type CheckCleanup = { ok: true } | { ok: false; reason: string };
 function describeResult(result: CheckExecutionResult): string {
   if (result.kind === "exited") return `exited ${result.exitCode}`;
   if (result.kind === "unavailable") return "reported that its command was not found";
+  if (result.kind === "decided") return `was decided ${result.status} before its command ran`;
   return `could not be run (${result.reason})`;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function message(err: unknown): string {

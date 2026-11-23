@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * The completion guardrail on a Recurring Mission: whether Foreman's own settled verdict may
@@ -69,6 +70,7 @@ interface StoredSchedule {
   id: string;
   name: string;
   completionPolicy: string | null;
+  enabled: boolean;
 }
 
 /** A mission saved WITHOUT the field, which is what an older caller sends. */
@@ -99,7 +101,28 @@ function storedPolicy(daemon: DaemonHandle, id: string): Promise<string | null |
 
 const COMPLETION = "When Foreman concludes a run's work is done";
 
-test("a mission's completion guardrail is chosen in the editor and shown on its detail", async ({
+test("Cmd+Enter creates a mission draft and confirms discarding it without saving", async ({ dashboard, daemon }) => {
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Recurring missions" });
+  await expectContentClearsBorder(dialog);
+  await dialog.getByRole("button", { name: "Close" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
+  const name = dialog.getByRole("textbox", { name: "Mission name" });
+  await expect(name).toBeVisible();
+  await name.fill("An unsaved keyboard mission");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  const discard = dialog.getByRole("alertdialog", { name: "Discard unsaved mission" });
+  await expect(discard).toBeVisible();
+  await discard.getByRole("button", { name: "Keep editing" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(discard).toBeHidden();
+  await expect(name).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Create mission" })).toBeVisible();
+  expect(await api<StoredSchedule[]>(daemon, "/api/schedules")).toEqual([]);
+  await shoot(dashboard, "cmd-enter-mission-draft-discarded");
+});
+
+test("Cmd+Enter saves and enables a mission once and respects the busy Schedule Editor guard", async ({
   dashboard,
   daemon,
 }) => {
@@ -109,6 +132,7 @@ test("a mission's completion guardrail is chosen in the editor and shown on its 
   expect(await storedPolicy(daemon, mission.id)).toBe("manual");
 
   await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await expectContentClearsBorder(dashboard.getByRole("dialog", { name: "Recurring missions" }));
   await dashboard.getByRole("button", { name: "Nightly sweep", exact: false }).first().click();
 
   // The stored configuration is where an operator goes to ask why a mission stopped running,
@@ -126,13 +150,36 @@ test("a mission's completion guardrail is chosen in the editor and shown on its 
   await shoot(dashboard, "02-editor-manual", completion);
 
   await completion.selectOption("auto-on-conclusion");
-  await dashboard.getByRole("button", { name: "Save & enable" }).click();
+  const writes: unknown[] = [];
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  await dashboard.route(`**/api/schedules/${mission.id}/update`, async (route) => {
+    if (route.request().method() === "POST") {
+      writes.push(route.request().postDataJSON());
+      await saveGate;
+    }
+    await route.continue();
+  });
+  // Focus a different footer action: the default must remain Save & enable.
+  await dashboard.getByRole("button", { name: "Save paused" }).focus();
+  try {
+    await dashboard.keyboard.press("Meta+Enter");
+    await expect.poll(() => writes.length).toBe(1);
+    await expect(dashboard.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await dashboard.keyboard.press("Meta+Enter");
+    expect(writes).toHaveLength(1);
+    await shoot(dashboard, "cmd-enter-schedule-busy-guard");
+  } finally {
+    releaseSave();
+  }
 
   await expect
     .poll(async () => storedPolicy(daemon, mission.id), {
       message: "choosing automatic completion should reach the daemon",
     })
     .toBe("auto-on-conclusion");
+  await expect.poll(async () => (await api<StoredSchedule[]>(daemon, "/api/schedules"))
+    .find((item) => item.id === mission.id)?.enabled).toBe(true);
 
   // And back out of the daemon onto the surface that reads it, which is the half a DOM
   // assertion on the select cannot prove.

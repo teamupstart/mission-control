@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
-import { TASK_WORKTREE_RETENTION_DAYS } from "../src/shared/types.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -131,7 +130,7 @@ test("the cleanup control states the retention policy in words", () => {
     mkTask({ id: "policy", title: "Held", status: "done", worktreePath: "/pool/held", completedAt: 5 }),
   ]);
   assert.ok(
-    html.includes(`removed automatically after ${TASK_WORKTREE_RETENTION_DAYS} days without a change`),
+    html.includes(`removed automatically after the configured retention window without a change`),
     "the operator is told that leaving it alone is also a decision",
   );
 });

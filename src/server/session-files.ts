@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { closeSync, constants, openSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { lstat, open, realpath, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -11,10 +11,45 @@ import type {
   SessionFileSaveResult,
 } from "@shared/types.ts";
 import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { run } from "./util/exec.ts";
 import { locateExecutable } from "./executables/locator.ts";
+import { nativePlanFiles } from "./plans/native.ts";
 
 export const MAX_SESSION_FILE_ENTRIES = 10_000;
+
+/**
+ * Where the `mockups` skill keeps a session's mock-ups, git-ignored by its own `.gitignore`.
+ *
+ * Mock-ups are for looking at, not for shipping. The skill keeps every mock-up here
+ * git-ignored - a `docs/mockups/.gitignore` holding `*` when the repository has none of its
+ * own, each path verified with `git check-ignore`, and the checkout's local `info/exclude` as
+ * the fallback - so nothing in it shows in `git status`, is staged by `git add -A`, or is
+ * captured in a workflow's review snapshot, which would otherwise carry an untracked mock-up
+ * into "commit everything that was reviewed". The listing below
+ * still reports the files, because a mock-up the operator cannot open is no mock-up at all.
+ *
+ * Only this one directory is listed through its ignore rule, and only what a mock-up can be.
+ * Every other ignored path - `node_modules`, `dist`, an `.env` - stays out of the Files list
+ * exactly as before; see `isListedMockup` for what inside the directory is admitted.
+ */
+export const SESSION_MOCKUP_ROOT = "docs/mockups";
+
+/**
+ * Whether an ignored file under `SESSION_MOCKUP_ROOT` may appear in the Files list.
+ *
+ * Being in the directory is not enough. It is ignored precisely so git will not look at it,
+ * which also makes it a natural place to drop a local `.env`, a key, or scratch output - and
+ * the Files viewer is not where those belong. So the exception admits only the formats a
+ * mock-up is, the ones the conversation previews: an HTML page or a browser-decodable image.
+ * A dot-named segment anywhere in the path (`.env.png`, `.private/screen.png`) is refused as
+ * well, because a hidden name is how a file says it is not for display.
+ */
+export function isListedMockup(filePath: string): boolean {
+  if (!filePath.startsWith(`${SESSION_MOCKUP_ROOT}/`)) return false;
+  if (filePath.split("/").some((segment) => segment.startsWith("."))) return false;
+  return isHtml(filePath) || browserImageMediaTypeForPath(filePath) !== null;
+}
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_PREVIEW_BYTES = 5 * 1024 * 1024;
 
@@ -151,21 +186,103 @@ export async function resolveSessionFilePath(cwd: string, relativePath: string):
   return target;
 }
 
-export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]> {
+/** Plain resident directories have no Git index or ignore rules to consult. */
+async function listDirectoryFiles(root: string): Promise<SessionFileEntry[]> {
+  const files: SessionFileEntry[] = [];
+  const native = nativePlanFiles();
+  let directories = 1;
+  const deadline = performance.now() + 15_000;
+  const checkTime = () => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new SessionFileError("session directory listing exceeded its time budget", 503);
+    return Math.ceil(remaining);
+  };
+  const visit = async (fd: number, relative: string, depth: number): Promise<void> => {
+    // At this many regular entries either the file or directory cap must be reached.
+    // The worker bounds its scan time too, including entries excluded as symlinks.
+    const entries = await native.readPlanDirectoryEntries(fd, MAX_SESSION_FILE_ENTRIES + 10_000, checkTime());
+    const pending: string[] = [];
+    for (const entry of entries) {
+      checkTime();
+      const filePath = path.join(relative, entry.name);
+      if (entry.directory) {
+        if (depth >= 64) throw new SessionFileError("session directory listing exceeded its depth limit", 413);
+        if (++directories > 10_000) throw new SessionFileError("session directory listing exceeded its directory count limit", 413);
+        pending.push(entry.name);
+      } else files.push({ path: filePath });
+      if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
+    }
+    for (const name of pending.reverse()) {
+      if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
+      checkTime();
+      let child: number;
+      try { child = native.openPlanEntry(fd, name, constants.O_RDONLY | constants.O_DIRECTORY); }
+      catch (error) {
+        if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
+        throw error;
+      }
+      try { await visit(child, path.join(relative, name), depth + 1); }
+      finally { closeSync(child); }
+    }
+  };
+  // Resident cwd is already canonical when allocated. Do not realpath it again:
+  // resolving an agent-substituted boundary would turn an escape into a new root.
+  let rootFd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    for (const name of path.resolve(root).split("/").filter(Boolean)) {
+      const child = native.openPlanEntry(rootFd, name, constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(rootFd);
+      rootFd = child;
+    }
+    await visit(rootFd, "", 0);
+    checkTime();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") throw new SessionFileError("session directory listing exceeded its time budget", 503);
+    if (code === "ENOENT") throw new SessionFileError("session checkout is unavailable", 404);
+    if (code === "ENOTDIR" || code === "ELOOP") throw new SessionFileError("session directory resolves through a symbolic link or non-directory", 403);
+    throw error;
+  } finally {
+    closeSync(rootFd);
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export async function listSessionFiles(
+  cwd: string,
+  task?: Parameters<typeof taskHasRepository>[0],
+  /** Test seam: the git runner, so the best-effort mock-up query can be made to fail alone. */
+  runGit: typeof run = run,
+): Promise<SessionFileEntry[]> {
+  if (task && !taskHasRepository(task)) return listDirectoryFiles(cwd);
   const root = await realpath(cwd).catch(() => {
     throw new SessionFileError("session checkout is unavailable", 404);
   });
-  const result = await run(
-    "git",
-    ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-    { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 },
-  );
+  const listing = { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 };
+  const [result, mockups] = await Promise.all([
+    runGit("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], listing),
+    runGit(
+      "git",
+      ["-C", root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", SESSION_MOCKUP_ROOT],
+      listing,
+    ),
+  ]);
   if (result.code !== 0 || result.overflowed) {
     throw new SessionFileError("could not list files in this checkout", 500);
   }
-  const discovered = result.stdout
-    .split("\0")
-    .filter(Boolean)
+  // Best effort: a failed mock-up read leaves the checkout's own listing intact. Only pages
+  // and images are admitted; the `.gitignore` marker and anything private are not. A failure
+  // is still logged, or mock-up paths turn into dead text with nothing saying why.
+  if (mockups.code !== 0 || mockups.overflowed) {
+    console.warn("[session-files] ignored mock-up listing failed; mock-ups are omitted from Files", {
+      code: mockups.code,
+      overflowed: mockups.overflowed,
+    });
+  }
+  const ignoredMockups = mockups.code === 0 && !mockups.overflowed
+    ? mockups.stdout.split("\0").filter(isListedMockup)
+    : [];
+  const discovered = [...new Set([...result.stdout.split("\0").filter(Boolean), ...ignoredMockups])]
     .sort((a, b) => a.localeCompare(b));
   const files: SessionFileEntry[] = [];
   for (const filePath of discovered) {

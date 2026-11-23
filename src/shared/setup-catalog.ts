@@ -1,9 +1,12 @@
+import { ENTERPRISE_PACKAGES_FLAG, type RecommendedPackageView } from "./enterprise-packages.ts";
 import { z } from "zod";
 import {
   ENVIRONMENT_CHECK_IDS,
   type EnvironmentCheckId,
 } from "./environment-checks.ts";
 import type { PipelineProviderId } from "./pipeline.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
+import { VOICE_FLAG, VOICE_REQUIRED_FLAGS } from "./voice.ts";
 
 // External tooling Mission Control can explain, split from the daemon probes for the same
 // reason `ENVIRONMENT_CHECK_INFO` is split from `server/environment`: the dashboard needs
@@ -32,7 +35,13 @@ export const SETUP_DEPENDENCY_IDS = [
   "iterm",
   "herdr",
   "node-runtime",
-  "pi-otel",
+  "coderabbit-cli",
+  "claude-mcp-trust",
+  "codex-mcp-trust",
+  "acli-cli",
+  "acli-auth",
+  "coderabbit-auth",
+  "voice-previews",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -42,9 +51,12 @@ export const SETUP_FAMILY_IDS = [
   "agents",
   "terminals",
   "github",
+  "repositories",
+  "jira",
   "extensions",
   "pipelines",
   "runtime",
+  "voice",
 ] as const;
 
 export type SetupFamilyId = (typeof SETUP_FAMILY_IDS)[number];
@@ -53,6 +65,11 @@ export interface SetupFamilyInfo {
   id: SetupFamilyId;
   label: string;
   description: string;
+  /**
+   * A preview feature flag the whole family follows. While it is off the family's rows are
+   * neither probed nor listed, and the rail does not draw the family.
+   */
+  flag?: FeatureFlagId;
 }
 
 export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
@@ -71,6 +88,16 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     label: "GitHub",
     description: "The GitHub CLI carries pull requests, reviews, issues, and repository reads.",
   },
+  repositories: {
+    id: "repositories",
+    label: "Repositories",
+    description: "The directories walked for git checkouts. Dispatch needs at least one repository to work in.",
+  },
+  jira: {
+    id: "jira",
+    label: "Jira",
+    description: "Jira task sources that read through the Atlassian CLI need it installed and signed in to their site.",
+  },
   extensions: {
     id: "extensions",
     label: "Agent extensions",
@@ -86,7 +113,28 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     label: "Runtime",
     description: "The serving daemon and external runtimes for source development and independent tools.",
   },
+  voice: {
+    id: "voice",
+    label: "Voice",
+    description: "What voice addressing needs before it can listen on this machine.",
+    flag: VOICE_FLAG,
+  },
 };
+
+/**
+ * Whether a family's preview flag, if it follows one, is on.
+ *
+ * `flagOn` is the caller's reader of the resolved flags. Without one every flag counts as on,
+ * which is what a reader of the whole catalog (a test, the search index) means; the daemon's
+ * probes and the Setup rail always pass the live answer.
+ */
+export function setupFamilyFlagOn(
+  family: SetupFamilyId,
+  flagOn?: (flag: FeatureFlagId) => boolean,
+): boolean {
+  const flag = SETUP_FAMILY_INFO[family].flag;
+  return flag === undefined || flagOn === undefined || flagOn(flag);
+}
 
 export type SetupRequirement = "required" | "recommended" | "optional";
 
@@ -108,7 +156,7 @@ export interface SetupGuideLink {
  * fact about this machine right now, and it is the one an operator with Herdr installed is
  * far more likely to be missing.
  */
-export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control"] as const;
+export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control", "claude-mcp-trust", "codex-mcp-trust"] as const;
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
@@ -119,24 +167,42 @@ export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
  * `The ${label} is running.` is true of a server and false of everything else. It produced
  * "The cmux socket control is running." for a repair that writes one value into a config
  * file and starts no process at all, which tells an operator nothing they can check.
+ * `retry` is the panel's next step after a refusal, for the same reason: "start it yourself in
+ * a terminal" is advice about a server, and wrong for a configuration write.
  */
 export const SETUP_SERVICE_INFO: Record<
   SetupServiceId,
-  { id: SetupServiceId; label: string; started: string; refused: string }
+  { id: SetupServiceId; label: string; started: string; refused: string; retry: string }
 > = {
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Claude Code. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Claude Code MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Codex. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Codex MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
+  },
   "herdr-server": {
     id: "herdr-server",
     label: "Herdr server",
     started: "The Herdr server is running.",
     refused: "The Herdr server could not be started.",
+    retry: "Start it yourself in a terminal, then press Re-check.",
   },
   "cmux-app": {
     id: "cmux-app",
     label: "cmux app",
     started: "cmux is open, and its control socket is answering.",
     refused: "cmux could not be opened.",
+    retry: "Open cmux yourself, then press Re-check.",
   },
-  // Not a process, and the only entry here that is not. It is in this union because it is
+  // A configuration repair belongs in this union because it is
   // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
   // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
   "cmux-socket-control": {
@@ -144,8 +210,21 @@ export const SETUP_SERVICE_INFO: Record<
     label: "cmux socket control",
     started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
     refused: "The cmux configuration could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
 };
+
+/**
+ * Something a service start found missing that a different, named repair supplies.
+ *
+ * `mission-integrations`: Codex MCP trust edits the `[mcp_servers.mission-control]` table,
+ * so it cannot run until the desktop app's integration install has registered that server.
+ * A refusal carrying this tells the panel to offer that install instead of prose that sends
+ * the operator to a terminal for something no terminal command in front of them would fix.
+ */
+export const SETUP_SERVICE_PREREQUISITES = ["mission-integrations"] as const;
+
+export type SetupServicePrerequisite = (typeof SETUP_SERVICE_PREREQUISITES)[number];
 
 /**
  * How the panel helps with one unsatisfied row.
@@ -156,15 +235,32 @@ export const SETUP_SERVICE_INFO: Record<
  * how it runs. That is what keeps this union safe to widen: the wire contract grows a case,
  * not an execution surface.
  */
+/**
+ * What a `command` remedy does once it runs, which decides how the panel and the terminal
+ * describe it. Not a grammar switch the browser controls: the daemon checks an `install`
+ * against its package-manager grammar and a `sign-in` against its closed list of exact
+ * sign-in commands, and refuses anything that is neither.
+ */
+export type SetupCommandPurpose = "install" | "sign-in";
+
 export type SetupRemedy =
   | { kind: "link"; url: string; label: string }
-  | { kind: "command"; argv: readonly string[]; note: string }
+  | { kind: "command"; purpose: SetupCommandPurpose; argv: readonly string[]; note: string }
   | { kind: "provider-installer"; provider: PipelineProviderId }
   | { kind: "skill"; command: string }
   // The one remedy that is not an installation. It carries no argv for the same reason
   // `provider-installer` does not: the browser names the service, and the daemon owns how
   // that service is started.
-  | { kind: "service"; service: SetupServiceId; label: string; note: string };
+  | { kind: "service"; service: SetupServiceId; label: string; note: string }
+  // Mission Control's own Claude integrations, installed by the desktop app with one press.
+  // Like `service`, the browser carries no argv to run: it names the action and the desktop
+  // shell owns the installer. `fallback` is copy-only text for a dashboard opened outside
+  // the desktop app, whose operator may be running Mission Control from a checkout instead.
+  | { kind: "integrations"; note: string; fallback: { argv: readonly string[]; note: string } }
+  // Turn preview feature flags on, through the same `PUT /api/feature-flags` the Feature flags
+  // panel uses. It names flags and nothing else: the browser could switch any of them anyway,
+  // and the daemon's flag route refuses an id it does not know.
+  | { kind: "feature-flags"; flags: readonly FeatureFlagId[]; label: string; note: string };
 
 /**
  * Start Herdr's default server, offered in place of the install link while the CLI is
@@ -197,6 +293,22 @@ export const CMUX_APP_REMEDY: SetupRemedy = {
 };
 
 /**
+ * Check the CodeRabbit CLI Mission Control selected, offered when a CodeRabbit reading was
+ * inconclusive (`--version` or `auth status` failed, timed out or answered unreadably), the
+ * selected binary is older than 0.9.1, or - on the sign-in row - no CLI is installed yet.
+ *
+ * Stands in for both catalog remedies on those readings. Installing would add a second copy
+ * without changing the binary the locator selects - a per-user install wins over Homebrew - and
+ * signing in is advice about a state nobody read. The row's text names the binary and what to
+ * do; this links the CLI's own guide.
+ */
+export const CODERABBIT_CHECK_REMEDY: SetupRemedy = {
+  kind: "link",
+  url: "https://docs.coderabbit.ai/cli",
+  label: "Open the CodeRabbit CLI guide",
+};
+
+/**
  * Let Mission Control's daemon drive cmux, offered while the socket is answering and
  * refusing.
  *
@@ -224,14 +336,15 @@ export interface SetupDependencyInfo {
   /** What is unavailable while this row is not satisfied. */
   enables: string;
   remedy: SetupRemedy;
+  /**
+   * The row this one is a next step of, rendered directly beneath it.
+   *
+   * Exists because `SETUP_DEPENDENCY_IDS` is append-only: a sign-in added long after its
+   * install would otherwise render wherever the end of its family happens to be, several rows
+   * away from the install it follows. Must name a row in the same family.
+   */
+  after?: SetupDependencyId;
 }
-
-/** The supported optional Pi telemetry package, owned and published by pi-buildout. */
-export const PI_OTEL_PACKAGE = {
-  name: "@upstart/pi-router-otel",
-  version: "0.1.1-alpha.4",
-  entry: "dist/extensions/otel/src/index.ts",
-} as const;
 
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
 export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo> = {
@@ -243,6 +356,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Claude sessions and Claude-backed background jobs cannot launch.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
       note: "Install the official Claude Code npm package without sudo. This installer requires external Node and npm; native CLI installations keep their own prerequisites.",
     },
@@ -267,6 +381,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Pi sessions cannot launch or resume, and Pi's Agent SDK runtime stays unavailable.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
       note: "Install the Pi coding agent package globally. This installer requires external Node and npm supported by Pi.",
     },
@@ -279,6 +394,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds durable detached sessions, provided an installed emulator can raise them.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "tmux"],
       note: "Install tmux with Homebrew.",
     },
@@ -303,6 +419,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds scriptable terminal windows and can raise detached tmux sessions.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "wezterm"],
       note: "Install WezTerm with Homebrew.",
     },
@@ -315,6 +432,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds native terminal windows that Mission Control can discover and focus on macOS.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "ghostty"],
       note: "Install Ghostty with Homebrew.",
     },
@@ -327,6 +445,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Mission Control cannot inspect, open, review, or merge GitHub work.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "gh"],
       note: "Install the GitHub CLI with Homebrew.",
     },
@@ -383,6 +502,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds scriptable iTerm2 windows and can raise detached tmux sessions on macOS.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "iterm2"],
       note: "Install iTerm2 with Homebrew.",
     },
@@ -394,9 +514,10 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     requirement: "optional",
     enables: "Adds durable default-server workspaces, pane control, and full-client reattachment on macOS and Linux.",
     remedy: {
-      kind: "link",
-      url: "https://herdr.dev/docs/install/",
-      label: "Open Herdr installation guide",
+      kind: "command",
+      purpose: "install",
+      argv: ["brew", "install", "herdr"],
+      note: "Install Herdr with Homebrew.",
     },
   },
   "node-runtime": {
@@ -407,23 +528,158 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "External Node.js is for source development and third-party Node tools. The installed desktop app, binary updates and Mission-owned helpers use bundled Node.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "node"],
       note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
     },
   },
-  "pi-otel": {
-    id: "pi-otel",
-    label: "Pi OpenTelemetry extension",
-    family: "agents",
+  "coderabbit-cli": {
+    id: "coderabbit-cli",
+    label: "CodeRabbit CLI",
+    family: "extensions",
     requirement: "optional",
-    enables: `Optional add-on for Pi: pi install npm:${PI_OTEL_PACKAGE.name}@${PI_OTEL_PACKAGE.version}. Requires Upstart CodeArtifact access for install.  Mission Control never installs it automatically; Pi works without it.`,
+    enables: "Local committed workflow reviews require CLI >=0.9.1. Only root YAML boolean true enables review. No review starts during detection.",
     remedy: {
-      kind: "link",
-      url: "https://github.com/teamupstart/mission-control/blob/main/docs/pi-telemetry.md",
-      label: "Install Pi telemetry (CodeArtifact)",
+      kind: "command",
+      purpose: "install",
+      argv: ["brew", "install", "--cask", "coderabbit"],
+      note: "Install the CodeRabbit CLI with Homebrew, then press Re-check and sign in below.",
+    },
+  },
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedy: {
+      kind: "service",
+      service: "claude-mcp-trust",
+      label: "Trust Mission Control in Claude Code",
+      note: "Add mcp__mission-control__* to permissions.allow in ~/.claude/settings.json, preserving other settings and a recovery copy. Restart Claude Code sessions to apply. Register the MCP server first with Install Claude integrations in the desktop app.",
+    },
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedy: {
+      kind: "service",
+      service: "codex-mcp-trust",
+      label: "Trust Mission Control in Codex",
+      note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Needs the MCP server registered in Codex; this offers Install Claude integrations when it is not.",
+    },
+  },
+  "acli-cli": {
+    id: "acli-cli",
+    label: "Atlassian CLI",
+    family: "jira",
+    requirement: "optional",
+    enables: "Without it, Jira task sources set to read through the Atlassian CLI (acli) cannot sweep, check, or write back.",
+    remedy: {
+      kind: "command",
+      purpose: "install",
+      // The tap-qualified name taps atlassian/homebrew-acli and installs from it in one step.
+      argv: ["brew", "install", "atlassian/acli/acli"],
+      note: "Install the Atlassian CLI from Atlassian's Homebrew tap, then press Re-check.",
+    },
+  },
+  "acli-auth": {
+    id: "acli-auth",
+    label: "Atlassian CLI sign-in",
+    family: "jira",
+    requirement: "optional",
+    enables: "acli reads Jira only while it is signed in, and only for the site it is signed in to. A source on another site is refused until acli switches to it.",
+    remedy: {
+      kind: "command",
+      purpose: "sign-in",
+      argv: ["acli", "jira", "auth", "login", "--web"],
+      note: "Sign acli in to Jira through your browser. Choose the site your Jira sources use, then press Re-check.",
+    },
+  },
+  // The CodeRabbit CLI's sign-in, split from its install the way acli's is, so a row that
+  // needs a sign-in offers the sign-in rather than an installer the operator already ran.
+  "coderabbit-auth": {
+    id: "coderabbit-auth",
+    label: "CodeRabbit CLI sign-in",
+    family: "extensions",
+    requirement: "optional",
+    after: "coderabbit-cli",
+    enables: "Local committed workflow reviews need stored CodeRabbit authentication in the daemon's effective HOME. No sign-in starts during detection.",
+    remedy: {
+      kind: "command",
+      purpose: "sign-in",
+      argv: ["coderabbit", "auth", "login"],
+      note: "Sign the CodeRabbit CLI in through your browser, then press Re-check.",
+    },
+  },
+  // Voice reads as unavailable while any flag it depends on is off, because a flag cannot
+  // require another. The probe names which are off and offers to turn exactly those on.
+  "voice-previews": {
+    id: "voice-previews",
+    label: "Voice previews",
+    family: "voice",
+    requirement: "optional",
+    enables: "Voice needs Ask without stopping, Reports and inbox upgrades and File plan decisions. Until all three are on, it does not listen.",
+    remedy: {
+      kind: "feature-flags",
+      flags: VOICE_REQUIRED_FLAGS,
+      label: "Turn on the previews voice needs",
+      note: "Turn on Ask without stopping, Reports and inbox upgrades and File plan decisions in Settings > Feature flags.",
     },
   },
 };
+
+/**
+ * Every preview flag a Setup reading depends on: a family that follows one, and the flags a
+ * `feature-flags` remedy turns on, whose probe reads them. A dashboard re-reads Setup when any
+ * of these changes, so a row never reports a flag as it was before the switch.
+ */
+export const SETUP_FLAG_INPUTS: readonly FeatureFlagId[] = [...new Set<FeatureFlagId>([
+  ...Object.values(SETUP_FAMILY_INFO).flatMap((family) => (family.flag ? [family.flag] : [])),
+  ...Object.values(SETUP_DEPENDENCY_INFO).flatMap((info) => (info.remedy.kind === "feature-flags" ? info.remedy.flags : [])),
+  ENTERPRISE_PACKAGES_FLAG,
+])];
+
+/**
+ * The resolved state of `SETUP_FLAG_INPUTS` as one string, one character per flag.
+ */
+export function setupFlagsKey(flagOn: (flag: FeatureFlagId) => boolean): string {
+  return SETUP_FLAG_INPUTS.map((flag) => (flagOn(flag) ? "1" : "0")).join("");
+}
+
+/**
+ * The flags a Setup reading is stamped with (`SetupChecksView.flagsKey`): `setupFlagsKey` while a
+ * gated family or the enterprise package preview is on, and nothing otherwise. Only then does any reading depend on
+ * these flags, and with every such family off the response stays the one an install without
+ * them gave. The dashboard computes the live stamp the same way and re-reads on a mismatch.
+ */
+export function setupReadingFlags(flagOn: (flag: FeatureFlagId) => boolean): string | undefined {
+  const gated = SETUP_FAMILY_IDS.some((family) => {
+    const flag = SETUP_FAMILY_INFO[family].flag;
+    return flag !== undefined && flagOn(flag);
+  });
+  return gated || flagOn(ENTERPRISE_PACKAGES_FLAG) ? setupFlagsKey(flagOn) : undefined;
+}
+
+/**
+ * The order rows render in: id order, except that a row naming `after` moves to directly
+ * beneath that row. Persisted ids stay where they are; only the panel's reading order moves.
+ */
+export const SETUP_DEPENDENCY_DISPLAY_ORDER: readonly SetupDependencyId[] = (() => {
+  const order: SetupDependencyId[] = SETUP_DEPENDENCY_IDS.filter((id) => !SETUP_DEPENDENCY_INFO[id].after);
+  for (const id of SETUP_DEPENDENCY_IDS) {
+    const anchor = SETUP_DEPENDENCY_INFO[id].after;
+    if (!anchor) continue;
+    let at = order.indexOf(anchor);
+    // Keep followers of one anchor in id order.
+    while (at + 1 < order.length && SETUP_DEPENDENCY_INFO[order[at + 1]!].after === anchor) at += 1;
+    order.splice(at + 1, 0, id);
+  }
+  return order;
+})();
 
 export interface SetupRuntimeView {
   origin: "bundled" | "electron-development" | "standalone";
@@ -438,7 +694,10 @@ export type SetupStatus =
   | { state: "needs-setup"; why: string; evidence: string | null; source?: string }
   | { state: "unknown"; why: string; evidence: string | null; source?: string };
 
-export type SetupDerivedRowId = "terminal-pair";
+/** Rows the daemon derives from composed state rather than from one dependency probe. */
+export const SETUP_DERIVED_ROW_IDS = ["terminal-pair", "indexed-repositories"] as const;
+
+export type SetupDerivedRowId = (typeof SETUP_DERIVED_ROW_IDS)[number];
 
 export type SetupRowId =
   | { source: "dependency"; id: SetupDependencyId }
@@ -446,10 +705,10 @@ export type SetupRowId =
   | { source: "derived"; id: SetupDerivedRowId };
 
 /** The persisted row identity keeps its namespace so ids from different sources cannot alias. */
-export const SetupRowIdSchema: z.ZodType<SetupRowId> = z.discriminatedUnion("source", [
+export const SetupRowIdSchema: z.ZodType<SetupRowId, SetupRowId> = z.discriminatedUnion("source", [
   z.object({ source: z.literal("dependency"), id: z.enum(SETUP_DEPENDENCY_IDS) }),
   z.object({ source: z.literal("environment-check"), id: z.enum(ENVIRONMENT_CHECK_IDS) }),
-  z.object({ source: z.literal("derived"), id: z.literal("terminal-pair") }),
+  z.object({ source: z.literal("derived"), id: z.enum(SETUP_DERIVED_ROW_IDS) }),
 ]);
 
 /** What this operator has acknowledged while the named rows remained unsatisfied. */
@@ -466,6 +725,7 @@ export const DEFAULT_SETUP_BANNER_DISMISSAL: SetupBannerDismissal = {
 };
 
 export interface SetupRowView {
+  recommendations?: RecommendedPackageView[];
   rowId: SetupRowId;
   label: string;
   family: SetupFamilyId;
@@ -477,6 +737,7 @@ export interface SetupRowView {
 }
 
 export interface SetupChecksView {
+  packageCatalogError?: string;
   /** Absent on older daemons. Never infer a bundled runtime from the connected UI. */
   runtime?: SetupRuntimeView;
   /** Positive readiness from Setup's Pi CLI probe; consumers do not reconstruct it from rows. */
@@ -496,6 +757,12 @@ export interface SetupChecksView {
    * as pre-shortened evidence, so a row can still show the absolute path on hover.
    */
   home: string;
+  /**
+   * The flags this reading was taken under (`setupReadingFlags`): present only while a gated family
+   * or the enterprise package preview is on. The dashboard re-reads when the live stamp differs,
+   * including a switch made between this read and its first snapshot.
+   */
+  flagsKey?: string;
 }
 
 /**
@@ -525,6 +792,19 @@ export interface SetupBannerView {
   /** The number the banner names to the operator. */
   attentionCount: number;
 }
+
+/**
+ * Reinstall Mission Control's Claude Code hooks, shared by both hook rows because the same
+ * installer writes the whole current event list and a path that exists.
+ */
+export const HOOK_INSTALL_REMEDY = {
+  kind: "integrations",
+  note: "Install Mission Control's Claude Code hooks and MCP server using this app's runtime, preserving your other settings.",
+  fallback: {
+    argv: ["npm", "run", "install-hooks"],
+    note: "Run from a durable Mission Control checkout rather than a pooled worktree.",
+  },
+} as const satisfies SetupRemedy;
 
 /** Metadata the narrower environment-check contract does not carry itself. */
 export const ENVIRONMENT_ROW_METADATA: Record<
@@ -570,19 +850,22 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     family: "extensions",
     requirement: "required",
     enables: "While a hook path is dead, every Claude hook event on this machine fails and terminal sessions report no state.",
-    // The note carries BOTH repairs because the row cannot tell which installer wrote the
-    // dead path. The check fires identically for this repo's `hooks/harness-hook.mjs` and
-    // for the packaged app's `dist/satellites/hook.mjs`, and someone who only ever pressed
-    // "Install Claude integrations" may have no checkout to run an npm script in at all.
-    // Offering them a command they cannot run, with no hint that a button exists, is a
-    // required row they can only dismiss. Conditioning the structured remedy on the missing
-    // script would mean carrying a remedy on `EnvironmentCheckView`, which is a wire
-    // contract change for one row; naming both here costs a sentence.
-    remedy: {
-      kind: "command",
-      argv: ["npm", "run", "install-hooks"],
-      note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
-    },
+    // One press in the desktop app, because the operator who hits this is most often running
+    // the packaged app and has no checkout to run an npm script in. The check fires the same
+    // way for this repo's `hooks/harness-hook.mjs` and the app's `dist/satellites/hook.mjs`,
+    // so the checkout command stays as the fallback a browser-opened dashboard shows.
+    remedy: HOOK_INSTALL_REMEDY,
+  },
+  // `optional`, unlike the dead-path row above it. These hooks still work: every installed event
+  // reports, and the session's state is right. What is missing is an event added since they were
+  // installed, which costs detail (a terminal session's background sub-agents) rather than the
+  // card. That is worth a row with a fix, not the setup banner. Same remedy, because the same
+  // installer writes the whole current list.
+  "mission-hook-events": {
+    family: "extensions",
+    requirement: "optional",
+    enables: "Until the hooks are reinstalled, terminal Claude sessions do not report the events they lack, such as a background sub-agent starting.",
+    remedy: HOOK_INSTALL_REMEDY,
   },
 };
 
@@ -599,6 +882,37 @@ export const TERMINAL_PAIR_INFO = {
     label: "Open terminal installation guide",
   },
 } as const satisfies Omit<SetupRowView, "status">;
+
+/**
+ * The required row derived from the repository index: at least one detected repository.
+ *
+ * Required because nothing Mission Control dispatches can start without a checkout to work
+ * in - the repo picker offers nothing and tasks filed by repository name cannot resolve. The
+ * Repositories family's pane carries the directory editor itself, so this remedy is the guide
+ * rather than a link back to the page the operator is already reading.
+ */
+export const INDEXED_REPOSITORIES_INFO = {
+  rowId: { source: "derived", id: "indexed-repositories" },
+  label: "At least one detected repository",
+  family: "repositories",
+  requirement: "required",
+  enables: "Without a detected repository, the dispatch repo picker offers nothing and tasks filed by repository name cannot resolve.",
+  remedy: {
+    kind: "link",
+    url: "https://github.com/teamupstart/mission-control/blob/main/docs/setup.md#repositories",
+    label: "Open repository setup guide",
+  },
+} as const satisfies Omit<SetupRowView, "status">;
+
+/**
+ * Anchors inside the Repositories family's directory editor, so a deep link to one of them
+ * selects that family before the page waits for the control to mount.
+ */
+export const SETUP_REPOSITORY_ANCHORS = {
+  directories: "setup/repositories-directories",
+  add: "setup/repositories-add",
+  rescan: "setup/repositories-rescan",
+} as const;
 
 /** A collision-proof anchor slug, including the row's id namespace. */
 export function setupRowAnchor(rowId: SetupRowId): string {

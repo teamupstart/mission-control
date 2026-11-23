@@ -1,6 +1,6 @@
 {
   "name": "mission-control",
-  "version": "1.27.2",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -18,7 +18,8 @@
     "node": ">=24"
   },
   "bin": {
-    "mission-control": "src/server/index.ts"
+    "mission-control": "src/server/index.ts",
+    "mctl": "dist/cli/mctl.mjs"
   },
   "main": "dist/main/index.cjs",
   "scripts": {
@@ -29,7 +30,7 @@
     "dev:foreman": "tsx watch src/server/foreman/worker.ts",
     "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:start": "concurrently -n server,web,shell,foreman -c blue,magenta,green,cyan \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\" \"npm:dev:foreman\"",
-    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard",
+    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:cli && npm run build:mod && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard && npm run build:resident-mcp-launcher",
     "build:installer": "node scripts/render-install-bootstrap.mjs",
     "build:pi-extension": "node --import tsx scripts/build-pi-extension.ts",
     "build:native": "node scripts/build-native.mjs",
@@ -40,6 +41,10 @@
     "build:foreman": "esbuild src/server/foreman/worker.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/foreman-worker.mjs",
     "build:main": "esbuild src/main/index.ts src/main/update-binary-worker.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
+    "build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli/mctl.mjs",
+    "build:mod": "node --import tsx scripts/build-mod.ts",
+    "test:mod": "node scripts/test-mod-engine.mjs",
+    "mctl": "tsx src/cli/main.ts",
     "smoke": "node scripts/smoke-bundles.mjs",
     "verify:keep-awake-native": "node scripts/probe-keep-awake-native.mjs",
     "verify:database-backup": "tsx scripts/verify-database-backup.ts",
@@ -56,11 +61,11 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src hooks test scripts e2e integrations",
     "pretest": "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs && node scripts/build-state-lock-native.mjs",
-    "test": "node --test --test-concurrency=${MISSION_TEST_CONCURRENCY:-6} ${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD} --import ./test/setup-state.mjs --import tsx 'test/**/*.test.ts'",
+    "test": "node --test --test-timeout=120000 --test-concurrency=${MISSION_TEST_CONCURRENCY:-6} ${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD} --import ./test/setup-state.mjs --import tsx 'test/**/*.test.ts'",
     "posttest": "npm run test:workflow-evidence",
-    "test:workflow-evidence": "node --test --import ./test/setup-state.mjs --import tsx test/workflow-image-evidence.test.ts test/workflow-test-evidence-audit.test.ts",
+    "test:workflow-evidence": "node --test --test-timeout=120000 --import ./test/setup-state.mjs --import tsx test/workflow-image-evidence.test.ts test/workflow-test-evidence-audit.test.ts",
     "pretest:electron": "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs",
-    "test:electron": "node --test --import ./test/setup-state.mjs --import tsx 'test/*-electron.test.ts'",
+    "test:electron": "node --test --test-timeout=120000 --import ./test/setup-state.mjs --import tsx 'test/*-electron.test.ts'",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "observability:up": "node scripts/observability.mjs up",
     "observability:status": "node scripts/observability.mjs status",
@@ -68,10 +73,11 @@
     "observability:reset": "node scripts/observability.mjs reset",
     "observability:ready": "node scripts/observability.mjs ready",
     "observability:verify": "node scripts/observability.mjs verify",
-    "test:telemetry-stack": "node --test --import ./test/setup-state.mjs --import tsx test/telemetry-stack.integration.ts",
+    "test:telemetry-stack": "node --test --test-timeout=120000 --import ./test/setup-state.mjs --import tsx test/telemetry-stack.integration.ts",
     "init": "node scripts/init.mjs",
     "personas": "tsx scripts/builtin-personas.ts",
     "session-actions": "tsx scripts/builtin-session-actions.ts",
+    "residents": "tsx scripts/builtin-residents.ts",
     "tours": "tsx scripts/tour-content.ts",
     "session": "node scripts/new-session.mjs",
     "prerecover:database": "node scripts/build-state-lock-native.mjs",
@@ -86,19 +92,21 @@
     "observability:generate": "node --import tsx scripts/observability/generate.ts",
     "observability:demo": "MC_OBSERVABILITY_MODE=demo node scripts/observability.mjs up && MC_OBSERVABILITY_MODE=demo node --import tsx scripts/observability/demo.ts",
     "observability:restart": "node scripts/observability.mjs restart",
-    "observability:integration": "node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/telemetry-dashboards-stack.integration.ts test/telemetry-analytics-stack.integration.ts",
+    "observability:integration": "node --test --test-timeout=120000 --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/telemetry-dashboards-stack.integration.ts test/telemetry-analytics-stack.integration.ts",
     "observability:benchmark": "node --expose-gc --import tsx scripts/observability/benchmark.ts",
     "build:pi-installer": "esbuild scripts/install-pi-extension.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/pi-installer/index.mjs",
-    "build:resume-guard": "esbuild src/server/terminal/resume-guard.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resume-guard.mjs"
+    "build:resume-guard": "esbuild src/server/terminal/resume-guard.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resume-guard.mjs",
+    "build:resident-mcp-launcher": "esbuild src/server/residents/mcp-launcher.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resident-mcp-launcher.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.310",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.325",
     "@codemirror/language-data": "^6.5.2",
-    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@hono/node-server": "^1.19.17",
     "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1.31.0",
-    "@openai/codex-sdk": "^0.164.0",
+    "@openai/codex-sdk": "^0.169.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.11.0",
     "@opentelemetry/otlp-transformer": "0.222.0",
@@ -120,9 +128,10 @@
     "rehype-highlight": "^7.0.2",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
-    "zod": "^3.24.1",
-    "zod-to-json-schema": "3.25.2",
-    "yauzl": "3.4.0"
+    "smol-toml": "^1.9.1",
+    "yaml": "^2.9.0",
+    "yauzl": "3.4.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electron/fuses": "1.8.0",
@@ -131,17 +140,17 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/yauzl": "3.4.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "electron": "^43.8.1",
+    "electron": "^43.8.4",
     "electron-builder": "26.16.1",
     "electronmon": "^2.0.4",
     "node-gyp": "^12.4.0",
     "oxlint": "^1.76.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^6.4.4",
-    "@types/yauzl": "3.4.0"
+    "vite": "^6.4.4"
   },
   "overrides": {
     "@anthropic-ai/claude-agent-sdk": {

@@ -68,6 +68,7 @@ const WRAPUP_CFG = {
 function mkTask(): Task {
   return {
     id: "task-1",
+    workUnitId: null,
     title: "Idle sessions are never submitted",
     intent: INTENT,
     kind: "ship",
@@ -78,8 +79,11 @@ function mkTask(): Task {
     enabled: true,
     model: null,
     effort: null,
+    advisorModel: null,
+    personaId: null,
     workflowId: null,
     source: null,
+    sourceParent: null,
     repoRoot: "/repo",
     worktreePath: "/repo",
     branch: null,

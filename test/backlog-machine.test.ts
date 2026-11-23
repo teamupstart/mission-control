@@ -53,6 +53,8 @@ let sessionSeq = 0;
 function mkSession(over: Partial<Session> = {}): Session {
   const n = ++sessionSeq;
   return {
+    blocker: null,
+    awaiting: null,
     id: `s${n}`,
     agent: "claude",
     name: `agent-${n}`,
@@ -81,7 +83,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -131,6 +133,24 @@ const decide = (over: {
 test("pipeline tasks never enter backlog autopilot", () => {
   const pipeline = mkTask({ kind: "pipeline" });
   assert.deepEqual(decide({ tasks: [pipeline], plan: mkPlan([[pipeline.id, []]]) }), {
+    kind: "none",
+    why: "no backlog item allows unattended scheduling",
+  });
+});
+
+test("a chat a Recurring Mission filed is launched in a fresh session, never assigned", () => {
+  // `TaskManager.assign` refuses a chat with `scope: "task"`: its opener is a new
+  // conversation's first message. Offered for assignment, it would be offered every tick.
+  const chat = mkTask({ kind: "chat", scheduleId: "mission-1" });
+  const free = mkSession();
+  const a = decide({ tasks: [chat], sessions: [free], plan: mkPlan([[chat.id, []]]) });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", chat.id);
+});
+
+test("a chat no mission filed never enters backlog autopilot", () => {
+  const chat = mkTask({ kind: "chat" });
+  assert.deepEqual(decide({ tasks: [chat], plan: mkPlan([[chat.id, []]]) }), {
     kind: "none",
     why: "no backlog item allows unattended scheduling",
   });
@@ -328,6 +348,23 @@ test("a repo that merely PREFIXES an allowlisted one does not clear the bar", ()
 
 // ---- assign vs dispatch --------------------------------------------------------------
 
+test("an agent started for another work unit is not offered the task, and one started for its own is", () => {
+  // Decision D7 on the selection side: the agent's environment carries the work unit it was
+  // started with, so it is skipped like a busy agent and the task is dispatched instead.
+  const mine = "wu_01JD0000000000000000000001";
+  const t = mkTask({ workUnitId: mine });
+  const other = mkSession({ launchWorkUnitId: "wu_01JD0000000000000000000002" });
+  const skipped = decide({ tasks: [t], sessions: [other], plan: mkPlan([[t.id, []]]) });
+  assert.equal(skipped.kind, "dispatch");
+  // A task with no id yet is given a new one when assigned, which is another work unit too.
+  const older = mkTask({ workUnitId: null });
+  assert.equal(decide({ tasks: [older], sessions: [other], plan: mkPlan([[older.id, []]]) }).kind, "dispatch");
+  for (const agent of [mkSession({ launchWorkUnitId: mine }), mkSession({ launchWorkUnitId: null }), mkSession()]) {
+    const a = decide({ tasks: [t], sessions: [agent], plan: mkPlan([[t.id, []]]) });
+    assert.equal(a.kind === "assign" ? a.session.id : a.kind, agent.id);
+  }
+});
+
 test("a free agent in the right repo is preferred over cutting a new worktree", () => {
   const t = mkTask();
   const free = mkSession();
@@ -390,6 +427,26 @@ test("a multi-repo task at the head does not block an assignable item behind it"
 
   assert.equal(a.kind, "assign");
   assert.equal(a.kind === "assign" ? a.task.id : "", ordinary.id);
+});
+
+test("a task that names a Persona is never offered for assignment, and is dispatched instead", () => {
+  // The same livelock as a multi-repo task: `TaskManager.assign` refuses a Persona task with
+  // `scope: "task"`, because its Persona rides the launch's standing instructions and a live
+  // process cannot take them on. Offered once, it would be offered every tick.
+  const role = mkTask({ personaId: "persona-reviewer" });
+  const ordinary = mkTask();
+  const free = mkSession();
+  const head = decide({ tasks: [role], sessions: [free], plan: mkPlan([[role.id, []]]) });
+  assert.equal(head.kind, "dispatch");
+  assert.equal(head.kind === "dispatch" ? head.task.id : "", role.id);
+
+  const behind = decide({
+    tasks: [role, ordinary],
+    sessions: [free],
+    plan: mkPlan([[role.id, []], [ordinary.id, []]]),
+  });
+  assert.equal(behind.kind, "assign");
+  assert.equal(behind.kind === "assign" ? behind.task.id : "", ordinary.id);
 });
 
 test("assignment still happens AT the ceiling - it consumes no new session", () => {
@@ -582,6 +639,18 @@ test("an UNINSTRUMENTED agent is never handed a task, however idle it looks", ()
 test("an agent with a review waiting on you is not free", () => {
   const s = mkSession({ pendingReviews: 1 });
   assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an agent stopped on a filed question is not free; one working past it, or with only a snoozed one, follows its state (async-input)", () => {
+  const stopped = mkSession({ state: "idle", openQuestions: 1 });
+  assert.equal(agentIsFree(stopped, [stopped], [], CFG, NOW), false, "backlog assignment is held while a question is pending");
+  const working = mkSession({ state: "working", openQuestions: 1 });
+  assert.equal(agentIsFree(working, [working], [], CFG, NOW), false, "a working agent is never free");
+  // A snoozed question is in neither count, so assignment reads the session as it does today.
+  const parked = mkSession({ state: "idle", openQuestions: 0 });
+  const parkedFree = agentIsFree(parked, [parked], [], CFG, NOW);
+  const plain = mkSession({ state: "idle" });
+  assert.equal(parkedFree, agentIsFree(plain, [plain], [], CFG, NOW));
 });
 
 test("an agent with an open work queue is already being fed", () => {
@@ -944,4 +1013,41 @@ test("a session-scoped refusal parks it, and so does a refusal that will not say
   // so a skew between them is an ordinary upgrade-window state, and the wrong answer to
   // fail toward is the one that loops.
   assert.equal(assignRefusalParksSession(undefined), true);
+});
+
+// Stacked pull requests: a task released to start on its prerequisite's open pull request has
+// to be cut from that pull request's head, so it is never handed to an existing agent - the
+// autopilot dispatches it into a fresh worktree instead of repeating a refused assignment.
+test("a stack-released task is dispatched, never assigned to a free agent", () => {
+  const parent = mkTask({ status: "running", sessionId: "busy" });
+  const stacked = mkTask({
+    backlogRank: 1,
+    dependencies: [{
+      type: "task", taskId: parent.id, title: parent.title, sessionId: null, episodeId: null,
+      agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+      stackReadyAt: 5, stackBaseBranch: "feat/parent", stackBaseSha: "a".repeat(40),
+      stackPrUrl: "https://github.com/acme/repo/pull/7",
+    }],
+  });
+  const free = mkSession();
+  const action = decide({ tasks: [parent, stacked], sessions: [free], plan: mkPlan([[stacked.id, []]]) });
+  assert.notEqual(action.kind, "assign");
+  assert.equal(action.kind, "dispatch");
+  assert.equal("task" in action ? action.task.id : null, stacked.id);
+});
+
+test("a blocked agent is not free for another task until its blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocked = mkSession({ blocker });
+  assert.equal(agentIsFree(blocked, [blocked], [], CFG, NOW), false);
+  const cleared = mkSession({ blocker: null });
+  assert.equal(agentIsFree(cleared, [cleared], [], CFG, NOW), true);
+});
+
+test("an agent awaiting its own background process is not free until the deadline passes", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  const held = mkSession({ awaiting });
+  assert.equal(agentIsFree(held, [held], [], CFG, NOW), false);
+  // Past the deadline the wait no longer holds it: the safety net, not a permanent hold.
+  assert.equal(agentIsFree(held, [held], [], CFG, NOW + 60_000), true);
 });

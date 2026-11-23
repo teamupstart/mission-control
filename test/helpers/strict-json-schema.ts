@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
  * The strict Structured Outputs contract, checked recursively over a RENDERED schema.
  *
  * This exists because the rule that broke the Inspector is not one a reader spots by eye.
- * `zodToJsonSchema` renders a `.optional()` or `.default()` property by leaving it out of
+ * `renderJsonSchema` renders a `.optional()` or `.default()` property by leaving it out of
  * `required`, which is correct JSON Schema and which the strict provider rejects with
  * `invalid_json_schema`: "required is required to be supplied and to be an array including
  * every key in properties". The rejection fails the CALL, so a schema that violates this at

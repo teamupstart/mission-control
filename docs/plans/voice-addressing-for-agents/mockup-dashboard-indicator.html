@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice mock-ups: in-window voice state (optional) (selected)</title>
+<link rel="stylesheet" href="../../../src/web/styles.css">
+<style>
+/* ---- Mock-up kit: page chrome shared by every voice-addressing mock-up page ----
+   The product stylesheet (src/web/styles.css) is linked above this block, so every
+   var(--token) and every product class (.btn, .field, .review, .inbox-item, .modal ...)
+   is the real one. Rules here only frame the variants. */
+html, body { height: auto !important; overflow: auto !important; }
+body.mk {
+  margin: 0;
+  padding: 28px 32px 90px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--sans);
+  min-width: 1180px;
+}
+.mk-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.mk-ico { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.mk-ico.sm { width: 11px; height: 11px; }
+.mk-ico.lg { width: 18px; height: 18px; }
+
+.mk-top h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+.mk-top p { color: var(--muted); max-width: 1020px; margin: 0 0 6px; }
+.mk-top .mk-spec { color: var(--dim); font-size: 12px; }
+.mk-top code, .mk-notes code, .mk-pitch code { font: 11.5px var(--mono); color: var(--fg); background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px; }
+.mk-toc { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.mk-toc a { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.mk-toc a b { color: var(--working); font-family: var(--mono); margin-right: 4px; }
+
+.mk-variant { margin-top: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-2); overflow: hidden; }
+.mk-variant-head { display: flex; gap: 14px; align-items: baseline; padding: 13px 18px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+.mk-letter { font: 700 14px var(--mono); color: var(--on-accent); background: var(--working); border-radius: 8px; padding: 3px 10px; flex: none; }
+.mk-variant-head h2 { margin: 0; font-size: 16px; white-space: nowrap; }
+.mk-pitch { color: var(--muted); margin: 0; flex: 1; }
+.mk-stage { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px 18px 22px; align-items: flex-start; }
+.mk-state { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mk-cap { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.mk-cap b { color: var(--muted); }
+.mk-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 28px; margin: 0; padding: 12px 18px 15px; border-top: 1px solid var(--border-soft); list-style: none; color: var(--muted); font-size: 12px; }
+.mk-notes li::before { content: "+ "; color: var(--idle); font-weight: 700; font-family: var(--mono); }
+.mk-notes li.con::before { content: "- "; color: var(--attention); }
+
+/* What the operator said. Never part of the product UI: it labels the mock-up. */
+.mk-say { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; font: 12px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 999px; padding: 3px 11px 3px 9px; }
+.mk-say .mk-ico { color: var(--working); }
+.mk-say q { color: var(--fg); quotes: "\201C" "\201D"; }
+
+/* A slice of the macOS menu bar, for anything that lives in or hangs off the tray. */
+.mk-menubar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; height: 26px; padding: 0 12px; border-radius: 8px 8px 0 0; background: linear-gradient(#3a3d44, #33363c); color: #f2f3f5; font: 500 12.5px -apple-system, system-ui, sans-serif; }
+.mk-menubar .mk-mb-left { margin-right: auto; display: flex; gap: 14px; opacity: 0.92; }
+.mk-menubar .mk-mb-left b { font-weight: 700; }
+.mk-menubar .mk-mb-item { display: inline-flex; align-items: center; gap: 4px; opacity: 0.9; }
+.mk-menubar .mk-mb-item.is-open { background: rgba(255, 255, 255, 0.2); border-radius: 4px; padding: 1px 6px; margin: 0 -6px; opacity: 1; }
+.mk-menubar .mk-mb-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff9f0a; }
+/* Some other app in front (Mission Control minimized). */
+.mk-desktop { position: relative; border-radius: 0 0 8px 8px; background: linear-gradient(135deg, #20304a, #3a2a4a 60%, #4a3340); overflow: hidden; }
+.mk-otherapp { position: absolute; inset: 18px 18px 0; border-radius: 9px 9px 0 0; background: #f4f5f7; opacity: 0.16; }
+/* A slice of the Mission Control window. */
+.mk-win { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; position: relative; }
+.mk-win-bar { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); color: var(--dim); font-size: 11.5px; }
+.mk-win-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); }
+.mk-win-bar span { margin-left: 8px; }
+.mk-skel { height: 9px; border-radius: 5px; background: var(--panel-2); margin: 8px 0; }
+.mk-skel.w40 { width: 40%; } .mk-skel.w60 { width: 60%; } .mk-skel.w80 { width: 80%; }
+.mk-tile { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+
+/* ---- Shared voice vocabulary. Variants restyle these; the names stay the same. ---- */
+/* An agent's display name, in its resident board colour (set --resident inline). */
+.v-name { font-weight: 650; color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg)); }
+/* The always-visible inline voice hint: lighter text, no hover. */
+.v-hint { font-size: 11.5px; color: var(--dim); }
+.v-hint q { color: var(--muted); quotes: "\201C" "\201D"; font-style: normal; }
+/* A draining cancel-window bar. Width is set inline to show a moment in time. */
+.v-count { height: 3px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.v-count > i { display: block; height: 100%; background: var(--working); border-radius: 2px; }
+.v-secs { font: 600 11px var(--mono); color: var(--working); }
+.v-live { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); box-shadow: 0 0 8px color-mix(in oklab, var(--idle) 70%, transparent); flex: none; }
+
+
+/* One accent per state. These borrow session-state tokens for the mock-up only; see the header. */
+.di-s-listen { --di: var(--idle); }
+.di-s-muted { --di: var(--dim); }
+.di-s-call { --di: var(--attention); }
+.di-s-ptt { --di: var(--working); }
+
+.di-ctx { width: 452px; height: 232px; display: flex; flex-direction: column; }
+.di-ctx .mk-winbody { padding: 10px 14px; flex: 1; min-height: 0; position: relative; }
+.di-states { display: grid; grid-template-columns: 116px auto; gap: 11px 12px; align-items: center; justify-content: start; width: 318px; }
+.di-states > span:nth-child(odd) { font-size: 11.5px; color: var(--dim); }
+.di-aff { width: 290px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.di-tip { display: inline-flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; font-size: 11px; font-weight: 500; color: var(--fg); box-shadow: var(--shadow); white-space: nowrap; }
+.di-tip::before { content: ""; width: 0; }
+.di-note { font-size: 11.5px; color: var(--dim); max-width: 290px; }
+.di-ico { color: var(--di); }
+
+/* A: a segment in the top bar's pulse readout */
+.di-topbar { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+.di-brand { display: flex; align-items: center; gap: 7px; font-weight: 650; font-size: 13px; margin-right: auto; white-space: nowrap; }
+.di-brand i { width: 14px; height: 14px; border-radius: 4px; background: var(--working); }
+.di-voice { color: var(--muted); }
+.di-voice .mk-ico { color: var(--di); }
+.di-voice.di-s-muted .tb-label { color: var(--dim); }
+.di-voice.is-hover { background: color-mix(in oklab, var(--di) 12%, transparent); color: var(--fg); }
+.di-solo { display: inline-flex; }
+
+/* B: a status line on the window's bottom edge */
+.di-status { display: flex; align-items: center; gap: 9px; height: 26px; padding: 0 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.di-status .di-word { color: var(--di); font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+.di-status .di-sp { margin-left: auto; }
+.di-status button { font: inherit; color: var(--muted); background: none; border: 0; padding: 0; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.di-status.is-crop { border: 1px solid var(--border-soft); border-radius: 7px; width: 190px; }
+
+/* C: a floating round button */
+.di-fab { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--panel); border: 1.5px solid color-mix(in oklab, var(--di) 70%, var(--border)); color: var(--di); box-shadow: var(--shadow), 0 0 0 4px color-mix(in oklab, var(--di) 14%, transparent); cursor: pointer; padding: 0; }
+.di-fab.di-s-muted { box-shadow: var(--shadow); border-color: var(--border); }
+.di-fab.is-abs { position: absolute; left: 12px; bottom: 12px; }
+.di-fabrow { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.di-fabpill { display: inline-flex; align-items: center; gap: 9px; height: 36px; border-radius: 999px; padding: 0 13px 0 10px; background: var(--panel); border: 1.5px solid color-mix(in oklab, var(--di) 70%, var(--border)); box-shadow: var(--shadow); font-size: 12px; white-space: nowrap; }
+
+/* D: a hairline on the window's top edge, with a tab */
+.di-edge { position: relative; height: 3px; background: var(--di); box-shadow: 0 0 14px 1px color-mix(in oklab, var(--di) 65%, transparent); }
+.di-edge.di-s-muted { box-shadow: none; background: var(--border); }
+.di-tab { position: absolute; left: 50%; top: 100%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 5px; font: 600 10.5px var(--sans); color: var(--di); background: var(--panel); border: 1px solid color-mix(in oklab, var(--di) 50%, var(--border)); border-top: 0; border-radius: 0 0 8px 8px; padding: 2px 10px 3px; white-space: nowrap; cursor: pointer; }
+.di-edgecrop { width: 190px; height: 34px; border: 1px solid var(--border-soft); border-top: 0; border-radius: 0 0 8px 8px; background: var(--bg); overflow: hidden; }
+
+/* E: a microphone control in the message composer */
+.di-compose { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 9px 12px; background: var(--panel); }
+.di-compose .compose-input { flex: 1; min-width: 0; margin: 0; }
+.di-mic { width: 28px; height: 28px; flex: none; border-radius: 8px; display: grid; place-items: center; background: color-mix(in oklab, var(--di) 13%, var(--panel-2)); border: 1px solid color-mix(in oklab, var(--di) 55%, var(--border)); color: var(--di); padding: 0; cursor: pointer; }
+.di-mic.di-s-muted { background: var(--panel-2); border-color: var(--border); }
+.di-microw { display: inline-flex; align-items: center; gap: 9px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.di-fake { font-size: 12.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); padding: 5px 9px; }
+.di-turn { border: 1px solid var(--border-soft); border-radius: 9px; padding: 7px 10px; margin-bottom: 7px; font-size: 12px; color: var(--muted); }
+
+</style>
+</head>
+<body class="mk">
+<svg class="mk-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 16 16"><path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z"/><path d="M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 16 16"><path d="M10 6V3.5a2 2 0 0 0-3.7-1M6 6v1.500a2 2 0 0 0 3 1.700"/><path d="M4 7.5a4 4 0 0 0 6.300 3.300M12 7.500a4 4 0 0 1-.300 1.500M8 11.500v3M5.500 14.500h5M2 1.500l12 13"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 16 16"><path d="M3 2.500h2.500l1 3-1.500 1a7 7 0 0 0 3.500 3.500l1-1.500 3 1V12a1.500 1.500 0 0 1-1.500 1.500A9.500 9.500 0 0 1 1.500 4 1.500 1.500 0 0 1 3 2.500z"/></symbol>
+  <symbol id="i-ptt" viewBox="0 0 16 16"><path d="M8 3a1.700 1.700 0 0 0-1.700 1.700v3a1.700 1.700 0 0 0 3.400 0v-3A1.700 1.700 0 0 0 8 3z"/><path d="M4.800 8a3.200 3.200 0 0 0 6.400 0M8 11.200v2.300M2 4.500a7 7 0 0 0 0 5.500M14 4.500a7 7 0 0 1 0 5.500"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.500l3.200 3.200L13 4.800"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.200l6.300 11H1.700z"/><path d="M8 6.500v3.200M8 11.700v.100"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.500V8l2.300 1.500"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8l11.500-5.500L10 14l-2.500-5z"/><path d="M7.500 9l6-6.500"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.500A5.500 5.500 0 0 1 6.500 3 5.500 5.500 0 1 0 13 9.500z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.300 6.300a1.800 1.800 0 1 1 2.600 1.600c-.600.300-.900.700-.900 1.300M8 11.500v.100"/></symbol>
+  <symbol id="i-keys" viewBox="0 0 16 16"><rect x="1.500" y="4" width="13" height="8" rx="1.500"/><path d="M4 6.500h.100M6.500 6.500h.100M9 6.500h.100M11.500 6.500h.100M4.500 9.500h7"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v8M4.800 7L8 10.200 11.200 7M2.500 13.500h11"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2 8v0M4.500 6v4M7 3.500v9M9.500 5.500v5M12 7v2M14 8v0"/></symbol>
+</svg>
+
+
+
+<header class="mk-top">
+  <h1>In-window voice state <span style="color:var(--dim);font-weight:500">(optional, not in the spec)</span></h1>
+  <p>The spec puts the listening state in one place: the menu-bar tray icon, so it is visible while Mission Control is minimized. It does not ask for anything inside the dashboard. This page offers an <b>optional mirror</b> of that state in the window, so the operator who is looking at the dashboard can see it and mute with a click, and so a Playwright spec has something to assert (the tray is outside the browser).</p>
+  <p class="mk-spec"><b>"Tray only, no in-window indicator" is a valid choice</b>, and it is the spec as written. If one of these is chosen it only mirrors the tray: the same four states (listening, muted, auto-muted for a call, push-to-talk active), one click to mute, and the hotkey shown as a keycap. With the voice flag off none of it renders. The state colours here borrow the session tones (<code>--idle</code>, <code>--attention</code>, <code>--working</code>) for the mock-up only; the stylesheet's own rule is that a new meaning gets its own token, so an implementation would mint voice tokens. What varies is <b>where the mirror lives</b> and <b>how much room it takes</b>.</p>
+  <nav class="mk-toc"><a href="#a"><b>A</b>Top-bar segment</a><a href="#b"><b>B</b>Status line</a><a href="#c"><b>C</b>Floating button</a><a href="#d"><b>D</b>Edge light</a><a href="#e"><b>E</b>Composer mic</a></nav>
+<p class="mk-spec"><b>Selected by the operator on 2026-11-22: all five variants, each behind a setting.</b> This page holds the selected designs; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
+</header>
+
+<!-- ============================== A ============================== -->
+<section class="mk-variant" id="a">
+  <div class="mk-variant-head"><span class="mk-letter">A</span><h2>Top-bar segment</h2>
+    <p class="mk-pitch">One more segment at the end of the top bar's pulse readout, beside need you and to answer. It is a button: click to mute.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> In place, listening</span>
+      <div class="mk-win di-ctx">
+        <div class="mk-win-bar"><i></i><i></i><i></i><span>Mission Control</span></div>
+        <div class="di-topbar">
+          <span class="di-brand"><i></i></span>
+          <div class="pulse">
+            <div class="pulse-seg pulse-attention"><span class="pulse-dot"></span><span class="pulse-n">2</span><span class="tb-label">need you</span></div>
+            <div class="pulse-seg pulse-attention"><span class="pulse-dot"></span><span class="pulse-n">4</span><span class="tb-label">to answer</span></div>
+            <button type="button" class="pulse-seg pulse-btn di-voice di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico"><use href="#i-mic"/></svg><span class="tb-label">Listening</span></button>
+          </div>
+        </div>
+        <div class="mk-winbody"><div class="mk-skel w60"></div><div class="mk-skel w80"></div><div class="mk-skel w40"></div><div class="mk-skel w60"></div></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> The four states</span>
+      <div class="di-states">
+        <span>Listening</span><div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-listen"><svg class="mk-ico"><use href="#i-mic"/></svg><span class="tb-label">Listening</span></button></div>
+        <span>Muted</span><div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-muted"><svg class="mk-ico"><use href="#i-mic-off"/></svg><span class="tb-label">Muted</span></button></div>
+        <span>Auto-muted for a call</span><div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-call"><svg class="mk-ico"><use href="#i-phone"/></svg><span class="tb-label">On a call</span></button></div>
+        <span>Push-to-talk held</span><div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-ptt"><svg class="mk-ico"><use href="#i-ptt"/></svg><span class="tb-label">Talk</span></button></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>3</b> Click and hotkey</span>
+      <div class="di-aff">
+        <div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-listen is-hover"><svg class="mk-ico"><use href="#i-mic"/></svg><span class="tb-label">Listening</span></button></div>
+        <span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-note">At the bar's narrow rungs the label drops and the glyph alone remains, as the other segments' labels already do.</span>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>It sits where the operator already reads the fleet's state, and it is a real button with an accessible name, so a spec selects it by role.</li>
+    <li class="con">The top bar is a measured one-row ladder and <code>e2e/specs/topbar-one-row.spec.ts</code> pins its pulse segments. The inbox plan is already adding a fifth (to read); this would be a sixth carrying width at every rung.</li>
+    <li>No new chrome: one more <code>PulseStat</code>-shaped segment and its tooltip.</li>
+    <li class="con">The pulse is a readout of counts about the fleet. A microphone state is a different kind of fact, and the only segment that changes what the app is doing when clicked.</li>
+  </ul>
+</section>
+
+<!-- ============================== B ============================== -->
+<section class="mk-variant" id="b">
+  <div class="mk-variant-head"><span class="mk-letter">B</span><h2>Status line</h2>
+    <p class="mk-pitch">A thin line along the window's bottom edge, the way an editor shows its mode. It has room for the state in words, a reminder of how to address an agent, and the hotkey.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> In place, listening</span>
+      <div class="mk-win di-ctx">
+        <div class="mk-win-bar"><i></i><i></i><i></i><span>Mission Control</span></div>
+        <div class="mk-winbody"><div class="mk-skel w60"></div><div class="mk-skel w80"></div><div class="mk-skel w40"></div><div class="mk-skel w60"></div><div class="mk-skel w80"></div></div>
+        <div class="di-status di-s-listen" role="status">
+          <button type="button" class="di-word" aria-label="Voice: listening. Mute"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</button>
+          <span class="v-hint">Say a name, then your message.</span>
+          <span class="di-sp"></span>
+          <button type="button">Mute <kbd class="kb-hint">⌃⌥M</kbd></button>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> The four states</span>
+      <div class="di-states">
+        <span>Listening</span><div class="di-status is-crop di-s-listen"><span class="di-word"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</span></div>
+        <span>Muted</span><div class="di-status is-crop di-s-muted"><span class="di-word"><svg class="mk-ico sm"><use href="#i-mic-off"/></svg>Muted</span></div>
+        <span>Auto-muted for a call</span><div class="di-status is-crop di-s-call"><span class="di-word"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span><span>hold <kbd class="kb-hint">⌃⌥M</kbd></span></div>
+        <span>Push-to-talk held</span><div class="di-status is-crop di-s-ptt"><span class="di-word"><svg class="mk-ico sm"><use href="#i-ptt"/></svg>Talk</span><span>listening</span></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>3</b> Click and hotkey</span>
+      <div class="di-aff">
+        <div class="di-status di-s-call" style="border:1px solid var(--border-soft);border-radius:7px;width:288px;box-sizing:border-box">
+          <span class="di-word"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span>
+          <span class="di-sp"></span>
+          <button type="button">Hold <kbd class="kb-hint">⌃⌥M</kbd> to talk</button>
+        </div>
+        <span class="di-note">The state word is the mute button. The right end always says what the hotkey does next: Mute, Unmute, or Hold to talk during a call.</span>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>Room for words, so the call state can say what to do about it ("hold ⌃⌥M to talk") instead of only changing colour.</li>
+    <li class="con">The dashboard has no window-wide status line today. This is new chrome on every page, and it takes a row of height from the surfaces that size themselves against the measured top bar.</li>
+    <li>Leaves the top bar and its pinned ladder alone.</li>
+    <li class="con">The bottom edge is the least looked-at part of the window, and the residents dock and the background-agents tray already live near it.</li>
+  </ul>
+</section>
+
+<!-- ============================== C ============================== -->
+<section class="mk-variant" id="c">
+  <div class="mk-variant-head"><span class="mk-letter">C</span><h2>Floating button</h2>
+    <p class="mk-pitch">A round microphone button pinned to the window's bottom-left corner on every page. The ring and glyph carry the state; hover or focus opens it into a pill with the words and the hotkey.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> In place, listening</span>
+      <div class="mk-win di-ctx">
+        <div class="mk-win-bar"><i></i><i></i><i></i><span>Mission Control</span></div>
+        <div class="mk-winbody"><div class="mk-skel w60"></div><div class="mk-skel w80"></div><div class="mk-skel w40"></div><div class="mk-skel w60"></div>
+          <button type="button" class="di-fab is-abs di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico lg"><use href="#i-mic"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> The four states</span>
+      <div class="di-states">
+        <span>Listening</span><span class="di-fabrow"><button type="button" class="di-fab di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico lg"><use href="#i-mic"/></svg></button></span>
+        <span>Muted</span><span class="di-fabrow"><button type="button" class="di-fab di-s-muted" aria-label="Voice: muted. Unmute"><svg class="mk-ico lg"><use href="#i-mic-off"/></svg></button></span>
+        <span>Auto-muted for a call</span><span class="di-fabrow"><button type="button" class="di-fab di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico lg"><use href="#i-phone"/></svg></button></span>
+        <span>Push-to-talk held</span><span class="di-fabrow"><button type="button" class="di-fab di-s-ptt" aria-label="Voice: push-to-talk is held"><svg class="mk-ico lg"><use href="#i-ptt"/></svg></button></span>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>3</b> Hover or focus</span>
+      <div class="di-aff">
+        <span class="di-fabpill di-s-listen"><svg class="mk-ico lg di-ico"><use href="#i-mic"/></svg><span><b>Listening</b> · click to mute</span><kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-fabpill di-s-call"><svg class="mk-ico lg di-ico"><use href="#i-phone"/></svg><span><b>On a call</b> · hold to talk</span><kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-note">The pill opens toward the middle of the window and closes on blur. A click anywhere on it toggles mute.</span>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>The largest click target of the five, in the same spot on every page, and nothing in the layout has to make room for it.</li>
+    <li class="con">It floats over content. Board columns, the conversation and the residents dock all reach the lower-left corner, so something is always underneath it.</li>
+    <li>Independent of the top bar's ladder and of whether a session is open.</li>
+    <li class="con">The words are behind a hover, which is the opposite of the feature's own rule for hints ("always visible, no hover"). At rest it is glyph and colour only.</li>
+  </ul>
+</section>
+
+<!-- ============================== D ============================== -->
+<section class="mk-variant" id="d">
+  <div class="mk-variant-head"><span class="mk-letter">D</span><h2>Edge light</h2>
+    <p class="mk-pitch">A hairline of light along the window's top edge in the state's colour, with a small tab that names the state. It is ambient: seen without being looked at.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> In place, listening</span>
+      <div class="mk-win di-ctx">
+        <div class="di-edge di-s-listen"><button type="button" class="di-tab" aria-label="Voice: listening. Mute"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</button></div>
+        <div class="mk-win-bar"><i></i><i></i><i></i><span>Mission Control</span></div>
+        <div class="mk-winbody"><div class="mk-skel w60"></div><div class="mk-skel w80"></div><div class="mk-skel w40"></div><div class="mk-skel w60"></div></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> The four states</span>
+      <div class="di-states">
+        <span>Listening</span><div class="di-edgecrop"><div class="di-edge di-s-listen"><span class="di-tab"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</span></div></div>
+        <span>Muted</span><div class="di-edgecrop"><div class="di-edge di-s-muted"><span class="di-tab"><svg class="mk-ico sm"><use href="#i-mic-off"/></svg>Muted</span></div></div>
+        <span>Auto-muted for a call</span><div class="di-edgecrop"><div class="di-edge di-s-call"><span class="di-tab"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span></div></div>
+        <span>Push-to-talk held</span><div class="di-edgecrop"><div class="di-edge di-s-ptt"><span class="di-tab"><svg class="mk-ico sm"><use href="#i-ptt"/></svg>Talk</span></div></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>3</b> Click and hotkey</span>
+      <div class="di-aff">
+        <div class="di-edgecrop" style="width:288px;height:36px"><div class="di-edge di-s-listen"><span class="di-tab" style="background:color-mix(in oklab, var(--idle) 14%, var(--panel))"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</span></div></div>
+        <span class="di-tip">Click the tab to mute <kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-note">The line is decoration; the tab is the control and the accessible name. Muted has no glow at all.</span>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>Readable from the corner of the eye, and it costs the layout nothing: the line overlays the window's top pixel rows.</li>
+    <li class="con">Colour is doing most of the work, and it has to keep working in every skin (Daylight, Paper, Blueprint, Neon Dusk), each of which would need four state colours that read on its own chrome.</li>
+    <li>The tab is small and fixed, so it never collides with the top bar's ladder.</li>
+    <li class="con">The tab sits in the title bar, which is the window's drag region in the desktop shell, so it needs a no-drag hole there and a different home in the browser build.</li>
+  </ul>
+</section>
+
+<!-- ============================== E ============================== -->
+<section class="mk-variant" id="e">
+  <div class="mk-variant-head"><span class="mk-letter">E</span><h2>Composer mic</h2>
+    <p class="mk-pitch">A microphone control at the head of the message box, where the operator would otherwise type. Its placeholder teaches the spoken form using the open session's own name.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> In place, listening</span>
+      <div class="mk-win di-ctx" style="--resident: var(--resident-cyan)">
+        <div class="mk-win-bar"><i></i><i></i><i></i><span>Mission Control · <span class="v-name">Steve</span></span></div>
+        <div class="mk-winbody"><div class="di-turn">Build is red on <code>main</code>: two failing unit shards. Looking at the first now.</div><div class="mk-skel w80"></div><div class="mk-skel w40"></div></div>
+        <div class="di-compose">
+          <button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico"><use href="#i-mic"/></svg></button>
+          <textarea class="compose-input" rows="1" placeholder="Message to send… or say &quot;Steve, …&quot;"></textarea>
+          <button class="btn btn-send">Send</button>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> The four states</span>
+      <div class="di-states">
+        <span>Listening</span><span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-fake">or say "Steve, …"</span></span>
+        <span>Muted</span><span class="di-microw"><button type="button" class="di-mic di-s-muted" aria-label="Voice: muted. Unmute"><svg class="mk-ico"><use href="#i-mic-off"/></svg></button><span class="di-fake">Voice is muted</span></span>
+        <span>Auto-muted for a call</span><span class="di-microw"><button type="button" class="di-mic di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico"><use href="#i-phone"/></svg></button><span class="di-fake">On a call · hold ⌃⌥M</span></span>
+        <span>Push-to-talk held</span><span class="di-microw"><button type="button" class="di-mic di-s-ptt" aria-label="Voice: push-to-talk is held"><svg class="mk-ico"><use href="#i-ptt"/></svg></button><span class="di-fake">Listening while held</span></span>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>3</b> Click and hotkey</span>
+      <div class="di-aff">
+        <span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute" style="box-shadow:0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent)"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span></span>
+        <span class="di-note">The button mutes Mission Control everywhere, not just for this session. It does not dictate into the box: speech is routed by name, as anywhere else.</span>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>Teaches the feature at the moment of typing, with the right name already filled in, which is the spec's "teach in place" goal.</li>
+    <li class="con">Only present where a message box is open. On the Board with nothing selected, in Settings or in the inbox there is no indicator, so it cannot be the only in-window mirror.</li>
+    <li>No change to the top bar, the window edges or any page's height.</li>
+    <li class="con">A microphone inside a text box reads as "dictate into this box" in every other app. Operators will expect the words to land in the field, and a session with no call sign has no name to put in the placeholder.</li>
+  </ul>
+</section>
+
+</body>
+</html>

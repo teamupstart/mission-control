@@ -22,6 +22,11 @@ import {
   isTestEvidenceAuditorPersona,
   testEvidenceRequestCategories,
 } from "./test-evidence-audit.ts";
+import { clipPacketField, clipUtf8, sanitizeWorkflowFeedback } from "./packet-text.ts";
+import { utf8Bytes } from "../util/utf8.ts";
+import { inspectorFindingsMinimumBytes, renderInspectorFindings } from "../inspector/findings-text.ts";
+
+export { sanitizeWorkflowFeedback };
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
 /**
@@ -65,6 +70,7 @@ export interface InspectorFeedbackInput {
   inspectorRound: number;
   reviewPosture: InspectorPosture | null;
   policy: InspectorFindingsPolicy;
+  freshPublishedReview?: boolean;
   findings: InspectorComment[];
   /** The pinned immutable workflow version contains at least one Persona. */
   workflowEvidence: boolean;
@@ -84,6 +90,8 @@ export interface PrHandoffInput {
    * a session running two reviews must be told which repository's.
    */
   repoRoot: string | null;
+  /** Stacked pull requests: the base this pull request belongs on, or null when not stacked. */
+  stackInstruction?: string | null;
 }
 
 /**
@@ -145,6 +153,12 @@ export interface SessionActionPacketInput {
   pullRequestCi?: boolean;
   /** PR completion or a required Pull Request skill, including older published actions. */
   pullRequestPolicy?: boolean;
+  /**
+   * Stacked pull requests: the base the session's pull request belongs on, computed when the
+   * packet is prepared. Rendered only beside the pull-request policy, and only when non-null,
+   * so every unstacked packet is byte-identical to what it was.
+   */
+  stackInstruction?: string | null;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -174,32 +188,6 @@ export interface EvidenceReadinessPacketInput {
   segment: number;
   readiness: WorkflowEvidenceReadinessResult;
   workflowEvidence: boolean;
-}
-
-/** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
-export function sanitizeWorkflowFeedback(value: string): string {
-  return value
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "  ")
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
-}
-
-function clipUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
-  const clean = sanitizeWorkflowFeedback(value);
-  if (encoder.encode(clean).byteLength <= maxBytes) return { value: clean, truncated: false };
-  let bytes = 0;
-  let output = "";
-  for (const scalar of clean) {
-    const size = encoder.encode(scalar).byteLength;
-    if (bytes + size > maxBytes) break;
-    output += scalar;
-    bytes += size;
-  }
-  return { value: output, truncated: true };
-}
-
-function field(value: string): { value: string; truncated: boolean } {
-  return clipUtf8(value, WORKFLOW_LIMITS.feedbackFieldBytes);
 }
 
 function evidenceLine(reference: EvidenceRef): string {
@@ -249,6 +237,15 @@ function testEvidenceRepairRecipe(verdict: PersonaVerdict): string[] {
   return lines;
 }
 
+/** The authorization contract and final instruction every finalized packet ends with. */
+function packetClosing(finalInstruction: string, workflowEvidence: boolean): string {
+  const authorization = executionAuthorizationContract({
+    workflowEvidence,
+    workflowContinuation: true,
+  });
+  return `${authorization}\n\n${finalInstruction}`;
+}
+
 function finalizePacket(
   body: string,
   truncated: boolean,
@@ -260,11 +257,7 @@ function finalizePacket(
   truncated: boolean;
 } {
   const cleanBody = sanitizeWorkflowFeedback(body).replace(/\s+$/u, "");
-  const authorization = executionAuthorizationContract({
-    workflowEvidence,
-    workflowContinuation: true,
-  });
-  const finalBlock = `${authorization}\n\n${finalInstruction}`;
+  const finalBlock = packetClosing(finalInstruction, workflowEvidence);
   let payload = `${cleanBody}\n\n${finalBlock}`;
   if (encoder.encode(payload).byteLength > WORKFLOW_LIMITS.feedbackPayloadBytes) truncated = true;
   if (truncated) {
@@ -317,7 +310,7 @@ export function renderEvidenceCaptureRepairPacket(input: {
 }): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -350,7 +343,7 @@ export function renderEvidenceReadinessPacket(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -375,7 +368,7 @@ export function renderEvidenceReadinessPacket(
   lines.push(
     "",
     "## How a criterion is matched",
-    "- Each criterion below needs a coverage claim with valid proof. Duplicate matches are warnings; one claim may answer several criteria.",
+    "- Each non-deferred criterion below needs a coverage claim with valid proof. Duplicate matches are warnings; one claim may answer several criteria.",
     "- Bind a claim by copying the criterion id into its `criterionId`. Copying the criterion text verbatim into `criterion` also binds it. Either one avoids a guess.",
     "- One evidence item may be linked from as many claims as apply. Proof you already registered does not need capturing again to cover a second criterion.",
     "- Evidence and coverage you already registered are carried into this repair segment. Register only what is genuinely missing.",
@@ -425,7 +418,15 @@ export function renderEvidenceReadinessPacket(
       lines.push("Advisory model warning: the suggested proof class differs from the author's declaration. The author declaration controls structural requirements.");
     }
   }
-  const satisfied = input.readiness.criteria.filter((item) => item.gaps.length === 0);
+  const deferred = input.readiness.criteria.filter((item) => item.deferredToAction === "pull_request");
+  if (deferred.length > 0) {
+    lines.push("", "## Criteria deferred to the Pull Request action",
+      "These outcomes remain owed after review. No publication proof or coverage claim is required before that action.");
+    for (const criterion of deferred) {
+      lines.push(`- ${bounded(criterion.criterionId)}: ${bounded(criterion.criterion)}`);
+    }
+  }
+  const satisfied = input.readiness.criteria.filter((item) => item.gaps.length === 0 && !item.deferredToAction);
   if (satisfied.length > 0) {
     lines.push("", "## Criteria already matched, for reference only");
     for (const criterion of satisfied) {
@@ -458,7 +459,7 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   const byNode = latestAttempts(input.attempts);
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -514,56 +515,40 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   };
 }
 
-const INSPECTOR_SEVERITY: Record<InspectorComment["severity"], number> = {
-  blocker: 0,
-  major: 1,
-  minor: 2,
-  nit: 3,
-};
-
-/** Render one frozen Inspector finding snapshot without reusing model prose as framing. */
+/**
+ * Render one frozen Inspector finding snapshot without reusing model prose as framing.
+ *
+ * The packet owns its header (goal, workflow, run, PR, pinned head, round and posture) and
+ * its `finalizePacket` closing. The findings between them come from the shared renderer,
+ * which Foreman's review follow-through also types findings through, given
+ * exactly what is left of the payload limit once the closing
+ * that will actually be sent is set aside. The truncation notice is reserved only when the
+ * packet will carry it, so `finalizePacket` never has to clip a finding part way and no
+ * finding that fits is dropped for a notice that never appears. Past the budget, whole
+ * findings are left out and the section says how many.
+ *
+ * Changing this text never reaches a packet already prepared. A delivery stores its payload
+ * and hash when it is prepared, delivery and restart recovery send those stored bytes, and
+ * the gate prepares at most one packet per submission, so only packets prepared after a
+ * change carry the new text.
+ */
 export function renderInspectorFeedback(input: InspectorFeedbackInput): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
-  const unique = new Map<string, InspectorComment>();
-  for (const finding of input.findings) {
-    const prior = unique.get(finding.fingerprint);
-    if (!prior) {
-      unique.set(finding.fingerprint, finding);
-      continue;
-    }
-    // A unique DB index normally makes this branch unreachable. Keeping the renderer
-    // deterministic for a duplicated snapshot prevents caller order from changing the
-    // frozen packet if a joined or legacy input ever contains the same issue twice.
-    const stableFinding = (row: InspectorComment): string => JSON.stringify([
-      row.path,
-      row.line,
-      row.title,
-      row.body,
-      row.severity,
-      row.id,
-    ]);
-    if (stableFinding(finding) < stableFinding(prior)) {
-      unique.set(finding.fingerprint, finding);
-    }
-  }
-  const findings = [...unique.values()].sort((a, b) =>
-    INSPECTOR_SEVERITY[a.severity] - INSPECTOR_SEVERITY[b.severity]
-    || (a.path ?? "").localeCompare(b.path ?? "")
-    || (a.line ?? Number.MAX_SAFE_INTEGER) - (b.line ?? Number.MAX_SAFE_INTEGER)
-    || a.fingerprint.localeCompare(b.fingerprint));
-  const policyInstruction = input.policy === "restart_workflow"
+  const policyInstruction = input.freshPublishedReview
+    ? "Address the findings and reply to their GitHub threads with evidence. The published tree differs from the earlier reviewed tree, so a fresh full workflow review is required even if no code changes are needed. Verify and push any repairs, then finish this turn so Mission Control can review the published work."
+    : input.policy === "restart_workflow"
     // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
     // `inspector_only` arm below still ends in "wait for Inspector to review that new head",
     // which remains literally true: that policy is resolved by the Inspector poller observing
     // a pushed head, not by anything the session reports.
     ? "Fix the findings, verify the work, then commit and push it."
     : "This published policy permits bypassing Personas only for this GitHub Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for GitHub Inspector to review that new head.";
-  const body = [
+  let header = sanitizeWorkflowFeedback([
     "GitHub Inspector reviewed the pinned pull request head and found changes that are required.",
     "",
     "Original user goal:",
@@ -575,26 +560,45 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     `Pinned head: ${bounded(input.targetHeadSha)}`,
     `GitHub Inspector round: ${input.inspectorRound}`,
     `Review posture: ${input.reviewPosture ?? "unknown"}`,
-    "",
-    ...findings.flatMap((finding, index) => {
-      const location = finding.path
-        ? `${finding.path}${finding.line ? `:${finding.line}` : ""}`
-        : "general";
-      return [
-        ...(index === 0 ? [] : [""]),
-        `## ${finding.severity.toUpperCase()} - ${bounded(finding.title)}`,
-        `Location: ${bounded(location)}`,
-        bounded(
-          finding.body
-            ?? "Legacy finding detail is unavailable. Use the severity, title, and location above.",
-        ),
-        `Fingerprint: ${finding.fingerprint}`,
-      ];
-    }),
-  ].join("\n");
+  ].join("\n"));
+  // The closing `finalizePacket` will append, sized as it will actually be sent: the
+  // truncation notice is added only to a packet that ends up truncated.
+  const closingBytes = utf8Bytes(`\n\n${packetClosing(policyInstruction, input.workflowEvidence)}`);
+  const noticeBytes = utf8Bytes(TRUNCATION_NOTICE);
+  // Several header fields are each capped at the field limit, so together they can outgrow
+  // the whole payload. The findings count is reserved first and the header takes what is
+  // left: a long goal may be clipped, but the session is always told how many findings exist.
+  const headerRoomBeforeNotice = WORKFLOW_LIMITS.feedbackPayloadBytes
+    - closingBytes
+    - inspectorFindingsMinimumBytes(input.findings)
+    - utf8Bytes("\n\n");
+  if (utf8Bytes(header) > headerRoomBeforeNotice) truncated = true;
+  // From here a truncated header makes the notice certain, so it is reserved outright.
+  const headerRoom = headerRoomBeforeNotice - (truncated ? noticeBytes : 0);
+  if (utf8Bytes(header) > headerRoom) {
+    header = clipUtf8(header, Math.max(0, headerRoom)).value.replace(/\s+$/u, "");
+    truncated = true;
+  }
+  const budgetBytes = WORKFLOW_LIMITS.feedbackPayloadBytes
+    - closingBytes
+    - (truncated ? noticeBytes : 0)
+    - utf8Bytes(`${header}\n\n`);
+  // Otherwise the notice is the renderer's to reserve, and only for a listing that clips a
+  // field: a finding that fits the packet as it will be sent is never dropped for it.
+  const section = renderInspectorFindings(input.findings, {
+    budgetBytes,
+    truncationReserveBytes: truncated ? 0 : noticeBytes,
+  });
   return {
-    ...finalizePacket(body, truncated, policyInstruction, input.workflowEvidence),
-    failedPersonaCount: findings.length,
+    ...finalizePacket(
+      `${header}\n\n${section.text}`,
+      truncated || section.truncated,
+      policyInstruction,
+      input.workflowEvidence,
+    ),
+    // Every unresolved finding the gate saw, listed or not: the count is the gate's, and a
+    // finding left out of the text to save bytes is still one the session has to fix.
+    failedPersonaCount: section.shown + section.omitted,
   };
 }
 
@@ -618,7 +622,7 @@ export function renderUnchangedEvidenceNudge(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -694,7 +698,7 @@ export function renderParkedRepairReminder(
 ): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -772,7 +776,9 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
     ? ["", workflowPullRequestCiContract(), ""]
     : [];
-  const prPolicy = input.pullRequestPolicy ? ["", pullRequestPolicyContract(), ""] : [];
+  const prPolicy = input.pullRequestPolicy
+    ? ["", pullRequestPolicyContract(), ...(input.stackInstruction ? ["", sanitizeWorkflowFeedback(input.stackInstruction)] : []), ""]
+    : [];
   const payload = `${[...lines, authorization, ...ciPolicy, ...prPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
@@ -796,7 +802,7 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
 export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback {
   let truncated = false;
   const bounded = (value: string): string => {
-    const result = field(value);
+    const result = clipPacketField(value);
     truncated ||= result.truncated;
     return result.value;
   };
@@ -807,6 +813,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     "",
     pullRequestPolicyContract(),
     "",
+    ...(input.stackInstruction ? [bounded(input.stackInstruction), ""] : []),
     "Original user goal:",
     bounded(input.originalGoal),
     "",

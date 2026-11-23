@@ -1,10 +1,10 @@
 # Pi telemetry setup
 
-In **Settings > Setup > Agent CLIs**, the optional **Pi OpenTelemetry extension** item follows
-Pi. It links to these instructions and checks installation when you press **Re-check**. Mission
-Control never installs this private package, changes Pi settings, or enables its exporter on
-your behalf. Pi works without it. This is separate from the [Mission Control Pi integration](pi-extension.md)
-that provides tools and lifecycle reporting.
+Enable **Enterprise package recommendations** in **Settings > Feature flags**. With the
+[bundled catalog](enterprise-packages.md), **Settings > Setup > Agent CLIs > Pi** lists the
+**Pi OpenTelemetry extension**. Its guide and **Re-check** result apply to the Pi home used
+by the daemon. Installing the package is optional. The [Mission Control Pi integration](pi-extension.md)
+provides tools and lifecycle reporting independently.
 
 ## Before installing
 
@@ -34,7 +34,7 @@ Only `@upstart` is routed to CodeArtifact; public npm resolution is unchanged:
     '@upstart:registry=https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/' \
     '//code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/:_authToken=${CODEARTIFACT_AUTH_TOKEN}' \
     > "$NPM_CONFIG_USERCONFIG"
-  pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
+  pi install npm:@upstart/pi-router-otel@0.1.1-alpha.8
   pi list
 )
 ```
@@ -43,8 +43,8 @@ For isolated validation, set `PI_CODING_AGENT_DIR` to a disposable directory bef
 If UMT is already installed, `umt artifacts --tools npm` is an alternative authentication
 setup; do not combine its persistent npm config with the temporary override above. See the
 [Pi package consumer instructions](https://github.com/nigel-upstart/pi-buildout/blob/main/packages/README.md#consumer-setup-read-only).
-The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
-all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
+The package enables logs, traces and metrics by default, including full prompt and tool content,
+and sends them to `https://corp-otel-staging-1.upstart.com` using OTLP HTTP/protobuf. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
 overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
 However, the gateway fails open silently.
 
@@ -57,7 +57,7 @@ However, the gateway fails open silently.
   for `pi install`; a terminal using another home does not repair the daemon's installation.
 - Disabled package autoload, a filtered entry, duplicate declarations, unreadable or truncated settings, an
   unsupported manifest, an empty or non-exact version range/tag, or a separate `npm:pi-otel` registration
-  reports **Unknown**, not Ready. An installed version that differs from its registered pin
+  reports **Unknown**, not Ready. An installed version or registered pin that differs from the recommendation
   reports **Needs setup**.
   Custom checkout/git installations and project-only installs are outside this check.
 - In a fresh Pi session, run `/otel status` to see effective enablement, signal export health
@@ -65,7 +65,7 @@ However, the gateway fails open silently.
   installation's defaults. Restart Mission Control before checking its embedded Pi sessions
   after an install or resource change.
 - Set `PI_OTEL_DISABLED=1` in the launching environment or `otel.enabled=false` in Pi settings
-  to stop exports. To remove the package, use `pi remove npm:@upstart/pi-router-otel@0.1.1-alpha.4`.
+  to stop exports. To remove the package, use `pi remove npm:@upstart/pi-router-otel@0.1.1-alpha.8`.
 
 ## Build and runtime boundary
 

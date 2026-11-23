@@ -173,6 +173,8 @@ async function startStub(
 function mkSession(cwd: string, over: Partial<Session> = {}): Session {
   const now = Date.now();
   return {
+    blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -208,7 +210,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
       completedAt: now - 120_000,
       updatedAt: now - 120_000,
     },
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -287,6 +289,8 @@ async function runWorker(
     claudeLog: string;
     ms: number;
     until?: (output: string) => boolean;
+    /** The worker's state directory, when a test reads what it wrote there. */
+    home?: string;
   },
 ): Promise<string> {
   let out = "";
@@ -299,7 +303,7 @@ async function runWorker(
       env: {
         ...process.env,
         MISSION_PORT: String(opts.port),
-        MISSION_HOME: tmp("mission-pw-e2e-"),
+        MISSION_HOME: opts.home ?? tmp("mission-pw-e2e-"),
         MISSION_CLAUDE_BIN: opts.claudeBin,
         MISSION_CLAUDE_TRANSPORT: "print",
         FAKE_CLAUDE_LOG: opts.claudeLog,
@@ -656,7 +660,8 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
     return { status: 200, json: null };
   });
 
-  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 12000 });
+  const home = tmp("mission-pw-claimed-");
+  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 12000, home });
   await stub.close();
 
   const injects = stub.calls.filter((c) => c.path.endsWith("/inject"));
@@ -693,6 +698,126 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
     1,
     `the retired Stop kept gathering transcript evidence on idle ticks\n${out}`,
   );
+
+  // A claim is consumed by the daemon's transaction, not by the worker's consume route, so it
+  // is recorded at the claim itself: one line naming the run Foreman started.
+  const decisions = readFileSync(join(home, "foreman.log"), "utf8").trim().split("\n");
+  assert.equal(decisions.length, 1, decisions.join("\n"));
+  assert.match(decisions[0]!, /\[foreman\] completion outcome=workflow_claimed session=s1 .* task=chat generation=1 /);
+  assert.match(decisions[0]!, / run=run-review( |$)/);
+});
+
+test("a session skipped for unresolved intent claims its bound workflow on the tick after acceptance", async () => {
+  // The stuck-goal exit (docs/plans/foreman-stuck-goal-recovery, phase 3). While the latest
+  // instruction is unresolved Foreman skips at step 8 every tick and nothing is gathered or
+  // claimed. Once a person accepts the objective as is, the goal route answers with the
+  // shape `Registry.acceptGoalObjective` writes - same objective and version, the pending
+  // revision resolved as steering - and the very next tick verifies, consumes and claims.
+  const repo = tmp("pw-accept-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  const paused = {
+    ...goalRecord,
+    prompt: "B",
+    focus: "B",
+    relationship: "unclear",
+    rationale: "The proposed amendment did not explicitly preserve the current objective.",
+    promptRevision: 2,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [{ revision: 2, prompt: "B" }],
+  };
+  const accepted = {
+    ...paused,
+    relationship: "steer",
+    rationale: "Accepted by you: the current objective is the completion contract. 1 instruction was recorded as steering.",
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  };
+  let queue = mkQueue(repo);
+  let pausedReads = 0;
+  let acceptedAt = 0;
+  let claimedAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    }
+    if (p === "/api/reviews" || p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      if (acceptedAt) return { status: 200, json: accepted };
+      // Two skipped ticks, then the person presses Accept objective as is.
+      if (++pausedReads >= 2) acceptedAt = Date.now();
+      return { status: 200, json: paused };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return { status: 200, json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc123" } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: [{ role: "user", text: GOAL, tools: [] }, { role: "assistant", text: "Added a retry.", tools: [] }],
+          truncated: false,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
+      queue = { ...queue, promptedConsumedGeneration: body.expectedWorkCycle.generation, updatedAt: Date.now() };
+      claimedAt = Date.now();
+      return { status: 200, json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+
+  let out: string;
+  try {
+    out = await runWorker({
+      port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 30_000,
+      until: () => claimedAt !== 0 && Date.now() - claimedAt >= IDLE_SETTLE_MS,
+    });
+  } finally {
+    await stub.close();
+  }
+
+  const goalReads = stub.to("GET", "/api/sessions/s1/goal");
+  const firstAcceptedRead = stub.calls.indexOf(goalReads[2]!);
+  assert.ok(pausedReads >= 2 && acceptedAt > 0, `the worker never reached the paused goal twice\n${out}`);
+  // Nothing was gathered or verified while the instruction was unresolved.
+  const diffs = stub.to("GET", "/api/sessions/s1/diff");
+  assert.ok(diffs.length >= 1, `the accepted goal was never verified\n${out}`);
+  assert.ok(
+    stub.calls.indexOf(diffs[0]!) > firstAcceptedRead,
+    `evidence was gathered while the intent was unresolved\n${out}`,
+  );
+  const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(claims.length, 1, `expected exactly one workflow claim after acceptance\n${out}`);
+  const claim = claims[0]!.body as {
+    expectedWorkCycle: { generation: number };
+    expectedIntent: { objective: string; objectiveVersion: number; promptRevision: number; episodeKey: string };
+  };
+  assert.equal(claim.expectedWorkCycle.generation, 1, "the skipped generation is the one consumed");
+  assert.deepEqual(claim.expectedIntent, {
+    objective: GOAL,
+    objectiveVersion: 1,
+    promptRevision: 2,
+    episodeKey: "intent:1:2",
+  }, "the claim is guarded by the accepted, unchanged objective");
+  assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+  assert.equal(queue.promptedConsumedGeneration, 1, out);
 });
 
 // Local bundles have no Git patch. Exercise the real worker through verification and
@@ -1379,7 +1504,6 @@ test("work restarting during verification discards the verdict without consuming
   const session = mkSession(repo);
   const completedAt = Date.now() - 120_000;
   let restarted = false;
-  let verifierStartedAt = 0;
   const queue = mkQueue(repo);
 
   const stub = await startStub((req, url) => {
@@ -1423,7 +1547,6 @@ test("work restarting during verification discards the verdict without consuming
       // This read is immediately before the verifier call. Model a hook that starts
       // generation 2 while the verifier is evaluating generation 1.
       restarted = true;
-      verifierStartedAt = Date.now();
       return { status: 200, json: { docs: [], truncated: false } };
     }
     return { status: 200, json: null };
@@ -1434,7 +1557,15 @@ test("work restarting during verification discards the verdict without consuming
     claudeBin: fake.bin,
     claudeLog: fake.log,
     ms: 20_000,
-    until: () => verifierStartedAt !== 0 && Date.now() - verifierStartedAt >= IDLE_SETTLE_MS,
+    // Settle from the verifier's OWN recorded call, not from the `/standards` read before it.
+    // That read precedes spawning `claude -p`, and on a loaded host the spawn alone can outlast
+    // the settle window - the worker was then shut down mid-verify (`claude exited null`) and
+    // the call this test counts was never made. The fake logs once it has read the prompt, so
+    // this waits for the verdict to be in flight and then a full idle cadence past it.
+    until: () => {
+      const calls = claudeCalls(fake.log);
+      return calls.length > 0 && Date.now() - calls[0]! >= IDLE_SETTLE_MS;
+    },
   });
   await stub.close();
 
@@ -1793,6 +1924,7 @@ function registeredCommandEvidence(
 async function runShipEvidenceScenario(input: {
   verdict: { complete: boolean; summary: string; gaps: FixedGap[]; resolved?: string[] };
   evidence?: WorkflowStagedEvidenceList;
+  evidenceAfterVerification?: WorkflowStagedEvidenceList;
   evidenceStatus?: number;
   evidenceReadsBeforeStop?: number;
   claimReason?: "no_binding" | "manual_trigger";
@@ -1860,7 +1992,8 @@ async function runShipEvidenceScenario(input: {
       return input.evidenceStatus && input.evidenceStatus !== 200
         ? { status: input.evidenceStatus, json: { error: "evidence unavailable" } }
         : { status: 200, json: {
-          ...(input.evidence ?? { generation: 0, images: [], artifacts: [] }),
+          ...((verificationFinished ? input.evidenceAfterVerification : undefined)
+            ?? input.evidence ?? { generation: 0, images: [], artifacts: [] }),
           ...(input.registrationEligible === null ? {} : {
             registrationEligible: verificationFinished && input.eligibilityAfterVerification !== undefined
               ? input.eligibilityAfterVerification
@@ -1933,7 +2066,9 @@ async function runShipEvidenceScenario(input: {
       ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
       : input.stopOn === "consume"
         ? () => stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length > 0
-        : (output) => input.eligibilityAfterVerification !== undefined
+        : (output) => input.evidenceAfterVerification !== undefined
+          ? output.includes("workflow evidence changed during verification")
+          : input.eligibilityAfterVerification !== undefined
           // Receiving the request is not proof that the worker processed its response.
           ? output.includes("workflow evidence eligibility changed or is unavailable")
           : evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250
@@ -2605,6 +2740,235 @@ process.stdin.on("end", () => {
   );
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+});
+
+
+test("a held plan whose foreman_complete workflow waits on the claim receives its gaps in the same pass", async () => {
+  // The reported stall: Plan Validation starts only from Foreman's completion claim, so a
+  // held plan verdict used to spend that cycle silently - no run, no message, no next turn.
+  const repo = tmp("pw-repo-");
+  const dir = tmp("fake-claude-plan-held-");
+  const log = join(dir, "calls.log");
+  const bin = join(dir, "claude");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, Date.now() + "\\n");
+  process.stdout.write(JSON.stringify({ result: JSON.stringify({
+    complete: false,
+    summary: "phase 3 has no dependency on phase 2",
+    gaps: [
+      { id: "phase-deps", severity: "blocking", kind: "incomplete", path: "docs/plans/x/phase-3.md",
+        detail: "phase 3 reads the reports table but does not depend on phase 2", fix: "add the dependency" },
+    ],
+  }) }));
+});
+`,
+  );
+  chmodSync(bin, 0o755);
+  writeFileSync(log, "");
+
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "plan", workflowId: "plan-validation",
+      planPolicy: { storage: "repository", commitPlanHtml: false } }),
+  });
+  const publication = {
+    owner: "workflow", bindingId: "plan-binding", workflowVersionId: "plan-version", triggerMode: "foreman_complete",
+  };
+  const stopAt = Date.now() - 120_000;
+  let queue = mkQueue(repo);
+  let deliveredAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: stopAt }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/workflow-runs") return { status: 200, json: { items: [] } };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: shipGoalRecord };
+    if (p === "/api/sessions/s1/plan-publication") return { status: 200, json: publication };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/docs/plans/x/phase-3.md b/docs/plans/x/phase-3.md\n+## Phase 3\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: SHIP_GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as {
+        generation: number;
+        decision?: { outcome: string; summary: string; gaps: { id: string }[] };
+      };
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.generation,
+        promptedDecision: body.decision
+          ? {
+            logicalKey: "agent-1",
+            generation: body.generation,
+            outcome: body.decision.outcome as "held",
+            summary: body.decision.summary,
+            gaps: body.decision.gaps as { id: string; path: string; detail: string }[],
+            decidedAt: Date.now(),
+          }
+          : null,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/s1/queue/ship-recovery/claim") {
+      const body = JSON.parse(raw) as {
+        taskId: string;
+        logicalKey: string;
+        generation: number;
+        decisionGeneration: number | null;
+        decisionOutcome: "held" | null;
+        reason: "held_gaps";
+        attempt: number;
+        marker: string;
+        payloadSummary: string;
+        deliveryRoute?: string;
+      };
+      queue = {
+        ...queue,
+        promptedRecovery: {
+          taskId: body.taskId,
+          logicalKey: body.logicalKey,
+          generation: body.generation,
+          decisionGeneration: body.decisionGeneration,
+          decisionOutcome: body.decisionOutcome,
+          reason: body.reason,
+          attempt: body.attempt,
+          marker: body.marker,
+          payloadSummary: body.payloadSummary,
+          claimedAt: Date.now(),
+          nextEligibleAt: Date.now() + 40 * 60_000,
+          lastDelivery: "unknown",
+        },
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/ship-recovery/delivery") {
+      assert.ok(queue.promptedRecovery);
+      queue = {
+        ...queue,
+        promptedRecovery: { ...queue.promptedRecovery, lastDelivery: "delivered" },
+        updatedAt: Date.now(),
+      };
+      deliveredAt = Date.now();
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: { ok: true } };
+    if (p === "/api/sessions/s1/inject") return { status: 200, json: { ok: true } };
+    return { status: 200, json: null };
+  });
+
+  const home = tmp("mission-pw-plan-held-");
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: bin,
+    claudeLog: log,
+    ms: 20_000,
+    until: () => deliveredAt !== 0 && Date.now() - deliveredAt >= IDLE_SETTLE_MS,
+    home,
+  });
+  await stub.close();
+
+  const consumes = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  assert.equal(consumes.length, 1, `expected exactly one consumed generation\n${out}`);
+  const decision = (consumes[0]!.body as {
+    decision?: { outcome: string; gaps: { id: string }[] };
+  }).decision;
+  assert.equal(decision?.outcome, "held", out);
+  assert.deepEqual(decision?.gaps.map((g) => g.id), ["phase-deps"], out);
+
+  const claims = stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim");
+  const injects = stub.to("POST", "/api/sessions/s1/inject");
+  assert.equal(claims.length, 1, `the held plan gaps did not spend exactly one recovery attempt\n${out}`);
+  assert.equal((claims[0]!.body as { deliveryRoute?: string }).deliveryRoute, "immediate-held");
+  assert.equal(injects.length, 1, `the held plan gaps were not delivered exactly once\n${out}`);
+  const text = (injects[0]!.body as { text?: string }).text ?? "";
+  assert.match(text, /docs\/plans\/x\/phase-3\.md: phase 3 reads the reports table/);
+  assert.match(text, /so its bound workflow has not started/);
+  assert.doesNotMatch(text, /Do not commit, push/, "a plan keeps its commit-and-push handoff rule");
+  assert.ok(
+    stub.calls.indexOf(consumes[0]!) < stub.calls.indexOf(claims[0]!),
+    "the held verdict must be consumed before its recovery attempt is claimed",
+  );
+  // An incomplete verdict never claims the workflow; the relay is how the plan gets back to it.
+  assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+
+  // The hold outlives the queue row that the next completion overwrites: foreman.log keeps
+  // one line per decision, with the gap ids that say why, and never the gap details.
+  const decisions = readFileSync(join(home, "foreman.log"), "utf8").trim().split("\n");
+  assert.equal(decisions.length, 1, decisions.join("\n"));
+  assert.match(decisions[0]!, /\[foreman\] completion outcome=held session=s1 .* task=plan generation=1 /);
+  assert.match(decisions[0]!, / gaps=phase-deps:incomplete /);
+  assert.match(decisions[0]!, /summary="phase 3 has no dependency on phase 2"$/);
+  assert.doesNotMatch(decisions[0]!, /reads the reports table/, "gap details stay out of the log");
+});
+
+
+test("capture timestamps and unrelated episodes do not invalidate registered proof", async () => {
+  const original = registeredCommandEvidence();
+  const after = structuredClone(original);
+  after.artifacts[0]!.updatedAt += 100;
+  after.artifacts.push(...registeredCommandEvidence("intent:0:1", "older-check").artifacts,
+    ...registeredCommandEvidence(null, "legacy-check").artifacts);
+  const result = await runShipEvidenceScenario({
+    verdict: { complete: true, summary: "implementation complete", gaps: [] },
+    evidence: original, evidenceAfterVerification: after, stopOn: "claim",
+  });
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 1, result.out);
+  assert.doesNotMatch(result.out, /workflow evidence changed during verification/);
+});
+
+test("evidence arriving or changing during verification leaves the generation unconsumed", async () => {
+  const original = registeredCommandEvidence();
+  const replaced = structuredClone(original);
+  replaced.artifacts[0]!.sha256 = "b".repeat(64);
+  for (const [before, after] of [
+    [{ generation: 0, images: [], artifacts: [] }, original],
+    [original, replaced],
+    [original, { generation: 5, images: [], artifacts: [] }],
+  ] satisfies Array<[WorkflowStagedEvidenceList, WorkflowStagedEvidenceList]>) {
+    const result = await runShipEvidenceScenario({
+      verdict: { complete: true, summary: "implementation complete", gaps: [] },
+      evidence: before, evidenceAfterVerification: after, respectEvidencePolicy: true, stopOn: "none",
+    });
+    assert.match(result.out, /workflow evidence changed during verification/);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim").length, 0);
+  }
 });
 
 });

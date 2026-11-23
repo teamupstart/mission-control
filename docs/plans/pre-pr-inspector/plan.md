@@ -30,7 +30,7 @@ the default review experience before PR creation without weakening current users
 or Shipping. It also creates a reversible proving period before retiring the remote reviewer.
 
 The supporting investigation is in
-[`docs/reports/inspector-pre-pr-assessment/report.html`](../../reports/inspector-pre-pr-assessment/report.html).
+`docs/reports/inspector-pre-pr-assessment/report.html` (removed from the repository in #1213).
 
 ## Goal and non-goals
 

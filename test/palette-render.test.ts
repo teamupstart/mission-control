@@ -23,7 +23,9 @@ function stores(over: Partial<PaletteStores> = {}): PaletteStores {
     sessionActions: [],
     schedules: [],
     sessionNames: new Map(),
+    residents: [],
     settingsBindings: new Map(),
+    featureFlags: { enableAll: false, overrides: {} },
     ...over,
   };
 }

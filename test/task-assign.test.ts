@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -17,7 +17,16 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getTask: getStoredTask } = await import("../src/server/db.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
+const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
+const { GRILL_FIRST_HEADING } = await import("../src/server/grill-first.ts");
+const shapingFlags = await import("../src/server/feature-flags/index.ts");
+const { currentShaping, SHAPING_SECTION_PREAMBLE } = await import("../src/shared/shaping.ts");
+const { getTaskShapingText } = await import("../src/server/db.ts");
+const workUnitHandOver = await import("../src/server/terminal-launch-work-units.ts");
+const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 
 /** Every git fixture this file built, removed together - they are whole checkouts. */
 const roots: string[] = [];
@@ -526,6 +535,9 @@ test("a reused session attributes its merged PR only to the current task after r
   assert.equal(r.getTask("binding-current"), undefined);
 
   const restarted = new Registry();
+  // The daemon restores both owners: TaskManager applies the completed task's merge
+  // quorum before writing dependent edges, including for sources pruned from memory.
+  const restartedTasks = new TaskManager(restarted);
   assert.equal(restarted.getTask("binding-current"), undefined);
   restarted.applyDiscovery([
     mkDiscovered({
@@ -561,6 +573,9 @@ test("a reused session attributes its merged PR only to the current task after r
 
   assert.ok(restarted.getTask("wait-current")?.dependencies[0]?.satisfiedAt);
   assert.equal(restarted.getTask("wait-previous")?.dependencies[0]?.satisfiedAt, null);
+  assert.deepEqual(restartedTasks.dependencyBlockers(restarted.getTask("wait-current")!), []);
+  restartedTasks.stopMissionSessionClosures();
+  await restartedTasks.settleWorktreeReturns();
 });
 
 test("assignment binds only after reset identity is resolved", async () => {
@@ -851,6 +866,35 @@ test("the drop's own arguments hand the task to the agent", async () => {
   // And it owns no checkout of its own - the agent kept the one it had, which is the
   // difference between a handover and a dispatch.
   assert.equal(handed?.worktreePath, null);
+});
+
+test("an assign hands over an older task with the work unit it stored first", async () => {
+  // Its own id: an earlier case assigned `t1`, which gave that row an id that, rightly, stays.
+  // A backlog row filed before work units existed: no id in memory or on disk. The assign gives
+  // it one before anything else, so by the time the prompt is typed the row already holds it,
+  // and the task the agent now runs carries that same stored value.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-work-unit-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ id: "older-work-unit", repoRoot: clone, workUnitId: null }));
+  assert.equal(getStoredTask("older-work-unit")?.workUnitId, null);
+
+  let storedAtPrompt: string | null | undefined;
+  const res = await tasks.assign("older-work-unit", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => {
+      storedAtPrompt = getStoredTask("older-work-unit")?.workUnitId;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  assert.equal(res.ok, true, res.error);
+  const stored = getStoredTask("older-work-unit")?.workUnitId;
+  assert.match(String(stored), /^wu_[0-9A-HJKMNP-TV-Z]{26}$/);
+  assert.equal(storedAtPrompt, stored, "saved before the assign typed the task");
+  const handed = r.getTask("older-work-unit");
+  assert.equal(handed?.status, "running");
+  assert.equal(handed?.sessionId, sessionId);
+  assert.equal(handed?.workUnitId, stored, "the assigned task carries the stored id");
 });
 
 test("a handover names the agent's terminal after the task it just took", async () => {
@@ -1220,6 +1264,188 @@ test("an assignment verifies every submission tool the task needs", async () => 
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+test("a grill-first task is refused before the reset when the MCP bundle cannot be launched", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-nomcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => null,
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /Grill me first/);
+  assert.match(res.error ?? "", /MCP server is not built/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine");
+});
+
+test("a grill-first task is refused before the reset when the bundle lacks request_plan_decisions", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-stale-mcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let asked: readonly string[] = [];
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpToolsForRunningSession: async (required) => {
+      asked = required;
+      return {
+        ok: false as const,
+        reason:
+          "Mission Control's MCP server at /dist/mcp/server.mjs does not publish "
+          + "request_plan_decisions. Run: npm run build",
+      };
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.deepEqual([...asked], ["request_plan_decisions"]);
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /starts with Grill me first, and .*request_plan_decisions/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("a grill-first task is refused before the reset when this session cannot load the grill skill", async () => {
+  // The skill rung of the assignment seam, after the MCP checks have passed: Grill me first
+  // opens with an action that invokes the grill skill, so a session that cannot load it - the
+  // skill switched off, or a conversation still holding the skill set from before the last
+  // change - would be reset and then told to run an interview it cannot start.
+  const cases = [
+    {
+      name: "the grill skill is off",
+      config: { enabled: true, skills: { grill: false } },
+      startedAt: Date.now() + 1_000,
+      error: /Enable Skills and the grill skill/,
+    },
+    {
+      name: "the session predates the current skills",
+      config: { enabled: true, skills: { grill: true } },
+      // Started long before the generation moved, and never acknowledged the reload.
+      startedAt: 0,
+      error: /Wait for Claude Code to reload its skills/,
+    },
+  ] as const;
+  for (const scenario of cases) {
+    // Off first, so turning skills on (or the grill skill off) moves the generation now.
+    applySkillsConfig({ enabled: false });
+    assert.deepEqual(applySkillsConfig(scenario.config).refused, [], scenario.name);
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-noskill-", { startedAt: scenario.startedAt });
+    gitIn(clone, "checkout", "-qb", "feature/mine");
+    r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+    let reset = false;
+    let typed = false;
+
+    let res: Awaited<ReturnType<typeof tasks.assign>>;
+    try {
+      res = await tasks.assign("t1", sessionId, {
+        paneReady,
+        confirmReset: true,
+        missionMcpDescriptor: async () => ({
+          serverName: "mission-control",
+          command: "node",
+          args: ["server.mjs"],
+          env: {},
+        }),
+        verifyMissionMcpToolsForRunningSession: async () => ({ ok: true as const }),
+        reset: async () => {
+          reset = true;
+          return cleanReset();
+        },
+        inject: async () => {
+          typed = true;
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      });
+    } finally {
+      applySkillsConfig({ enabled: false });
+    }
+
+    assert.equal(res.ok, false, scenario.name);
+    assert.match(res.error ?? "", scenario.error, scenario.name);
+    assert.match(res.error ?? "", /A Grill me first task opens with the Grill session action/, scenario.name);
+    assert.equal(res.scope, "task", scenario.name);
+    assert.equal(reset, false, `${scenario.name}: nothing may be done to an agent that cannot run the interview`);
+    assert.equal(typed, false, `${scenario.name}: and nothing is typed at it`);
+    assert.equal(r.getTask("t1")?.status, "backlog", scenario.name);
+    assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine", `${scenario.name}: the checkout is untouched`);
+  }
+});
+
+test("an assigned grill-first task is typed the resolved Grill action ahead of its contract, with request_plan_decisions verified", async () => {
+  // The success path through the live-session seam. The two refusals above prove the tool
+  // check runs; this proves a passing one ends in a prompt that actually opens with the
+  // interview - the operator's edited Grill instruction, resolved against THIS session's
+  // skills, ahead of the ship contract - rather than a ship prompt with nothing to grill.
+  assert.deepEqual(applySkillsConfig({ enabled: true, skills: { grill: true } }).refused, []);
+  // Started after the skills generation moved, so the watermark rung admits it the way it
+  // admits any session launched on the current set.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-ok-", { startedAt: Date.now() + 1_000 });
+  const actions = new SessionActionManager(r);
+  const shipped = actions.get(GRILL_SESSION_ACTION_ID)!;
+  const edited = `${shipped.promptMarkdown}\nAsk about rollout risk in the first round.\n`;
+  assert.equal(actions.update(GRILL_SESSION_ACTION_ID, { expectedRevision: shipped.revision, promptMarkdown: edited }).ok, true);
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true, intent: "add archive exports" }));
+  let asked: readonly string[] = [];
+  let typed: string | null = null;
+
+  let res: Awaited<ReturnType<typeof tasks.assign>>;
+  try {
+    res = await tasks.assign("t1", sessionId, {
+      paneReady,
+      confirmReset: true,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: "node",
+        args: ["server.mjs"],
+        env: {},
+      }),
+      verifyMissionMcpToolsForRunningSession: async (required) => {
+        asked = required;
+        return { ok: true as const };
+      },
+      reset: cleanReset,
+      inject: async (_session, prompt) => {
+        typed = prompt;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+  } finally {
+    actions.reset(GRILL_SESSION_ACTION_ID, actions.get(GRILL_SESSION_ACTION_ID)!.revision);
+    applySkillsConfig({ enabled: false });
+  }
+
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual([...asked], ["request_plan_decisions"], "the decisions tool is required of this session");
+  assert.ok(typed !== null, "the task was typed");
+  const prompt: string = typed;
+  assert.match(prompt, /^add archive exports/, "the operator's words stay first");
+  const grill = prompt.indexOf(`${GRILL_FIRST_HEADING}\n`);
+  assert.ok(grill > 0, "the Grill block was delivered");
+  assert.ok(prompt.includes(`\n/grill\n\n${edited}`), "this session's skill line, then the EDITED instruction verbatim");
+  assert.ok(prompt.indexOf("## Ship task completion handoff") > grill, "the ship contract still follows it");
+});
+
 test("assigned scout and ship prompts keep intent first and receive the shared authorization", async () => {
   for (const kind of ["scout", "ship"] as const) {
     const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);
@@ -1352,4 +1578,761 @@ test("an assigned plan is typed the invocations THAT SESSION could actually run"
   assert.match(typed!, /\/phased-plan/);
   assert.match(typed!, /request_plan_decisions/);
   assert.doesNotMatch(typed!, /submit_scout_artifacts/, "a plan is not handed a scout's contract");
+});
+
+// ---- task shaping on the handover ----
+
+type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
+
+const HANDOVER_SECTION = `${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: Idempotent charges\nCharge once per key.`;
+
+function setShaping(enabled: boolean): void {
+  assert.equal(shapingFlags.applyFeatureFlagIntent({ kind: "flag", id: "task-shaping", enabled }).ok, true);
+}
+
+/** A shaper run answering with `section`, recording each input and whether the mark was up. */
+function handoverStandIn(section: string, r: InstanceType<typeof Registry>) {
+  const calls: Array<{ input: Parameters<ShapeTask>[0]; marked: boolean }> = [];
+  const shapeTask: ShapeTask = async (input) => {
+    calls.push({ input, marked: Boolean(r.getTask(input.context.taskId!)?.shapingContext) });
+    return {
+      section,
+      entries: [],
+      summary: {
+        state: "ok", at: Date.now(), durationMs: 2, entries: 1, bytes: Buffer.byteLength(section), truncated: false,
+        shapers: [{
+          id: "acme", label: "Acme guidance", stage: "select", origin: "registered", sha256: null, outcome: "ok",
+          reason: null, durationMs: 2, entries: 1, bytes: Buffer.byteLength(section), truncated: false, redacted: false, version: null,
+        }],
+      },
+    };
+  };
+  return { shapeTask, calls };
+}
+
+test("a handover is shaped like a launch: the section follows the contract and the record names the session", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "THE-HANDED-OVER-TASK" }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    let typed: string | null = null;
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, true);
+    assert.ok(typed!.endsWith(`\n\n${HANDOVER_SECTION}`), "the section ends the turn");
+    assert.ok(typed!.indexOf("THE-HANDED-OVER-TASK") < typed!.indexOf("## Task context"));
+    const call = probe.calls[0]!;
+    assert.equal(call.marked, true, "Shaping context shows while the step runs");
+    assert.equal(call.input.task, "THE-HANDED-OVER-TASK");
+    assert.equal(call.input.context.runtime, "terminal");
+    assert.equal(call.input.context.repositories.length, 1);
+    assert.equal(call.input.context.repositories[0]!.path, clone, "the session's own checkout");
+    assert.equal(call.input.trace, null, "a pane session was launched with no trace context");
+    const task = r.getTask("t1")!;
+    assert.equal(task.shapingContext, undefined, "and the mark is gone after");
+    assert.equal(currentShaping(task)?.sessionId, sessionId);
+    assert.equal(getTaskShapingText("t1")?.text, HANDOVER_SECTION);
+  } finally {
+    setShaping(false);
+  }
+});
+
+/** Hand `t1` to the session, back to the backlog, and over to the same session again with `second`. */
+async function handBackToSameSession(prefix: string, second: (r: InstanceType<typeof Registry>) => Promise<unknown>) {
+  const { r, tasks, sessionId, clone } = setupInRepo(prefix);
+  r.upsertTask(mkTask({ repoRoot: clone, intent: "THE-HANDED-OVER-TASK" }));
+  const verified = async () => ({ ok: true, pasted: true, submitVerified: true });
+  const first = await tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask, inject: verified,
+  });
+  assert.equal(first.ok, true);
+  const earlier = currentShaping(r.getTask("t1")!)!;
+  assert.equal(earlier.sessionId, sessionId, "the first handover's record shows");
+  r.upsertTask({ ...r.getTask("t1")!, status: "backlog", sessionId: null });
+  await second(r);
+  const handBack = () => tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask, inject: verified,
+  });
+  return { r, sessionId, earlier, handBack };
+}
+
+test("a handover back to the same session whose record cannot be written never shows the earlier record, even after a restart", async () => {
+  setShaping(true);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    let assigned: unknown;
+    const { r, sessionId, earlier, handBack } = await handBackToSameSession("mission-assign-shaping-failed-commit-", async (registry) => {
+      // SQLite refuses the record's write every time; nothing tries, or needs, to clear the earlier one.
+      registry.shapingCommitter = () => { throw new Error("disk full"); };
+    });
+    assigned = await handBack();
+    r.shapingCommitter = null;
+    assert.deepEqual(assigned, { ok: true }, "the handover itself goes ahead");
+    const stored = getStoredTask("t1")!;
+    assert.equal(stored.status, "running");
+    assert.equal(stored.sessionId, sessionId, "bound to the receiving session on disk");
+    assert.deepEqual(stored.shaping, earlier, "the earlier delivery's record is still on disk, naming that session");
+    assert.equal(currentShaping(r.getTask("t1")!), null, "no live reader shows it");
+    assert.equal(currentShaping(stored), null, "no durable reader shows it");
+    const restarted = new Registry();
+    assert.equal(restarted.getTask("t1")?.sessionId, sessionId);
+    assert.equal(currentShaping(restarted.getTask("t1")!), null, "and a restarted daemon shows nothing either");
+  } finally {
+    console.warn = warn;
+    setShaping(false);
+  }
+});
+
+test("a handover stopped between its record and its binding leaves neither written", async () => {
+  setShaping(true);
+  const warn = console.warn;
+  console.warn = () => {};
+  const d = openDb();
+  try {
+    const { r, sessionId, earlier, handBack } = await handBackToSameSession("mission-assign-shaping-torn-", async () => {
+      // The process stops at the second write: the row naming the receiving session.
+      d.exec(`CREATE TRIGGER stop_at_handover_binding BEFORE UPDATE OF status ON tasks WHEN NEW.id = 't1' AND NEW.status = 'running'
+              BEGIN SELECT RAISE(ABORT, 'process stopped'); END;`);
+    });
+    await assert.rejects(handBack(), /process stopped/);
+    d.exec("DROP TRIGGER stop_at_handover_binding");
+    const stored = getStoredTask("t1")!;
+    assert.equal(stored.status, "backlog", "the binding was not written");
+    assert.deepEqual(stored.shaping, earlier, "and neither was this handover's record");
+    assert.equal(getTaskShapingText("t1")?.text, HANDOVER_SECTION);
+    // The live registry did not move ahead of the row either.
+    const live = r.getTask("t1")!;
+    assert.equal(live.status, "backlog");
+    assert.equal(live.shapingDelivery, stored.shapingDelivery, "live and durable carry the same delivery id");
+    assert.deepEqual(live.shaping, stored.shaping);
+    const restarted = new Registry();
+    assert.equal(currentShaping(restarted.getTask("t1")!), null, "a restart reads no record for a handover that did not bind");
+    assert.equal(restarted.getTask("t1")?.shaping?.deliveryId, earlier.deliveryId, "the only record on disk is the first handover's");
+    assert.notEqual(restarted.getTask("t1")?.sessionId, sessionId);
+  } finally {
+    d.exec("DROP TRIGGER IF EXISTS stop_at_handover_binding");
+    console.warn = warn;
+    setShaping(false);
+  }
+});
+
+test("with the flag off a handover calls nothing and types no task context", async () => {
+  setShaping(false);
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-off-");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  const probe = handoverStandIn(HANDOVER_SECTION, r);
+  let typed: string | null = null;
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+    inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(probe.calls.length, 0);
+  assert.doesNotMatch(typed!, /## Task context/);
+  assert.equal(r.getTask("t1")?.shaping, undefined);
+  assert.equal(getTaskShapingText("t1"), null);
+});
+
+function setWorkUnitPreview(enabled: boolean): void {
+  assert.equal(shapingFlags.applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled }).ok, true);
+}
+
+/**
+ * An idle agent in a real checkout, started beneath a launch wrapper that was handed
+ * `workUnitId` as its decision, so the registry installs that launch record when it first sees
+ * the agent. Null starts it with none, as an agent launched with the preview off was.
+ */
+function setupLaunchedWith(prefix: string, workUnitId: string | null) {
+  const launchHome = mkdtempSync(join(home, "launch-"));
+  const decision = workUnitHandOver.expectTerminalLaunchWorkUnit(launchHome, workUnitId);
+  const fixture = setupInRepo(prefix, { missionLaunched: true, missionLaunchHome: launchHome });
+  workUnitHandOver.settleTerminalLaunchWorkUnit(decision, "succeeded");
+  assert.equal(fixture.r.getSession(fixture.sessionId)?.launchWorkUnitId ?? null, workUnitId, "the fixture's launch record");
+  return fixture;
+}
+
+test("a handover's shapers carry the work unit the agent was started with, whatever the preview says now", async (t) => {
+  setShaping(true);
+  t.after(() => { setShaping(false); setWorkUnitPreview(false); });
+  const WU = "wu_01JD00000000000000000000AA";
+  // Started with the preview on, and handed a task of its own work unit after it was switched off.
+  const started = setupLaunchedWith("mission-assign-work-unit-shaping-", WU);
+  setWorkUnitPreview(false);
+  started.r.upsertTask(mkTask({ id: "wu-own", repoRoot: started.clone, workUnitId: WU }));
+  const own = handoverStandIn(HANDOVER_SECTION, started.r);
+  const handed = await started.tasks.assign("wu-own", started.sessionId, {
+    paneReady, reset: cleanReset, shapeTask: own.shapeTask, inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(handed.ok, true, handed.error);
+  assert.equal(own.calls[0]!.input.workUnitId, WU, "its launch record, not the preview as it reads now");
+  // Started with none, and handed a task after the preview was switched on: still none.
+  const bare = setupLaunchedWith("mission-assign-work-unit-shaping-none-", null);
+  setWorkUnitPreview(true);
+  bare.r.upsertTask(mkTask({ id: "wu-bare", repoRoot: bare.clone, workUnitId: "wu_01JD00000000000000000000BB" }));
+  const none = handoverStandIn(HANDOVER_SECTION, bare.r);
+  const plain = await bare.tasks.assign("wu-bare", bare.sessionId, {
+    paneReady, reset: cleanReset, shapeTask: none.shapeTask, inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(plain.ok, true, plain.error);
+  assert.equal(none.calls[0]!.input.workUnitId, null, "an agent started without the variable gives its shapers none");
+});
+
+test("a handover whose inject fails commits no shaping record", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-refused-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async () => ({ ok: false, pasted: false, submitVerified: false, error: "pane busy" }),
+    });
+    assert.equal(res.ok, false);
+    assert.equal(probe.calls.length, 1, "the handover was shaped");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.shaping, undefined, "and nothing was recorded for a turn nobody received");
+    assert.equal(getTaskShapingText("t1"), null);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a handover is told the commit the reset left the checkout on", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-base-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    });
+    assert.equal(res.ok, true);
+    const head = gitIn(clone, "rev-parse", "HEAD");
+    assert.equal(probe.calls[0]!.input.context.repositories[0]!.baseSha, head);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a task changed while its handover was being shaped is not typed, and stays in the backlog", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-edited-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "the original request" }));
+    const recordBefore = r.getTask("t1")?.shaping;
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // An operator's edit is already refused while the task is being assigned.
+      assert.deepEqual(await tasks.update("t1", { intent: "an operator's edit" }), { ok: false, error: "task is being assigned" });
+      // A writer outside TaskManager does not take that lock; the handover must still notice.
+      r.upsertTask({ ...r.getTask("t1")!, intent: "the rewritten request" });
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.ok ? "" : res.error ?? "", /edited while its context was being shaped/);
+    assert.equal(typed, false, "the older text and its context were not handed over");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.intent, "the rewritten request");
+    assert.deepEqual(r.getTask("t1")?.shaping, recordBefore, "and nothing was recorded for a turn nobody received");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a session that started a turn while its handover was being shaped is not typed into, and the task stays in the backlog", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-busy-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // The operator types into the session while shapers are still answering.
+      r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /became working while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into the now-active conversation");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a turn that starts during the handover's last pane probe is caught by the guard at delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-probe-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // The second probe is the one after shaping; the operator starts a turn while it runs.
+      paneReady: async () => {
+        if (++probes === 2) {
+          r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+        }
+        return { ok: true };
+      },
+      // As `injectPrompt` does: the guard runs immediately before anything is written.
+      inject: async (_session, _text, _deps, beforeWrite) => {
+        const refused = beforeWrite?.() ?? null;
+        if (refused) return { ok: false, pasted: false, submitVerified: false, error: refused };
+        typed = true;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(probes, 2, "the pane was probed before the reset and again after shaping");
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /became working while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into the now-active conversation");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("an edit that lands during the handover's last pane probe is caught by the guard at delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-probe-edit-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "the original request" }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // A writer that bypasses the assign lock rewrites the card during the second probe.
+      paneReady: async () => {
+        if (++probes === 2) r.upsertTask({ ...r.getTask("t1")!, intent: "the rewritten request" });
+        return { ok: true };
+      },
+      inject: async (_session, _text, _deps, beforeWrite) => {
+        const refused = beforeWrite?.() ?? null;
+        if (refused) return { ok: false, pasted: false, submitVerified: false, error: refused };
+        typed = true;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(probes, 2);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /edited while its context was being shaped/);
+    assert.equal(typed, false, "the older text and its context were not handed over");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.intent, "the rewritten request");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a turn the operator starts and finishes while shapers run stops the handover, though the session is idle again", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-turn-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const listeners = r.listenerCount("event");
+    const shapeTask: ShapeTask = async (input) => {
+      // A whole turn while shapers answer: submitted, then finished.
+      r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+      r.applyHook({ agent: "claude", event: "Stop", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {} });
+      assert.equal(r.getSession(sessionId)?.state, "idle", "the session is idle again");
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /took a turn while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into a conversation used since the reset");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.listenerCount("event"), listeners, "the turn watch was removed");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a pane probe that throws after shaping sends the original prompt, and releases the handover's turn watch", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-probe-throws-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const listeners = r.listenerCount("event");
+    let probes = 0;
+    let typed = "";
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // The probe after shaping is inconclusive: it throws rather than answering.
+      paneReady: async () => {
+        if (++probes === 2) throw new Error("the pane probe failed");
+        return { ok: true };
+      },
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(probes, 2);
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.doesNotMatch(typed, /## Task context/, "the already-reset session gets its original prompt");
+    assert.equal(r.getTask("t1")?.status, "running");
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "degraded");
+    assert.match(record?.limit?.reason ?? "", /pane could not be probed again before delivery/);
+    assert.equal(r.listenerCount("event"), listeners, "no listener outlives the handover");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a handover whose submit was not verified still runs, and records its context as unconfirmed", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unverified-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // Typed, but the submit was not seen: the text may still be sitting in the composer.
+      inject: async () => ({ ok: true, pasted: true, submitVerified: false }),
+    });
+    assert.equal(res.ok, true, "the assignment proceeds as it always has");
+    assert.equal(r.getTask("t1")?.status, "running");
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "degraded");
+    assert.equal(record?.entries, 0, "nothing is counted as delivered");
+    assert.match(record?.limit?.reason ?? "", /could not confirm/);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("with the flag on and no shaper that applies, a handover skips the shaping-only checks", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-none-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      // No shaper applied: the engine answers with no record and no section.
+      shapeTask: async () => ({ summary: null, section: "", entries: [] }),
+      // A second probe would fail; with nothing shaped there must not be one.
+      paneReady: async () => (++probes === 1 ? { ok: true } : { ok: false, error: "the pane timed out" }),
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    });
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.equal(probes, 1, "only the probe every handover makes");
+    assert.equal(r.getTask("t1")?.status, "running");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a handover tells shapers the branch and commit the checkout is on, not the registry's cached branch", async () => {
+  setShaping(true);
+  try {
+    for (const detach of [true, false]) {
+      // The registry still holds the branch from before the reset.
+      const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-shaping-branch-${detach}-`, { gitBranch: "feature/before-reset" });
+      r.upsertTask(mkTask({ repoRoot: clone }));
+      const probe = handoverStandIn(HANDOVER_SECTION, r);
+      // The reset leaves the checkout detached, or on a branch the registry has not seen yet.
+      const reset = async () => {
+        if (detach) gitIn(clone, "checkout", "--detach");
+        else gitIn(clone, "checkout", "-b", "feature/after-reset");
+        return cleanReset();
+      };
+      const res = await tasks.assign("t1", sessionId, {
+        paneReady, reset, shapeTask: probe.shapeTask,
+        inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      const repository = probe.calls[0]!.input.context.repositories[0]!;
+      assert.equal(repository.baseSha, gitIn(clone, "rev-parse", "HEAD"));
+      assert.equal(repository.branch, detach ? null : "feature/after-reset", detach ? "a detached HEAD has no branch" : "the branch the checkout is on");
+    }
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("with nothing shaped, a turn taken while the handover prepared still stops it", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-empty-turn-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      // No shaper applies, but a whole turn happens while the handover prepared.
+      shapeTask: async () => {
+        r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+        r.applyHook({ agent: "claude", event: "Stop", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {} });
+        return { summary: null, section: "", entries: [] };
+      },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /took a turn while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("an unverified handover that carried no section keeps the shapers' own outcome", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unverified-empty-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    // A shaper answered with nothing to add: a record, but no section.
+    const empty = handoverStandIn("", r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      shapeTask: async (input) => {
+        const answer = await empty.shapeTask(input);
+        return { ...answer, summary: { ...answer.summary!, entries: 0, bytes: 0, shapers: answer.summary!.shapers.map((s) => ({ ...s, entries: 0, bytes: 0 })) } };
+      },
+      inject: async () => ({ ok: true, pasted: true, submitVerified: false }),
+    });
+    assert.equal(res.ok, true);
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "ok", "nothing was sent, so there is nothing unconfirmed");
+    assert.equal(record?.truncated, false);
+    assert.equal(record?.limit, undefined);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout that moved while the handover's shapers ran is not handed guidance chosen for the old one", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-moved-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // Another terminal in the same checkout switches branch while shapers answer.
+      gitIn(clone, "checkout", "-b", "someone-else");
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /checkout changed while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout that moves during the handover's last pane probe is still caught before delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-moved-probe-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // Another terminal switches branch while the post-shaping pane probe runs.
+      paneReady: async () => {
+        if (++probes === 2) gitIn(clone, "checkout", "-b", "someone-else-during-probe");
+        return { ok: true };
+      },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(probes, 2);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /checkout changed while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a handover whose shaper failed falls back to the original prompt, past the context-only checks", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-failed-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = "";
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      // The step ran and failed: a degraded record, and no section.
+      shapeTask: async () => { throw new Error("the guidance server is down"); },
+      // A second probe would fail; with no context to protect there must not be one.
+      paneReady: async () => (++probes === 1 ? { ok: true } : { ok: false, error: "the pane timed out" }),
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.equal(probes, 1, "no context-only probe");
+    assert.doesNotMatch(typed, /## Task context/, "the original prompt was delivered");
+    assert.equal(r.getTask("t1")?.status, "running");
+    assert.equal(currentShaping(r.getTask("t1")!)?.state, "degraded", "and the failure is recorded");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout that cannot be read again before delivery sends the original prompt without context", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unreadable-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = "";
+    const hidden = `${clone}-git-hidden`;
+    try {
+      const res = await tasks.assign("t1", sessionId, {
+        reset: cleanReset,
+        shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+        // The checkout becomes unreadable after shaping: the post-shaping read cannot confirm it.
+        paneReady: async () => {
+          if (++probes === 2) renameSync(join(clone, ".git"), hidden);
+          return { ok: true };
+        },
+        inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      assert.doesNotMatch(typed, /## Task context/, "the original prompt, without context it could not verify");
+      assert.equal(r.getTask("t1")?.status, "running");
+      const record = currentShaping(r.getTask("t1")!);
+      assert.equal(record?.state, "degraded");
+      assert.equal(record?.entries, 0);
+      assert.match(record?.limit?.reason ?? "", /checkout could not be read before or after shaping/);
+    } finally {
+      if (existsSync(hidden)) renameSync(hidden, join(clone, ".git"));
+    }
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout unreadable before shaping but readable after it sends the original prompt, not a refusal", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unreadable-first-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = "";
+    const hidden = `${clone}-git-hidden-first`;
+    try {
+      const res = await tasks.assign("t1", sessionId, {
+        // The checkout is unreadable when the baseline is read, after the reset, and readable again
+        // once shapers run.
+        reset: async () => { renameSync(join(clone, ".git"), hidden); return cleanReset(); },
+        shapeTask: async (input) => {
+          renameSync(hidden, join(clone, ".git"));
+          return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+        },
+        paneReady,
+        inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      assert.doesNotMatch(typed, /## Task context/);
+      assert.equal(r.getTask("t1")?.status, "running");
+      assert.match(currentShaping(r.getTask("t1")!)?.limit?.reason ?? "", /checkout could not be read before or after shaping/);
+    } finally {
+      if (existsSync(hidden)) renameSync(hidden, join(clone, ".git"));
+    }
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("the branch probe tells a detached checkout from one it could not read", async () => {
+  const { headBranch } = await import("../src/server/dispatcher.ts");
+  const { clone } = setupInRepo("mission-assign-branch-probe-");
+  gitIn(clone, "checkout", "-b", "feature/probe");
+  assert.equal(await headBranch(clone), "feature/probe");
+  gitIn(clone, "checkout", "--detach");
+  assert.equal(await headBranch(clone), null, "detached HEAD has no branch");
+  const notARepo = mkdtempSync(join(tmpdir(), "mission-not-a-repo-"));
+  try {
+    assert.equal(await headBranch(notARepo), undefined, "an unreadable checkout is unknown, not detached");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});
+
+test("a session that reports another checkout while the handover is shaped is not handed context chosen for the first", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-cwd-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    // From the moment shapers run, the same session reports a different working directory.
+    let moved = false;
+    const read = r.getSession.bind(r);
+    r.getSession = (id: string) => {
+      const session = read(id);
+      return session && moved && id === sessionId ? { ...session, cwd: `${clone}/elsewhere` } : session;
+    };
+    const shapeTask: ShapeTask = async (input) => {
+      moved = true;
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /moved to another checkout while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a session whose pane changes while the handover is shaped is not pasted a section sized for the first", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-pane-", {
+      terminals: [mkMuxHandle({ session: "before", windowName: "agent" })],
+    });
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    // From the moment shapers run, the same session reports a different pane.
+    let moved = false;
+    const read = r.getSession.bind(r);
+    r.getSession = (id: string) => {
+      const session = read(id);
+      return session && moved && id === sessionId
+        ? { ...session, terminals: [mkMuxHandle({ session: "after", windowName: "agent", paneId: "%77" })] }
+        : session;
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      shapeTask: async (input) => { moved = true; return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input); },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /moved to another pane while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
 });

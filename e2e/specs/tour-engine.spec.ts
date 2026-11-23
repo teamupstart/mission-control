@@ -141,9 +141,10 @@ test("both entry points are drawn from the tour registry, and start the same one
   await dashboard.goto(`${daemon.baseURL}/#/settings/keyboard`);
 
   // The Settings footer draws one row per registered tour - a list, not hardcoded buttons
-  // that happen to look alike. Four tours are registered, and each has exactly one row.
+  // that happen to look alike. Five tours are registered, and each has exactly one row
+  // beside Browse tours.
   const helpAndTours = dashboard.getByRole("group", { name: "Help & tours" });
-  await expect(helpAndTours.getByRole("button")).toHaveCount(5);
+  await expect(helpAndTours.getByRole("button")).toHaveCount(6);
   await expect(helpAndTours.getByRole("button", { name: "Start See the work tour" }))
     .toHaveCount(1);
   await expect(helpAndTours.getByRole("button", { name: "Start Author what runs tour" }))
@@ -151,6 +152,8 @@ test("both entry points are drawn from the tour registry, and start the same one
   await expect(helpAndTours.getByRole("button", { name: "Start Follow the review tour" }))
     .toHaveCount(1);
   await expect(helpAndTours.getByRole("button", { name: "Start Set up this machine tour" }))
+    .toHaveCount(1);
+  await expect(helpAndTours.getByRole("button", { name: "Start Meet your residents tour" }))
     .toHaveCount(1);
 
   // The palette's Do group draws one command row per registered tour, from the same registry.

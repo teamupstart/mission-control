@@ -21,7 +21,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
-const { DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS } = await import(
+const { ANNOUNCED_TOURS, DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS } = await import(
   "../src/shared/protocol.ts",
 );
 
@@ -70,6 +70,136 @@ test("the conversation rendering round-trips, and an unknown one is refused", ()
   assert.equal(getUiConfig().conversationView, "chat", "a refused patch changed the store");
 });
 
+test("the skin defaults to Default, round-trips, and only a shipped id can be written", async () => {
+  const { UiConfigPatchSchema, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.equal(getUiConfig().skin, "default", "a missing key reads as today's look");
+  setUiConfig({ skin: "daylight" });
+  assert.equal(getUiConfig().skin, "daylight");
+  // Strict on write, at the route's schema and at the store: a bad id is refused, never
+  // stored as Default by the read schema's fallback.
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "nope" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "daylight" }).success, true);
+  assert.throws(() => setUiConfig({ skin: "nope" } as never));
+  assert.equal(getUiConfig().skin, "daylight", "a refused skin changed the store");
+  // Tolerant on read: a skin written by a newer build (a downgrade) opens as Default, and the
+  // rest of the record survives it.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build" as never, layout: "console" });
+  assert.equal(getUiConfig().skin, "default");
+  assert.equal(getUiConfig().layout, "console", "an unknown skin failed the whole ui record");
+  assert.equal(UiConfigSchema.parse({ skin: 42 }).skin, "default");
+});
+
+test("every skin write keeps the desktop window's launch colour, browser or desktop alike", async () => {
+  // A browser tab has no desktop bridge, so the daemon is the one place every skin write passes
+  // through. Without this, Daylight chosen in a browser would open the next desktop launch on a
+  // dark frame.
+  const { readFileSync, rmSync: remove, existsSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+  remove(launch, { force: true });
+
+  setUiConfig({ skin: "daylight" });
+  assert.equal(color(), "#f5f7fa", "picking Daylight left no launch colour for the shell");
+  setUiConfig({ skin: "default" });
+  assert.equal(color(), "#0a0c0f");
+
+  // A write that is not about the skin leaves the file alone.
+  remove(launch);
+  setUiConfig({ richText: false });
+  assert.equal(existsSync(launch), false, "an unrelated preference rewrote the launch colour");
+
+  // Startup and post-restore reconciliation read whatever is stored, however it got there.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight" });
+  syncWindowBackground();
+  assert.equal(color(), "#f5f7fa");
+});
+
+test("a malformed field elsewhere cannot abort startup or fail the page, and a valid skin survives it", async () => {
+  // Startup and the dashboard document read the skin outside any settings request. A strict
+  // parse of the whole record would throw on one bad field and take the daemon or every page
+  // load down with it; reading the skin alone keeps a valid Daylight in force.
+  const { readFileSync, rmSync: remove } = await import("node:fs");
+  const { storedSkin, syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight", layout: "hologram" } as never);
+  assert.throws(() => getUiConfig(false), "the premise: a strict parse of this record throws");
+  assert.equal(storedSkin(), "daylight");
+  remove(launch, { force: true });
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#f5f7fa", "startup did not record the valid stored skin");
+
+  // An unknown skin, or a record that is not an object at all, reads as Default and never throws.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "hologram" } as never);
+  assert.equal(storedSkin(), "default");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, "not an object" as never);
+  assert.equal(storedSkin(), "default");
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#0a0c0f");
+});
+
+test("a launch colour that cannot be written never fails the skin write or startup", async (t) => {
+  // The launch colour is a convenience for the next desktop launch; the skin choice is the
+  // setting. A failed write - a full disk, a read-only state home, something in the way - must
+  // leave the skin saved and the caller unharmed. A non-empty directory where the file belongs
+  // makes the atomic rename fail on every platform, with no permission trick root would ignore.
+  const { mkdirSync, writeFileSync: write, rmSync: remove, statSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  remove(launch, { recursive: true, force: true });
+  mkdirSync(launch, { recursive: true });
+  write(join(launch, "occupied"), "");
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args));
+  try {
+    setUiConfig({ skin: "default" });
+    warnings.length = 0;
+
+    assert.doesNotThrow(() => setUiConfig({ skin: "daylight" }), "a failed launch-colour write failed the skin write");
+    assert.equal(getUiConfig().skin, "daylight", "the skin was not saved when its launch colour could not be");
+    assert.doesNotThrow(() => syncWindowBackground(), "a failed launch-colour write would abort daemon startup");
+    assert.ok(statSync(launch).isDirectory(), "the premise: the launch file really could not be written");
+    assert.equal(warnings.length, 2, "each failed write is reported, not swallowed silently");
+    assert.match(String(warnings[0]![0]), /could not remember the window background/);
+  } finally {
+    remove(launch, { recursive: true, force: true });
+  }
+});
+
+test("a skin from a newer build survives unrelated writes in this one, and a real choice replaces it", () => {
+  // After a downgrade, a skin this build does not ship reads as Default - but it must not be
+  // WRITTEN as Default by a write that was not about the skin, or the operator loses their
+  // choice for good on the next upgrade.
+  const raw = (): unknown => (getAppConfig(APP_CONFIG_ENTRIES.ui) as { skin?: unknown }).skin;
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "skin-from-a-newer-build", layout: "console", guidedTour: false } as never);
+  assert.equal(getUiConfig().skin, "default", "an unknown skin still reads as Default");
+
+  setUiConfig({ richText: false });
+  assert.equal(raw(), "skin-from-a-newer-build", "an unrelated setting erased the newer build's skin");
+  assert.equal(getUiConfig().richText, false, "the unrelated setting itself was saved");
+
+  // This module's own migration write keeps it too: a record without the guidedTour key is
+  // rewritten on read.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "skin-from-a-newer-build", layout: "console" } as never);
+  getUiConfig();
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { guidedTour?: unknown }).guidedTour, false, "the premise: the migration wrote");
+  assert.equal(raw(), "skin-from-a-newer-build", "the migration write erased the newer build's skin");
+
+  // Choosing a skin in this build is a real choice and replaces it; so does choosing Default.
+  setUiConfig({ skin: "daylight" });
+  assert.equal(raw(), "daylight");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "skin-from-a-newer-build", guidedTour: false } as never);
+  setUiConfig({ skin: "default" });
+  assert.equal(raw(), "default");
+
+  // Something that is not an id at all is not worth keeping.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "<script>", guidedTour: false } as never);
+  setUiConfig({ richText: true });
+  assert.equal(raw(), "default");
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {
@@ -82,6 +212,25 @@ test("startup tours default on for fresh and upgraded profiles independently of 
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>).showToursOnStartup, false);
   assert.throws(() => setUiConfig({ showToursOnStartup: "false" } as never));
   assert.equal(getUiConfig().showToursOnStartup, false);
+});
+
+test("a profile stored before announced tours existed is owed every one, a fresh one none", () => {
+  // Fresh: nothing in the catalog is news to someone opening it for the first time.
+  assert.deepEqual(getUiConfig().announcedTours, [...ANNOUNCED_TOURS]);
+  // Upgraded: the key's absence on a stored record is the signal, whatever else it says -
+  // including an explicit startup opt-out, which the announcement opens the picker past once.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board", showToursOnStartup: false } as never);
+  assert.deepEqual(getUiConfig().announcedTours, []);
+  assert.equal(getUiConfig().showToursOnStartup, false);
+  // The migration is persisted, so an unrelated write cannot re-derive it as the default.
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>).announcedTours, []);
+  setUiConfig({ richText: false });
+  assert.deepEqual(getUiConfig().announcedTours, []);
+  // Recording an announcement is an ordinary whole-list write, and ids it does not know survive.
+  setUiConfig({ announcedTours: ["residents", "from-a-newer-build"] });
+  setUiConfig({ richText: true });
+  assert.deepEqual(getUiConfig().announcedTours, ["residents", "from-a-newer-build"]);
+  assert.throws(() => setUiConfig({ announcedTours: "residents" } as never));
 });
 
 test("a key from a retired preference is dropped rather than carried forever", () => {
@@ -101,6 +250,8 @@ test("a stored Cards preference is rewritten to the shipped default", () => {
     ...UI_CONFIG_DEFAULTS,
     richText: false,
     guidedTour: false,
+    // A record an older build wrote predates every announced tour.
+    announcedTours: [],
   });
 });
 
@@ -127,7 +278,10 @@ test("saving the defaults on purpose still counts as configured", () => {
   // Board has configured this, and adoption must not fire over the top of that choice.
   setUiConfig({ layout: "board" });
   assert.equal(uiConfigView().configured, true);
-  assert.deepEqual(uiConfigView().config, UI_CONFIG_DEFAULTS);
+  // The `voice` flag is off here, so the view withholds `ui.voice`; the stored record keeps it.
+  const { voice: _withheld, ...withoutVoice } = UI_CONFIG_DEFAULTS;
+  assert.deepEqual(uiConfigView().config, withoutVoice);
+  assert.deepEqual(getUiConfig(), UI_CONFIG_DEFAULTS);
 });
 
 test("a patch merges over the stored config rather than replacing it", () => {
@@ -148,6 +302,73 @@ test("keybindings are replaced whole, so an override can actually be dropped", (
   assert.deepEqual(getUiConfig().keybindings, { select: "shift+Tab" });
   setUiConfig({ keybindings: {} });
   assert.deepEqual(getUiConfig().keybindings, {});
+});
+
+test("Disabled Line is stored as its own key, so a daemon from before it still opens the record", async () => {
+  // A third `lineDensity` member would fail every UI preference on an older daemon - its
+  // `.default()` covers a missing value only - after a downgrade, or a worktree build sharing
+  // this state dir. A separate key is stripped by that daemon instead, and it draws the strip.
+  const { LINE_DENSITIES, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual([...LINE_DENSITIES], ["expanded", "condensed"]);
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig({ lineHidden: true });
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "switching off kept the density to return to");
+  assert.throws(() => setUiConfig({ lineDensity: "hairline" } as never));
+
+  // What this build wrote, read by the schema of a build that never had `lineHidden`.
+  const written = getAppConfig(APP_CONFIG_ENTRIES.ui);
+  const older = UiConfigSchema.omit({ lineHidden: true }).parse(written);
+  assert.equal(older.lineDensity, "expanded");
+  assert.equal("lineHidden" in older, false);
+});
+
+test("a Disabled Line stored as lineDensity \"hidden\" by #1399 is moved to lineHidden, not refused", () => {
+  openDb()
+    .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
+    .run("ui", JSON.stringify({ layout: "console", lineDensity: "hidden" }));
+  const config = getUiConfig();
+  assert.equal(config.lineHidden, true);
+  assert.equal(config.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(config.layout, "console", "the rest of the record survived the move");
+  // Persisted, so a daemon from before `lineHidden` reading this state never sees "hidden".
+  const raw = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
+  assert.equal(raw.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(raw.lineHidden, true);
+});
+
+test("a #1399 dashboard's Disabled request is read as lineHidden, and other unknown densities are still refused", async () => {
+  // A tab left open across the upgrade still sends Disabled as a third density. Refusing it
+  // with a 400 would roll that tab's own choice back; it means `lineHidden: true`.
+  const { UiConfigPatchSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "hidden" }), { lineHidden: true });
+  assert.deepEqual(
+    UiConfigPatchSchema.parse({ lineDensity: "hidden", layout: "console" }),
+    { layout: "console", lineHidden: true },
+  );
+  // Switching it back on from that tab sends a density alone, which means "draw the Line".
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "expanded" }), {
+    lineDensity: "expanded",
+    lineHidden: false,
+  });
+  // This build's panel states `lineHidden` itself, and that is left exactly as sent.
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "condensed", lineHidden: true }), {
+    lineDensity: "condensed",
+    lineHidden: true,
+  });
+  assert.deepEqual(UiConfigPatchSchema.parse({ layout: "board" }), { layout: "board" });
+  assert.equal(UiConfigPatchSchema.safeParse({ lineDensity: "hairline" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({}).success, false, "an empty update is still refused");
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "hidden" }));
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "the bridged request kept the stored density");
+  // The same old tab switches it back on: a refreshed dashboard must agree that it is on.
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "condensed" }));
+  assert.equal(getUiConfig().lineHidden, false);
+  assert.equal(getUiConfig().lineDensity, "condensed");
 });
 
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {

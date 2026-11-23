@@ -18,11 +18,13 @@ import type { InspectorConfig } from "../src/shared/protocol.ts";
 
 const SHIPPING: ShippingState = {
   config: {
+    codeRabbitAutoResolve: false,
     autoMerge: true,
     soakMinutes: 5,
     method: "squash",
     repoAllowlist: ["/repo"],
     closeSessionAfterMerge: false,
+    maxStackDepth: 3,
   },
   inspections: [],
   update: async () => true,

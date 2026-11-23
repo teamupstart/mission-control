@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { partialPatch } from "./zod-shapes.ts";
 
 /** Shipped roots for a machine that has never saved repository-index settings. */
 export const DEFAULT_INDEXED_DIRECTORIES = [
@@ -9,6 +10,28 @@ export const DEFAULT_INDEXED_DIRECTORIES = [
 ] as const;
 
 export const MAX_INDEXED_DIRECTORIES = 16;
+
+/**
+ * Response header on `GET /api/repos`: the stamp of the scan that produced the list - when
+ * it started, in epoch milliseconds, made strictly increasing so no two scans share one. A
+ * client holding two answers keeps the one with the later stamp.
+ */
+export const REPOS_SCANNED_AT_HEADER = "x-repos-scanned-at";
+
+/**
+ * Response header on `GET /api/repos`: the identity of the index the list answers for (the
+ * effective directories and depth). The same value rides the SSE snapshot and
+ * `repo_index_changed`, so a window can tell whether a list it holds still applies.
+ */
+export const REPO_INDEX_IDENTITY_HEADER = "x-repo-index-identity";
+
+/**
+ * Sent in place of an identity when the daemon could not read its index config. A window
+ * treats it as "whatever you hold may be stale": it drops its list rather than keep offering
+ * one the daemon cannot vouch for, and takes the next real answer. Not a hash, so it never
+ * equals a real identity.
+ */
+export const REPO_INDEX_IDENTITY_UNKNOWN = "unknown";
 
 export const IndexedDirectorySchema = z.object({
   path: z.string().trim().min(1, "Directory paths cannot be empty."),
@@ -22,12 +45,15 @@ export type IndexedDirectory = z.infer<typeof IndexedDirectorySchema>;
  * distinction is what makes every seeded root removable without extra bookkeeping.
  */
 export const RepoIndexConfigSchema = z.object({
-  directories: z.array(IndexedDirectorySchema).default(
+  // The structural ceiling, checked before any row is parsed. `MAX_INDEXED_DIRECTORIES` is
+  // the product rule and is refused with its own message by `repo-index-config.ts`; this only
+  // stops an absurd list from being parsed element by element first.
+  directories: z.array(IndexedDirectorySchema).max(MAX_INDEXED_DIRECTORIES * 16).prefault(
     DEFAULT_INDEXED_DIRECTORIES.map((path) => ({ path })),
   ),
 });
 
-export const RepoIndexConfigPatchSchema = RepoIndexConfigSchema.partial();
+export const RepoIndexConfigPatchSchema = partialPatch(RepoIndexConfigSchema);
 
 export type RepoIndexConfig = z.infer<typeof RepoIndexConfigSchema>;
 export type RepoIndexConfigPatch = z.infer<typeof RepoIndexConfigPatchSchema>;
@@ -58,6 +84,13 @@ export interface RepoIndexView {
   /** Stored rows that remain intact but do not participate while the environment wins. */
   savedDirectories: IndexedDirectoryView[];
   defaultsMissing: string[];
-  repoCount: number;
-  scannedAt: number;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  repoCount: number | null;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  scannedAt: number | null;
+  /**
+   * Why the counts are unknown: no scan of these directories has ever finished and the walk
+   * timed out or is stuck behind one that did (a stalled mount). Null whenever a count is shown.
+   */
+  scanUnavailable: string | null;
 }

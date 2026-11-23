@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
+import type { ProductIssuePreflight } from "../../src/shared/product-issues.ts";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -116,6 +117,42 @@ test.beforeEach(async ({ dashboard, daemon }) => {
   });
   await dashboard.reload();
 });
+
+test("Cmd+Enter authorizes the rendered feedback preview and publishes once", async ({ dashboard, daemon }) => {
+  await openFromTopbar(dashboard);
+  await fill(dashboard, "Bug", "Keyboard feedback", "Submit the rendered preview through the default dialog action.");
+  await expect(submit(dashboard)).toBeEnabled();
+  // A forged key event must not authorize publishing, just as a forged click cannot.
+  await form(dashboard).dispatchEvent("keydown", { key: "Enter", metaKey: true, bubbles: true });
+  expect(productCreates(daemon)).toHaveLength(0);
+  await form(dashboard).getByRole("textbox", { name: "Details", exact: true }).press("Meta+Enter");
+  await expect(form(dashboard)).toContainText(FAKE_GH_PRODUCT_ISSUE_URL);
+  await expect.poll(() => productCreates(daemon).length).toBe(1);
+  await form(dashboard).getByRole("button", { name: "Close feedback form" }).focus();
+  await dashboard.keyboard.press("Control+Enter");
+  await expect(form(dashboard)).toBeHidden();
+  expect(productCreates(daemon)).toHaveLength(1);
+});
+
+for (const modifier of ["Meta", "Control"]) {
+  test(`${modifier}+Enter publishes feedback from Title while plain Enter does not`, async ({ dashboard, daemon }) => {
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", `${modifier} keyboard title`, "The dialog shortcut must work from its Title field.");
+    await expect(submit(dashboard)).toBeEnabled();
+    await titleBox(dashboard).press("Enter");
+    await expect(form(dashboard)).toBeVisible();
+    expect(productCreates(daemon)).toHaveLength(0);
+    await titleBox(dashboard).press(`${modifier}+Enter`);
+    await expect(form(dashboard)).toContainText(FAKE_GH_PRODUCT_ISSUE_URL);
+    await expect.poll(() => productCreates(daemon).length).toBe(1);
+    expect(productCreates(daemon)[0]!.argv).toContain(`${modifier} keyboard title`);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = join(process.cwd(), "e2e/.artifacts/dialog-default-action");
+      mkdirSync(dir, { recursive: true });
+      await form(dashboard).screenshot({ path: join(dir, `title-${modifier.toLowerCase()}-feedback-published.png`) });
+    }
+  });
+}
 
 test("a loopback caller cannot authorize itself, while one Report click publishes", async ({
   dashboard,
@@ -285,7 +322,18 @@ test("all five types file their own labels, and the browser chooses none of them
  */
 test("the submission carries reporter content and nothing that steers GitHub", async ({
   dashboard,
+  daemon,
 }) => {
+  // This case inspects POST bytes, not CLI readiness. An unanswered fake `gh repo view`
+  // previously disabled Report for the whole test despite a valid preview. Control only
+  // this prerequisite; preview, consent, submission and the recorded create stay real.
+  // Refuse the CLI check so accidentally depending on it cannot pass by scheduling luck.
+  script(daemon, { preflight: "repository", issueCreate: "created" });
+  const ready: ProductIssuePreflight = {
+    ready: true, target: "acme/public-issues",
+    attachments: { enabled: true, reason: null }, problems: [],
+  };
+  await dashboard.route("**/api/product-issues/preflight", (route) => route.fulfill({ json: ready }));
   const bodies: string[] = [];
   await dashboard.route("**/api/product-issues", async (route) => {
     bodies.push(route.request().postData() ?? "");
@@ -294,6 +342,7 @@ test("the submission carries reporter content and nothing that steers GitHub", a
 
   await openFromTopbar(dashboard);
   await fill(dashboard, "Usability", "The rail hides its own scroll", "I could not find it.");
+  await expect(submit(dashboard)).toBeEnabled();
   await publish(dashboard);
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
 
@@ -313,6 +362,7 @@ test("the submission carries reporter content and nothing that steers GitHub", a
   expect(bodies[0]).not.toContain("acme/public-issues");
   expect(bodies[0]).not.toContain("status:needs-triage");
   expect(bodies[0]).not.toContain("source:");
+  expect(productCreates(daemon)).toHaveLength(1);
 });
 
 /**

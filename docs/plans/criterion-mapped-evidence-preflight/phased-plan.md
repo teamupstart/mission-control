@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Approved goal: [`plan.md`](plan.md)
-- Supporting rejection analysis: [`../../reports/test-evidence-auditor-first-pass/report.html`](../../reports/test-evidence-auditor-first-pass/report.html)
+- Supporting rejection analysis: `docs/reports/test-evidence-auditor-first-pass/report.html` (removed from the repository in #1213)
 - Repository: `teamupstart/mission-control`
 - Planning decision: the operator explicitly requested a phased implementation plan and scheduling on 2026-09-03, superseding the earlier choice to stop after the root plan.
 

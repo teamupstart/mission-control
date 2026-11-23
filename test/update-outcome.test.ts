@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { withMigrationLock } from "../scripts/install-migration.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +56,14 @@ test("a surfaced outcome is consumed exactly once", async (t) => {
   assert.deepEqual([consumeUpdateOutcome(path), consumeUpdateOutcome(path)], [outcome, null]);
 });
 
+test("consuming an absent outcome does not require a state directory", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mission-update-absent-"));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const stateDirectory = join(directory, "fresh-state");
+  assert.equal(consumeUpdateOutcome(join(stateDirectory, "update-outcome.json")), null);
+  assert.equal(fs.existsSync(stateDirectory), false);
+});
+
 
 test("startup waits for its live helper to publish verified success, and an old notice cannot clear a newer failure", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "mission-update-settled-"));
@@ -73,9 +85,9 @@ test("startup waits for its live helper to publish verified success, and an old 
   assert.deepEqual(await pending, success);
   const failure = {result: "failure" as const, targetVersion: "2.1.0", recordedAt: "2026-08-20T12:00:00.000Z", message: "failed"};
   writeUpdateOutcome(path, failure);
-  clearUpdateOutcome(path, success);
+  assert.equal(clearUpdateOutcome(path, success), false);
   assert.deepEqual(readUpdateOutcome(path), failure);
-  clearUpdateOutcome(path, failure);
+  assert.equal(clearUpdateOutcome(path, failure), true);
   assert.equal(readUpdateOutcome(path), null);
 });
 
@@ -131,4 +143,70 @@ test("transient lock inspection errors retry before reading the helper's final r
   };
   assert.deepEqual(await readSettledUpdateOutcome(directory, lock), failure);
   assert.equal(reads, 3);
+});
+
+
+test("outcome retirement excludes a helper trying to replace the marker after comparison", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mission-update-retirement-"));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const path = join(directory, "update-outcome.json");
+  const expected = {result: "success" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z"};
+  const replacement = {result: "failure" as const, targetVersion: "2.1.0", recordedAt: "2026-08-20T12:00:00.000Z", message: "failed"};
+  writeUpdateOutcome(path, expected);
+  const contender = () => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import {dirname, join} from "node:path";
+    import {acquireHelperLock, releaseHelperLock, realHelperLockOperations, HELPER_LOCK_DIR_NAME} from "./scripts/update-lock.mjs";
+    import {writeOutcome} from "./scripts/apply-update.mjs";
+    const path = process.argv[2];
+    const directory = join(dirname(path), HELPER_LOCK_DIR_NAME);
+    const ops = realHelperLockOperations();
+    const claim = acquireHelperLock(directory, ops);
+    if (claim.ok) {
+      try { writeOutcome(path, JSON.parse(process.argv[3])); }
+      finally { releaseHelperLock(directory, claim.entryName, ops); }
+    }
+    process.stdout.write(JSON.stringify({ok: claim.ok}));
+  `, directory, path, JSON.stringify(replacement)], {cwd: new URL("..", import.meta.url), encoding: "utf8"})) as {ok: boolean};
+
+  // Pause at the exact vulnerable boundary: the matching bytes were read, but
+  // the public marker has not yet been removed. The contender is another process.
+  let attempted = false;
+  let admitted: boolean | undefined;
+  const read = fs.readFileSync;
+  const interleave = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+    const bytes = read(...args);
+    if (args[0] === path && !attempted) {
+      attempted = true;
+      admitted = contender().ok;
+    }
+    return bytes;
+  });
+  syncBuiltinESMExports();
+  try { assert.equal(clearUpdateOutcome(path, expected), true); }
+  finally { interleave.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(attempted, true);
+  assert.equal(admitted, false, "the helper must not publish between comparison and removal");
+  assert.equal(readUpdateOutcome(path), null);
+  assert.equal(contender().ok, true, "retirement must release ownership for the next helper");
+  assert.deepEqual(readUpdateOutcome(path), replacement);
+  assert.equal(clearUpdateOutcome(path, expected), false);
+  assert.deepEqual(readUpdateOutcome(path), replacement);
+});
+
+test("outcome retirement cannot overlap recovery in the same app process", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mission-update-recovery-retirement-"));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const path = join(directory, "update-outcome.json");
+  const expected = {result: "success" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z"};
+  writeUpdateOutcome(path, expected);
+  // Force identical pid/time claim names, which need the shared local-owner guard.
+  t.mock.method(Date, "now", () => 123456789);
+  await withMigrationLock(directory, async () => {
+    await Promise.resolve();
+    assert.throws(() => clearUpdateOutcome(path, expected), /Another update or install/);
+    assert.throws(() => consumeUpdateOutcome(path), /Another update or install/);
+    assert.deepEqual(readUpdateOutcome(path), expected);
+  });
+  assert.equal(clearUpdateOutcome(path, expected), true);
+  assert.equal(readUpdateOutcome(path), null);
 });

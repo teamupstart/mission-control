@@ -39,6 +39,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`previewWorktreeAction`](../src/web/lib/api.ts#L343) | `/api/worktrees/actions/preview` |
 | [`executeWorktreeAction`](../src/web/lib/api.ts#L346) | `/api/worktrees/actions/execute` |
 | [`dismissWorktreeOperation`](../src/web/lib/api.ts#L352) | `/api/worktrees/operations/:id/dismiss` |
+| [`stopWorktreeClaim`](../src/web/lib/api.ts#L376) | `/api/worktrees/:id/claim/stop` |
 | [`openWorktreeTerminal`](../src/web/lib/api.ts#L355) | `/api/worktrees/:id/open` |
 | [`fetchEnvironmentChecks`](../src/web/lib/api.ts#L364) | `/api/environment/checks` |
 | [`fetchSetupChecks`](../src/web/lib/api.ts#L367) | `/api/setup/checks` |
@@ -48,6 +49,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`fetchCostConfig`](../src/web/lib/api.ts#L384) | `/api/cost/config` |
 | [`fetchInspectorConfig`](../src/web/lib/api.ts#L385) | `/api/inspector/config` |
 | [`fetchInspectorPrs`](../src/web/lib/api.ts#L398) | `/api/inspector/prs`<br>`/api/inspector/prs?adoptedSince=:id` |
+| [`fetchInspectorFindings`](../src/web/lib/api.ts#L426) | `/api/inspector/findings?pr=:id` |
 | [`fetchInspectorStatus`](../src/web/lib/api.ts#L404) | `/api/inspector/status` |
 | [`fetchLlmConfig`](../src/web/lib/api.ts#L406) | `/api/llm/config` |
 | [`fetchLlmStatus`](../src/web/lib/api.ts#L414) | `/api/llm/status` |
@@ -133,6 +135,8 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.submitAnswers`](../src/web/lib/api.ts#L1741) | `/api/sessions/:id/submit-options` |
 | [`api.handoff`](../src/web/lib/api.ts#L1754) | `/api/sessions/:id/handoff` |
 | [`api.resolveReview`](../src/web/lib/api.ts#L1764) | `/api/reviews/:id/resolve` |
+| [`api.snoozeReview`](../src/web/lib/api.ts#L2109) | `/api/reviews/:id/snooze` |
+| [`api.wakeReview`](../src/web/lib/api.ts#L2112) | `/api/reviews/:id/wake` |
 | [`api.dispatch`](../src/web/lib/api.ts#L1772) | `/api/tasks` |
 | [`api.startTourDemo`](../src/web/lib/api.ts#L1780) | `/api/tours/:id/dispatch` |
 | [`api.startTourPreview`](../src/web/lib/api.ts#L1786) | `/api/tours/:id/preview` |
@@ -159,6 +163,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.pushTaskToSource`](../src/web/lib/api.ts#L1900) | `/api/tasks/:id/push` |
 | [`api.setForemanConfig`](../src/web/lib/api.ts#L1904) | `/api/foreman/config` |
 | [`api.retryForemanPlanner`](../src/web/lib/api.ts#L1905) | `/api/foreman/planner/retry` |
+| [`api.dismissForemanErrors`](../src/web/lib/api.ts#L2006) | `/api/foreman/health/dismiss` |
 | [`api.setSkillsConfig`](../src/web/lib/api.ts#L1906) | `/api/skills/config` |
 | [`api.setHarnessesConfig`](../src/web/lib/api.ts#L1909) | `/api/harnesses/config` |
 | [`api.setTerminalsConfig`](../src/web/lib/api.ts#L1911) | `/api/terminals/config` |
@@ -241,14 +246,19 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 
 | Tool | Owner / event or exclusion |
 | --- | --- |
-| `share_plan` | Review creation, `attention.request` |
 | `request_plan_decisions` | Review creation, `attention.request`; subsequent polling excluded |
 | `request_review` | Review creation, `attention.request`; subsequent polling excluded |
 | `create_task` | Task owner, `task.create`; dispatch remains Phase 3 |
+| `list_open_questions` | Read-only outstanding-question query, explicitly excluded |
+| `withdraw_question` | Review owner, `attention.withdraw` |
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
-| `report_product_feedback` | Product-issue preview/confirmation/submission owner, `task.issue_*` |
+| `post_report` | Report owner (`ReportManager.post`), `/mcp/reports`; never a review |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |
+| `report_blocker` | Session blocker owner, `session.blocker_report` |
+| `clear_blocker` | Session blocker owner, `session.blocker_clear` |
+| `report_awaiting` | Session awaiting owner, `session.awaiting_report` |
+| `clear_awaiting` | Session awaiting owner, `session.awaiting_clear` |
 | `respond_to_file_comments` | File-comment owner, `file.comment_reply` |
 | `adopt_pipeline_run` | Pipeline owner, `pipeline.adopt` |
 | `report_pipeline_workspace` | Pinned workspace owner, `pipeline.workspace` |

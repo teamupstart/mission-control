@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { PLANNABLE_LIMIT } from "@shared/backlog.ts";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { runStructured, parseModelReply } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
@@ -111,10 +112,10 @@ export const BacklogReportSchema = z.object({
       // have no reason worth writing" have to stay sayable, and the alternative under a
       // strict schema is a model inventing a dependency or a sentence. `sanitizePlan`
       // then reads exactly what it read before.
-      dependsOn: nullAsAbsent(z.array(z.string()).default([])),
+      dependsOn: nullAsAbsent(z.array(z.string()).max(PLANNABLE_LIMIT).default([])),
       reason: nullAsAbsent(z.string().optional()),
     }),
-  ),
+  ).max(PLANNABLE_LIMIT),
   note: nullAsAbsent(z.string().optional()),
 });
 const BACKLOG_REPORT_JSON_SCHEMA = providerJsonSchema(BacklogReportSchema);
@@ -344,7 +345,7 @@ export async function planBacklog(
         schema: BACKLOG_REPORT_JSON_SCHEMA,
       }),
     buildBacklogPrompt(backlog),
-    (raw) => parseModelJson(raw, BacklogReportSchema),
+    (raw) => parseModelReply(raw, BacklogReportSchema),
     "The backlog planner",
     undefined,
     { shapeGuaranteed: runner.structuredOutput?.guaranteesInputShape === true },

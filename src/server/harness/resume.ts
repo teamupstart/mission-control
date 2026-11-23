@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Session } from "@shared/types.ts";
+import type { AdvisorChoice, Session } from "@shared/types.ts";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../agent-subprocess-env.ts";
+import { workUnitEnv } from "../agent-work-unit.ts";
 import { STATE_DIR, resumeGuardPath } from "../config.ts";
 import { missionToolsAvailability } from "../mission-tools.ts";
 import { MISSION_MCP_TOOLS, missionMcpDescriptor, resolveMissionMcpRuntime, verifyMissionMcpTools,
@@ -18,7 +19,27 @@ export interface ResumeContext {
   managed: boolean;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
+  /**
+   * The advisor the owning task resolves to for the model this conversation runs on - the
+   * Settings -> Harnesses choice, or a pin the task saved before that move - rendered the way
+   * a terminal dispatch renders it. Omitted or null inherits.
+   */
+  advisorModel?: AdvisorChoice | null;
+  /**
+   * This resume's one work unit decision (`launchWorkUnitId`), made by the owner that resolved
+   * the task. The resumed agent gets it as `WORK_UNIT_ID`, and the registry records it when the
+   * agent appears. Omitted or null resumes with none.
+   */
+  workUnitId?: string | null;
 }
+/**
+ * What a managed terminal resume reads of the conversation it reopens - and nothing else, so
+ * a caller with no live session (a hibernated task's saved conversation) is checked by the
+ * compiler rather than cast. A live `Session` is one.
+ */
+export type ResumeSource = Pick<Session, "id" | "agent" | "agentSessionId" | "cwd" | "permissionMode" | "runtime">
+  & { meta?: { modelId?: string | null } | null };
+
 export interface PreparedResume {
   cwd: string;
   argv: string[];
@@ -28,6 +49,10 @@ export interface PreparedResume {
   requiredTools: readonly MissionMcpTool[];
   descriptor: MissionMcpDescriptor | null;
   instrumented: boolean;
+  /** The work unit the prepared environment carries, or null: the resume's one decision. */
+  workUnitId: string | null;
+  /** The note key the resumed agent binds to: the conversation's native id. */
+  conversationKey: string;
   beginLaunch(): void;
   dispose(): boolean;
 }
@@ -46,15 +71,34 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
   return `${session.agent}:${session.agentSessionId}`;
 }
 
+/**
+ * How long the resume guard's `--check` may take. A bound on a hung guard, not a guess at a
+ * healthy one: at 5s a loaded Mac's Node startup ran past it and a sound guard was reported as
+ * unusable, refusing the resume with a false "run: npm run build". Matches the MCP handshake
+ * bound in `mission-mcp.ts`.
+ */
+export const RESUME_GUARD_CHECK_TIMEOUT_MS = 15_000;
+
+/**
+ * The command a managed resume wrapper `exec`s: the guard, which claims the lease and then
+ * spawns the agent as its own child, so it stays that agent's ancestor for as long as the
+ * agent runs. One owner for this shape, because discovery recognizes Mission Control's own
+ * resumes by it (`isMissionLaunchProcess`), and a launch path that built it a second way
+ * would be hidden whenever outside sessions are.
+ */
+export function resumeGuardArgv(runtimeCommand: string, guard: string, lease: Pick<ResumeLease, "root" | "id">): string[] {
+  return [runtimeCommand, guard, lease.root, lease.id];
+}
+
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
-export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
+export async function prepareTerminalResume(session: ResumeSource, context: ResumeContext): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
   const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);
   const guard = resumeGuardPath();
   if (!existsSync(guard)) throw new Error("Mission Control's managed resume guard is not built - run: npm run build");
   const runtime = resolveMissionMcpRuntime();
-  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: 5_000 });
+  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: RESUME_GUARD_CHECK_TIMEOUT_MS });
   if (guardCheck.code !== 0 || guardCheck.stdout.trim() !== "mission-resume-guard-v1") {
     throw new Error("Mission Control's managed resume guard is unusable - run: npm run build");
   }
@@ -90,17 +134,23 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
     }
     const scope = harness.multiRepoDispatch;
     if (context.extraDirs.length && scope?.kind === "flags") argv.push(...scope.launchArgs([...context.extraDirs]));
-    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd });
+    const advisor = context.advisorModel && harness.advisor
+      ? { args: harness.advisor.launchArgs(context.advisorModel), env: harness.advisor.launchEnv(context.advisorModel) }
+      : { args: [], env: {} };
+    argv.push(...advisor.args);
+    const workUnitId = context.workUnitId ?? null;
+    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd,
+      extraEnv: { ...advisor.env, ...workUnitEnv(workUnitId) } });
     dropPaneIdentityEnv(env);
     delete env.MISSION_SESSION_ID;
     env.MISSION_AGENT_SESSION_ID = session.agentSessionId;
     writeResumeRecord(join(lease.home, "launch.json"), { argv, env, cwd: session.cwd });
     const wrapper = join(lease.home, LAUNCH_SCRIPT_FILE);
     // This tiny shell holds no config or credential. The guard claims before reading either.
-    const command = [runtime.command, guard, lease.root, lease.id];
+    const command = resumeGuardArgv(runtime.command, guard, lease);
     writeFileSync(wrapper, `#!/bin/sh\n${runtime.env.ELECTRON_RUN_AS_NODE ? "export ELECTRON_RUN_AS_NODE=1\n" : ""}exec ${shellCommand(command)}\n`, { mode: 0o700 });
     return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper], stateHome: lease.home,
-      lease, descriptor, requiredTools, instrumented, dispose,
+      lease, descriptor, requiredTools, instrumented, workUnitId, conversationKey: session.agentSessionId, dispose,
       beginLaunch: () => { beginResumeLaunch(lease); preparing.delete(lease.id); } };
   } catch (error) {
     dispose();

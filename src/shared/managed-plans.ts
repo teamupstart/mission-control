@@ -12,7 +12,7 @@ export const ManagedPlanPolicySchema = z.discriminatedUnion("storage", [
 export type ManagedPlanPolicy = z.infer<typeof ManagedPlanPolicySchema>;
 export const PlanIdentitySchema = z.object({
   repoKey: z.string().regex(/^[a-f0-9]{64}$/),
-  planId: z.string().uuid(),
+  planId: z.string().guid(),
   revision: z.number().int().positive(),
 }).strict();
 export type PlanIdentity = z.infer<typeof PlanIdentitySchema>;
@@ -23,13 +23,19 @@ export const TaskPlanInputsSchema = z.array(TaskPlanInputSchema).max(16);
 export type TaskPlanInput = z.infer<typeof TaskPlanInputSchema>;
 export const PlanReviewInputSchema = z.object({
   repoSlot: z.string().regex(/^repo-\d{2,}$/).default("repo-01"),
-  planId: z.string().uuid(), revision: z.number().int().positive(),
+  planId: z.string().guid(), revision: z.number().int().positive(),
 }).strict();
 export const PLAN_APPROVAL_DECISION = "approve-final-bundle";
 export const PLAN_APPROVAL_OPTION = "approve";
+
+/** Did this submitted form choose "Approve final bundle", and nothing else, for the bundle question? */
+export function approvesFinalBundle(selections: readonly { decisionId: string; selected: string[]; other: string | null }[] | null | undefined): boolean {
+  return Boolean(selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION
+    && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other));
+}
 export const PlanPublicationReceiptSchema = PlanIdentitySchema.extend({
   version: z.literal(2), storage: z.literal("local"),
-  id: z.string().uuid(), reviewId: z.string().min(1), sessionId: z.string().min(1),
+  id: z.string().guid(), reviewId: z.string().min(1), sessionId: z.string().min(1),
   taskId: z.string().min(1), episodeId: z.string().nullable(),
   bindingId: z.string().nullable(), workflowVersionId: z.string().nullable(), submissionId: z.string().nullable(),
   manifestHash: z.string().regex(/^[a-f0-9]{64}$/), publishedAt: z.number().int().positive(),
@@ -46,19 +52,19 @@ export interface PlanReadiness {
 export const PLAN_CONTENT_LIMITS = { files: 64, fileBytes: 1024 * 1024, totalBytes: 8 * 1024 * 1024 } as const;
 export const PlanFileNameSchema = z.string().max(120).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.(md|html|txt|css|svg)$/);
 export const PlanSlotSchema = z.string().regex(/^repo-\d{2,}$/).default("repo-01");
-export const PlanCatalogCursorSchema = z.string().uuid();
+export const PlanCatalogCursorSchema = z.string().guid();
 export const PlanContextInputSchema = z.object({ repoSlot: PlanSlotSchema }).strict();
 export const SavePlanInputSchema = z.object({
   repoSlot: PlanSlotSchema,
-  requestId: z.string().uuid(),
-  planId: z.string().uuid().optional(),
+  requestId: z.string().guid(),
+  planId: z.string().guid().optional(),
   slug: z.string().max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   expectedRevision: z.number().int().nonnegative(),
   files: z.array(z.object({ name: PlanFileNameSchema, content: z.string().max(PLAN_CONTENT_LIMITS.fileBytes) }).strict()).min(2).max(PLAN_CONTENT_LIMITS.files),
 }).strict();
 export const ReadPlanInputSchema = z.object({
   repoSlot: PlanSlotSchema,
-  planId: z.string().uuid().optional(),
+  planId: z.string().guid().optional(),
   revision: z.number().int().positive().optional(),
   file: PlanFileNameSchema.optional(),
   cursor: PlanCatalogCursorSchema.optional(),
@@ -66,7 +72,7 @@ export const ReadPlanInputSchema = z.object({
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const PlanManifestSchema = z.object({
   version: z.literal(1),
-  planId: z.string().uuid(),
+  planId: z.string().guid(),
   repoKey: DigestSchema,
   slug: SavePlanInputSchema.shape.slug,
   revision: z.number().int().positive(),
@@ -95,3 +101,21 @@ export interface ManagedPlanCatalog {
   nextCursor: string | null;
 }
 export const managedPlanPreview = (id: string, revision: number): string => `/?plan=${id}&revision=${revision}`;
+
+/** Editor guidance derived from the same exact-origin rule enforced on save. */
+export interface TaskPlanDependencyRequirement {
+  input: TaskPlanInput;
+  title: string;
+  dependencyKeys: string[];
+}
+export interface TaskPlanDependencyRequirements {
+  requirements: TaskPlanDependencyRequirement[];
+  error: string | null;
+}
+
+export const TaskPlanInputChangeSchema = z.object({
+  expectedUpdatedAt: z.number().int().optional(),
+  from: TaskPlanInputSchema,
+  to: TaskPlanInputSchema,
+}).strict();
+export type TaskPlanInputChange = z.infer<typeof TaskPlanInputChangeSchema>;

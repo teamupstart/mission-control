@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
+import { findDisallowedModCalls } from "./mod-calls.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -28,7 +29,7 @@ import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
 // would fail for anyone who had not built first - reporting a missing build as a broken
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, copyFile, readFile, rm } from "node:fs/promises";
@@ -403,10 +404,12 @@ async function smokeMcp() {
 }
 
 async function declaredTaskExtraRepoLimit() {
-  const source = await readFile(resolve("src/shared/protocol.ts"), "utf8");
+  // Defined beside the task kinds (and re-exported by protocol.ts) so the resident launch
+  // schemas can share it without an import cycle.
+  const source = await readFile(resolve("src/shared/task.ts"), "utf8");
   const value = /export const MAX_TASK_EXTRA_REPOS = (\d+);/.exec(source)?.[1];
   if (!value) {
-    fail("MAX_TASK_EXTRA_REPOS could not be read out of src/shared/protocol.ts");
+    fail("MAX_TASK_EXTRA_REPOS could not be read out of src/shared/task.ts");
     return null;
   }
   return Number(value);
@@ -500,6 +503,7 @@ async function smokeSatellitePaths() {
     ["MCP server", "dist/mcp/server.mjs"],
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
     ["Managed resume guard", "dist/satellites/resume-guard.mjs"],
+    ["resident MCP scoped launcher", "dist/satellites/resident-mcp-launcher.mjs"],
     ["Pi extension", "dist/pi-integration/extension.js"],
   ];
   for (const [label, built] of expected) {
@@ -520,6 +524,58 @@ async function smokeSatellitePaths() {
     }
     console.log(`[smoke] daemon bundle resolves the ${label} to the built artifact`);
   }
+}
+
+/** The `mod-calls` check (spec 7.10): the mod's source reaches only the daemon paths in `src/mod/allowed-calls.json`. */
+function smokeModCalls() {
+  const refused = findDisallowedModCalls(resolve("."));
+  if (refused.length > 0) {
+    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+    return;
+  }
+  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
+}
+
+/**
+ * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
+ * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's
+ * version and a `modApi` integer, a hooks file naming a module that exists, the state contract
+ * the manifest names, and a marketplace whose relative `source` reaches the plugin. When the
+ * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
+ * engine would refuse shows up here rather than on a person's machine.
+ */
+async function smokeModBuild() {
+  const modRoot = resolve("dist/mod");
+  const pluginDir = join(modRoot, "mission-control");
+  const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
+  try {
+    const pkg = await readJson(resolve("package.json"));
+    const plugin = await readJson(join(pluginDir, ".claude-plugin", "plugin.json"));
+    if (plugin.name !== "mission-control") throw new Error(`plugin.json names ${plugin.name}`);
+    if (plugin.version !== pkg.version) throw new Error(`plugin.json version ${plugin.version} is not the app's ${pkg.version}`);
+    if (!Number.isInteger(plugin.modApi)) throw new Error("plugin.json has no integer modApi");
+    if (!existsSync(join(pluginDir, plugin.types))) throw new Error(`plugin.json names types ${plugin.types}, which does not exist`);
+    const hooks = await readJson(join(pluginDir, "hooks", "hooks.json"));
+    if (!Array.isArray(hooks.modules) || hooks.modules.length !== 1) throw new Error("hooks.json must name exactly one module");
+    if (!existsSync(join(pluginDir, "hooks", hooks.modules[0]))) throw new Error(`hooks.json names ${hooks.modules[0]}, which does not exist`);
+    const market = await readJson(join(modRoot, ".claude-plugin", "marketplace.json"));
+    const entry = market.plugins?.find((p) => p.name === "mission-control");
+    if (!entry || typeof entry.source !== "string" || !entry.source.startsWith("./")) {
+      throw new Error("marketplace.json must list mission-control with a relative source");
+    }
+    if (!existsSync(join(modRoot, entry.source, ".claude-plugin", "plugin.json"))) throw new Error(`marketplace source ${entry.source} does not reach the plugin`);
+  } catch (error) {
+    fail(`the built mod is not in the expected shape: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  console.log("[smoke] the mod and its folder marketplace are in the expected shape");
+  if (spawnSync("claude", ["--version"], { stdio: "ignore" }).status !== 0) {
+    console.log("[smoke] claude is not installed; skipping claude plugin validate");
+    return;
+  }
+  const validated = spawnSync("claude", ["plugin", "validate", pluginDir], { encoding: "utf8" });
+  if (validated.status !== 0) fail(`claude plugin validate rejected the built mod:\n${validated.stdout}${validated.stderr}`);
+  else console.log("[smoke] claude plugin validate accepts the built mod");
 }
 
 /**
@@ -607,12 +663,12 @@ await smokePiExtension();
  * The second cannot be asked of that file at all. Its Pi module is an internal lazy chunk
  * with no export anyone outside can reach, and importing the bundle starts a daemon. So the
  * load is proven on a second artifact built from the daemon's OWN entry module for the
- * driver, with the flags READ OUT OF `build:server` rather than restated here - a probe
+ * driver plus a synthetic OAuth probe, with flags READ OUT OF `build:server` - a probe
  * carrying its own copy of the bundler configuration would pass while the shipped one
  * failed, which is the same class of lie as the stale MCP bundle above.
  *
- * It resolves a path and loads a module. It reads no credential, opens no session file, and
- * contacts nothing.
+ * It loads the SDK and derives OAuth auth from in-memory synthetic credentials with fetch
+ * disabled. It reads no operator credentials, opens no session file, and contacts nothing.
  */
 async function smokePiSdkBundle() {
   const bundle = resolve("dist/server/index.mjs");
@@ -656,7 +712,7 @@ async function smokePiSdkBundle() {
   // platform binary rather than a script, and running it through node parses Mach-O as
   // JavaScript. `npm run build` spends the same file.
   const built = await run(resolve("node_modules/.bin/esbuild"), [
-    "src/server/harness/pi/sdk-deps.ts",
+    "test/helpers/pi-oauth-probe.ts",
     ...flags,
     `--outfile=${out}`,
   ]);
@@ -675,7 +731,7 @@ async function smokePiSdkBundle() {
   const override = process.env[overrideEnv];
   delete process.env[overrideEnv];
   try {
-    const { defaultPiSdkDeps } = await import(pathToFileURL(out).href);
+    const { defaultPiSdkDeps, verifyBundledOAuth } = await import(pathToFileURL(out).href);
     const sdk = await defaultPiSdkDeps.load();
     for (const name of [
       "agentDir",
@@ -695,7 +751,8 @@ async function smokePiSdkBundle() {
       fail("the bundled Pi SDK could not resolve Pi's agent directory");
       return;
     }
-    console.log("[smoke] the pinned Pi SDK is inlined in the daemon bundle and loads");
+    await verifyBundledOAuth(dirname(out));
+    console.log("[smoke] bundled Pi SDK loads and derives OpenAI Codex and Anthropic OAuth auth without network or provider sidecars");
   } catch (err) {
     fail(`the bundled Pi SDK could not be loaded (${err instanceof Error ? err.message : err})`);
   } finally {
@@ -808,6 +865,8 @@ await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+smokeModCalls();
+await smokeModBuild();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");
 else {

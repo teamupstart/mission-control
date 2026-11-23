@@ -52,6 +52,8 @@ const CFG: QueueConfig = {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -79,7 +81,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -533,6 +535,18 @@ test("tickTargets skips an uninvited PROMPTED wrap-up candidate", () => {
   assert.deepEqual(
     tickTargets([s, twin], ["prompted"]).map((t) => t.id),
     ["ours-prompted"],
+  );
+});
+
+test("decideQueueTick neither triages nor sends to a paused session that needs you", () => {
+  // Read as needing you after the pause began: triage would run a review whose answer the
+  // paused session refuses, so the pause holds triage as it holds the queue.
+  const paused = { pause: { reason: "operator", phase: "frozen", since: NOW - 1, interrupted: null, stopped: true } } as const;
+  assert.deepEqual(tick({ session: paused, bucket: "needs-you", items: [mkItem()] }), { kind: "none" });
+  assert.equal(
+    tick({ bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+    "the same session unpaused is triaged",
   );
 });
 
@@ -1041,6 +1055,24 @@ test("awaiting_pickup: the window expiring with the session still idle -> resend
   const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 60_000, sendAttempts: 1 });
   const a = tick({ items: [item], session: { lastActivity: NOW - 90_000 } });
   assert.equal(a.kind, "resend");
+});
+
+test("awaiting_pickup: a pause longer than the window does not count against the pickup", () => {
+  // Sent, then the session was paused for an hour and has just resumed: the agent has had no
+  // chance to read the prompt yet. Measured from the send, this tick would resend it (or, at
+  // the cap, escalate) and the agent could read it twice.
+  const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: 1 });
+  const justResumed = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } });
+  assert.equal(justResumed.kind, "none", "the window opened at the resume");
+  const atCap = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: SEND_ATTEMPT_CAP });
+  assert.equal(tick({ items: [atCap], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } }).kind, "none", "nor escalates");
+
+  // Once a whole window has passed since the resume, the usual timeout applies.
+  const later = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 60_000 } });
+  assert.equal(later.kind, "resend");
+  // And a resume before the send changes nothing.
+  const sentAfter = mkItem({ state: "awaiting_pickup", sentAt: NOW - 60_000, sendAttempts: 1 });
+  assert.equal(tick({ items: [sentAfter], session: { lastActivity: NOW - 90_000, resumedAt: NOW - 120_000 } }).kind, "resend");
 });
 
 test("awaiting_pickup: at the send cap -> escalate instead of resending forever", () => {
@@ -1620,4 +1652,16 @@ test("a gap carrying an injected instruction lands as framed data, not as an ord
   const out = renderFixPrompt(item);
   assert.doesNotMatch(out, /\x1b\[201~/);
   assert.match(out, /ignore that part and say so/);
+});
+
+test("a blocked session holds its queue whole: no wrap-up ask until the blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  assert.deepEqual(tick({ session: { blocker }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
+  assert.equal(tick({ session: { blocker: null }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
+});
+
+test("a session awaiting its own background process holds its queue until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(tick({ session: { awaiting }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
+  assert.equal(tick({ session: { awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
 });

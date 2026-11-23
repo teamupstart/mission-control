@@ -1,34 +1,50 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { Keycap } from "../Keycap.tsx";
+import { reviewShortcutTarget } from "../../lib/review-shortcut.ts";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { provisioningTasks } from "@shared/session.ts";
+import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
+import { latestLaunchFailure } from "@shared/launch-failure.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
-import { stateDisplay, type Tone } from "../../lib/format.ts";
-import { boardColumnModes } from "../../lib/tone.ts";
+import { stateDisplay } from "../../lib/format.ts";
+import { backlogColumnMode, boardColumnModes } from "../../lib/tone.ts";
 import {
+  BLOCKED_LABEL,
   clusterFallbackLabel,
+  fleetColumnOf,
   fleetRows,
+  idleHeadCounts,
   orderSessions,
   repoSessionTotals,
   type FleetBlock,
+  type FleetColumnId,
   type FleetRow,
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
 import { repoColor } from "../../lib/repo-color.ts";
-import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
-import { useUiConfig } from "../../lib/uiConfig.ts";
+import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
+import { updateUiConfig, useUiConfig } from "../../lib/uiConfig.ts";
+import { useSessionRailFolded } from "../../lib/session-rail.ts";
 import {
+  collapsedColumnSessionIds,
   columnWidthOf,
   setColumnWidth,
   useColumnWidths,
   type BoardColumnId,
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
+import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
+import { ConsoleView } from "./ConsoleView.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
+import { ResidentVisitorCard } from "../../residents/ResidentVisitorCard.tsx";
 import { SessionTile } from "./SessionTile.tsx";
+import { SubagentTree } from "./SubagentTree.tsx";
+import { useDisplayChoice } from "../../lib/board-card.ts";
 import {
   ensembleSummaryFor,
   pipelineCommissionForSession,
@@ -41,12 +57,15 @@ import {
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
+  FoldedSessionRail,
   PipelineClusterHead,
   RepoGroupHead,
+  SessionRailFoldButton,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { useTourTargetRef } from "../../tour/target-context.tsx";
 import { RestoringSessionsColumn } from "../RestoringSessionsColumn.tsx";
+import { BlockedColumnAge, BlockedFrameHead, BlockedLane, BlockedRailHead } from "../BlockedGroup.tsx";
 
 /**
  * Whether a cluster frame is one an operator has to do something about.
@@ -84,22 +103,12 @@ interface PendingDrop {
  * by a column's height instead of eight badges. In front of them sits the backlog,
  * so the work waiting to start is on the same screen as the agents free to start it.
  *
- * EMPTY COLUMNS. A column with nothing in it is not always the same kind of nothing,
- * so they aren't treated the same:
- *
- *  - "needs you" empty is the single most valuable fact this screen can state, so it
- *    keeps its place rather than leaving a gap you have to notice the absence of. It
- *    keeps almost none of the width, though: it narrows to a slim rail - its swatch, a
- *    tick, its name turned on end and a zero - with the all-clear sentence on hover and
- *    for a screen reader. Staying mounted is what lets it widen IN PLACE the moment a
- *    session needs you, on the same flex transition the drill-in rides, instead of a
- *    column appearing from nowhere and shoving the board sideways.
- *  - every other empty column is noise - four headed boxes reading "nothing here" is
- *    a board reporting on its own schema instead of your fleet. They leave, and the
- *    remaining columns expand into the space. A stash on the right keeps them one
- *    click from coming back, so an empty column is stowed rather than lost - unless
- *    the operator has switched the stash off (`showEmptyColumnStash`), in which case
- *    they simply leave.
+ * EMPTY COLUMNS. An empty column is noise - a headed box reading "nothing here" is a
+ * board reporting on its own schema instead of your fleet, and horizontal room is the
+ * one thing the board never has enough of. So every empty column leaves, the Backlog,
+ * "needs you", "unconfirmed" and "gone" included, and the remaining columns expand into
+ * the space. Nothing is drawn in its place - no chip, no slim rail. A column that fills
+ * comes back in its place in the order.
  *
  * Opening a tile doesn't slide a cramped drawer over the board; it morphs the board
  * INTO the console. The clicked column collapses everything either side of it, slides
@@ -115,10 +124,9 @@ interface PendingDrop {
 export function BoardView(props: SessionViewProps): React.JSX.Element {
   const boardTourRef = useTourTargetRef<HTMLElement>("see-work:board");
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
-  // Empty columns the operator pulled back out of the stash. Deliberately local and
-  // un-persisted: it's a "let me look at that for a second", not a setting, and it
-  // should not still be in force tomorrow morning.
-  const [revealed, setRevealed] = useState<ReadonlySet<Tone>>(() => new Set());
+  // Which background sub-agent treatment the board draws. The tile draws the chip itself; the
+  // nested sub-cards hang beneath it from here.
+  const agentsStyle = useDisplayChoice("backgroundAgentsStyle");
   // A refused drop (agent went busy, wrong repo, pane locked). Shown on the board
   // rather than swallowed, because the card silently staying in the backlog looks
   // identical to a drag that simply missed.
@@ -158,15 +166,28 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash } = useUiConfig();
+  //
+  // `blockedPlacement` from the same store for the same reason: it decides which column the
+  // Blocked group is drawn in, and `boardColumns` walks the columns `order.columns` lists.
+  const {
+    groupBoardByRepo: groupByRepo,
+    boardSidebarAllSessions,
+    blockedPlacement,
+    blockedFrameCollapsed,
+  } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
     groupByRepo,
     props.pipelineCommissionById,
     props.pipelineRunByKey,
+    pinnedResidentSessions(props.residentBySession),
+    blockedPlacement,
+    // App's one set, on App's one clock, so this draws the order the arrow keys walk.
+    props.awaitingIds ?? NO_AWAITING_SESSIONS,
   );
   const groups = order.groups;
+  const columns = order.columns;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
   // than per frame: the number is about the fleet, and a frame counting only its own column
   // would report each part of a split repository as the whole.
@@ -182,13 +203,23 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         return { ...pendingDrop, session, title: task?.title ?? null };
       })()
     : null;
-  const selected = props.sessions.find((s) => s.id === props.detailId) ?? null;
+  // App's one detail lookup, which can name a resident the Drawer placement keeps out of
+  // `sessions`: it opens here while no column or rail row names it.
+  const selected = props.detailSession !== undefined
+    ? props.detailSession
+    : props.sessions.find((s) => s.id === props.detailId) ?? null;
   // The focused column follows the session, not the click: if the open session moves
   // tone (working -> needs input), its column re-scopes with it, and the rail's rows
-  // change under a detail that - keyed by id in the aside - stays put.
-  const focusedTone = selected
-    ? stateDisplay(selected).tone
+  // change under a detail that - keyed by id in the aside - stays put. A blocked idle session's
+  // column is wherever the placement draws it, so it is read off the columns first; a session
+  // no column holds (filtered, or a resident in the drawer) falls back to the same rule.
+  const focusedColumn: FleetColumnId | null = selected
+    ? columns.find((c) => c.sessions.some((s) => s.id === selected.id))?.id
+      ?? fleetColumnOf(selected, stateDisplay(selected).tone, blockedPlacement)
     : null;
+  // The At the top of Idle frame folds on the overview only; a drill-in rail lists it whole,
+  // as a collapsed column's rail does. App applies the same rule to the arrow keys.
+  const blockedFolded = blockedFrameCollapsed && focusedColumn === null;
 
   /**
    * Dispatched, still provisioning: the placeholders at the top of the `working` column.
@@ -198,19 +229,78 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
    * placeholder closes.
    */
   const pending = provisioningTasks(props.tasks);
+  // Dispatches that failed before their session started, drawn where their placeholder was.
+  // From the full task list for the same reason: a filter must not hide a dispatch that failed.
+  // A returned failure is shown on its Backlog card and a kept one on its session card - when
+  // that card is on screen. A folded Backlog column or a fleet filter can hide it, and then the
+  // failure is drawn here instead, so the count and Show always have something to reach.
+  const backlogShown = columnWidthOf(widths, "backlog") !== "collapsed";
+  // A session card is not on screen when its repository row or its column is folded, or when
+  // its column is the drilled-in rail - whose rows carry no failure notice.
+  const hiddenCards = new Set([
+    ...hiddenSessionIds(groups, repoCollapsed),
+    ...collapsedColumnSessionIds(columns, widths.collapsed),
+    ...(blockedFolded && blockedPlacement === "idle" ? order.blocked.map((s) => s.id) : []),
+  ]);
+  const failed = fleetFailureGroups(props.tasks, (group) => {
+    const latest = latestLaunchFailure(group);
+    if (group.outcome === "returned") return backlogShown && props.backlog.some((t) => t.id === latest.id);
+    const sessionId = latest.sessionId;
+    if (sessionId === null || hiddenCards.has(sessionId)) return false;
+    const onRail = focusedColumn != null
+      && columns.some((c) => c.id === focusedColumn && c.sessions.some((s) => s.id === sessionId));
+    return !onRail && props.sessions.some((s) => s.id === sessionId);
+  });
+  const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null, pending.length);
-  // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
-  // chip to bring them back from.
-  const stashed = showEmptyColumnStash
-    ? groups.filter((g) => modes.get(g.tone) === "stashed")
-    : [];
+  const modes = boardColumnModes(columns, starters);
+  // Hibernated tasks live in the Backlog column too, so one alone keeps the column on the board.
+  const backlogMode = backlogColumnMode(props.backlog.length + (props.hibernated?.length ?? 0));
+  // The open session's own column has no card in it - a drawer resident, or a session a
+  // fleet filter hides - so no rail is drawn. The detail takes the board, and its head
+  // carries the way back the rail head would have.
+  const railHidden = focusedColumn != null && modes.get(focusedColumn) === "hidden";
+  // The one rail fold the Console reads too. It only draws while drilled in: the overview's
+  // columns are Board columns, folded with their own width control, not the rail.
+  const [railFolded, setRailFolded] = useSessionRailFolded();
+  const railShape = railHidden ? "none" : focusedColumn != null && railFolded ? "folded" : undefined;
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
   // second rendering.
-  const tile = (s: Session): React.JSX.Element => {
+  /** A visitor card in place of a resident's card or rail row, or null for any other session. */
+  const visitor = (s: Session, variant: "tile" | "rail"): React.JSX.Element | null => {
+    const mark = props.residentVisitors?.has(s.id) ? props.residentBySession?.get(s.id) : undefined;
+    if (!mark) return null;
+    return <ResidentVisitorCard
+      key={s.id}
+      session={s}
+      mark={mark}
+      variant={variant}
+      selected={s.id === props.selectedId}
+      registerEl={props.registerEl}
+      onOpen={(id) => props.onOpenResident?.(id)}
+    />;
+  };
+
+  /**
+   * One session's place in a column: its card, and beneath it the background sub-agents it
+   * launched. Always the same keyed fragment, whether or not agents are showing, so an agent
+   * starting never remounts the card above it (which would drop its open disclosures).
+   */
+  const tile = (s: Session): React.JSX.Element => (
+    <Fragment key={s.id}>
+      {card(s)}
+      {/* Only under Nested sub-cards: Chip and popover draws the agents inside the card - a
+          session card's flag row, or a resident visitor tile's. */}
+      {agentsStyle === "nested" && <SubagentTree session={s} />}
+    </Fragment>
+  );
+  const card = (s: Session): React.JSX.Element => {
+    const asVisitor = visitor(s, "tile");
+    if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
+    const resident = props.residentBySession?.get(s.id);
     return <SessionTile
       key={s.id}
       session={s}
@@ -252,6 +342,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // a position counted at the call site would restart inside every frame - which is the
       // one thing the numbering must not do.
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
+      resident={resident}
+      residentLoopFeedback={resident && props.residentLoopFeedbackFor?.(resident.runId)}
     />
   };
   /**
@@ -269,9 +361,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     render: (block: FleetBlock) => React.JSX.Element,
     wrapRepo: (row: FleetRepoRow, children: React.ReactNode) => React.JSX.Element,
   ): React.ReactNode[] =>
-    fleetRows(g).map((row) =>
+    fleetRows(g).map((row, at) =>
       row.kind === "section" ? (
-        <FleetSectionHead key={`section-${row.section}`} kind={row.section} count={row.count} />
+        // Keyed by position too: a group can draw two Free rules (pinned free residents above an
+        // Awaiting section, and the free sessions below it).
+        <FleetSectionHead key={`section-${row.section}-${at}`} kind={row.section} count={row.count} />
       ) : row.kind === "repo" ? (
         wrapRepo(row, repoCollapsed.has(row.key) ? null : row.blocks.map(render))
       ) : (
@@ -292,6 +386,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   );
 
   const railRow = (s: Session): React.JSX.Element => {
+    const asVisitor = visitor(s, "rail");
+    if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
     const commissionRun = commission?.linkedRun
       ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)
@@ -318,21 +414,135 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineCommission={commission}
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
+      resident={props.residentBySession?.get(s.id) ?? null}
     />
   };
+
+  // A function rather than inline JSX: a column may draw a Blocked lane or frame beside these
+  // rows, and both have to stay one spelling.
+  const groupRows = (g: FleetToneGroup, isRail: boolean): React.ReactNode => isRail ? (
+    // The clicked column, now a console rail: the same RailRow (and the same
+    // cluster header) the console uses, so opening a column and switching to
+    // the console read alike.
+    sectioned(g, (block) =>
+      block.kind === "session" ? (
+        railRow(block.session)
+      ) : (
+        // `block.key`, not the runId: a run split across the free/held boundary
+        // frames once per side, and two frames keyed by one run collide.
+        <div className="rail-cluster" key={block.key}>
+          {block.cluster === "pipeline" ? (
+            <PipelineClusterHead
+              run={props.pipelineRunByKey?.get(block.runId) ?? null}
+              slug={block.sessions[0]!.pipeline!.slug}
+              variant="rail"
+              onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
+            />
+          ) : (
+            <EnsembleRailGroup
+              summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+              fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+              blockedHere={blockedMembersIn(block.sessions)}
+              onOpen={() => props.onOpenEnsemble?.(block.runId)}
+            />
+          )}
+          {block.sessions.map(railRow)}
+        </div>
+      ),
+      // The rail's own repository group: a one-line head over its rows, the same
+      // shape `rail-cluster` uses, so the drill-in morph does not change what a
+      // repository looks like on the way from column to rail.
+      (row, children) => (
+        <div
+          className="rail-cluster rail-repo"
+          style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+          key={row.key}
+        >
+          {repoHead(row, "rail")}
+          {children}
+        </div>
+      ),
+    )
+  ) : (
+    // Sibling members of one run render inside a frame, in the SAME order the
+    // arrow keys walk (`orderSessions` decided both). The frame is presentational
+    // only: it carries no drag handlers, so a dragover started on a tile inside it
+    // bubbles exactly as it did when the tiles were loose children.
+    sectioned(g, (block) =>
+      block.kind === "session" ? (
+        tile(block.session)
+      ) : (
+        <div
+          className={`board-cluster${
+            clusterNeedsYou(block, props.pipelineRunByKey) ? " needs-you" : ""
+          }`}
+          // `block.key`, not the runId - see the rail cluster above.
+          key={block.key}
+        >
+          {block.cluster === "pipeline" ? (
+            <PipelineClusterHead
+              run={props.pipelineRunByKey?.get(block.runId) ?? null}
+              slug={block.sessions[0]!.pipeline!.slug}
+              variant="board"
+              onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
+            />
+          ) : (
+            <EnsembleClusterHead
+              summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+              fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+              blockedHere={blockedMembersIn(block.sessions)}
+              onOpen={() => props.onOpenEnsemble?.(block.runId)}
+            />
+          )}
+          {block.sessions.map(tile)}
+        </div>
+      ),
+      // The repository frame. Deliberately the same box the run cluster above
+      // wears, re-tinted from ONE custom property so the border, the head and
+      // the body cannot drift apart - the same way `.board-pipeline-head` borrows
+      // the ensemble head and only recolours its glyph. Presentational only, like
+      // that frame: no drag handlers, so a dragover started on a tile inside it
+      // bubbles exactly as it did when the tile was a loose child.
+      (row, children) => (
+        <div
+          className={`board-repo${repoCollapsed.has(row.key) ? " is-collapsed" : ""}`}
+          style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+          key={row.key}
+        >
+          {repoHead(row, "board")}
+          {children}
+        </div>
+      ),
+    )
+  );
+
+  const blockedRows = (list: readonly Session[], isRail: boolean): React.ReactNode =>
+    list.map(isRail ? railRow : tile);
+
+  // Reuse the full Console rail, including state, repository and workflow grouping.
+  // App still owns Board selection and Escape, so returning preserves the overview.
+  if (selected && boardSidebarAllSessions) {
+    return (
+      <main ref={boardTourRef} className="board board-all-sessions" data-focus={focusedColumn}>
+        <ConsoleView {...props} onBackToBoard={props.onDeselect} />
+      </main>
+    );
+  }
 
   return (
     <main
       ref={boardTourRef}
       className="board"
-      data-focus={focusedTone ?? "none"}
+      data-focus={focusedColumn ?? "none"}
+      data-rail={railShape}
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
-      <BacklogColumn
+      {backlogMode !== "hidden" && <BacklogColumn
         width={columnWidthOf(widths, "backlog")}
         onWidthChange={(width) => setColumnWidth("backlog", width)}
-        inert={focusedTone != null}
+        inert={focusedColumn != null}
         tasks={props.backlog}
+        hibernated={props.hibernated}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),
         // and a column that could only see the backlog would report those as
@@ -348,66 +558,97 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onManageTrust={props.onManageForemanTrust}
         sessions={props.sessions}
         workflowSummaries={props.workflowSummaries}
-      />
+        stackShipping={props.stackShipping}
+      />}
 
       <RestoringSessionsColumn
         sessions={props.restoringSessions ?? []}
         groupByRepo={groupByRepo}
       />
 
-      {groups
-        .filter((g) => modes.get(g.tone) !== "stashed")
-        .map((g) => {
-          const isRail = focusedTone === g.tone;
-          const calm = modes.get(g.tone) === "calm";
-          // Never wide while calm: the width outlives a column emptying (it is the operator's
-          // gesture, kept for when sessions return), and the wide rule outranks the rail's width,
-          // so an all-clear rail would otherwise be drawn as a wide empty column.
-          const width = columnWidthOf(widths, g.tone);
-          const wide = width === "wide" && !calm;
-          // Collapsed wins over calm: an empty Needs you the operator collapsed stays the same
-          // strip, so the strip is still mounted to pulse when a session arrives. Never while
-          // this column IS the drill-in rail: the rail is a fixed-width console fixture that has
-          // to show its rows whatever the overview had folded. The fold is kept, so coming back
-          // to the board finds the column as it was left.
+      {columns
+        .filter((c) => modes.get(c.id) !== "hidden")
+        .map((c) => {
+          const g = c.group;
+          // The head's awaiting / free / held split, from the one helper the rail head reads.
+          const head = g ? idleHeadCounts(g) : null;
+          const isRail = focusedColumn === c.id;
+          const width = columnWidthOf(widths, c.id);
+          const wide = width === "wide";
+          // Never while this column IS the drill-in rail: the rail is a fixed-width console
+          // fixture that has to show its rows whatever the overview had folded. The fold is
+          // kept, so coming back to the board finds the column as it was left.
           const collapsed = width === "collapsed" && !isRail;
-          const count = g.sessions.length + (g.tone === "working" ? pending.length : 0);
+          const lane = g !== null && c.blocked.length > 0 && blockedPlacement === "needs-you";
+          const frame = g !== null && c.blocked.length > 0 && blockedPlacement === "idle";
+          // A lane has its own head and count, so the column's count is its own cards; a frame
+          // is part of the column it sits in, so Idle's count includes it.
+          const count = (lane ? g.sessions.length : c.sessions.length) + (c.id === "working" ? starters : 0);
           if (collapsed) {
             return (
               <section
-                key={g.tone}
-                className={`board-col tone-${g.tone} is-collapsed`}
-                inert={focusedTone != null}
+                key={c.id}
+                className={`board-col tone-${c.id} is-collapsed`}
+                inert={focusedColumn != null}
               >
                 <CollapsedColumnStrip
-                  label={g.label}
+                  label={c.label}
                   count={count}
-                  announce={g.tone === "attention"}
-                  onRestore={() => setColumnWidth(g.tone, "normal")}
+                  blockedCount={lane ? c.blocked.length : undefined}
+                  announce={c.id === "attention"}
+                  onRestore={() => setColumnWidth(c.id, "normal")}
                 />
               </section>
             );
           }
+          // The drill-in rail folded to its strip: the same strip the Console's rail folds to,
+          // counting only this column, since this column is all the rail lists. Kept as the
+          // `is-rail` section so the morph and the reader's width rules still see a rail.
+          //
+          // One key whatever the tone, so it stays one strip as the open session moves between
+          // columns: when that session starts waiting the rail follows it into Needs you, and a
+          // strip remounted there would take the new count as its baseline and never pulse.
+          // `asking` is the fleet's Needs you count for the same reason - this column's count
+          // is not news just because focus moved into it. A Blocked lane folds with its column
+          // and keeps its own red count, as the collapsed strip above does.
+          if (isRail && railFolded) {
+            return (
+              <section key="folded-session-rail" className={`board-col tone-${c.id} is-rail is-folded`}>
+                <FoldedSessionRail
+                  label={c.label}
+                  groups={lane
+                    ? [
+                        { tone: c.id, label: c.label, count },
+                        { tone: "blocked", label: BLOCKED_LABEL, count: c.blocked.length },
+                      ]
+                    : [{ tone: c.id, label: c.label, count }]}
+                  asking={groups.find((x) => x.tone === "attention")?.sessions.length ?? 0}
+                  onUnfold={() => setRailFolded(false)}
+                />
+              </section>
+            );
+          }
+          const ownRows = g === null ? blockedRows(c.blocked, isRail)
+            : g.sessions.length > 0 ? groupRows(g, isRail) : null;
           return (
             <section
-              key={g.tone}
-              className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}${calm ? " is-calm" : ""}${
-                wide ? " is-wide" : ""
-              }`}
-              inert={focusedTone != null && !isRail}
+              key={c.id}
+              className={`board-col tone-${c.id}${isRail ? " is-rail" : ""}${wide ? " is-wide" : ""}${
+                lane ? " has-blocked-lane" : ""}`}
+              inert={focusedColumn != null && !isRail}
             >
               {/* Double-click the head to expand, the gesture asked for. On the HEAD
                   rather than on the title alone: the head is the column's handle, the
                   title is a word inside it, and a 40px target is not one. It sits
-                  beside the toggle rather than instead of it - the same reveal the
-                  `×` restash uses, so neither gesture is the only way in.
+                  beside the width control rather than instead of it, so neither
+                  gesture is the only way in.
 
                   Not while this column IS the drill-in rail: the rail is a fixed-width
                   console fixture, so the gesture would record a width nothing draws and
                   then surprise you with it on the way back to the board. */}
               <header
                 className="board-col-head"
-                onDoubleClick={isRail || calm ? undefined : () => toggleWide(g.tone)}
+                onDoubleClick={isRail ? undefined : () => toggleWide(c.id)}
               >
                 {isRail && (
                   <Tooltip label="Back to the board (Esc)">
@@ -421,7 +662,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   </Tooltip>
                 )}
                 <span className="board-swatch" aria-hidden />
-                <h2>{g.label}</h2>
+                <h2>{c.label}</h2>
+                {/* Remind the operator of the attention shortcut when this column has a review. */}
+                {c.id === "attention" && g !== null && reviewShortcutTarget(g.sessions, null) && (
+                  <span className="board-col-key"><Keycap action="review" /></span>
+                )}
+                {g === null && <BlockedColumnAge sessions={c.blocked} />}
                 {/* BEFORE the count, not after it. The count carries `margin-left: auto`
                     and sat flush against the head's right edge; a control placed after it
                     reserves its 22px even while transparent, so every column's count
@@ -430,13 +676,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
                     Not while drilled in: the rail is a fixed-width console fixture, and
                     a width control there would offer to move something that cannot. */}
-                {/* Nor on the all-clear rail: it is already slim, and there is nothing in it
-                    to read wider. */}
-                {!isRail && !calm && (
+                {!isRail && (
                   <ColumnWidthControl
                     width={width}
-                    label={g.label}
-                    onChange={(next) => setColumnWidth(g.tone, next)}
+                    label={c.label}
+                    onChange={(next) => setColumnWidth(c.id, next)}
                   />
                 )}
                 {/* One number when the column is one kind of thing, two when it is not. A
@@ -450,182 +694,91 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     rule below it about whether this column had two halves at all. */}
                 {/* A placeholder is a visible row and counts in the unsplit Working column.
                     It is not included in the free/held split because no session exists yet. */}
-                {g.heldFrom === null ? (
+                {/* Awaiting agents first, in the order the column draws them: idle on purpose,
+                    so neither free to take work nor stuck. */}
+                {head && head.awaiting > 0 && (
+                  <Tooltip label="Idle on purpose until a background process they started reports back">
+                    <span className="board-col-n n-awaiting">{head.awaiting} awaiting</span>
+                  </Tooltip>
+                )}
+                {g === null || head!.free === null ? (
                   <span className="board-col-n">{count}</span>
                 ) : (
                   <>
-                    {g.heldFrom > 0 && (
-                      <Tooltip
-                        label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}
-                      >
-                        <span className="board-col-n n-free">{g.heldFrom} free</span>
+                    {/* The At the top of Idle frame's cards sit in this column too, and the split
+                        counts only the column's own group, so they get a pill of their own -
+                        first, in the order the column draws them. */}
+                    {frame && (
+                      <Tooltip label={`${c.blocked.length} blocked in the frame above the idle cards`}>
+                        <span className="board-col-n n-blocked">{c.blocked.length} blocked</span>
                       </Tooltip>
                     )}
-                    <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-                      <span className="board-col-n n-held">
-                        {g.sessions.length - g.heldFrom} held
-                      </span>
-                    </Tooltip>
+                    {head!.free! > 0 && (
+                      <Tooltip
+                        label={`${head!.free} of ${g.sessions.length} idle agents can take work`}
+                      >
+                        <span className="board-col-n n-free">{head!.free} free</span>
+                      </Tooltip>
+                    )}
+                    {/* Split by a wait alone, with nothing held, there is no held side. */}
+                    {head!.held !== null && (
+                      <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                        <span className="board-col-n n-held">
+                          {head!.held} held
+                        </span>
+                      </Tooltip>
+                    )}
                   </>
                 )}
-                {/* A revealed column can be put back where it came from. Only offered
-                    on empty ones - a column with sessions in it is not stashable. */}
-                {modes.get(g.tone) === "revealed" && revealed.has(g.tone) && (
-                  <Tooltip label={`Hide the empty ${g.label} column again`}>
-                  <button
-                    className="board-restash"
-                    aria-label={`Hide the empty ${g.label} column`}
-                    onClick={() =>
-                      setRevealed((prev) => {
-                        const next = new Set(prev);
-                        next.delete(g.tone);
-                        return next;
-                      })
-                    }
-                  >
-                    ×
-                  </button>
-                  </Tooltip>
-                )}
+                {/* The rail's own fold, where the width control would be: drilled in, the
+                    column stops being a Board column and becomes the session rail. */}
+                {isRail && <SessionRailFoldButton onFold={() => setRailFolded(true)} />}
               </header>
-              <div className="board-col-body">
-                {/* Keep the placeholder at the top of Working, and use the rail shape while
-                    this column is drilled in so the Board-to-Console morph stays coherent. */}
-                {g.tone === "working" && (
-                  <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
-                )}
-                {/* The rail's body is this one element, filling it, so hovering anywhere
-                    below the head gives the sentence the rail has no room to print. The
-                    sentence is in the markup too, for a screen reader. */}
-                {calm ? (
-                  <Tooltip label="All clear. Nothing is waiting on you.">
-                    <p className="board-allclear">
-                      <span className="board-allclear-tick" aria-hidden>
-                        ✓
-                      </span>
-                      <span className="sr-only">All clear. Nothing is waiting on you.</span>
-                    </p>
-                  </Tooltip>
-                ) : g.sessions.length === 0 ? (
-                  g.tone === "working" && pending.length > 0 ? null : (
-                    <p className="board-col-empty">Nothing here</p>
-                  )
-                ) : isRail ? (
-                  // The clicked column, now a console rail: the same RailRow (and the same
-                  // cluster header) the console uses, so opening a column and switching to
-                  // the console read alike.
-                  sectioned(g, (block) =>
-                    block.kind === "session" ? (
-                      railRow(block.session)
-                    ) : (
-                      // `block.key`, not the runId: a run split across the free/held boundary
-                      // frames once per side, and two frames keyed by one run collide.
-                      <div className="rail-cluster" key={block.key}>
-                        {block.cluster === "pipeline" ? (
-                          <PipelineClusterHead
-                            run={props.pipelineRunByKey?.get(block.runId) ?? null}
-                            slug={block.sessions[0]!.pipeline!.slug}
-                            variant="rail"
-                            onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
-                          />
-                        ) : (
-                          <EnsembleRailGroup
-                            summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
-                            fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
-                            blockedHere={blockedMembersIn(block.sessions)}
-                            onOpen={() => props.onOpenEnsemble?.(block.runId)}
-                          />
-                        )}
-                        {block.sessions.map(railRow)}
-                      </div>
-                    ),
-                    // The rail's own repository group: a one-line head over its rows, the same
-                    // shape `rail-cluster` uses, so the drill-in morph does not change what a
-                    // repository looks like on the way from column to rail.
-                    (row, children) => (
-                      <div
-                        className="rail-cluster rail-repo"
-                        style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
-                        key={row.key}
-                      >
-                        {repoHead(row, "rail")}
-                        {children}
-                      </div>
-                    ),
-                  )
-                ) : (
-                  // Sibling members of one run render inside a frame, in the SAME order the
-                  // arrow keys walk (`orderSessions` decided both). The frame is presentational
-                  // only: it carries no drag handlers, so a dragover started on a tile inside it
-                  // bubbles exactly as it did when the tiles were loose children.
-                  sectioned(g, (block) =>
-                    block.kind === "session" ? (
-                      tile(block.session)
-                    ) : (
-                      <div
-                        className={`board-cluster${
-                          clusterNeedsYou(block, props.pipelineRunByKey) ? " needs-you" : ""
-                        }`}
-                        // `block.key`, not the runId - see the rail cluster above.
-                        key={block.key}
-                      >
-                        {block.cluster === "pipeline" ? (
-                          <PipelineClusterHead
-                            run={props.pipelineRunByKey?.get(block.runId) ?? null}
-                            slug={block.sessions[0]!.pipeline!.slug}
-                            variant="board"
-                            onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
-                          />
-                        ) : (
-                          <EnsembleClusterHead
-                            summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
-                            fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
-                            blockedHere={blockedMembersIn(block.sessions)}
-                            onOpen={() => props.onOpenEnsemble?.(block.runId)}
-                          />
-                        )}
-                        {block.sessions.map(tile)}
-                      </div>
-                    ),
-                    // The repository frame. Deliberately the same box the run cluster above
-                    // wears, re-tinted from ONE custom property so the border, the head and
-                    // the body cannot drift apart - the same way `.board-pipeline-head` borrows
-                    // the ensemble head and only recolours its glyph. Presentational only, like
-                    // that frame: no drag handlers, so a dragover started on a tile inside it
-                    // bubbles exactly as it did when the tile was a loose child.
-                    (row, children) => (
-                      <div
-                        className={`board-repo${repoCollapsed.has(row.key) ? " is-collapsed" : ""}`}
-                        style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
-                        key={row.key}
-                      >
-                        {repoHead(row, "board")}
-                        {children}
-                      </div>
-                    ),
-                  )
-                )}
-              </div>
+              {/* A Needs you column holding only its Blocked lane draws no body above it: the
+                  lane takes the column. */}
+              {(!lane || g.sessions.length > 0) && (
+                <div className="board-col-body">
+                  {/* Keep the placeholder at the top of Working, and use the rail shape while
+                      this column is drilled in so the Board-to-Console morph stays coherent. */}
+                  {c.id === "working" && (
+                    <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
+                  )}
+                  {c.id === "working" && (
+                    <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
+                  )}
+                  {frame && (isRail ? (
+                    <div className="rail-cluster rail-blocked" key="blocked">
+                      <BlockedRailHead sessions={c.blocked} />
+                      {blockedRows(c.blocked, true)}
+                    </div>
+                  ) : (
+                    <div
+                      className={`board-repo board-blocked${blockedFolded ? " is-collapsed" : ""}`}
+                      role="group"
+                      aria-label="Blocked"
+                      key="blocked"
+                    >
+                      <BlockedFrameHead
+                        sessions={c.blocked}
+                        expanded={!blockedFolded}
+                        onToggle={() => void updateUiConfig({ blockedFrameCollapsed: !blockedFrameCollapsed })}
+                      />
+                      {!blockedFolded && blockedRows(c.blocked, false)}
+                    </div>
+                  ))}
+                  {/* Only Working is ever drawn with no sessions, and only while it is holding
+                      dispatch placeholders - every other empty column is not rendered. */}
+                  {ownRows}
+                </div>
+              )}
+              {lane && (
+                <BlockedLane sessions={c.blocked} alone={g.sessions.length === 0} rail={isRail}>
+                  {blockedRows(c.blocked, isRail)}
+                </BlockedLane>
+              )}
             </section>
           );
         })}
-
-      {stashed.length > 0 && (
-        <div className="board-stash">
-          <span className="board-stash-label">empty</span>
-          {stashed.map((g) => (
-            <Tooltip key={g.tone} label={`Show the empty ${g.label} column`}>
-              <button
-                className={`board-stash-chip tone-${g.tone}`}
-                onClick={() => setRevealed((prev) => new Set(prev).add(g.tone))}
-              >
-                <span className="board-swatch" aria-hidden />
-                {g.label}
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-      )}
 
       {dropError && (
         <p className="board-drop-error" role="status">
@@ -662,7 +815,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         aria-label={selected ? "Session detail workspace" : undefined}
         aria-hidden={selected == null}
       >
-        {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
+        {selected && (
+          <ConsoleDetail
+            key={selected.id}
+            view={props}
+            session={selected}
+            // The rail head's back button is off screen both when no rail is drawn and when
+            // the rail is folded to its strip, so the detail head carries the way back then.
+            onBack={railHidden || railFolded ? props.onDeselect : undefined}
+          />
+        )}
       </aside>
     </main>
   );

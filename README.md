@@ -19,8 +19,12 @@ New binaries install **Agent Mission Control.app**. Existing managed installatio
 the same folder, preserving their state and receipt scope. Older saved installers must be
 replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
 
-**Release qualification is still pending.** Until a signed ready manifest is published, this
-command refuses installation. It never falls back to compilation. The explicit developer route
+The plain command installs the newest stable release whose tag's Signed distribution run has
+published a ready manifest, so a release still publishing never blocks an install. Until any
+stable release has one, it installs the newest alpha instead and the app offers stable releases
+as they publish. Each eligible `main` commit publishes a signed, notarized alpha automatically;
+`--channel alpha` installs `main`'s newest published one, and `--channel stable` never falls
+back. The installer never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
 See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
 for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
@@ -57,6 +61,13 @@ that handles the routine interruptions you don't want, a verification workflow t
 and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
 drives the work, Mission Control watches that too.
 
+Codex SDK sessions show background child agents from their native thread-tree frames, including
+children still running after the parent finishes. See [harness behavior](docs/harnesses-and-terminals.md#codex-sdk-background-sub-agents).
+
+The [asynchronous input preview](docs/sessions.md#asking-without-stopping) lets agents keep
+working while questions wait in your inbox. Answers carry their original context, and consecutive
+queued answers can arrive together. Agents can list and withdraw questions within a ten-question limit.
+
 Prefer one page? The
 [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
 is this same tour as a single self-contained document, with 25 screenshots from a running
@@ -82,20 +93,32 @@ Each new dashboard window or reload offers a tour picker with a list and preview
 **See the work**, **Author what runs**, or the recommended **Set up this machine**, then
 explicitly select **Start this tour**. No tour starts just from opening or browsing the picker.
 
-Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home.
+Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home; a
+newly added tour, such as **Meet your residents**, is still announced in the picker once, and
+again after you leave that tour midway.
 **Browse tours** in **Settings > Help & tours** or the command palette always reopens it.
 Tours start at their first stop and do not save progress or resume. See the
 [guided tours reference](docs/ui.md#guided-tours) for details.
 
 ## The board
 
+With Board selected, **Settings > Display > Layout > Board view settings** offers
+**Show all sessions in sidebar**. Enable it to switch between sessions grouped by state
+without returning to the board. Backlog tasks remain on the overview; the default sidebar
+continues to show only the selected session's state group.
+
 The board turns a directory full of agent sessions into an operational view. One column per state
 answers what is working, what is idle, and what needs a decision. Cards group by repository and can
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
 context. The signals that need a person can never be hidden.
 
+The [model badge](docs/sessions.md#status-line-optional) follows the latest observed turn;
+large Codex logs do not substitute an older model from the start of the conversation.
+
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
+**Settings > Display > Appearance** repaints the whole dashboard in another
+[skin](docs/ui.md#skins) - Daylight, Paper, Blueprint or Neon Dusk - the moment you pick it.
 
 Read more in [The Line and fleet UI](docs/ui.md) and
 [Attention, alerts, and Away mode](docs/attention-and-alerts.md).
@@ -107,6 +130,18 @@ Read it as a terminal stream or a chat, queue and reorder messages, answer struc
 change permission posture, interrupt a turn, and drop images directly into the composer.
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
+
+Mission MCP's `cancel_task` cancels saved tasks by task id, including running tasks whose
+session is missing. It uses the dashboard's cancellation and cleanup rules and keeps the task
+record available for inspection or deletion. A red **lost** segment in the topbar's fleet pulse
+counts running tasks that no session or Pipeline run owns; clicking it explains them and opens
+Sitrep, which lists them first with Cancel and Cancel all. After startup observation, eligible running tasks inherited without a
+session binding and unchanged during restore can settle as failed with a session-ended reason,
+retaining their worktrees. [Task recovery](docs/tasks-and-scheduling.md) preserves SDK, Pipeline,
+terminal-handoff and local-plan recovery ownership.
+
+Chat tasks can delegate separate work with Mission MCP's `create_task` and `dispatch_task`,
+using the same backlog and launch checks as the dashboard while the conversation stays open.
 
 Managed terminal resumes [verify Mission tools before stopping the SDK](docs/harnesses-and-terminals.md#managed-terminal-resumes),
 preserve permission posture and attached checkout scope, and retain their prepared environment
@@ -149,6 +184,16 @@ WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
 Ghostty dispatches retain their verified pane UUID across daemon restarts and inventory failures.
 External Ghostty sessions without a proven pane association remain visible with input disabled.
 
+A dispatch that fails before its session starts stays where it was dispatched, as a **Did not
+start** tile with the full reason, or as a note on its Backlog card when it went back there. The
+top bar counts open failures. Every failure offers **Dismiss**, and every failure except a
+report session's own offers **Report bug**, which starts a session that catalogs the failure and
+drafts a public bug report for you to review and submit.
+The way back in depends on the failure: a dispatch that kept nothing offers **Retry**, a resident
+offers **Launch again**, a task back in the Backlog is dispatched from there, and a failure that
+kept its session offers **Open** when the task is bound to that session. See
+[when a dispatch does not start](docs/dispatch-and-backlog.md#when-a-dispatch-does-not-start).
+
 Mission Control supports five kinds of work:
 
 - **Ship** delivers a change and opens a pull request.
@@ -156,6 +201,14 @@ Mission Control supports five kinds of work:
 - **Plan** produces a reviewable plan that can become ordered follow-up tasks.
 - **Pipeline** hands the work to an external SDLC engine while keeping it visible here.
 - **Chat** opens a conversation with no required deliverable or ceremony.
+
+**Residents** are long-running agents with a standing role. Author a resident profile once - a
+Persona, instructions, a harness, model and effort - on the Residents page, then launch it from
+**Dispatch > Resident**. It runs in the Agent SDK with its persona as standing instructions and ends
+only when you choose **Complete & close**. Choose a repository for a task worktree, or **No repository**
+for a private working directory removed when the run ends. A profile can also let its resident
+control your other sessions; only a Launch click in the desktop app grants that, to that run. Read
+more in [Residents](docs/residents.md).
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
@@ -180,6 +233,9 @@ publish after applicable validation without a PR; repository and code dependenci
 wait for their normal merge condition. See
 [managed plans](docs/managed-plans.md).
 
+HTML Plans applies to explicitly selected Mission Control planning. Other repository-native
+planning workflows keep their artifact and approval contracts without requiring Mission Control tools.
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
@@ -187,7 +243,8 @@ Read more in [Skills and settings](docs/skills-and-settings.md) and
 
 On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,
 and Pi. Settings → Skills shows the machine-wide selection and lets you switch off the
-whole catalog or individual skills. Existing saved choices stay in force after updates.
+whole catalog or individual skills. The Mockups rollout enables that row once for existing
+installations, preserving the master switch. Later opt-outs stay in force after updates.
 
 Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-session-mixed-reload-behavior).
 
@@ -197,6 +254,8 @@ Not every valuable result is a code change. A Scout investigates a question and 
 limitations. Any session can publish requested scout reports, with a separate archive for each
 report directory. Normal Scout completion requires at least one complete report and verifies
 every report submitted in that work episode. Other task kinds keep their existing completion rules.
+Explicit file lists can publish Git-ignored reports and evidence without collecting unlisted
+neighbors or changing Git state.
 
 The archive makes reports and plans searchable by their question and content. They outlive the
 temporary task, agent, branch, and worktree that produced them, while preserving an honest record
@@ -227,7 +286,8 @@ hold individual items, express dependencies, or let backlog autopilot schedule e
 the concurrency you allow.
 
 Task sources pull from GitHub issues and Jira without starting agents behind your back. Imported
-work arrives parked by default for triage. Enable **Keep imported backlog tasks updated** on a source
+work arrives parked by default for triage. Jira sources can select **Atlassian CLI (acli)** to
+read through acli's own OAuth login, without Jira environment variables. Enable **Keep imported backlog tasks updated** on a source
 to refresh unstarted tasks on each sweep, preserving local edits and showing conflicts for review.
 Recurring missions and agent-created follow-up tasks feed
 the same queue, so planned work, discovered work, and scheduled work share one lifecycle.
@@ -255,6 +315,10 @@ plain-language guide to its role, context, and responsibilities. The guide links
 Read more in [Foreman](docs/foreman.md).
 
 ## Workflows and Personas
+
+Reused workflow check slots with ignored Go source are quarantined before checks run, preserving
+the files and reporting pool contamination as infrastructure trouble. See
+[check isolation](docs/worktrees-and-checks.md#running-a-check-command).
 
 Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
 before model reviewers, independent Personas review the same immutable evidence snapshot in
@@ -291,14 +355,27 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 ![Mission Control workflow run](docs/images/workflows.png)
 
+Local CodeRabbit reviews are available as a reusable Library Command and in the optional
+No-Mistakes review stage. Root YAML enables review without a Library override; the default
+allowance is ten executions. Recoverable connection failures retry automatically within that
+allowance; an incomplete review stays blocked when retries or allowance run out. See
+[CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
+
 Read more in [Workflows and Personas](docs/workflows.md) and
 [The Library](docs/library-and-line.md).
 
 ## Shipping and the GitHub reviewer
 
-The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
-answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
-code fixes them. Dry run records what it would say without publishing anything.
+The GitHub Inspector starts enabled in Live mode on fresh installations. It reviews pull requests
+Mission Control can prove it opened and publishes only in repositories granted access in Settings >
+Trust. It comments inline, answers replies in its own threads, re-reviews every pushed head, and
+resolves findings when the code fixes them. Dry run records what it would say without publishing
+anything.
+
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, on by default (an upgrade turns it on once; a later opt-out is kept). It prompts
+eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
+attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
+invitation and repository trust, and waits while a workflow owns the session.
 
 Optional shipping automation can merge only after the current head has a clean published review,
 CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,
@@ -314,6 +391,9 @@ that publication from workflow completion.
 Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor
+
+> Temporarily unavailable: the ai-conductor integration is hidden from Setup, Settings and
+> Dispatch while it is rebuilt. See [Pipelines](docs/pipelines.md).
 
 Some work is driven by a complete SDLC engine rather than one long-running agent. Mission Control
 can observe ai-conductor's gated pipeline, show its agents on the same fleet, surface halts in the
@@ -398,7 +478,8 @@ repository:
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
-  You can still check for updates manually at any time.
+  You can still check for updates manually at any time. Updating drains owned background
+  work; interrupted workflow checks retain a shutdown reason, and the app reopens automatically.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
@@ -417,6 +498,9 @@ repository:
 
 Either way, **Settings → Setup** is where Mission Control reports what this machine can already do
 and what is still missing. The [setup guide](docs/setup-guide.html) reads that panel row by row.
+Under **Agent extensions**, the Claude Code and Codex Mission Control MCP trust rows allow
+Mission Control tools by default in each agent, including auto mode. See the
+[MCP trust settings](docs/configuration.md#mission-control-mcp-trust).
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:
@@ -483,9 +567,10 @@ and build contracts.
 ## Community participation
 
 Sessions can [report product feedback](docs/sessions.md) with the
-`report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
-dashboard approval. The dashboard feedback form uses the same destination.
+`report_product_issue` MCP tool. After an explicit user request, it shows the exact public issue
+in the dashboard and publishes it in `teamupstart/mission-control` by default only when you select
+Submit public issue, then returns its GitHub URL. The dashboard feedback form uses the same
+destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
@@ -498,8 +583,12 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Conversation-use telemetry](docs/observability-actions.md#measuring-conversation-use) - confirmed
+  dashboard sends, automation and unknown attribution, with direct terminal input left unmeasured.
 - [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
   gaps and the OTLP query contract.
+- [Feature flags](docs/feature-flags.md) - machine-wide choices and live daemon and dashboard
+  gates. The registry ships empty; Settings controls arrive separately.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries
@@ -514,3 +603,11 @@ Mission Control is licensed under the [Apache License 2.0](LICENSE). See [NOTICE
 attribution information. Third-party dependencies remain subject to their own license terms,
 including the `@anthropic-ai/claude-agent-sdk` dependency and
 [Anthropic's applicable commercial terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+### Automatic PR branch updates (preview)
+
+Settings > Feature flags > **Automatic PR branch updates** lets Mission Control update
+otherwise ready PR branches when GitHub requires them to catch up with their target. The
+PR link follows update progress, fresh checks and reviews, and offers conflict recovery.
+This works for manual merging and grants no permission to merge. See
+[Inspector and shipping](docs/inspector-and-shipping.md#automatic-pr-branch-updates-preview).

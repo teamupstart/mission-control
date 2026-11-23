@@ -7,7 +7,7 @@ import { z } from "zod";
 export const UpdatePreferencesSchema = z.object({
   alpha: z.boolean().default(false),
   // Exact release tags or full alpha commit IDs, never shortened display labels.
-  snoozedUntil: z.record(z.number().int().nonnegative().finite()).default({}),
+  snoozedUntil: z.record(z.string(), z.number().int().nonnegative().finite()).default({}),
 });
 export type UpdatePreferences = z.infer<typeof UpdatePreferencesSchema>;
 

@@ -906,11 +906,16 @@ test("canonical citations must belong to every run receiving the claim's reposit
   try {
     const store = new WorkflowStore();
     const noteKey = "citation-scope-note";
+    const canonical = join(home, "citation-canonical");
+    execFileSync("git", ["init", canonical]);
+    execFileSync("git", ["-C", canonical, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+      "commit", "--allow-empty", "-m", "fixture"]);
+    execFileSync("git", ["-C", canonical, "worktree", "add", "-b", "secondary-proof", secondary]);
     const runs = [primary, secondary].map((root, index) => {
       const binding = store.insertBinding({
         id: `citation-binding-${index}`, workflowVersionId: IMAGE_WORKFLOW_VERSION_ID, noteKey,
         sessionId: "citation-session", sessionAgent: "codex", sessionName: "citations",
-        sessionCwd: primary, sessionRepoRoot: primary, ...(index === 1 ? { repoRoot: root } : {}),
+        sessionCwd: root, sessionRepoRoot: root, ...(index === 1 ? { repoRoot: canonical } : {}),
         triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1,
       });
       const canonicalCriteria = [
@@ -930,7 +935,9 @@ test("canonical citations must belong to every run receiving the claim's reposit
       // The sibling uses the legacy latest-context fallback, while the primary has frozen criteria.
       return { ...created, canonicalCriteria };
     });
-    const input = { store, noteKey, task: taskAt(primary, [secondary, unbound]), fallbackRoot: primary, images: [] };
+    const task = taskAt(primary, [secondary, unbound]);
+    task.extraRepos[0]!.repoRoot = canonical;
+    const input = { store, noteKey, task, fallbackRoot: primary, images: [] };
     const proof = { kind: "command" as const, clientItemId: "scope-proof", command: "check both repositories",
       exitCode: 0, output: "passed", caption: "Shared execution proof", repositoryScope: "all" as const };
     const claim = { clientCriterionId: "wrong-run", criterion: "A criterion owned by another run",
@@ -954,9 +961,11 @@ test("canonical citations must belong to every run receiving the claim's reposit
       `${repositoryScope} cannot borrow ${criterionId} from a different receiving run`);
       assert.deepEqual(store.listWorkflowEvidence(noteKey), before, "refusal stages neither proof nor claims and does not advance the generation");
     }
-    await stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof], coverage: [
+    const secondaryProof = { ...proof, clientItemId: "secondary-proof", repositoryScope: "repo-02" as const };
+    const registered = await stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof, secondaryProof], coverage: [
       { ...claim, clientCriterionId: "primary", repositoryScope: "repo-01", criterionId: "criterion-repo-1" },
-      { ...claim, clientCriterionId: "secondary", repositoryScope: "repo-02", criterionId: "criterion-repo-2" },
+      { ...claim, clientCriterionId: "secondary", repositoryScope: "repo-02", criterionId: "criterion-repo-2",
+        links: [{ clientItemId: secondaryProof.clientItemId, role: "execution" }] },
       { ...claim, clientCriterionId: "shared", repositoryScope: "all", criterionId: "criterion-shared" },
     ] });
     for (const [index, source] of runs.entries()) {
@@ -964,6 +973,9 @@ test("canonical citations must belong to every run receiving the claim's reposit
         triggerSource: "manual", triggerKey: `citation-repair-${index}`, evidenceGroupKey: "citation-shared-capture",
         context: {}, evidence: {}, now: 3 });
       await captureSubmissionTextArtifacts(store, child.submission.id, 3);
+      assert.equal(child.submission.stagedImageGeneration, registered.generation);
+      assert.deepEqual(store.submissionFrozenEvidenceIdentities(child.submission.id).map(item => item.clientItemId).sort(),
+        index === 0 ? [proof.clientItemId] : [proof.clientItemId, secondaryProof.clientItemId].sort());
       const coverage = store.listSubmissionCoverage(child.submission.id);
       assert.deepEqual(coverage.map(c => c.clientCriterionId).sort(), [index === 0 ? "primary" : "secondary", "shared"]);
       const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria: source.canonicalCriteria, coverage,
@@ -1090,9 +1102,9 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       sessionId: "image-session",
       sessionAgent: "codex",
       sessionName: "images",
-      sessionCwd: primary,
-      sessionRepoRoot: primary,
-      repoRoot: secondary,
+      sessionCwd: secondary,
+      sessionRepoRoot: secondary,
+      repoRoot: `${secondary}-canonical`,
       triggerMode: "manual",
       deliveryMode: "preview",
       maxRepairRounds: 5,

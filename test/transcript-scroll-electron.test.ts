@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { TranscriptMessage } from "../src/shared/types.ts";
+import type { SubagentSummary, TranscriptMessage } from "../src/shared/types.ts";
+import { SUBAGENT_LIMIT } from "../src/shared/subagents.ts";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import { ConversationFindBar, ConversationFindRail } from "../src/web/components/ConversationFind.tsx";
 import type { FindHit } from "../src/web/lib/find.ts";
@@ -39,6 +40,11 @@ import { mkSession } from "./helpers/session-fixture.ts";
  * activity withheld), each in the Console detail - and the
  * narrow-container layouts where activity collapses to a disclosure row that opens on
  * request while find still stacks its full rail.
+ *
+ * The Background agents tray is measured for the same reason: it docks between the log and
+ * the composer, so it takes its height from the log. With a full list of agents it must
+ * still leave the reply box inside the pane and the log scrolling, and scroll its own list
+ * rather than growing past its cap.
  *
  * The log's in-progress row is measured here for the same reason. Its single line is a
  * correctness requirement, not a preference - the log follows its tail only while the
@@ -79,6 +85,13 @@ interface Measured {
   progressLineHeight: number | null;
   progressRightOverflow: number | null;
   progressClipped: boolean | null;
+  trayHeight: number | null;
+  trayBottomOverflow: number | null;
+  trayAboveCompose: boolean | null;
+  trayBelowLog: boolean | null;
+  trayListContentHeight: number | null;
+  trayListViewHeight: number | null;
+  trayListScrolledTo: number | null;
 }
 
 /**
@@ -103,8 +116,29 @@ function hit(i: number): FindHit {
   };
 }
 
+/**
+ * A full list of background agents: every slot taken, running and finished mixed, and some
+ * already folded - the tallest tray the summary can produce.
+ */
+const FULL_TRAY: SubagentSummary = {
+  agents: Array.from({ length: SUBAGENT_LIMIT }, (_, i) => ({
+    id: `agent-${i}`,
+    type: i % 2 === 0 ? "Explore" : "general-purpose",
+    description: `Background agent ${i} mapping every offset-pagination call site in the ledger module`,
+    state: i < 8 ? "running" : "completed",
+    startedAt: 1_000,
+    endedAt: i < 8 ? null : 60_000,
+    toolUses: 18,
+    tokens: 41_000,
+    lastTool: "Grep",
+    summary: null,
+    launchTurnId: `toolu_${i}`,
+  })),
+  finishedFolded: 3,
+};
+
 /** The panel's real markup, hydrated with a real conversation through the history map. */
-function panelMarkup(): string {
+function panelMarkup(subagents?: SubagentSummary): string {
   resetHistories();
   // Assistant turns carry tools BESIDE their prose - the mixed shape the Observed
   // activity projection must not miss - and enough of them (two per assistant turn)
@@ -127,6 +161,7 @@ function panelMarkup(): string {
     createElement(TranscriptPanel, {
       session: mkSession({
         id: "s1",
+        ...(subagents ? { subagents } : {}),
         // A working session, so the log carries its in-progress row - and an activity line
         // far wider than any pane here, because the row's whole correctness argument is
         // that it clips instead of wrapping. A comfortable string would measure one line
@@ -206,15 +241,17 @@ function findMarkup(): { bar: string; rail: string } {
  * stacked disclosure). The `-expanded` cases flip that disclosure open; the `-open`
  * cases open find instead.
  */
-function page(panel: string, styles: string): string {
-  const detail = (width: number): string =>
-    `<div class="detail-body" style="height:600px;width:${width}px"><div class="detail-conv">${panel}</div></div>`;
+function page(panel: string, trayPanel: string, styles: string): string {
+  const detail = (width: number, markup = panel): string =>
+    `<div class="detail-body" style="height:600px;width:${width}px"><div class="detail-conv">${markup}</div></div>`;
   const cases = [
     ["detail-closed", detail(640)],
     ["detail-open", detail(640)],
     ["detail-narrow", detail(480)],
     ["detail-narrow-expanded", detail(480)],
     ["detail-narrow-open", detail(480)],
+    ["detail-tray", detail(640, trayPanel)],
+    ["detail-tray-narrow", detail(480, trayPanel)],
   ];
   return `<!doctype html><meta charset="utf-8"><style>${styles}</style>
     <script type="application/json" id="find-markup">${JSON.stringify(findMarkup())}</script>
@@ -235,7 +272,10 @@ before(() => {
   try {
     const htmlPath = join(dir, "transcript.html");
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-    writeFileSync(htmlPath, page(panelMarkup(), styles));
+    // Rendered in turn, not inline: both share the history map `panelMarkup` resets.
+    const plain = panelMarkup();
+    const withTray = panelMarkup(FULL_TRAY);
+    writeFileSync(htmlPath, page(plain, withTray, styles));
     const output = execFileSync(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
@@ -255,6 +295,8 @@ const ALL_CASES = [
   "detail-narrow",
   "detail-narrow-expanded",
   "detail-narrow-open",
+  "detail-tray",
+  "detail-tray-narrow",
 ];
 
 for (const name of ALL_CASES) {
@@ -429,3 +471,36 @@ for (const name of ["detail-narrow-expanded"]) {
     assert.ok((m.activityBottomOverflow ?? 0) <= 1, "expanded activity stays inside the pane");
   });
 }
+
+for (const name of ["detail-tray", "detail-tray-narrow"]) {
+  test(`the Background agents tray docks above the composer without evicting it (${name})`, () => {
+    const m = measured[name];
+    assert.ok(m, `no geometry for ${name}`);
+    assert.ok((m.trayHeight ?? 0) > 0, "a session with background agents draws its tray");
+    // Between the two, in that order: below the conversation split and above the reply box.
+    assert.equal(m.trayBelowLog, true, "the tray sits below the conversation, not inside it");
+    assert.equal(m.trayAboveCompose, true, "the tray sits above the reply box, not inside it");
+    assert.ok(
+      (m.trayBottomOverflow ?? 0) <= 1,
+      `the tray must stay inside the pane, got ${m.trayBottomOverflow}px past its bottom`,
+    );
+    // Bounded: a full list costs the log a band, not the pane. A third of the pane is a
+    // generous ceiling that still fails loudly if the cap ever stops resolving.
+    assert.ok(
+      (m.trayHeight ?? 0) <= m.boxHeight / 3,
+      `the tray must stay bounded, got ${m.trayHeight}px of ${m.boxHeight}px`,
+    );
+    // And it scrolls its own list past the cap instead of growing.
+    assert.ok(
+      (m.trayListContentHeight ?? 0) > (m.trayListViewHeight ?? 0),
+      `a full list must overflow the tray, got ${m.trayListContentHeight}px of rows in ${m.trayListViewHeight}px`,
+    );
+    assert.ok((m.trayListScrolledTo ?? 0) > 0, "the tray's list must scroll when asked to");
+  });
+}
+
+test("a session without background agents draws no tray in any case", () => {
+  for (const name of ALL_CASES.filter((c) => !c.startsWith("detail-tray"))) {
+    assert.equal(measured[name]?.trayHeight, null, `${name} must have no tray`);
+  }
+});

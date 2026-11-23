@@ -8,7 +8,7 @@
   "-c",
   "mcp_servers.mission-control.args=[\"<STATE_HOME>/server.mjs\"]",
   "-c",
-  "mcp_servers.mission-control.env={\"PATH\"=\"<PATH>\",\"MISSION_HOME\"=\"<AGENT_HOME>\",\"MISSION_PORT\"=\"7317\",\"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE\"=\"<CREDENTIAL_FILE>\",\"MISSION_PRODUCT_ISSUE_CLIENT\"=\"browser\"}",
+  "mcp_servers.mission-control.env={\"PATH\"=\"<PATH>\",\"GOCACHE\"=\"<GO_CACHE>\",\"MISSION_HOME\"=\"<AGENT_HOME>\",\"MISSION_PORT\"=\"7317\",\"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE\"=\"<CREDENTIAL_FILE>\",\"MISSION_PRODUCT_ISSUE_CLIENT\"=\"browser\"}",
   "-c",
   "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"'<NODE>' '<STATE_HOME>/codex-hook.mjs' 'SessionStart'\"}]}]",
   "-c",

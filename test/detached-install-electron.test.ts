@@ -41,8 +41,25 @@ function fixtureDiagnostic(state: string): string {
     if (parsed) journal = JSON.stringify({stage: parsed.stage, ownerRole: parsed.ownerRole, targetProcess: parsed.targetProcess});
   } catch (error) { journal = `(unreadable: ${String(error)})`; }
   return [`journal: ${journal}`, `fixture-target-waiting: ${read('fixture-target-waiting')}`,
-    `fixture-error.txt: ${read('fixture-error.txt')}`, `update-outcome.json: ${read('update-outcome.json')}`,
+    `fixture-error.txt: ${read('fixture-error.txt')}`,
+    `parent-stdout.log: ${read('parent-stdout.log')}`, `parent-stderr.log: ${read('parent-stderr.log')}`,
+    `update-outcome.json: ${read('update-outcome.json')}`,
     `update.log: ${read('update.log')}`].join('\n');
+}
+
+/**
+ * The journal, read while a helper may be swapping the app. Validating it resolves the app
+ * bundle, and the helper renames that bundle away and back as it works, so a bundle that is
+ * there for `existsSync` can be gone by `realpathSync`. That ENOENT means "not yet": the next
+ * poll reads it again. Any other failure is still a failure.
+ */
+function journalWhileSwapping(state: string): ReturnType<typeof readMigrationJournal> {
+  try {
+    return readMigrationJournal(state);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boundedMigrationWait>): Promise<void> {
@@ -53,7 +70,7 @@ async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boun
   }
 }
 
-for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: mode === 'readiness-failure' ? 300_000 : 180_000}, async (t) => {
   const binary = mode.startsWith('binary-');
   const rename = mode === 'binary-rename';
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
@@ -107,6 +124,20 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     mkdirSync(dirname(join(resources, path)), {recursive: true});
     copyFileSync(path, join(resources, path));
   }
+  // This suite exercises installation and recovery, not native presentation. The detached
+  // helper outlives the test's Electron parent, so inject at its copied entry point rather
+  // than relying on test-runner environment surviving LaunchServices. Keep real progress
+  // ownership/cleanup and record its display port without opening dialogs on the operator.
+  const helperPath = join(resources, 'scripts/apply-update.mjs');
+  const helperSource = readFileSync(helperPath, 'utf8');
+  const invocation = 'await runApplyUpdate(parsed.args)';
+  assert.equal(helperSource.split(invocation).length, 2);
+  writeFileSync(helperPath, helperSource.replace(invocation, `await runApplyUpdate(parsed.args,
+    realApplyOperations(parsed.args.logPath, undefined, (message) => {
+      const path = join(parsed.args.stateDirectory, 'fixture-progress.jsonl');
+      appendFileSync(path, JSON.stringify({event: 'show', message}) + '\\n');
+      return () => appendFileSync(path, JSON.stringify({event: 'close'}) + '\\n');
+    }))`));
   buildSync({entryPoints: ['src/main/updater.ts'], bundle: true, platform: 'node', format: 'esm',
     alias: {'@shared': './src/shared'}, outfile: join(resources, 'updater-fixture.mjs')});
   if (binary) prepareBinaryFixtureRuntime(root, resources);
@@ -115,7 +146,7 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   writeFileSync(join(resources, 'package.json'), JSON.stringify(pkg));
   writeFileSync(join(resources, 'fixture-main.cjs'), `
     const {app} = require('electron');
-    const {writeFileSync, readFileSync, existsSync} = require('node:fs');
+    const {writeFileSync, readFileSync, existsSync, renameSync} = require('node:fs');
     const {join, resolve} = require('node:path');
     app.whenReady().then(async () => {
       try {
@@ -135,8 +166,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
           runningBundle: resolve(__dirname, '../../..'), nonce: process.argv.includes('--mission-migration') ? process.argv[process.argv.indexOf('--mission-migration') + 1] : undefined, port: 59999});
         if (!result.proceed) {app.exit(0); return;}
         const receipt = JSON.parse(readFileSync(join(process.env.MISSION_HOME, 'install-receipt.json')));
-        writeFileSync(join(process.env.MISSION_HOME, 'fixture-ready.json'), JSON.stringify({result, receipt, pid: process.pid,
+        // Whole, then renamed into place. The test parses this file the moment it exists, and a
+        // plain write is visible empty before its bytes land - which a loaded host does show.
+        const ready = join(process.env.MISSION_HOME, 'fixture-ready.json');
+        writeFileSync(ready + '.partial', JSON.stringify({result, receipt, pid: process.pid,
           nodeFlag: process.env.ELECTRON_RUN_AS_NODE ?? null, electron: process.versions.electron}));
+        renameSync(ready + '.partial', ready);
         app.quit();
       } catch (error) {
         writeFileSync(join(process.env.MISSION_HOME, 'fixture-error.txt'), String(error.stack));
@@ -145,8 +180,16 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
           const {readMigrationJournal} = await import('./scripts/install-migration.mjs');
           // Exercise exit after launch identification, rather than racing the
           // helper's first poll and falling into its missing-launch deadline.
-          await boundedMigrationWait(() => readMigrationJournal(process.env.MISSION_HOME)?.targetProcess?.pid === process.pid,
-            'Fixture failed target was not identified', {timeout: 5000});
+          // The helper may be mid-swap: a bundle gone between its exists and realpath checks is
+          // "not yet", the same as in the test's own journal polls.
+          await boundedMigrationWait(() => {
+            try {
+              return readMigrationJournal(process.env.MISSION_HOME)?.targetProcess?.pid === process.pid;
+            } catch (error) {
+              if (error.code === 'ENOENT') return false;
+              throw error;
+            }
+          }, 'Fixture failed target was not identified', {timeout: 5000});
         }
         app.exit(1);
       }
@@ -243,10 +286,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   const env: NodeJS.ProcessEnv = {...process.env, MISSION_HOME: state, MISSION_PORT: '59999', PATH: `${traps}:/usr/bin:/bin`,
     MISSION_RUNTIME_TRAPS: join(root, 'trap-hits')};
   delete env.ELECTRON_RUN_AS_NODE;
-  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
+  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--stdout', join(state, 'parent-stdout.log'),
+    '--stderr', join(state, 'parent-stderr.log'), '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
     env, stdio: ['ignore', 'pipe', 'pipe']});
   let output = ''; parent.stdout.on('data', (v) => {output += v;}); parent.stderr.on('data', (v) => {output += v;});
   assert.equal(await new Promise((done) => parent.once('exit', done)), 0, output);
+  assert.ok(existsSync(join(state, 'handoff.json')), `parent launch returned without a handoff at ${state}\n${output}\n${fixtureDiagnostic(state)}`);
   const handed = JSON.parse(readFileSync(join(state, 'handoff.json'), 'utf8'));
   if (mode === 'preparation-retry') assert.equal(handed.runtime,
     JSON.parse(readFileSync(join(state, 'fixture-preparation-retry.json'), 'utf8')).attempt,
@@ -259,10 +304,15 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     'legacy helper did not check the candidate', {timeout: 120_000});
     assert.deepEqual(inspectBundle(current), priorBundle, 'edited legacy candidate must never replace the accepted installation');
     assert.match(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).message, /accepted staged app bytes changed/);
-    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
-    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
+    // The refusal is recorded BEFORE the helper relaunches the prior app, and that relaunch is real
+    // work: `prepareAppLaunch`, then a full launchd preflight sweep, then `open`. So wait for the
+    // relaunch first, with the budget every other mode here gives a relaunch, and only then for
+    // the helper to exit - which by then is teardown, as it is in every other mode. Waiting for
+    // exit first would make a teardown budget cover a sweep.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 120_000});
     const restored = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
     await boundedMigrationWait(() => !processIsAlive(restored.pid), 'prior app did not exit', {timeout: 10_000});
+    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
     assert.equal(restored.receipt.installedCommit, 'a'.repeat(40));
     assert.equal(restored.nodeFlag, null, 'prior GUI relaunch must clear run-as-node');
     assert.deepEqual(readFileSync(join(state, 'install-receipt.json')), receiptBytes);
@@ -274,7 +324,7 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }
   if (mode === 'interrupted-after-swap') {
     await waitWithDiagnostic(state, () => {
-      const journal = readMigrationJournal(state);
+      const journal = journalWhileSwapping(state);
       return journal?.stage === 'target-staged' && journal.targetProcess !== null && existsSync(join(state, 'fixture-target-waiting'));
     }, 'fixture never reached the post-swap interruption boundary', {timeout: 120_000});
     const journal = readMigrationJournal(state)!;
@@ -302,6 +352,14 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     ownedProcesses.push({pid: retry.pid!, identity: processIdentity(retry.pid!)});
     assert.equal(await new Promise((done) => retry.once('exit', done)), 0, 'ordinary startup handed off recovery');
   }
+  if (mode === 'readiness-failure') {
+    // This mode must first fail readiness and restore the app, then run a second real
+    // LaunchServices preflight/relaunch. Give each phase its own bounded wait, as the
+    // interruption case above does, instead of spending the relaunch budget on rollback.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'update-outcome.json'))
+      && JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result === 'failure',
+    'failed readiness did not record recovery', {timeout: 120_000});
+  }
   await boundedMigrationWait(() => {
     if (mode !== 'readiness-failure' && existsSync(join(state, 'fixture-error.txt'))) throw new Error(readFileSync(join(state, 'fixture-error.txt'), 'utf8'));
     return existsSync(join(state, 'fixture-ready.json'));
@@ -321,6 +379,13 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }
   if (interruptedTarget) assert.equal(processIsAlive(interruptedTarget.pid), false, 'recovery stopped the replaced target');
   assert.equal(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result, failure ? 'failure' : 'success');
+  if (mode === 'success') {
+    assert.ok(existsSync(join(state, 'fixture-progress.jsonl')),
+      'nonvisual updater tests must record progress instead of displaying native dialogs on the operator desktop');
+    const progress = readFileSync(join(state, 'fixture-progress.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(progress.some(event => event.event === 'show' && event.message.includes('Waiting for Mission Control')));
+    assert.equal(progress.at(-1).event, 'close', 'successful installation closes the progress display');
+  }
   assert.equal(readFileSync(join(state, 'fixture-state-sentinel'), 'utf8'), 'existing user state');
   if (binaryFixture) {
     const prepared = JSON.parse(readFileSync(join(state, 'binary-prepared.json'), 'utf8'));

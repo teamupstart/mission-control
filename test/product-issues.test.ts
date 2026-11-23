@@ -765,3 +765,20 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     assert.equal(result.outcome, "refused");
   });
 });
+
+// A killed check is not a "no": it leaves the dialog refusing to report until it is
+// reopened. 5s per check expired on busy machines with a healthy, signed-in gh, so each
+// read-only check now gets the 20s every other read-only gh caller in the daemon gives.
+test("every preflight check gets the daemon's read-only gh budget", async () => {
+  const budgets: Array<{ args: string; timeoutMs: number | undefined }> = [];
+  const service = new ProductIssueService({
+    target,
+    runner: async (_bin, args, options) => {
+      budgets.push({ args: args.slice(0, 2).join(" "), timeoutMs: options?.timeoutMs });
+      return stubRun({ stdout: args[0] === "--version" ? "gh version 2.101.0\n" : "acme/public-issues\n", stderr: "", code: 0 });
+    },
+  });
+  await service.preflight();
+  assert.deepEqual(budgets.map((b) => b.args), ["--version", "auth status", "repo view", "api --paginate"]);
+  assert.ok(budgets.every((b) => b.timeoutMs === 20_000), JSON.stringify(budgets));
+});

@@ -1,26 +1,46 @@
+import { hibernatedTasks } from "@shared/hibernation.ts";
+import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
+import { useShapingSettings } from "./useShapingSettings.ts";
+import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useNow } from "./useNow.ts";
+import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
+import type { ReportEntryControls } from "./lib/sessionReports.ts";
+import { clearReportDraft } from "./lib/reportDrafts.ts";
+import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { isFrozen } from "@shared/pause.ts";
+import { taskHasRepository } from "@shared/task.ts";
+import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
+import { FleetPauseBanner } from "./components/FleetPauseControl.tsx";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
-  type KeepAwakeStatus,
-  type RestoringSession,
   type Session,
   type Task,
 } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import {
+  activePaneDialog,
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  liveActivity,
+  lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
@@ -29,18 +49,29 @@ import type {
   TranscriptScrollDistance,
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
-import { AttentionInbox } from "./components/AttentionInbox.tsx";
+import { requestComposerFocus } from "./lib/composer-focus.ts";
+import { ReportDocumentReader } from "./components/ReportDocumentReader.tsx";
+import type { ReportPublishState } from "./lib/sessionReports.ts";
+import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
+import {
+  LaunchFailureProvider,
+  LaunchFailureToasts,
+  ReportLaunchFailureDialog,
+  revealLaunchFailure,
+  type LaunchFailureControls,
+} from "./components/LaunchFailures.tsx";
+import { openLaunchFailureGroups } from "@shared/launch-failure.ts";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
+import { ResidentRestartPromptContext } from "./residents/restart-prompt.ts";
 import { KillModal } from "./components/KillModal.tsx";
 import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
-import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsPage } from "./components/SettingsPage.tsx";
 import {
   DEFAULT_SETTINGS_CATEGORY,
@@ -49,12 +80,11 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
-import { ForemanBar } from "./components/ForemanBar.tsx";
-import { SpendChip } from "./components/SpendChip.tsx";
-import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
+import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
+import { setupReadingFlags, setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
-import { LineStrip } from "./components/LineStrip.tsx";
+import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -63,8 +93,8 @@ import { ShippedDrawer } from "./components/line/ShippedDrawer.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
 import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
-import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
+import { Topbar } from "./components/Topbar.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type {
@@ -81,35 +111,46 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
-import { toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
 import { useDisplayItems } from "./lib/board-card.ts";
+import { isTopbarItemShown, PAGE_SEGMENTS, useTopbarLayout } from "./lib/topbar-items.ts";
 import {
   assignCardShortcuts,
   cardShortcutTarget,
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
-import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
-import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
-import { collapsedColumnSessionIds } from "./lib/column-width.ts";
-import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
-import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention } from "./lib/attention.ts";
 import {
-  useKeybindingHints,
+  refreshAnnouncedTours,
+  uiConfig,
+  uiConfigHydrated,
+  updateUiConfig,
+  useUiConfig,
+  useUiConfigHydrated,
+} from "./lib/uiConfig.ts";
+import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
+import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
+import { reviewChordTarget } from "./lib/review-shortcut.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
+import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
+import { snoozedQuestions } from "./lib/review-snooze.ts";
+import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
   chordUsesFunctionKey,
   chordYieldsToSelection,
-  formatChord,
   isTypingTarget,
+  residentShortcutIndex,
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
-import { matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { canRenameSession, stateDisplay } from "./lib/format.ts";
+import { matchesRestoringFilter, matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { matchesBacklogSearch } from "./lib/backlog-filter.ts";
 import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
@@ -126,6 +167,7 @@ import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
 import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
 import {
   pageShortcutRoute,
+  parseMissionRoute,
   pipelineRunRoute,
   useWorkflowRoute,
 } from "./workflows/useWorkflowRoute.ts";
@@ -133,6 +175,7 @@ import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
@@ -143,6 +186,16 @@ import { CommandLibrary } from "./workflows/CommandLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
+import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { isBuiltinResidentProfileId } from "@shared/residents.ts";
+import { pinnedResidentSessions, residentMarksBySession, residentMarkTitle, residentReplacementsBySession } from "./residents/marker.ts";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, matchesResidentDrawerFilter, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import type { ResidentLoopFeedback } from "./residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL, residentLoopActions, residentLoopSearchFields } from "./residents/loop-presentation.ts";
+import { RESIDENT_VISITOR_NOTE } from "./residents/ResidentVisitorCard.tsx";
+import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
+import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
+import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -159,6 +212,7 @@ import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
+import { StorageBanner, useStorageNotifications } from "./components/StorageBanner.tsx";
 import { OrganizationTelemetryNotice } from "./components/OrganizationTelemetryNotice.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
@@ -167,7 +221,18 @@ import { GuidedTourController } from "./tour/GuidedTourController.tsx";
 import { TourPicker } from "./components/TourPicker.tsx";
 import { TourPreferenceNotice } from "./components/TourPreferenceNotice.tsx";
 import { tourCatalog } from "./tour/catalog.ts";
-import { startupTourDecision } from "./tour/startup.ts";
+import {
+  pendingTourAnnouncement,
+  recordTourAnnouncements,
+  startupTourDecision,
+  withOwedAnnouncements,
+} from "./tour/startup.ts";
+import {
+  oweAnnouncement,
+  owedAnnouncementsMark,
+  readOwedAnnouncements,
+  settleOwedAnnouncements,
+} from "./tour/owed-announcements.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
 import { tourEntry } from "./tour/entries.ts";
@@ -192,6 +257,12 @@ import {
   type WorkflowsTourRuntime,
 } from "./tour/tours/workflows.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
+import {
+  RESIDENTS_TOUR,
+  selectResidentsTourProfile,
+  type ResidentsTourNavigation,
+  type ResidentsTourRuntime,
+} from "./tour/tours/residents.ts";
 import { createTourTargetRegistry, type TourTargetId } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -249,44 +320,6 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
   }
 }
 
-/** The topbar's primary pages, in reading order, with one direct shortcut each. */
-const PAGE_SEGMENTS = [
-  {
-    id: "fleet",
-    action: "fleet",
-    label: "Fleet",
-    glyph: "▦",
-    hint: "The fleet of running sessions, their tasks and their reviews",
-  },
-  {
-    id: "library",
-    action: "workflows",
-    label: "Library",
-    glyph: "⌗",
-    hint: "The Library - workflows, Personas, actions, ensemble strategies and intake",
-  },
-  {
-    id: "runs",
-    action: "runs",
-    label: "Runs",
-    glyph: "▷",
-    hint: "Workflow Runs - live and finished workflow reviews",
-  },
-  {
-    id: "scouts",
-    action: "scouts",
-    label: "Scouts",
-    glyph: "⌖",
-    hint: "Scouts - finished investigations and the evidence they kept",
-  },
-] as const satisfies readonly {
-  id: "fleet" | "library" | "runs" | "scouts";
-  action: ActionId;
-  label: string;
-  glyph: string;
-  hint: string;
-}[];
-
 /**
  * Everything a tour moves and therefore owes back.
  *
@@ -341,6 +374,7 @@ export function App(): React.JSX.Element {
     sessions,
     restoringSessions,
     reviews,
+    reports,
     tasks,
     personas,
     sessionActions,
@@ -355,16 +389,27 @@ export function App(): React.JSX.Element {
     fileCommentReviews,
     fleetCost,
     lineSummary,
+    featureFlags,
+    subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
+    voice,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
+    attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
     archivesRevision,
     settingsRestoreNotice,
     schedules,
+    residentProfiles,
+    residentRuns,
     connected,
     hasSnapshot,
     sessionTransfers,
@@ -379,22 +424,31 @@ export function App(): React.JSX.Element {
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
+  // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
+  // resident runs; the daemon's Away watcher passes them on the same flag.
+  const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
   const alertScope = useMemo(
-    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({
+      sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      ...(inboxNames ? { names: residentRuns } : {}),
+    }),
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
-  const [keybindingHints] = useKeybindingHints();
   useEffect(() => {
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.page === "residents" ? "residents"
       : route.kind === "pipelines" ? "pipelines" : "runs";
     featureVisit("page", JSON.stringify(route), feature);
   }, [route]);
   const [layout, setLayout] = useLayoutMode();
   const [lineDensity, setLineDensity] = useLineDensity();
+  // Switched off in Settings (Display > Top bar > The Line > Disabled). Its own key, not a
+  // density - see `LINE_DENSITIES` for why an older daemon must never read a third one.
+  const lineHidden = useUiConfig().lineHidden;
   const foreman = useForeman();
   // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
   // popover and the Cost panel read the same `view` setting, so a local copy in the page
@@ -403,7 +457,12 @@ export function App(): React.JSX.Element {
   const llm = useLlm();
   // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
-  const setup = useSetupChecks(true);
+  // Re-read when a flag Setup depends on is switched in any window (the Voice family).
+  const liveSetupFlags = useMemo(
+    () => (hasSnapshot ? setupReadingFlags((id) => resolveFeatureFlag(id, featureFlags)) ?? "" : null),
+    [hasSnapshot, featureFlags],
+  );
+  const setup = useSetupChecks(true, liveSetupFlags);
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
@@ -420,11 +479,127 @@ export function App(): React.JSX.Element {
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
+  // Storage's size and free-space warnings, as a desktop notification when the operator asked.
+  useStorageNotifications(storageHealth);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
-  // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
-  // target of its own - what it draws is `attention` below, folded from state App already has -
-  // so it cannot go stale behind an item that resolved while it was open.
-  const [inboxOpen, setInboxOpen] = useState(false);
+  // The entry point can ask for initial focus on a conversation's question. The inbox still
+  // renders the live attention fold.
+  const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
+  // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
+  // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
+  // read" to. Opening a report records that it was opened (once) and never marks it read.
+  const [openReportId, setOpenReportId] = useState<string | null>(null);
+  // The chain (`rootId`) of the open report, so that when the agent replaces it the replacement
+  // takes its place on screen rather than the card closing under the operator.
+  const openReportRoot = useRef<string | null>(null);
+  // Whether the open report has been seen waiting to be read since it was opened. Only a report
+  // that was live and has just left the live list was replaced under the operator; an older
+  // version opened on purpose from its conversation entry was never live, and stays open.
+  const openReportLive = useRef<{ id: string | null; live: boolean }>({ id: null, live: false });
+  useEffect(() => {
+    const live = openReportId !== null && reports.some((report) => report.id === openReportId);
+    const seen = openReportLive.current;
+    if (seen.id !== openReportId) {
+      openReportLive.current = { id: openReportId, live };
+      return;
+    }
+    if (live) {
+      seen.live = true;
+      return;
+    }
+    if (openReportId === null || !seen.live) return;
+    seen.live = false;
+    const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
+    if (successor) setOpenReportId(successor.id);
+  }, [reports, openReportId]);
+  const reportOpenPosted = useRef(new Set<string>());
+  // The report whose attached document the reader is showing, if any.
+  const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
+  // Publish as scout's state per report id. Held here, not in the card, so a refusal or a request
+  // still in flight survives the card being collapsed or the inbox being closed, until the next
+  // attempt starts.
+  const [publishStates, setPublishStates] = useState<ReadonlyMap<string, ReportPublishState>>(new Map());
+  // What a report's conversation entry needs: which report is open, opening it, opening its
+  // document, and Mark read. Kept apart from the inbox's controls so that typing a draft, or a
+  // session or resident run changing, does not hand the open conversation new controls and
+  // re-merge its transcript. Everything here depends only on the open report and stable setters.
+  const reportEntryControls = useMemo<ReportEntryControls>(() => {
+    // Record the first time the operator opened a report, whichever way they opened it.
+    const postOpened = (report: AgentReport) => {
+      if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
+      reportOpenPosted.current.add(report.id);
+      void api.openReport(report.id).then((result) => {
+        if (!result.ok) reportOpenPosted.current.delete(report.id);
+      });
+    };
+    return {
+      openReportId,
+      onToggle: (report) => {
+        const opening = openReportId !== report.id;
+        setOpenReportId(opening ? report.id : null);
+        openReportRoot.current = opening ? report.rootId : null;
+        if (opening) postOpened(report);
+      },
+      // Open report: the stored copy of its document. Posts opened, and never marks it read.
+      onOpenDocument: (report) => {
+        setDocumentReport(report);
+        postOpened(report);
+      },
+      onMarkRead: async (report) => {
+        const result = await api.markReportRead(report.id);
+        if (!result.ok) return result.error ?? "Could not mark the report read";
+        setOpenReportId((current) => (current === report.id ? null : current));
+        return null;
+      },
+    };
+  }, [openReportId]);
+  // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up, and
+  // Publish as scout. The card's draft lives in its own store (`lib/reportDrafts.ts`), so typing
+  // re-renders the card alone; a send that is accepted clears it here.
+  const reportControls = useMemo<InboxReportControls>(() => ({
+    ...reportEntryControls,
+    // Read from the live sessions and resident runs, so a card changes what it offers the moment
+    // its agent exits or a resident is relaunched.
+    targetFor: (report) => replyTarget(report, sessions, residentRuns),
+    onReply: async (report, text) => {
+      const result = await api.replyToReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not send the reply";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+    onFollowUp: async (report, text) => {
+      const result = await api.followUpReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+    // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
+    onPublish: (report) => {
+      const set = (state: ReportPublishState) =>
+        setPublishStates((current) => new Map(current).set(report.id, state));
+      set({ busy: true, refusal: null });
+      void api.publishReport(report.id).then((result) => {
+        if (result.ok) return set({ busy: false, refusal: null });
+        const error = result.error ?? "Could not publish the report";
+        set({
+          busy: false,
+          refusal: {
+            error,
+            problems: result.problems?.length ? result.problems : [error],
+            failed: result.status === undefined || result.status >= 500,
+          },
+        });
+      });
+    },
+    publishStateFor: (report) => publishStates.get(report.id) ?? { busy: false, refusal: null },
+    onOpenArchive: (report) => {
+      if (!report.publishedArchiveKey) return;
+      setInbox(null);
+      navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
+    },
+  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -534,6 +709,12 @@ export function App(): React.JSX.Element {
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
   const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
+  // The top bar's Residents button, registered here rather than by the dock that draws it:
+  // Settings > Display renders a preview top bar whose dock would overwrite the real one.
+  const residentsButtonTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
+    tourTargets,
+    "residents:topbar-button",
+  );
   // The gear, for the Setup tour's first stop. App renders the topbar above `TourTargetHost`,
   // so it registers through the owned hook exactly as Dispatch does.
   const settingsGearTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
@@ -550,6 +731,43 @@ export function App(): React.JSX.Element {
   // A one-shot request rather than lifted popover state: ForemanBar still owns its ordinary
   // toggle/close lifecycle, while the System profile can ask that existing control to open.
   const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
+  // The same one-shot shape for the Residents dock beside it: its chord and its palette row.
+  const [residentsDockRequest, setResidentsDockRequest] = useState(0);
+  const openResidentsDock = useCallback(() => setResidentsDockRequest((n) => n + 1), []);
+  // Where residents live (Settings → Display → Residents), and the Residents drawer's state.
+  // One drawer, one column beside the fleet, open by either of two facts: `residentDrawerOpen`,
+  // for this page load only, or the stored pin, which outlives a reload and a restart.
+  const { residentPlacement, residentDrawerPinned } = useUiConfig();
+  const residentsInDrawer = residentPlacement === "drawer";
+  const [residentDrawerOpen, setResidentDrawerOpen] = useState(false);
+  /** The drawer's selected resident, by session id: its card is the expanded one. */
+  const [residentDrawerSelected, setResidentDrawerSelected] = useState<string | null>(null);
+  /** A one-shot request to focus a card in the drawer. */
+  const [residentCardFocus, setResidentCardFocus] = useState<{ sessionId: string | null; nonce: number } | null>(null);
+  /**
+   * The Meet your residents tour shows this drawer whatever the placement. Under Board and
+   * Console it borrows the drawer for the length of the tour - only one the tour opened, never
+   * the stored pin - the way See the work borrows a switched-off Line, and writes nothing.
+   */
+  const residentsTourBorrowsDrawer = !residentsInDrawer && activeTour?.tourId === "residents";
+  const residentDrawerShown = residentsInDrawer
+    ? residentDrawerOpen || residentDrawerPinned
+    : residentsTourBorrowsDrawer && residentDrawerOpen;
+  const residentDrawerShownRef = useRef(residentDrawerShown);
+  residentDrawerShownRef.current = residentDrawerShown;
+  // The one launch state behind the dock and the drawer, so a launch outlives either closing.
+  const residentLauncher = useResidentLaunches();
+  /**
+   * The resident actions, read through a ref by the palette and the global key handler: both
+   * are declared above the session plumbing these need, and reading the latest through a ref
+   * keeps the key listener from re-subscribing on every fleet event.
+   */
+  const residentActionsRef = useRef({
+    /** The top-bar button, `⇧H` and the palette command: the drawer, or the dock. */
+    openSurface: (): void => {},
+    toggleSurface: (): void => {},
+    openDetail: (_sessionId: string): void => {},
+  });
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -622,6 +840,22 @@ export function App(): React.JSX.Element {
     },
     [openSettingsAnchor],
   );
+  /**
+   * The door an environment warning in the dispatch form offers, opened: that check's own
+   * Setup row, which carries the remedy (the Install button, or the command to run).
+   *
+   * Re-reads the setup snapshot too. The dispatch form asked the machine a moment ago, but
+   * the Setup panel shows what was read at startup, and a row the operator was just sent to
+   * must not be missing because the warning is newer than the snapshot.
+   */
+  const refreshSetup = setup.refresh;
+  const openEnvironmentFix = useCallback(
+    (check: EnvironmentCheckId): void => {
+      void refreshSetup();
+      openSettingsAnchor("setup", setupRowAnchor({ source: "environment-check", id: check }));
+    },
+    [openSettingsAnchor, refreshSetup],
+  );
   const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
@@ -636,6 +870,8 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  /** Set while the Complete dialog is Restart's offer, so it can say why it opened. */
+  const [restartPromptSessionId, setRestartPromptSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   // The session the Return to backlog confirm was showing when it sent its request. Requeueing
@@ -665,6 +901,14 @@ export function App(): React.JSX.Element {
   // this so the rename shortcut and a title click drive the same session.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  // The operator's Top bar choices (Settings > Display). Hiding Search drops any term the box
+  // held: a filter with no box on screen would leave the fleet missing cards with nothing
+  // saying why.
+  const topbarLayout = useTopbarLayout();
+  const searchShown = isTopbarItemShown(topbarLayout, "search");
+  useEffect(() => {
+    if (!searchShown) setFilter("");
+  }, [searchShown]);
 
   // The single source of truth for "is an overlay open". Populated by the overlays
   // themselves as they mount (see Overlay.tsx), so the guards below can never fall out
@@ -762,7 +1006,11 @@ export function App(): React.JSX.Element {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
     if (activeEditor && !active?.closest(".cdetail")) return;
-    sessionEls.current.get(id)?.focus({ preventScroll: true });
+    // A folded rail draws no rows, so no row is registered for the id. The strip that stands
+    // in for them takes the keyboard instead: leaving the reader must still leave it, or every
+    // Escape would land back inside the reader and the next one could never peel further.
+    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
+      ?.focus({ preventScroll: true });
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -857,7 +1105,22 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeComplete = useCallback(() => {
+    setCompleteSessionId(null);
+    setRestartPromptSessionId(null);
+  }, []);
+  /**
+   * Restart on new profile succeeded somewhere - a card menu, the band, the dock or the
+   * Residents page - and left the original task open. Offer to complete it now, with the
+   * ordinary Complete dialog over whatever page the operator is on; Cancel keeps it open, and
+   * the replaced session's band keeps the offer afterwards.
+   */
+  const promptRestartCompletion = useCallback((replacedTaskId: string) => {
+    const session = sessionsRef.current.find((candidate) => candidate.task?.id === replacedTaskId);
+    if (!session) return;
+    setRestartPromptSessionId(session.id);
+    setCompleteSessionId(session.id);
+  }, []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -869,6 +1132,11 @@ export function App(): React.JSX.Element {
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
   const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
+  const openResidentLaunch = useCallback(
+    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
+    [],
+  );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
    * Ensemble mode on that strategy.
@@ -919,11 +1187,47 @@ export function App(): React.JSX.Element {
   // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
   // the same module-level store, so this is a third reader of one value rather than a copy.
   const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
-  const showToursOnStartup = useUiConfig().showToursOnStartup;
+  const { showToursOnStartup, announcedTours } = useUiConfig();
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
+  const announcedToursRef = useRef(announcedTours);
+  announcedToursRef.current = announcedTours;
+  /**
+   * The new tour this profile is owed an announcement of, or null - from the daemon's record and
+   * this browser's midway-dismissal debt, read afresh on every ask. The debt lives in shared
+   * `localStorage`, and another window can announce the tour and settle it at any moment, so no
+   * copy of it is kept: a startup opening that waited behind another dialog, and a Browse tours
+   * opening, both decide from what is owed now. Nothing is owed before hydration, because the
+   * cache cannot say whether a profile predates a tour.
+   */
+  const owedTourAnnouncement = useCallback((): TourId | null => (
+    uiConfigHydrated()
+      ? pendingTourAnnouncement(
+        withOwedAnnouncements(announcedToursRef.current, readOwedAnnouncements()),
+        catalog.map((entry) => entry.id),
+      )
+      : null
+  ), [catalog]);
   const startupTourHandled = useRef(false);
+  /**
+   * The daemon's `announcedTours` has been re-read for the automatic opening about to happen.
+   * Cleared whenever that opening has to wait again, so the record is confirmed at the moment it
+   * opens rather than at some earlier one.
+   */
+  const startupAnnouncementConfirmed = useRef(false);
+  const startupAnnouncementChecking = useRef(false);
+  /**
+   * Counts every time the startup opening is made to wait. A confirming read counts only if no
+   * wait happened between its start and its landing: a dialog that opened meanwhile can stay open
+   * while another window announces the tour, so that read says nothing about the moment the
+   * picker can actually open, and the decision reads again then.
+   */
+  const startupAnnouncementWaits = useRef(0);
+  /** Re-runs the startup decision once a confirming read lands. */
+  const [startupRecheck, setStartupRecheck] = useState(0);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
+  /** The tour the open picker announces, captured as it opened. */
+  const [tourPickerFeatured, setTourPickerFeatured] = useState<TourId | null>(null);
   const tourPickerOrigin = useRef<FocusBookmark>(captureFocusBookmark(null));
   const [tourPreferenceSaving, setTourPreferenceSaving] = useState(false);
   const tourPreferenceSavingRef = useRef(false);
@@ -940,8 +1244,23 @@ export function App(): React.JSX.Element {
     // A palette opened from the document root has no focusable invoker to return to.
     tourPickerOrigin.current = origin.element === document.body
       ? captureFocusBookmark(null) : origin;
+    // Whichever way the picker opens, the first opening that features a new tour is its
+    // announcement, and recording it lets the next window honor the startup preference again.
+    // A refused write rolls back and the next window announces it once more; nothing to report.
+    const featured = owedTourAnnouncement();
+    setTourPickerFeatured(featured);
+    if (featured) {
+      const recorded = recordTourAnnouncements(announcedToursRef.current);
+      // Only debts that existed as this write began are its to settle: the operator can start
+      // the tour from this very picker and leave it midway before the write lands, and that
+      // newer dismissal must survive it.
+      const mark = owedAnnouncementsMark();
+      void updateUiConfig({ announcedTours: recorded }).then((saved) => {
+        if (saved) settleOwedAnnouncements(recorded, undefined, mark);
+      });
+    }
     setTourPickerOpen(true);
-  }, []);
+  }, [owedTourAnnouncement]);
 
   const closeTourPicker = useCallback((): void => {
     setTourPickerOpen(false);
@@ -976,18 +1295,22 @@ export function App(): React.JSX.Element {
    * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
    * palette opens.
    */
+  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
+  // Owned here beside the flags' settings: its confirmed state is the event stream's, which App holds.
+  const shapingSettings = useShapingSettings(shaping, hasSnapshot && connected, subscribeShaping);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
         guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
+        featureFlags: featureFlagsSettings,
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update, featureFlagsSettings],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -1000,6 +1323,61 @@ export function App(): React.JSX.Element {
     () => new Map(sessions.map((session) => [session.id, session.name])),
     [sessions],
   );
+  /**
+   * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
+   * for the drawer's cards, the jump keys and the palette's resident rows.
+   */
+  const residentEntries = useMemo(
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
+    [residentRuns, residentProfiles, sessions],
+  );
+  // The filter and both card surfaces share each run's feedback across menu and card unmounts.
+  const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
+  const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
+    setResidentLoopFeedback((current) => {
+      const next = new Map(current);
+      if (feedback.busy || feedback.error) next.set(runId, feedback);
+      else next.delete(runId);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    if (residentLoopFeedback.size === 0) return;
+    const live = new Set(residentRuns.map((run) => run.id));
+    if ([...residentLoopFeedback.keys()].every((id) => live.has(id))) return;
+    setResidentLoopFeedback((current) => new Map([...current].filter(([id]) => live.has(id))));
+  }, [residentRuns, residentLoopFeedback]);
+  const pendingReviews = useMemo(() => reviews.filter((review) => review.status === "pending"), [reviews]);
+  const fleetQuery = filter.trim();
+  const residentActiveHours = resolveFeatureFlag("resident-active-hours", featureFlags);
+  const residentSearchNow = useNow(route.page === "fleet" && Boolean(fleetQuery) && residentRuns.some((run) => run.nextWakeAt !== null));
+  const visibleResidentEntries = useMemo(() => {
+    if (!residentDrawerShown || !fleetQuery) return residentEntries;
+    return residentEntries.filter((entry) =>
+      matchesResidentDrawerFilter(entry, fleetQuery, pendingReviews, residentSearchNow, residentActiveHours,
+        residentLoopFeedback.get(entry.run.id)?.error));
+  }, [residentDrawerShown, fleetQuery, residentEntries, pendingReviews, residentSearchNow, residentActiveHours, residentLoopFeedback]);
+  // The drawer always has a card selected while it is on screen: the one it was asked to open
+  // on, or the one it last had while that resident is still live, else the first needing you.
+  useEffect(() => {
+    if (!residentDrawerShown) return;
+    if (residentEntries.some((entry) => entry.session && entry.session.id === residentDrawerSelected)) return;
+    setResidentDrawerSelected(defaultResidentSelection(residentEntries));
+  }, [residentDrawerShown, residentEntries, residentDrawerSelected]);
+  const paletteResidents = useMemo(
+    () => residentEntries.flatMap((entry) => {
+      if (!entry.session) return [];
+      const state = stateDisplay(entry.session);
+      return [{
+        sessionId: entry.session.id,
+        name: entry.mark.name,
+        label: entry.mark.label,
+        state: state.label,
+        attention: state.tone === "attention",
+      }];
+    }),
+    [residentEntries],
+  );
   /** Everything the palette's providers read, in one object. */
   const paletteStores = useMemo<PaletteStores>(
     () => ({
@@ -1010,9 +1388,13 @@ export function App(): React.JSX.Element {
       sessionActions,
       schedules,
       sessionNames,
+      residents: paletteResidents,
       settingsBindings: paletteBindings,
+      featureFlags,
     }),
     [
+      featureFlags,
+      paletteResidents,
       workflowSummaries,
       workflowRuns,
       ensembleSummaries,
@@ -1044,7 +1426,7 @@ export function App(): React.JSX.Element {
     setSeeWorkTourBriefReady(false);
     const preferredRepo = run.sessionId
       ? sessions.find((session) => session.id === run.sessionId)?.repoRoot ?? null
-      : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+      : tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setSeeWorkTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1107,7 +1489,7 @@ export function App(): React.JSX.Element {
       setWorkflowsTourRepoRoot(null);
       return;
     }
-    const preferredRepo = tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    const preferredRepo = tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setWorkflowsTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1120,6 +1502,15 @@ export function App(): React.JSX.Element {
     });
   }, [tasks]);
 
+
+  /**
+   * Whether this residents run reached its last stop, which is what seeing it through means.
+   * A run that ends without it was dismissed midway, and its cleanup announces the tour again.
+   */
+  const residentsTourReachedEnd = useRef(false);
+  const beginResidentsRun = useCallback((): void => {
+    residentsTourReachedEnd.current = false;
+  }, []);
 
   /**
    * How each tour opens: the resource it wants to point at, and the run state it seeds.
@@ -1141,8 +1532,12 @@ export function App(): React.JSX.Element {
     // pins the daemon's deterministic demonstration run, whatever the fleet holds.
     "workflows": { resource: pickWorkflowsTourSession, begin: beginWorkflowsTourRun },
     "setup": { resource: () => null, begin: () => {} },
+    // Meet your residents reads the live profile collection and the drawer, both of which
+    // already exist, so it singles nothing out. Each run starts not having reached its end.
+    "residents": { resource: () => null, begin: beginResidentsRun },
   }), [
     beginLibraryRun,
+    beginResidentsRun,
     beginSeeWorkRun,
     beginWorkflowsTourRun,
     pickSeeWorkSession,
@@ -1185,12 +1580,46 @@ export function App(): React.JSX.Element {
       handled: startupTourHandled.current,
       hydrated: tourPreferenceHydrated,
       enabled: showToursOnStartup,
+      // Read now rather than when this document loaded: an opening that waited behind another
+      // dialog must not open past an opt-out for a debt another window has since settled.
+      announcing: owedTourAnnouncement() !== null,
       hasTours: catalog.length > 0,
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
     if (decision === "settle") startupTourHandled.current = true;
-    if (decision === "open") openTourPicker(captureFocusBookmark(null));
-  }, [activeTour, catalog, openTourPicker, overlays.anyOpen, showToursOnStartup, tourPreferenceHydrated]);
+    if (decision === "wait") {
+      startupAnnouncementConfirmed.current = false;
+      startupAnnouncementWaits.current += 1;
+    }
+    if (decision !== "open") return;
+    // Opening on account of an announcement: confirm the daemon still owes it. Preferences do
+    // not live-sync between windows, so another window may have announced the tour while this
+    // one loaded or waited behind a dialog, and opening past an opt-out to announce it twice is
+    // exactly what this must not do. A daemon that cannot answer leaves the loaded record in
+    // force, which errs toward one more showing rather than none.
+    if (owedTourAnnouncement() !== null && !startupAnnouncementConfirmed.current) {
+      if (startupAnnouncementChecking.current) return;
+      startupAnnouncementChecking.current = true;
+      const waitsAtStart = startupAnnouncementWaits.current;
+      void refreshAnnouncedTours().finally(() => {
+        startupAnnouncementChecking.current = false;
+        startupAnnouncementConfirmed.current = startupAnnouncementWaits.current === waitsAtStart;
+        setStartupRecheck((n) => n + 1);
+      });
+      return;
+    }
+    openTourPicker(captureFocusBookmark(null));
+  }, [
+    activeTour,
+    announcedTours,
+    catalog,
+    openTourPicker,
+    overlays.anyOpen,
+    owedTourAnnouncement,
+    showToursOnStartup,
+    startupRecheck,
+    tourPreferenceHydrated,
+  ]);
 
   const startPickerTour = useCallback((id: TourId): void => {
     if (startTour(id, tourPickerOrigin.current)) setTourPickerOpen(false);
@@ -1486,6 +1915,31 @@ export function App(): React.JSX.Element {
   }, []);
   // Setup only navigates and spotlights existing page chrome, so it creates nothing to reclaim.
   const cleanupSetupRun = useCallback(async (): Promise<void> => {}, []);
+  /**
+   * Whether the Residents drawer on screen is one the residents tour opened, rather than one
+   * the operator already had open or pinned. Only that one is the tour's to put away.
+   */
+  const residentsTourOpenedDrawer = useRef(false);
+  /**
+   * The residents tour creates nothing. What it may hold is a drawer it opened: in Drawer
+   * placement that is handed over open on the fleet, which is where the tour ends; under Board
+   * and Console it was borrowed, so it goes away with the tour rather than lying in wait to
+   * spring open if the operator later switches placement.
+   */
+  const cleanupResidentsRun = useCallback(async (): Promise<void> => {
+    if (residentsTourOpenedDrawer.current && uiConfig().residentPlacement !== "drawer") {
+      setResidentDrawerOpen(false);
+    }
+    residentsTourOpenedDrawer.current = false;
+    // Dismissed midway: the tour is owed its announcement again, so the next window's picker
+    // features it once more. The debt lives in this browser only, and the daemon is never asked
+    // to take the tour back off `announcedTours`: that list is written whole, so a late re-arm
+    // could land after another window had already announced the tour and quietly owe it a
+    // second time. A picker opening's own record write, or a run seen through, settles it.
+    if (residentsTourReachedEnd.current) settleOwedAnnouncements(["residents"]);
+    else oweAnnouncement("residents");
+    residentsTourReachedEnd.current = false;
+  }, []);
 
   /**
    * Close whichever tour is active.
@@ -1650,6 +2104,12 @@ export function App(): React.JSX.Element {
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
+        case "residents-dock":
+          residentActionsRef.current.openSurface();
+          return;
+        case "open-resident":
+          residentActionsRef.current.openDetail(target.sessionId);
+          return;
         default: {
           // Exhaustiveness: a new target kind fails to compile here rather than silently
           // doing nothing when its row is pressed.
@@ -1662,6 +2122,7 @@ export function App(): React.JSX.Element {
       navigate,
       openDispatch,
       openFeedback,
+      openResidentsDock,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -1725,7 +2186,9 @@ export function App(): React.JSX.Element {
    * than to an empty page, which is the rule every unresolvable deep link in this router
    * already takes.
    */
-  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  // Zero while the ai-conductor integration is hidden, so the Pipelines tab cannot appear
+  // even against a daemon that still reports observed repositories.
+  const pipelinesObserving = CONDUCTOR_INTEGRATION_ENABLED ? settingsStatus?.pipelines.observing ?? 0 : 0;
   const runsKind: RunsKind =
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"
@@ -1776,6 +2239,142 @@ export function App(): React.JSX.Element {
       if (layout === "board") setBoardOpen(true);
     },
     [navigate, layout],
+  );
+  /**
+   * Open a resident's full detail: the Board drill-in on the Board, the detail pane in Console,
+   * through `openSessionOnFleet`, in both placements. An open drawer stays on screen beside the
+   * detail with the resident still selected.
+   */
+  const openResidentDetail = useCallback(
+    (sessionId: string): void => {
+      setResidentDrawerSelected(sessionId);
+      openSessionOnFleet(sessionId);
+    },
+    [openSessionOnFleet],
+  );
+  /**
+   * Put the keyboard on one resident's card once the drawer can show it, or, with `null`, on
+   * whichever card the drawer selects once it has one: opened before any resident has arrived,
+   * the request waits for the first card rather than being dropped.
+   */
+  const focusResidentCard = useCallback((sessionId: string | null): void => {
+    setResidentCardFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+  /**
+   * Open the drawer, or bring it forward: the column lives on Fleet, so opening it from another
+   * page goes there to show it. The keyboard goes onto the selected resident's card while that
+   * resident is still live, else the first that needs you - which the drawer decides against the
+   * cards it actually has, so a selection whose resident has since ended is never waited on.
+   */
+  /** Set while a requested drawer waits on a leave dialog for the move to Fleet. */
+  const residentDrawerAwaitsFleet = useRef(false);
+  const showResidentDrawer = useCallback((): void => {
+    if (navigate({ page: "fleet" })) {
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else {
+      // A dirty draft is holding the move to Fleet behind its leave dialog. The drawer opens
+      // only if the operator leaves; see the effect below.
+      residentDrawerAwaitsFleet.current = true;
+    }
+  }, [navigate, focusResidentCard]);
+  /**
+   * The drawer was asked for from a page whose unsaved draft held the move to Fleet. Opening it
+   * then and there would leave it - and a focus request - waiting to spring open on some later
+   * visit to Fleet if the operator chose to stay. So it opens when the route actually becomes
+   * Fleet, and the ask is dropped when the move is cancelled or another destination is held.
+   *
+   * Confirming the dialog sets the address to Fleet at once and the route follows on the next
+   * hashchange; cancelling leaves the address where it was. The address is what tells the two
+   * apart in the render between, when the held route has already cleared either way.
+   */
+  useEffect(() => {
+    if (!residentDrawerAwaitsFleet.current) return;
+    if (route.page === "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else if (pendingRoute ? pendingRoute.page !== "fleet" : parseMissionRoute(window.location.hash).page !== "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+    }
+  }, [route.page, pendingRoute, focusResidentCard]);
+  /**
+   * A drawer card's ask row: the review modal on that resident's pending reviews, or the menu it
+   * is parked on, with its card selected. The drawer names a requested decision; the modal is
+   * where it is answered.
+   */
+  const openResidentReview = useCallback((sessionId: string): void => {
+    setResidentDrawerSelected(sessionId);
+    setReviewSessionId(sessionId);
+  }, []);
+  /** Close the drawer, pinned or not: a pinned drawer closed is no longer pinned. */
+  const closeResidentDrawer = useCallback((): void => {
+    setResidentDrawerOpen(false);
+    if (residentDrawerPinned) void updateUiConfig({ residentDrawerPinned: false });
+  }, [residentDrawerPinned]);
+  /** `⇧H` and the top-bar button in Drawer placement. */
+  const toggleResidentDrawer = useCallback((): void => {
+    if (residentDrawerShown && route.page === "fleet") closeResidentDrawer();
+    else showResidentDrawer();
+  }, [residentDrawerShown, route.page, closeResidentDrawer, showResidentDrawer]);
+  /**
+   * Pin or unpin. Either way the drawer stays open now; the pin only decides whether it is
+   * still open after a reload or a restart.
+   */
+  const setResidentDrawerPinned = useCallback((pinned: boolean): void => {
+    setResidentDrawerOpen(true);
+    if (pinned) navigate({ page: "fleet" });
+    void updateUiConfig({ residentDrawerPinned: pinned });
+  }, [navigate]);
+  residentActionsRef.current = {
+    openSurface: () => {
+      if (!residentsInDrawer) openResidentsDock();
+      else showResidentDrawer();
+    },
+    toggleSurface: () => (residentsInDrawer ? toggleResidentDrawer() : openResidentsDock()),
+    openDetail: (sessionId) => openResidentDetail(sessionId),
+  };
+  // Leaving the drawer placement puts the drawer away for this page load. A stored pin is left
+  // as it is, so switching back brings a pinned drawer back with it.
+  useEffect(() => {
+    if (residentsInDrawer) return;
+    setResidentDrawerOpen(false);
+  }, [residentsInDrawer]);
+  // The failure a Report bug press is confirming, or null.
+  const [reportingLaunchFailure, setReportingLaunchFailure] = useState<Task | null>(null);
+  const launchFailureControls = useMemo<LaunchFailureControls>(
+    () => ({
+      tasks,
+      openReport: setReportingLaunchFailure,
+      launchResident: (profileId) => openResidentLaunch(profileId),
+      openProfile: (profileId) => navigate({ page: "residents", profileId }),
+      openSession: openSessionOnFleet,
+    }),
+    [tasks, openResidentLaunch, navigate, openSessionOnFleet],
+  );
+  // "Show" from a toast or the top bar: back to the fleet, then to the surface drawing it once
+  // that page has painted. The failure is drawn from the task row, so it is there to find.
+  const showLaunchFailure = useCallback(
+    (taskId: string): void => {
+      navigate({ page: "fleet" });
+      const afterPaint = (then: () => void): void => {
+        requestAnimationFrame(() => requestAnimationFrame(then));
+      };
+      // Drawn, but inert: a drilled-in session makes every other column inert, so close the
+      // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. Both can
+      // hold at once - a folded Working behind a drilled-in Idle session - so each fix is followed
+      // by another look, and there are at most two to make. A failure already on the drilled rail
+      // is shown on the first look, and the open session stays put.
+      const look = (fixesLeft: number): void => afterPaint(() => {
+        const seen = revealLaunchFailure(tasks, taskId);
+        if (seen === "shown" || layout !== "board" || fixesLeft === 0) return;
+        if (seen === "inert") setBoardOpen(false);
+        else setColumnWidth("working", "normal");
+        look(fixesLeft - 1);
+      });
+      look(2);
+    },
+    [navigate, tasks, layout],
   );
   /**
    * Run a Line stage click.
@@ -1952,6 +2551,31 @@ export function App(): React.JSX.Element {
     showSettings: () => navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY }),
     showSetup: () => navigate({ page: "settings", category: "setup" }),
     showTrust: () => navigate({ page: "settings", category: "trust" }),
+  }), [navigate]);
+  /**
+   * The residents tour's moves: the Residents page on a profile, the fleet, and the drawer.
+   *
+   * `showDrawer` is not `showResidentDrawer`: that one puts the keyboard on a card, which would
+   * pull focus out of the tour's popover, and the pin it never touches is the operator's.
+   */
+  const residentsNavigation = useMemo<ResidentsTourNavigation>(() => ({
+    showProfile: (profileId) =>
+      navigate(profileId ? { page: "residents", profileId } : { page: "residents" }),
+    showFleet: () => navigate({ page: "fleet" }),
+    showDrawer: () => {
+      if (!navigate({ page: "fleet" })) return false;
+      if (!residentDrawerShownRef.current) residentsTourOpenedDrawer.current = true;
+      setResidentDrawerOpen(true);
+      return true;
+    },
+    hideDrawer: () => {
+      if (!residentsTourOpenedDrawer.current) return;
+      residentsTourOpenedDrawer.current = false;
+      setResidentDrawerOpen(false);
+    },
+    reachedEnd: () => {
+      residentsTourReachedEnd.current = true;
+    },
   }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
@@ -2130,8 +2754,7 @@ export function App(): React.JSX.Element {
     [workflowBindingSummaries, sessions],
   );
 
-  // Nav-bar filter: live substring match over each card's title, status, agent, and visible
-  // pull-request label. Empty filter shows everything.
+  // The nav-bar filter matches every word of the query against the card's text.
   //
   // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
   // and anchors the cluster at its first member, so a filter that hides that member has to be
@@ -2141,7 +2764,17 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  //
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // per repository for display: an older run of the same repository that is still open holds
+  // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
+  const heldIds = useMemo(() => {
+    const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const run of workflowRuns) {
+      if (run.sessionId) runsBySession.set(run.sessionId, [...(runsBySession.get(run.sessionId) ?? []), run]);
+    }
+    return heldSessionIds(runsBySession);
+  }, [workflowRuns]);
   const pipelineRunByKey = useMemo(() => {
     const map = new Map<string, PipelineRun>();
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
@@ -2157,13 +2790,171 @@ export function App(): React.JSX.Element {
   // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
-  const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Where idle blocked sessions are drawn (Settings → Display → Blocked sessions), for the same
+  // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
+  // the one ordering rather than a decision a view makes while drawing.
+  const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
+    [sessions, residentRuns, residentProfiles],
+  );
+  const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
+  const residentReplacementBySession = useMemo(
+    () => residentReplacementsBySession(sessions, tasks, residentRuns),
+    [sessions, tasks, residentRuns],
+  );
+  // Console's detail is its selection. Board keeps its detail separate from the arrow-key
+  // cursor; Enter or a click opens it, and what it opens is the cursor's session.
+  const boardOpenId = boardOpen ? selectedId : null;
+  const detailId = layout === "board" ? boardOpenId : selectedId;
+  // Which residents are placed on the fleet (Settings → Display → Residents). Decided here,
+  // once, from the open detail rather than from `visible`, so the rule never reads its own
+  // output; the fleet memo below applies it before ordering, so the Board columns, both rails,
+  // the arrow keys and the ⌘-numbers all inherit it and no view branches on placement. While a
+  // detail is open, every resident that needs you is a row in the Needs you rail.
+  const placement = useMemo(
+    () => placeResidents({
+      placement: residentPlacement,
+      residentIds: residentBySession.keys(),
+      toneOf: (id) => {
+        const session = sessions.find((candidate) => candidate.id === id);
+        return session ? stateDisplay(session).tone : null;
+      },
+      drawerOpen: residentDrawerShown,
+      openDetailId: detailId,
+    }),
+    [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
+  );
+  // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
+  // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
+  // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
+  // even in the tick a deadline passes.
+  const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
+  const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
+  // The same Set object while its members are unchanged, so a tick that moves no wait across
+  // its deadline does not rerun the fleet ordering below or redraw its cards.
+  const awaitingIdsRef = useRef<ReadonlySet<string>>(NO_AWAITING_SESSIONS);
+  const awaitingIds = useMemo(() => {
+    awaitingIdsRef.current = keepAwaitingIds(awaitingIdsRef.current, awaitingSessionIds(sessions, awaitingEnabled, awaitingNow));
+    return awaitingIdsRef.current;
+  }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey);
-  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey]);
+    const placed = placement.excluded.size > 0
+      ? sessions.filter((s) => !placement.excluded.has(s.id))
+      : sessions;
+    const matched = !fleetQuery ? placed : placed.filter((session) => {
+      const mark = residentBySession.get(session.id);
+      if (!mark) return matchesSessionFilter(session, fleetQuery);
+      const residentFields = [mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      if (placement.visitors.has(session.id)) {
+        residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
+      } else {
+        residentFields.push(session.activity, liveActivity(session) ?? subagentActivityLine(session));
+        if (mark.loop) {
+          residentFields.push(...residentLoopSearchFields(mark.loop, session, residentSearchNow, residentActiveHours));
+          if (layout === "board") {
+            residentFields.push(
+              RESIDENT_LOOP_CONTROLS_LABEL,
+              ...residentLoopActions(mark).map(({ label }) => label),
+              residentLoopFeedback.get(mark.runId)?.error ?? null,
+            );
+          }
+        }
+      }
+      return matchesSessionFilter(session, fleetQuery, residentFields);
+    });
+    return orderSessions(
+      matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds,
+    );
+  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+    residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
+    pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
+  /**
+   * The session whose detail is open: the fleet list first, then - in Drawer placement - the
+   * open resident, which no fleet list holds. The views draw the detail from this, and the
+   * selected-session actions below act on it.
+   */
+  const detailSession = detailSessionLookup({
+    id: detailId,
+    fleet: visible,
+    sessions,
+    placement: residentPlacement,
+    isResident: (id) => residentBySession.has(id),
+  });
+  // The selection, read the same way. A resident counts only while it IS the open detail, so a
+  // Board cursor left on a resident whose drill-in closed never aims a key at a session nobody
+  // can see.
+  const selected = selectedId
+    ? visible.find((s) => s.id === selectedId) ?? (selectedId === detailId ? detailSession : null)
+    : null;
+  /** An open resident's detail: on screen while no fleet list names it. */
+  const openResident = detailSession && !visible.includes(detailSession) ? detailSession : null;
+  /**
+   * The open detail's resident in Drawer placement, whether or not a rail row names it: a
+   * resident asking in the Needs you rail is on the fleet, and the Escape that leaves its detail
+   * still hands the keyboard back to its drawer card.
+   */
+  const detailResidentId = residentsInDrawer && detailSession && residentBySession.has(detailSession.id)
+    ? detailSession.id
+    : null;
+  /**
+   * The drawer's Needs you group, including residents in the rail. The review shortcut
+   * uses this group when the inbox entry point does not apply.
+   */
+  const drawerAsking = useMemo(() => {
+    if (!residentDrawerShown) return [];
+    return residentDrawerGroups(visibleResidentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
+  }, [residentDrawerShown, visibleResidentEntries]);
+  /**
+   * Residents the operator paused, by session: a paused resident does not wake, so its open
+   * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
+   * `PausedResidentsContext`; the review chord is handed it through `residentKeysRef`.
+   */
+  const pausedResidents = useMemo(() => pausedResidentSessionIds(residentRuns, sessions), [residentRuns, sessions]);
+  /**
+   * What the global key handler needs about residents, read through a ref so the listener does
+   * not re-subscribe on every resident or drawer change.
+   */
+  const residentKeysRef = useRef({
+    entries: residentEntries,
+    openResident,
+    detailResidentId,
+    drawerAsking,
+    pausedResidents,
+    detailId,
+    visitors: placement.visitors,
+    openDetail: openResidentDetail,
+    leftDetail: (_sessionId: string): void => {},
+    leaveConsoleDetail: (_sessionId: string): void => {},
+  });
+  residentKeysRef.current = {
+    entries: residentEntries,
+    openResident,
+    detailResidentId,
+    drawerAsking,
+    pausedResidents,
+    detailId,
+    visitors: placement.visitors,
+    openDetail: openResidentDetail,
+    // The Escape that left a resident's detail. With the drawer on screen beside it, the
+    // keyboard goes back to that resident's card.
+    leftDetail: (sessionId) => {
+      if (!residentDrawerShown) return;
+      setResidentDrawerSelected(sessionId);
+      focusResidentCard(sessionId);
+    },
+    // Console: an open resident has no rail row to hand the keyboard back to, so the Escape that
+    // would peel the reader leaves the detail instead.
+    leaveConsoleDetail: (sessionId) => {
+      setSelectedId(null);
+      residentKeysRef.current.leftDetail(sessionId);
+    },
+  };
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
   // nav-bar filter contract as real session cards: title, displayed state, and agent. Keep
@@ -2184,16 +2975,37 @@ export function App(): React.JSX.Element {
     const q = filter.trim().toLowerCase();
     const items = backlogTasks(tasks);
     if (!q) return items;
-    return items.filter((t) => matchesTaskFilter(t, q));
+    return items.filter((t) => matchesBacklogSearch(t, q));
+  }, [tasks, filter]);
+  // The Backlog's Hibernated section, narrowed by the same filter box for the same reason.
+  const visibleHibernated = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = hibernatedTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
 
   // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
   // and a filter left over from browsing the fleet must not make the reply look like "no".
   const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
+  // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
+  // and session-card notices, and the top bar's `did not start` count all read these groups.
+  const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Held at zero until the first snapshot: before it, every running task would look
+  // sessionless only because no session has arrived yet.
+  const lostTaskCount = useMemo(
+    () => (hasSnapshot ? lostTasks(tasks, sessions).length : 0),
+    [hasSnapshot, tasks, sessions],
+  );
+  // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
+  // and on the Board a returned one whose Backlog card is hidden becomes a tile.
+  const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
-  const pendingReviews = reviews.filter((r) => r.status === "pending");
+  // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
+  // cards and the console cannot count paused sessions differently.
+  const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
   // An inbox row is a thing to act on, and a review whose session is gone has nothing left to
@@ -2209,6 +3021,9 @@ export function App(): React.JSX.Element {
     const live = new Set(sessions.map((s) => s.id));
     return pendingReviews.filter((r) => live.has(r.sessionId));
   }, [pendingReviews, sessions]);
+  // Questions parked with "Remind me later", for the inbox's Snoozed section and the topbar's
+  // `snoozed` segment - one list, so the figure and what opens under it cannot disagree.
+  const snoozed = useMemo(() => snoozedQuestions(reviews, sessions), [reviews, sessions]);
 
   // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
   // <name>" without every renderer re-deriving it. Archived schedules leave the live
@@ -2244,17 +3059,55 @@ export function App(): React.JSX.Element {
   // questions that agree until they don't. Folded here because every input is already in this
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
+  //
+  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
+  // popping back up on the next frame, the next reload or in a second window. The fold applies
+  // them, so the figure and the list still cannot disagree.
+  //
+  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
+  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
+  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
+  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
+  // contract, which the session detail reads so its send composer gives way to that box.
+  const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
+  const noteInboxReplyBox = useCallback((sessionId: string, present: boolean) => {
+    setInboxReplyBoxes((boxes) => withInboxReplyBox(boxes, sessionId, present));
+  }, []);
   const attention = useMemo(
     () =>
-      foldAttention({
-        sessions,
-        reviews: answerableReviews,
-        ensembles: ensembleSummaries,
-        pipelineRuns,
-        pipelineCommissions,
-        tasks,
-      }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
+      attentionDismissals.dismissed === null
+        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
+        : foldAttention({
+            sessions,
+            reviews: answerableReviews,
+            residentRuns,
+            ensembles: ensembleSummaries,
+            pipelineRuns,
+            pipelineCommissions,
+            tasks,
+            dismissed: attentionDismissals.dismissed,
+            // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
+            // read figure, whatever the window was told before the flag went off.
+            ...(inboxNames ? { reports } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
+            ...(inboxNames && stalls ? { stalls } : {}),
+          }),
+    [
+      sessions,
+      answerableReviews,
+      inboxNames,
+      stalls,
+      ensembleSummaries,
+      pipelineRuns,
+      pipelineCommissions,
+      tasks,
+      residentRuns,
+      attentionDismissals.dismissed,
+      inboxNames,
+      reports,
+    ],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -2312,18 +3165,32 @@ export function App(): React.JSX.Element {
   // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
-  const collapsedColumns = useUiConfig().collapsedBoardColumns;
-  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  const hasAnswers = attention.total > 0;
+  const hasOtherInboxItems = attention.toRead > 0 || snoozed.length > 0;
+  // A filter can hide the selected detail without clearing the saved drill-in intent.
+  // Navigation follows the overview that BoardView renders until a detail is visible again.
+  const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
+  const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
+  // The folded At the top of Idle frame hides its cards on the Board overview only, like a
+  // collapsed column: the rails always list the Blocked group in full.
+  const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
+    && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
-    if (!hideCollapsedColumns) return folded;
-    const inStrips = collapsedColumnSessionIds(fleet.groups, new Set(collapsedColumns));
-    if (inStrips.size === 0) return folded;
-    return new Set([...folded, ...inStrips]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns]);
+    const inStrips = hideCollapsedColumns
+      ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
+      : new Set<string>();
+    const inFrame = hideFoldedBlocked ? fleet.blocked : [];
+    if (inStrips.size === 0 && inFrame.length === 0) return folded;
+    return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
 
+  // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
+  // of the column that draws it and the Own column placement adds a sixth array.
   const boardColumns = useMemo(
-    () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
+    () => fleet.columns.map((c) => c.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
     [fleet, foldedIds],
   );
 
@@ -2359,8 +3226,16 @@ export function App(): React.JSX.Element {
   // on a Console that draws twelve keycaps.
   const cardShortcutsOn = route.page === "fleet" && shownDisplayItem("cardShortcut");
   const cardShortcuts = useMemo(
-    () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
-    [cardShortcutsOn, boardColumns],
+    // Visitor cards and residents asking in the rail are skipped, so the numbers do not shift
+    // while a resident's ask is open or as a detail opens and closes.
+    () => {
+      if (!cardShortcutsOn) return NO_CARD_SHORTCUTS;
+      const skipped = unnumberedResidents(placement);
+      return assignCardShortcuts(skipped.size > 0
+        ? boardColumns.map((column) => column.filter((id) => !skipped.has(id)))
+        : boardColumns);
+    },
+    [cardShortcutsOn, boardColumns, placement],
   );
   // Read by the keydown handler through a ref, and synced in a LAYOUT effect - which is the
   // whole point of it being one.
@@ -2402,11 +3277,6 @@ export function App(): React.JSX.Element {
     void window.missionDesktop?.setCardJumpKeys?.(cardShortcutsOn);
   }, [cardShortcutsOn]);
 
-  // Console's detail is its selection. Board keeps its detail separate from the arrow-key
-  // cursor; Enter or a click opens it, and what it opens is the cursor's session.
-  const boardOpenId = boardOpen ? selectedId : null;
-  const detailId = layout === "board" ? boardOpenId : selectedId;
-
   // A tab request is an instruction for the detail currently on screen, not a saved tab
   // preference. Leaving that detail consumes it so returning to the session later starts
   // on Conversation as usual.
@@ -2430,6 +3300,9 @@ export function App(): React.JSX.Element {
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
     : [];
+  // A menu the session is parked on is answered in the same modal as its reviews: a resident
+  // card's menu row opens it, as its review rows do.
+  const modalDialog = modalSession ? activePaneDialog(modalSession) : null;
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
@@ -2552,6 +3425,10 @@ export function App(): React.JSX.Element {
       .map((action) => action.id)
       .sort()[0] ?? null
   ), [sessionActions]);
+  const residentsTourRuntime: ResidentsTourRuntime = {
+    profileId: selectResidentsTourProfile(residentProfiles),
+    drawerShown: residentDrawerShown,
+  };
   const libraryTourRuntime: LibraryTourRuntime = {
     personaId: libraryTourPersonaId,
     actionId: libraryTourActionId,
@@ -2669,16 +3546,38 @@ export function App(): React.JSX.Element {
         />
       ),
     },
+    "residents": {
+      activeTaskId: null,
+      activeRunId: null,
+      cleanup: cleanupResidentsRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={RESIDENTS_TOUR}
+          registry={tourTargets}
+          navigation={residentsNavigation}
+          runtime={residentsTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
   };
   tourBindingsRef.current = tourBindings;
   const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
 
-  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
     ? sessions.find((s) => s.id === completeSessionId) ?? null
     : null;
+  // A built-in resident's profile is app data, so its Complete dialog offers no retro that would
+  // propose edits nothing may write. An ended run is no longer listed; the route still knows.
+  const completeResidentRun = completeSession?.task?.kind === "resident"
+    ? residentRuns.find((run) => run.taskId === completeSession.task?.id) ?? null
+    : null;
+  const completeResident = completeResidentRun
+    ? { builtin: isBuiltinResidentProfileId(completeResidentRun.profileId) }
+    : undefined;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
   const requeueSession = requeueSessionId
     ? sessions.find((s) => s.id === requeueSessionId) ?? requeueSentFor
@@ -2705,13 +3604,21 @@ export function App(): React.JSX.Element {
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
-  // the board additionally renders backlog and restoring-session rows.
+  // the board additionally renders backlog, hibernated and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
+    // An open resident's detail is drawn by the layout even though no fleet list holds it, and
+    // a fleet whose only sessions are residents in the drawer still draws its (empty) layout
+    // rather than a "nothing matches" that no filter caused.
+    detailSession !== null ||
+    (placement.excluded.size > 0 && !filter.trim()) ||
     dispatchingTasks.length > 0 ||
-    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+    failedLaunchTiles > 0 ||
+    (layout === "board" &&
+      (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
-    sessions.length + (layout === "board" ? restoringSessions.length : 0);
+    sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
+  const drawerHasMatches = residentDrawerShown && visibleResidentEntries.length > 0;
   const filterableSessionNoun =
     layout === "board"
       ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
@@ -2719,14 +3626,28 @@ export function App(): React.JSX.Element {
         ? "session"
         : "sessions";
 
+  /**
+   * The Line's drawer stages for a Console whose Line is switched off, or undefined.
+   *
+   * Exactly while the strip is not drawn, so the fleet never has two doors to one drawer: the
+   * See work tour borrows the strip while the Line is off, and for that stretch the strip is
+   * the door. The same handler and the same button registry as the strip, which is what makes
+   * `closeLineDrawer` hand the keyboard back to whichever one opened the drawer.
+   */
+  const lineDock: LineDockProps | undefined = layout === "console" && lineHidden && !seeWorkRun
+    ? { summary: lineSummary, openStage: lineDrawer, stageRef: registerLineStage, onStage: onLineStage }
+    : undefined;
+
   const viewProps: SessionViewProps = {
     sessions: visible,
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
+    hibernated: visibleHibernated,
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
+    stackShipping: settingsStatus?.shipping,
     workflowSummaries,
     selectedId,
     consoleZone,
@@ -2743,6 +3664,9 @@ export function App(): React.JSX.Element {
     onCursorTo: setSelectedId,
     onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
     detailId,
+    detailSession,
+    residentVisitors: placement.visitors,
+    onOpenResident: openResidentDetail,
     onOpenReviews: setReviewSessionId,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
@@ -2786,6 +3710,9 @@ export function App(): React.JSX.Element {
     // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
+    // Agent reports' conversation entries, behind the `inbox` flag like the inbox's section.
+    reports: inboxNames ? reports : [],
+    reportControls: reportEntryControls,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
@@ -2800,6 +3727,15 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    residentBySession,
+    residentLoopFeedbackFor: (runId) => ({
+      value: residentLoopFeedback.get(runId),
+      onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
+    }),
+    awaitingIds,
+    residentReplacementBySession,
+    onFocusSession: focusSession,
+    onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
   // Drop selection / collapse / close the diff if the session disappears
@@ -2819,8 +3755,10 @@ export function App(): React.JSX.Element {
     for (const id of Object.keys(files.sessions)) {
       if (!sessions.some((session) => session.id === id)) files.drop(id);
     }
-    if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+    if (renamingId && renamingId !== detailSession?.id && !visible.some((s) => s.id === renamingId)) {
+      setRenamingId(null);
+    }
+  }, [sessions, visible, detailSession, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
 
   useEffect(() => {
     if (latestSessionTransfer?.state === "adopted" && selectedId === latestSessionTransfer.sourceSessionId
@@ -3056,6 +3994,33 @@ export function App(): React.JSX.Element {
         navigate(shortcutTarget);
         return;
       }
+      // Residents is a route rather than a title-bar segment, with the same stand-downs.
+      if (
+        chord === bindings.residents && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        navigate({ page: "residents" });
+        return;
+      }
+      // The dock lives in the top bar on every page, so its chord works from every page too.
+      // In Drawer placement it toggles the drawer, which is a column rather than an overlay.
+      if (chord === bindings.residentsDock && !typing && !renamingId && !overlaysRef.current.anyOpen) {
+        e.preventDefault();
+        residentActionsRef.current.toggleSurface();
+        return;
+      }
+      // ⌥1 … ⌥9 open live resident N's detail, from any page and in both placements, in the
+      // order the drawer and the dock list them. Matched on the physical key (macOS turns
+      // Option+digit into a symbol) and ignored while typing.
+      const residentIndex = residentShortcutIndex(e);
+      if (residentIndex !== null) {
+        if (typing || renamingId || overlaysRef.current.anyOpen) return;
+        const residentSession = residentKeysRef.current.entries[residentIndex]?.session;
+        if (!residentSession) return;
+        e.preventDefault();
+        residentActionsRef.current.openDetail(residentSession.id);
+        return;
+      }
 
       // Every page that is not the fleet owns its own keys - the Workflows editor, the
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
@@ -3135,8 +4100,18 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // Fold or unfold the session rail, a bare key for the reason the Line's is. Only while a
+      // rail is actually beside a detail - the Console, or a Board drill-in. On the Board
+      // overview there is no rail to fold, and flipping a preference nobody can see would
+      // surprise whoever opens a card next.
+      if (!typing && chord === bindings.sessionRail && (layout === "console" || boardDetailOpen)) {
+        e.preventDefault();
+        toggleSessionRail();
+        return;
+      }
+
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
-      // strip that opened it.
+      // strip (or, with the Line off, the Console's stage dock) that opened it.
       //
       // Scoped by focus rather than taken unconditionally, because Escape on this page is
       // already a ladder that peels one layer at a time - session detail, then reader, then
@@ -3150,7 +4125,7 @@ export function App(): React.JSX.Element {
       if (
         chord === "Escape" &&
         lineDrawerRef.current &&
-        (target?.closest(".line-drawer") || target?.closest(".line"))
+        (target?.closest(".line-drawer") || target?.closest(".line") || target?.closest(".line-dock"))
       ) {
         e.preventDefault();
         closeLineDrawer();
@@ -3172,8 +4147,42 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      // The Console's stage dock is a row of ordinary buttons, so Tab and Shift+Tab move along
+      // it natively. Without this they would act as they do on a rail row: Tab dives into the
+      // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
+      // never get from Intake to Backlog.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // A session awaiting a background process draws its band's controls (Open, Clear,
+        // Details) in the Conversation pane, which the tab strip walk below would skip: without
+        // this a hold could only be ended with a pointer. Tab order inside the reader is
+        // therefore body, then the band's controls, then the tab strip; Shift+Tab walks back to
+        // the body. Only while a band is drawn, so every other reader tabs exactly as before.
+        if ((chord === "Tab" || chord === "shift+Tab") && inReader) {
+          const band = target?.closest(".awaiting-band") ?? null;
+          const onBody = Boolean(target?.matches(".detail-body"));
+          const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          // A collapsed Details keeps its Markdown in the DOM, hidden: a link or button in it cannot
+          // take focus, and stepping onto one would leave the keyboard stuck on the summary. Only
+          // controls a person can see are on the path, so a closed Details offers its summary alone.
+          const controls = scope
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")].filter((el) => {
+                const closed = el.closest("details:not([open])");
+                return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+              })
+            : [];
+          if (controls.length > 0) {
+            const at = band ? controls.indexOf(target as HTMLElement) : -1;
+            const next = controls[at + (chord === "Tab" ? 1 : -1)];
+            e.preventDefault();
+            if (next) next.focus({ preventScroll: true });
+            else if (chord === "Tab") readerTabbers.current.get(readerSession.id)?.(1);
+            else focusReaderBody();
+            return;
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {
@@ -3234,11 +4243,26 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The inbox can hold items even with no visible session rows.
+      if (chord === bindings.review && (
+        (layout === "board" && hasAnswers) || (readerSession && (hasAnswers || hasOtherInboxItems))
+      )) {
+        e.preventDefault();
+        setInbox({ focusSessionId: readerSession?.id ?? null });
+        return;
+      }
+
       // The flat rail order, minus anything a folded repository frame is hiding. `visible` itself
       // is NOT filtered: the views still need every session to draw a frame's count and to know
       // what a fold is covering. Only what the keyboard walks is narrowed.
       const ids = visible.filter((s) => !foldedIds.has(s.id)).map((s) => s.id);
-      if (ids.length === 0) return;
+      // An open resident is on screen with no fleet row, so an empty fleet still has Escape.
+      const residentOpen = residentKeysRef.current.openResident;
+      // Any open resident, rail row or not: leaving its detail goes back to its drawer card.
+      const detailResident = residentKeysRef.current.detailResidentId;
+      // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
+      const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
+      if (ids.length === 0 && !residentOpen && !drawerReview) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -3261,6 +4285,12 @@ export function App(): React.JSX.Element {
           // rail, and only the NEXT closes the board drill-in or drops the selection.
           if (readerSession && target?.closest(".cdetail")) {
             e.preventDefault();
+            // A Console resident has no rail row to hand the keyboard back to, so this is the
+            // Escape that leaves its detail.
+            if (layout === "console" && residentOpen) {
+              residentKeysRef.current.leaveConsoleDetail(residentOpen.id);
+              return;
+            }
             setConsoleZone("rail");
             focusReaderRail(readerSession.id);
             return;
@@ -3268,12 +4298,14 @@ export function App(): React.JSX.Element {
           if (layout === "board" && boardOpen) {
             e.preventDefault();
             setBoardOpen(false);
+            if (detailResident) residentKeysRef.current.leftDetail(detailResident);
             return;
           }
           if (!selectedId) return;
           e.preventDefault();
           handle()?.cancel();
           setSelectedId(null);
+          if (detailResident) residentKeysRef.current.leftDetail(detailResident);
           return;
         case "ArrowRight":
         case "ArrowLeft":
@@ -3292,7 +4324,7 @@ export function App(): React.JSX.Element {
             if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
-            mode: layout,
+            mode: allSessionsRail ? "console" : layout,
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
@@ -3302,11 +4334,14 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console") focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
-            if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
+            if (layout === "board" && !boardDetailOpen) {
+              setBoardOpen(false);
+              pendingTileFocus.current = nextId;
+            }
           }
           return;
         }
@@ -3316,6 +4351,12 @@ export function App(): React.JSX.Element {
           // eaten by the key it merely shares.
           if (chord !== "Enter") break;
           if (!selectedId) break;
+          // A visitor card opens its resident's conversation, as its click does.
+          if (residentKeysRef.current.visitors.has(selectedId)) {
+            e.preventDefault();
+            residentKeysRef.current.openDetail(selectedId);
+            return;
+          }
           if (layout === "board" && !boardOpen) {
             e.preventDefault();
             setBoardOpen(true);
@@ -3341,7 +4382,7 @@ export function App(): React.JSX.Element {
       // The decision is pure and lives in lib/ because nothing in test/ can dispatch a
       // keydown into this handler; see that module's comment.
       if (chord === bindings.conversation) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         const reveal = conversationReveal({
           layout,
           hasSelection: sel != null,
@@ -3359,7 +4400,7 @@ export function App(): React.JSX.Element {
       // open is replayed by `registerFind` when that panel mounts. A transcript already
       // mounted takes the direct path and opens on this keystroke.
       if (chord === bindings.findInConversation) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel) return;
         e.preventDefault();
         const mounted = findHandles.current.get(sel.id);
@@ -3385,7 +4426,7 @@ export function App(): React.JSX.Element {
         return;
       }
       if (chord === bindings.files) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel?.cwd) return;
         const detailOpen = layout === "console" || (layout === "board" && boardOpen);
         if (!detailOpen) return;
@@ -3396,7 +4437,7 @@ export function App(): React.JSX.Element {
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
       // workflow ladder.
       if (chord === bindings.sessionScouts) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel) return;
         e.preventDefault();
         if (layout === "board") setBoardOpen(true);
@@ -3404,7 +4445,7 @@ export function App(): React.JSX.Element {
         return;
       }
       if (chord === bindings.sessionWorkflows) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel) return;
         e.preventDefault();
         // The board's overview shows tiles, not the detail that owns the tab, so drill in
@@ -3414,7 +4455,7 @@ export function App(): React.JSX.Element {
         return;
       }
       if (chord === bindings.filePicker) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel?.cwd) return;
         e.preventDefault();
         files.ensure(sel.id);
@@ -3423,7 +4464,7 @@ export function App(): React.JSX.Element {
       }
       if (chord === bindings.rename) {
         if (!selectedId) return;
-        const sel = visible.find((s) => s.id === selectedId);
+        const sel = selected;
         // Only renameable sessions (a live terminal pane) open the editor.
         if (!sel || !canRenameSession(sel)) return;
         e.preventDefault();
@@ -3435,28 +4476,32 @@ export function App(): React.JSX.Element {
       // ResetModal. Needs a session with a working dir; without one we leave the chord
       // alone, so the default Ctrl+R still falls through to a harmless browser reload.
       if (chord === bindings.reset) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const sel = selected;
         if (!sel?.cwd) return;
         e.preventDefault();
         setResetSessionId(sel.id);
         return;
       }
-      // The review queue. The same click the attention-toned badge on the card performs,
-      // and deliberately the same TARGET rule: the selected session when it is the one
-      // asking, otherwise the first session in fleet order that is. Unclaimed - no
-      // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
-      // fleet stays the browser's.
+      // Session and resident shortcuts when the inbox entry point does not apply.
       if (chord === bindings.review) {
-        const target = reviewShortcutTarget(visible, selectedId);
+        const keys = residentKeysRef.current;
+        const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
+        const target = reviewChordTarget(visible.map(mark), selectedId, keys.drawerAsking.map(mark), keys.detailId);
         if (!target) return;
         e.preventDefault();
-        if (target.refocus) focusSession(target.sessionId);
+        if (target.kind === "resident" && target.opens === "conversation") {
+          if (target.sessionId !== keys.detailId) keys.openDetail(target.sessionId);
+          requestComposerFocus(target.sessionId);
+          return;
+        }
+        if (target.kind === "resident") setResidentDrawerSelected(target.sessionId);
+        else if (target.refocus) focusSession(target.sessionId);
         setReviewSessionId(target.sessionId);
         return;
       }
       const launcher = LAUNCHER_ACTIONS.find(([id]) => chord === bindings[id]);
       if (launcher) {
-        const sel = selectedId ? visible.find((session) => session.id === selectedId) : null;
+        const sel = selected;
         if (!sel) return;
         e.preventDefault();
         const run = launcher[1];
@@ -3557,7 +4602,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -3737,6 +4782,7 @@ export function App(): React.JSX.Element {
         )
         : (
           <LibraryPage
+            filter={filter}
             workflowSummaries={workflowSummaries}
             personas={personas}
             foremanSummary={{
@@ -3764,6 +4810,14 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <FeatureFlagsContext.Provider value={featureFlags}>
+      <FleetPauseContext.Provider value={fleetPause}>
+      <HeldSessionsContext.Provider value={heldIds}>
+      <PausedResidentsContext.Provider value={pausedResidents}>
+      <ResidentNamesContext.Provider value={residentRuns}>
+      <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
+      <LaunchFailureProvider value={launchFailureControls}>
+      <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -3771,213 +4825,79 @@ export function App(): React.JSX.Element {
       >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
-        <header className="topbar" ref={topbarRef}>
-          <div className="brand">
-            <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
-            <h1>Mission Control</h1>
-          </div>
-          {/* The three primary pages as one control: sessions, reusable authoring, and run
-              history. Each segment has its own direct chord, so its label and keycap keep
-              the same meaning from every page. `aria-current` rather than `aria-pressed`:
-              these are navigation, and only one of them is where you are. */}
-          <nav className="page-seg" aria-label="Pages">
-            {PAGE_SEGMENTS.map(({ id, action, label, glyph, hint }) => {
-              const current = route.page === id;
-              const chord = formatChord(bindings[action]);
-              return (
-                <Tooltip
-                  key={id}
-                  label={chord ? `${hint} (${chord})` : hint}
-                >
-                  <button
-                    className={`page-seg-btn${current ? " is-current" : ""}`}
-                    {...(current ? { "aria-current": "page" as const } : {})}
-                    onClick={() => navigate({ page: id })}
-                  >
-                    <span aria-hidden>{glyph}</span>
-                    <span className="tb-label">{label}</span>
-                    <Keycap action={action} />
-                  </button>
-                </Tooltip>
-              );
-            })}
-          </nav>
-          {/* A <label>, not a <div>: at narrow widths the input collapses to zero and the
-              box is just its ⌕, so the click that opens it lands on the glyph rather than
-              on the field. An implicit label makes that click focus the input, which is
-              what makes the collapse a control instead of a dead icon. */}
-          <label className="filter-box">
-            <span className="filter-icon" aria-hidden>
-              ⌕
-            </span>
-            <input
-              ref={filterRef}
-              className="filter-input"
-              type="text"
-              placeholder={`Filter (${formatChord(bindings.filter)})`}
-              aria-label="Filter sessions by title, status, agent, or PR number"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  if (filter) setFilter("");
-                  else e.currentTarget.blur();
-                }
-              }}
-            />
-            {filter && (
-              <Tooltip label="Clear the filter">
-                <button
-                  className="filter-clear"
-                  aria-label="Clear filter"
-                  onClick={() => {
-                    setFilter("");
-                    filterRef.current?.focus();
-                  }}
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            )}
-          </label>
-          <FleetPulse
-            connected={connected}
-            keepAwake={keepAwakeStatus}
-            sessions={sessions.length}
-            attention={counts.attention}
-            working={counts.working}
-            inbox={attention.total}
-            onOpenInbox={() => setInboxOpen(true)}
-          />
-          {launcherFocusError && (
-            <span className="launch-flash is-error" role="status">
-              {launcherFocusError}
-            </span>
-          )}
-          {/* A READOUT, so it sits with the pulse rather than inside the action cluster
-              below - which is three ranked groups of CONTROLS, and a figure dropped into
-              them would break the rank it teaches. The bar's whole right-hand side is
-              this phase's; the page segment arriving on the left is another's. */}
-          <SpendChip
-            fleet={fleetCost}
-            view={cost.status?.config.view ?? "usd"}
-            onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
-          />
-          {/* Twelve peers at one weight is what made this bar unreadable, so the
-              cluster is THREE groups with a rank, not one rhythm: destinations you
-              navigate to, the two controls that act on the fleet (Foreman's posture and
-              the primary Dispatch), and the glyph tools. The groups sit at 16px from each
-              other and 8px within, which is what lets the eye find four things instead of
-              counting twelve. `live` is no longer stranded past the end of it - it moved
-              into the pulse, where the rest of the status lives.
-
-              Each degradable label is a `.tb-label`: at narrow container widths it goes
-              visually-hidden rather than `display: none`, so the button keeps its
-              accessible name and only its glyph is drawn. Dispatch has no `.tb-label` -
-              the one control you would hunt for keeps its word at every width. */}
-          <div className="topbar-actions">
-            <div className="tb-group">
-              <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
-                <button
-                  className="ghost-btn missions-btn"
-                  onClick={openMissions}
-                  aria-label={
-                    scheduleAttentionCount > 0
-                      ? `Recurring missions - ${scheduleAttentionCount} need attention`
-                      : "Recurring missions"
-                  }
-                >
-                  <span aria-hidden>◷</span> <span className="tb-label">Missions</span>
-                  {scheduleAttentionCount > 0 && (
-                    <span className="ghost-badge">{scheduleAttentionCount}</span>
-                  )}
-                </button>
-              </Tooltip>
-            </div>
-            <div className="tb-group">
-              <ForemanBar
-                state={foreman}
-                openRequest={foremanOpenRequest}
-                onOpenModels={() => navigate({ page: "settings", category: "models" })}
-                onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
-              />
-              <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
-                <button className="dispatch-btn" onClick={openDispatch} ref={dispatchTourRef}>
-                  {/* The keycap REPLACES the decorative glyph rather than sitting beside
-                      it: the default chord is "+", so drawing both put a ＋ on each end of
-                      one word and read as a rendering fault. Any other chord takes the
-                      same slot, which is the one place on this button an operator is
-                      already looking. */}
-                  {keybindingHints ? <Keycap action="dispatch" /> : <span aria-hidden>＋</span>}
-                  Dispatch
-                </button>
-              </Tooltip>
-            </div>
-            <div className="tb-group tb-tools">
-              {/* Glyph-only, like its two peers, and so it adds the same ~30px at every rung
-                  rather than a word that has to be shed. The accessible name is the same
-                  phrase the palette row uses, at every width, because this button is the
-                  one an unhappy person hunts for and it must not go quiet. */}
-              <Tooltip label="Report product feedback - file a public GitHub issue about Mission Control">
-                <button
-                  className="ghost-btn glyph-btn feedback-btn"
-                  onClick={openFeedback}
-                  aria-label="Report product feedback"
-                >
-                  <span aria-hidden>☺</span>
-                </button>
-              </Tooltip>
-              <Tooltip
-                label={
-                  route.page === "settings"
-                    ? "Return to the fleet of running sessions"
-                    : gearPhrase
-                      ? `Settings (⌘,) - ${gearPhrase}`
-                      : "Settings (⌘,)"
-                }
-              >
-                <button
-                  ref={settingsGearTourRef}
-                  className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
-                  onClick={() =>
-                    navigate(
-                      route.page === "settings"
-                        ? { page: "fleet" }
-                        : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
-                    )
-                  }
-                  // The label changes with what the click will do, the way the Workflows
-                  // button's does. No `aria-pressed` beside it: a toggle button that
-                  // renames itself and reports a pressed state announces the same fact
-                  // twice, and the second telling contradicts the first ("Return to Fleet,
-                  // pressed"). The worst-status phrase rides the label so the dot's meaning
-                  // is not carried by colour alone.
-                  aria-label={
-                    route.page === "settings"
-                      ? "Return to Fleet"
-                      : gearPhrase
-                        ? `Settings - ${gearPhrase}`
-                        : "Settings"
-                  }
-                >
-                  <span aria-hidden>⚙</span>
-                  {/* The gear inherits the worst rail dot, so a subsystem needing attention
-                      is visible without opening Settings. Purely visual - the phrase above
-                      carries it to assistive tech. */}
-                  {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
-                </button>
-              </Tooltip>
-              <AlertBar
-                settings={alertSettings}
-                update={updateAlerts}
-                away={away}
-                setAway={setAway}
-                buffered={buffered}
-              />
-            </div>
-          </div>
-        </header>
+        <Topbar
+          barRef={topbarRef}
+          layout={topbarLayout}
+          page={route.page}
+          onNavigatePage={(page) => navigate({ page })}
+          filter={filter}
+          onFilterChange={setFilter}
+          filterRef={filterRef}
+          connected={connected}
+          keepAwake={keepAwakeStatus}
+          sessions={sessions.length}
+          attention={counts.attention}
+          working={counts.working}
+          inbox={attention.total}
+          snoozed={snoozed.length}
+          toRead={attention.toRead}
+          inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
+          onOpenInbox={() => setInbox({ focusSessionId: null })}
+          didNotStart={launchFailureGroups.length}
+          onShowDidNotStart={() => {
+            const first = launchFailureGroups[0];
+            if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
+          lostTasks={lostTaskCount}
+          onOpenLostTasks={() => {
+            // Sitrep is a modal over the fleet, so it opens from any page without leaving it.
+            closeLineDrawer();
+            setReportOpen(true);
+          }}
+          launcherFocusError={launcherFocusError}
+          fleetCost={fleetCost}
+          costView={cost.status?.config.view ?? "usd"}
+          onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
+          scheduleAttentionCount={scheduleAttentionCount}
+          onOpenMissions={openMissions}
+          foreman={foreman}
+          foremanOpenRequest={foremanOpenRequest}
+          onOpenModels={() => navigate({ page: "settings", category: "models" })}
+          onOpenForemanSettings={() => navigate({ page: "settings", category: "foreman" })}
+          residents={{
+            runs: residentRuns,
+            profiles: residentProfiles,
+            sessions,
+            openRequest: residentsDockRequest,
+            onOpenSession: openSessionOnFleet,
+            onOpenLaunch: openResidentLaunch,
+            onManage: () => navigate({ page: "residents" }),
+            launcher: residentLauncher,
+            buttonTourRef: residentsButtonTourRef,
+            // Drawer placement: the same button opens the drawer, and the dock stays shut.
+            ...(residentsInDrawer
+              ? { onToggleDrawer: toggleResidentDrawer, drawerOpen: residentDrawerShown }
+              : {}),
+          }}
+          onOpenDispatch={openDispatch}
+          dispatchRef={dispatchTourRef}
+          onOpenFeedback={openFeedback}
+          gearDot={gearDot}
+          gearPhrase={gearPhrase}
+          onGear={() =>
+            navigate(
+              route.page === "settings"
+                ? { page: "fleet" }
+                : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+            )
+          }
+          gearRef={settingsGearTourRef}
+          alertSettings={alertSettings}
+          updateAlerts={updateAlerts}
+          away={away}
+          setAway={setAway}
+          buffered={buffered}
+        />
 
         <UpdateBanner
           snapshot={desktopUpdates.snapshot}
@@ -3996,6 +4916,8 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        <FleetPauseBanner />
+        <StorageBanner health={storageHealth} />
         <OrganizationTelemetryNotice
           notice={settingsStatus?.telemetry?.organizationNotice ?? null}
           onDismiss={async () => {
@@ -4099,6 +5021,7 @@ export function App(): React.JSX.Element {
                     filters,
                   })}
                   onOpenSession={openSessionOnFleet}
+                  isOverlayOpen={isOverlayOpen}
                   // The worklist's "Open file" on a change that cites one, through the same
                   // reveal the diff's "Open in Files" uses, so one path opens one way.
                   onOpenSessionPath={openSessionPath}
@@ -4152,6 +5075,27 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          residents={route.page === "residents" ? (
+            <ResidentsPage
+              sessions={sessions}
+              runs={residentRuns}
+              profiles={residentProfiles}
+              personas={personas}
+              selectedId={route.profileId ?? null}
+              creating={route.creating === true}
+              skillSources={route.skillSources === true}
+              onSkillSources={() => navigate({ page: "residents", skillSources: true })}
+              mcpServers={route.mcpServers === true}
+              onMcpServers={() => navigate({ page: "residents", mcpServers: true })}
+              onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onCreate={() => navigate({ page: "residents", creating: true })}
+              // Ungated: the page itself just settled the draft (saved, archived, discarded).
+              onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onDirtyChange={setWorkflowDirty}
+              onLaunch={(profile) => openResidentLaunch(profile.id)}
+              onCreatePersona={() => navigate({ page: "library", shelf: "personas", creating: true })}
+            />
+          ) : null}
           scouts={
             // Mounted only when the route IS Scouts, like every other slot, so the archive
             // list and detail fetches never run while somebody is on the fleet. The page
@@ -4177,6 +5121,9 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              featureFlagsSettings={featureFlagsSettings}
+              shapingSettings={shapingSettings}
+              voice={voice}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -4197,6 +5144,8 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              storageHealth={storageHealth}
+              storageConfigRevision={storageConfigRevision}
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
@@ -4222,12 +5171,26 @@ export function App(): React.JSX.Element {
             pull requests that shipped this week, and the strip is where that is said. */}
         <LineStrip
           summary={lineSummary}
-          density={lineDensity}
+          // Switched off draws nothing - except under the See work tour, whose first stop
+          // spotlights this strip and would otherwise point at nothing. It borrows the
+          // condensed row for the length of the tour and writes no preference.
+          density={lineHidden && seeWorkRun ? "condensed" : lineChoice({ lineDensity, lineHidden })}
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}
-          onDensity={setLineDensity}
+          // No caret on a strip the tour borrowed while the Line is off: folding it would send
+          // a density, which the daemon reads as switching the Line back on.
+          onDensity={lineHidden ? undefined : setLineDensity}
         />
+
+        {/* A Console with nothing to arrange has no rail, so the stages the rail would carry
+            sit where the strip would have been. An empty fleet still has a backlog, and a
+            filter that matches no session still leaves the queue worth opening. */}
+        {lineDock && !layoutHasContent && (
+          <div className="line-dock-loose">
+            <LineStageDock {...lineDock} />
+          </div>
+        )}
 
         {/* A dispatched task with no session now renders inside the fleet, at the top of the
             Working group where its real row will land. Both layouts own that placement through
@@ -4292,6 +5255,7 @@ export function App(): React.JSX.Element {
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             backlogTrust={backlogTrust}
             onManageTrust={openForemanTrust}
+            stackShipping={settingsStatus?.shipping}
             onClose={closeLineDrawer}
             onEditTask={openTaskEditor}
             onOpenSitrep={() => {
@@ -4324,11 +5288,49 @@ export function App(): React.JSX.Element {
             items leaves the board with something to arrange and Console with none.
             Reading `visible` alone here is what hid a task named "P5: Ghostty terminal
             emulator adapter" the moment you typed "ghostty". */}
-        {layoutHasContent && (
-          <>
-            {layout === "console" && <ConsoleView {...viewProps} />}
-            {layout === "board" && <BoardView {...viewProps} />}
-          </>
+        {(() => {
+          const layoutView = layoutHasContent
+            ? layout === "console"
+              ? <ConsoleView {...viewProps} lineDock={lineDock} />
+              : <BoardView {...viewProps} />
+            : null;
+          // Open, the drawer is a column beside the layout, so the Board or Console narrows
+          // instead of being covered. Otherwise the layout is exactly as it always was.
+          if (!residentDrawerShown) return layoutView;
+          return (
+            <div className="residents-pinned-row">
+              {layoutView ?? <div className="residents-pinned-spacer" />}
+              <ResidentsDrawer
+                entries={visibleResidentEntries}
+                live={residentEntries.length}
+                loopFeedback={residentLoopFeedback}
+                onLoopFeedbackChange={updateResidentLoopFeedback}
+                profiles={residentProfiles}
+                pinned={residentDrawerPinned}
+                selectedId={residentDrawerSelected}
+                onSelect={setResidentDrawerSelected}
+                onOpen={openResidentDetail}
+                onClose={closeResidentDrawer}
+                onPinnedChange={setResidentDrawerPinned}
+                launcher={residentLauncher}
+                onOpenLaunch={openResidentLaunch}
+                onManage={() => navigate({ page: "residents" })}
+                focusRequest={residentCardFocus}
+                onFocusRequestHandled={() => setResidentCardFocus(null)}
+                reviews={pendingReviews}
+                onOpenReview={openResidentReview}
+              />
+            </div>
+          );
+        })()}
+        {/* The edge tab: the drawer's handle on the window's right edge while it is closed. */}
+        {residentsInDrawer && !residentDrawerShown && (
+          <ResidentsEdgeTab
+            live={residentEntries.length}
+            needsYou={residentEntries.some(residentEntryAmber)}
+            working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
+            onOpen={() => showResidentDrawer()}
+          />
         )}
 
         {filesSession && (
@@ -4369,18 +5371,6 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {completeSession && (
-          <CompleteModal
-            session={completeSession}
-            tasks={tasks}
-            tourOutcome={
-              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
-            }
-            onCompleted={() => onKilled(completeSession.id)}
-            onClose={closeComplete}
-          />
-        )}
-
         {killSession && (
           <KillModal
             session={killSession}
@@ -4410,8 +5400,10 @@ export function App(): React.JSX.Element {
             asked for exactly that. `layoutHasContent` counts these tasks so the layout holding
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
+          !(residentDrawerShown && residentEntries.length > 0) &&
           (layout !== "board" || restoringSessions.length === 0) &&
-          dispatchingTasks.length === 0 && (
+          dispatchingTasks.length === 0 &&
+          failedLaunchTiles === 0 && (
           hasSnapshot ? (
             <div className="empty">
               <p className="empty-title">No agent sessions detected</p>
@@ -4445,10 +5437,8 @@ export function App(): React.JSX.Element {
           )
         )}
 
-        {/* Only when the layout drew nothing - on the board a filter that matched only
-            backlog items has already rendered them, and telling the operator nothing
-            matched while the match is on screen is the bug this replaced. */}
-        {filterableSessionCount > 0 && !layoutHasContent && (
+        {/* Backlog and drawer matches also count as results. */}
+        {filterableSessionCount > 0 && !layoutHasContent && !drawerHasMatches && (
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
@@ -4468,6 +5458,23 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* In the slot every page shares: Restart on new profile offers it from the
+                  Residents page and the dock as well as the fleet. */}
+              {completeSession && (
+                <CompleteModal
+                  session={completeSession}
+                  tasks={tasks}
+                  tourOutcome={
+                    completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+                  }
+                  lead={restartPromptSessionId === completeSession.id
+                    ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
+                    : undefined}
+                  resident={completeResident}
+                  onCompleted={() => onKilled(completeSession.id)}
+                  onClose={closeComplete}
+                />
+              )}
               {/* The everything-palette lives in the slot every page shares, because it
                   indexes every page: it opens over the fleet, the Library, a run reader and
                   Settings alike, and a row's navigation must not unmount the surface that
@@ -4480,7 +5487,7 @@ export function App(): React.JSX.Element {
               />
 
               {tourPickerOpen && (
-                <TourPicker entries={catalog} enabled={showToursOnStartup}
+                <TourPicker entries={catalog} featuredId={tourPickerFeatured} enabled={showToursOnStartup}
                   hydrated={tourPreferenceHydrated} saving={tourPreferenceSaving}
                   saveError={tourPreferenceError} onSave={saveTourPreference}
                   onStart={startPickerTour} onClose={closeTourPicker} />
@@ -4493,24 +5500,47 @@ export function App(): React.JSX.Element {
                 </OverlayRegistration>
               )}
 
-              {inboxOpen && (
+              {inbox && (
                 <AttentionInbox
                   fold={attention}
-                  onClose={() => setInboxOpen(false)}
+                  focusSessionId={inbox.focusSessionId}
+                  snoozed={snoozed}
+                  onDismiss={attentionDismissals.dismiss}
+                  onClose={() => setInbox(null)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onReplyBox={noteInboxReplyBox}
+                  reports={reportControls}
+                  held={attentionDismissals.dismissed === null}
                 />
               )}
+              {/* Open report: an agent report's attached document, from its stored copy. Opened from
+                  an inbox card or a conversation entry, so it sits over either. */}
+              {documentReport && (
+                <ReportDocumentReader report={documentReport} onClose={() => setDocumentReport(null)} />
+              )}
 
-              {modalSession && modalReviews.length > 0 && (
+              {modalSession && (modalReviews.length > 0 || modalDialog) && (
                 <ReviewModal
                   session={modalSession}
                   reviews={modalReviews}
+                  dialog={modalDialog}
                   onClose={() => {
                     delete document.documentElement.dataset.mcTourReview;
                     setReviewSessionId(null);
                   }}
+                  // "Chat about it": the conversation is the next stop, so close the modal even
+                  // with other reviews still pending, and land in the session's message box.
+                  onMovedToChat={(sessionId) => {
+                    delete document.documentElement.dataset.mcTourReview;
+                    setReviewSessionId(null);
+                    focusSession(sessionId);
+                    requestComposerFocus(sessionId);
+                  }}
+                  files={files}
+                  // The review stays pending; "to review" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
 
@@ -4522,6 +5552,7 @@ export function App(): React.JSX.Element {
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 harnessesRevision={harnessesRevision}
+                stackingDefault={settingsStatus?.shipping.stacking}
                 pipelinesRevision={
                   settingsStatus?.pipelines.observedRepoKeys
                     ? JSON.stringify({
@@ -4533,7 +5564,11 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
+                onOpenEnvironmentFix={openEnvironmentFix}
                 onEnsembleLaunched={openEnsembleRun}
+                residentProfiles={residentProfiles}
+                onEditResidentProfile={(profileId) =>
+                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
               />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
@@ -4632,6 +5667,8 @@ export function App(): React.JSX.Element {
                 workflows={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
+                workflowBindingBySession={workflowBindingBySession}
+                workflowRunsBySession={workflowRunsBySession}
                 onClose={() => setWorkflowBindingTarget(null)}
                 onRun={openWorkflowRun}
               />
@@ -4647,7 +5684,7 @@ export function App(): React.JSX.Element {
             request={{
               title: "Leave with unsaved changes",
               body:
-                "The workflow or Persona open in the editor has changes that have not been "
+                "The workflow, Persona or resident profile open in the editor has changes that have not been "
                 + "saved. Leaving this page discards them.",
               confirmLabel: "Discard and leave",
               confirmHint: "Throw the unsaved edits away and go to the page you asked for",
@@ -4657,32 +5694,30 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
+        {reportingLaunchFailure && (
+          <ReportLaunchFailureDialog
+            task={reportingLaunchFailure}
+            onClose={() => setReportingLaunchFailure(null)}
+          />
+        )}
+        <LaunchFailureToasts
+          tasks={tasks}
+          ready={hasSnapshot}
+          onShow={showLaunchFailure}
+          onReport={setReportingLaunchFailure}
+        />
       </div>
       </TourTargetHost>
+      </ResidentRestartPromptContext.Provider>
+      </LaunchFailureProvider>
+      </InboxReplyBoxesContext.Provider>
+      </ResidentNamesContext.Provider>
+      </PausedResidentsContext.Provider>
+      </HeldSessionsContext.Provider>
+      </FleetPauseContext.Provider>
+      </FeatureFlagsContext.Provider>
     </OverlayHost>
   );
-}
-
-/** The restoring-row counterpart of `matchesSessionFilter`, with its only truthful state label. */
-function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
-  const haystack = `${session.name} restoring ${session.agent ?? ""}`.toLowerCase();
-  return haystack.includes(q);
-}
-
-/**
- * True when a backlog task matches the nav-bar filter - the task-shaped counterpart of
- * `matchesSessionFilter`, matching the same three core things a session does (title, status, agent)
- * so one query reads the board across both.
- *
- * `status` is the literal here, not a display label, and that is not the inconsistency
- * it looks like: a backlog task's status IS "backlog", the word already on the column
- * header, whereas a session's raw state lies (see `matchesSessionFilter`). Labels join the
- * haystack because they exist to be searched - they are the operator's own tags, and a
- * filter that could not see them would make them decorative.
- */
-function matchesTaskFilter(t: Task, q: string): boolean {
-  const haystack = `${t.title} ${t.status} ${t.agent} ${t.labels.join(" ")}`.toLowerCase();
-  return haystack.includes(q);
 }
 
 /** A launch failure can be terminal, or safely returned to Backlog with its reason. */
@@ -4695,144 +5730,14 @@ function taskLaunchStopped(task: Task | null): boolean {
   );
 }
 
-/**
- * One segment of the fleet pulse: a tone dot, a figure, and a word.
- *
- * The word is a `.tb-label`, so the narrow ladder can take it away and leave a dot and a
- * number - which is why every segment carries a Tooltip whether or not it is clickable.
- * Tooltip always renders its label into a hidden `aria-describedby` node, so the meaning
- * survives the collapse for a screen reader as well as for a pointer.
- */
-function PulseStat({
-  n,
-  label,
-  tip,
-  tone,
-  onClick,
-}: {
-  n: number;
-  label: string;
-  tip: string;
-  tone?: Tone;
-  onClick?: () => void;
-}): React.JSX.Element {
-  const cls = `pulse-seg${tone ? ` pulse-${tone}` : ""}`;
-  const body = (
-    <>
-      <span className="pulse-dot" aria-hidden />
-      <span className="pulse-n">{n}</span>
-      <span className="tb-label">{label}</span>
-    </>
-  );
-  return (
-    <Tooltip label={tip}>
-      {onClick ? (
-        <button type="button" className={`${cls} pulse-btn`} onClick={onClick}>
-          {body}
-        </button>
-      ) : (
-        <div className={cls}>{body}</div>
-      )}
-    </Tooltip>
-  );
-}
-
-/**
- * The fleet's state as ONE readout.
- *
- * This was four separately-bordered pills plus a `live` indicator stranded on the far side
- * of the action cluster - five bordered boxes for one idea, at the same visual weight as
- * the seven buttons beside them, and the widest thing in the bar. One container with
- * hairline-separated segments says the same in roughly two thirds the width and one
- * border, which is most of what buys the single row at half screen.
- *
- * The connection state leads the readout rather than trailing the actions, because that is
- * what it qualifies: every figure to its right came over the stream, so when the stream is
- * down they are stale and `.is-down` dims them to say so. That is also why the down state
- * keeps its word while the counts give theirs up on the narrow ladder - a lone red dot is
- * the one thing here you cannot afford to have to hover.
- */
-function FleetPulse({
-  connected,
-  keepAwake,
-  sessions,
-  attention,
-  working,
-  inbox,
-  onOpenInbox,
-}: {
-  connected: boolean;
-  /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
-  keepAwake: KeepAwakeStatus | null;
-  sessions: number;
-  attention: number;
-  working: number;
-  /**
-   * How many answers the operator owes - the attention fold's total, not a review count.
-   *
-   * A separate segment from `attention`, which counts SESSIONS in an attention tone. The two
-   * are different UNITS of one set, not different sets: `attention` is how many agents are
-   * blocked, `inbox` is how many replies it takes to unblock them, so one session holding
-   * three questions reads `1 need you` beside `3 to answer`. It reads "to answer" rather than
-   * borrowing "need you" because two segments carrying the same word in one readout is a
-   * figure nobody can attribute.
-   *
-   * `inbox >= attention` always, and `attention-pill-invariant.test.ts` holds the fold to it.
-   * The reverse used to be reachable - a session parked on a permission prompt, or one whose
-   * `awaiting_input` came from a hook that files no review, counted in `attention` and
-   * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
-   */
-  inbox: number;
-  onOpenInbox: () => void;
-}): React.JSX.Element {
-  return (
-    <div className={`pulse${connected ? "" : " is-down"}`}>
-      {/* The connection segment, now the Keep Awake control. It keeps the leading
-          position and the live/reconnecting word because the connection fact still
-          qualifies every figure to its right; the dropdown it opens is the one place
-          host power state is controlled from. */}
-      <KeepAwakeControl connected={connected} status={keepAwake} />
-      <PulseStat
-        n={sessions}
-        label={sessions === 1 ? "session" : "sessions"}
-        tip={`${sessions} session${sessions === 1 ? "" : "s"} on the fleet`}
-      />
-      {attention > 0 && (
-        <PulseStat
-          n={attention}
-          label="need you"
-          tone="attention"
-          tip={`${attention} session${attention === 1 ? " is" : "s are"} waiting on you`}
-        />
-      )}
-      {working > 0 && (
-        <PulseStat
-          n={working}
-          label="working"
-          tone="working"
-          tip={`${working} session${working === 1 ? " is" : "s are"} working`}
-        />
-      )}
-      {inbox > 0 && (
-        <PulseStat
-          n={inbox}
-          label="to answer"
-          tone="attention"
-          onClick={onOpenInbox}
-          tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
-        />
-      )}
-    </div>
-  );
-}
-
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;
   let working = 0;
   for (const s of sessions) {
     const tone = stateDisplay(s).tone;
     if (tone === "attention") attention++;
-    else if (tone === "working") working++;
+    // A frozen agent keeps its column but is not working; the title bar's count says so.
+    else if (tone === "working" && !isFrozen(s)) working++;
   }
   return { attention, working };
 }

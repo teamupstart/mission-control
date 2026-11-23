@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   symlinkSync,
   unlinkSync,
@@ -30,7 +31,7 @@ import {
 import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
-import type { RunResult } from "../src/server/util/exec.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import {
   provisionWorktree,
@@ -106,7 +107,7 @@ test("maintenance reclaims domain leases even when no native pool exists", async
 });
 
 test("worktree config defaults on, is bounded, and merges repository patches", () => {
-  assert.deepEqual(getWorktreesConfig(), { enabled: true, maxSlots: 16, repositories: {} });
+  assert.deepEqual(getWorktreesConfig(), { enabled: true, maxSlots: 16, repositories: {}, taskRetentionDays: 30 });
   assert.throws(() => WorktreesConfigSchema.parse({ maxSlots: 0 }));
   assert.throws(() => WorktreesConfigSchema.parse({ maxSlots: 129 }));
   assert.throws(() =>
@@ -140,11 +141,13 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
     enabled: false,
     maxSlots: 4,
     setupArgv: ["npm", "install"],
+    claim: null,
   });
   assert.deepEqual(resolveWorktreePolicy("/unknown/.git", next), {
     enabled: true,
     maxSlots: 24,
     setupArgv: null,
+    claim: null,
   });
 
   const cleared = setWorktreesConfig(
@@ -153,6 +156,87 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
     }),
   );
   assert.deepEqual(cleared.repositories["/one/.git"], { enabled: false, maxSlots: 4 });
+});
+
+/**
+ * A one-commit repository beside `beside`, on the files ref backend whatever this machine's
+ * git defaults to. `-c init.defaultRefFormat` rather than `--ref-format`, which a git older than
+ * 2.45 rejects. Cases that read a HEAD file, or count inspection's git calls, need the files
+ * backend: reftable keeps only a stub there and inspection correctly asks git instead.
+ */
+function filesBackendRepo(beside: string, name: string): string {
+  const repo = join(beside, "..", name);
+  execFileSync("git", ["-c", "init.defaultRefFormat=files", "init", "-q", "-b", "main", repo], { stdio: "pipe" });
+  writeFileSync(join(repo, "keep.txt"), "base\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
+  return repo;
+}
+
+/** A linked worktree of `clone` at its HEAD, detached, beside the clone. */
+function mkLinkedDetached(clone: string, name: string): string {
+  const path = join(clone, "..", name);
+  gitIn(clone, "worktree", "add", "-q", "--detach", path);
+  return realpathSync(path);
+}
+
+test("inspection reads HEAD, detachment and dirtiness from real git in one status read", async () => {
+  // Files backend: on a machine whose git defaults to reftable, inspection correctly makes a
+  // second call (covered by the reftable test below), which is not what this one counts.
+  const { clone } = repository("mission-native-inspect-");
+  const detached = mkLinkedDetached(filesBackendRepo(clone, "files-backend"), "detached");
+  const calls: string[][] = [];
+  const git = new NativeWorktreeGit(async (bin, args, options) => {
+    calls.push(args);
+    return run(bin, args, options);
+  });
+  const clean = await git.inspect(detached);
+  assert.ok(clean.ok, clean.ok ? "" : clean.reason);
+  assert.deepEqual(
+    { head: clean.value.head, detached: clean.value.detached, dirty: clean.value.dirty },
+    { head: gitIn(detached, "rev-parse", "HEAD"), detached: true, dirty: false },
+  );
+  assert.equal(calls.length, 1, "one git process per inspection");
+
+  // `(detached)` is a legal branch name, and status prints it exactly as it prints a detached
+  // HEAD. A slot on that branch holds a branch, which is what gates its lease.
+  gitIn(detached, "switch", "-q", "-c", "(detached)");
+  writeFileSync(join(detached, "keep.txt"), "changed\n");
+  const named = await git.inspect(detached);
+  assert.ok(named.ok, named.ok ? "" : named.reason);
+  assert.equal(named.value.detached, false);
+  assert.equal(named.value.dirty, true);
+});
+
+/** Whether this git can make a reftable repository (2.45 and later). */
+function supportsReftable(dir: string): boolean {
+  try {
+    execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "main", dir], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("inspection settles detachment from git, not the HEAD file, in a reftable repository", async (t) => {
+  // Reftable writes a fixed stub as HEAD (`ref: refs/heads/.invalid`) whatever HEAD really is,
+  // so the HEAD-file shortcut would read every detached slot as one holding a branch.
+  const { clone } = repository("mission-native-inspect-reftable-");
+  const repo = join(clone, "..", "reftable");
+  if (!supportsReftable(repo)) return t.skip("this git predates reftable");
+  writeFileSync(join(repo, "keep.txt"), "base\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
+  const detached = mkLinkedDetached(repo, "reftable-detached");
+  const git = new NativeWorktreeGit();
+  const inspected = await git.inspect(detached);
+  assert.ok(inspected.ok, inspected.ok ? "" : inspected.reason);
+  assert.equal(inspected.value.detached, true);
+  assert.equal(inspected.value.head, gitIn(detached, "rev-parse", "HEAD"));
+  gitIn(detached, "switch", "-q", "-c", "(detached)");
+  const named = await git.inspect(detached);
+  assert.ok(named.ok, named.ok ? "" : named.reason);
+  assert.equal(named.value.detached, false, "a branch named (detached) is still a branch");
 });
 
 test("native Git operations fail closed when a subprocess outcome is unknown", async () => {
@@ -182,25 +266,107 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     }
   };
 
+  // Each observation read retries once; this proves where a twice-unknown read lands.
+  const noPause = async () => {};
   const listed = await new NativeWorktreeGit(async () =>
-    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`)
+    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`), noPause,
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
-  const inspectSteps: Record<string, RegExp> = {
-    "rev-parse": /git rev-parse HEAD/,
-    status: /git status/,
-    // A detached-HEAD probe that never answered is not "detached". It gates the lease, so
-    // it fails the whole inspection rather than defaulting either way.
-    "symbolic-ref": /git symbolic-ref HEAD/,
-  };
-  for (const [unknownProbe, step] of Object.entries(inspectSteps)) {
-    const inspected = await new NativeWorktreeGit(async (_bin, args) => {
-      if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
-      return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
-    }).inspect(clone);
-    assertUnknown(inspected, step);
+  // Inspection is one `status --porcelain=v2 --branch` read. A read that died, and one that
+  // answered without the header a verdict needs, are both unknown: a HEAD nobody reported is
+  // neither a commit nor "detached". Detachment gates the lease, so it fails the whole
+  // inspection rather than defaulting either way.
+  const header = (oid: string, head: string) => `# branch.oid ${oid}\0# branch.head ${head}\0`;
+  assertUnknown(await new NativeWorktreeGit(async () => unknown(header(sha, "(detached)")), noPause).inspect(clone), /git status/);
+  for (const [stdout, step] of [
+    [`# branch.head (detached)\0`, /HEAD's commit/],
+    [`# branch.oid ${sha}\0`, /whether HEAD is detached/],
+    [header(sha.slice(0, 12), "(detached)"), /full commit id/],
+    [`# branch.oid ${sha}\0# branch.head (detached)`, /complete record/],
+  ] as const) {
+    assertUnknown(await new NativeWorktreeGit(async () => known(stdout), noPause).inspect(clone), step);
   }
+  const unborn = await new NativeWorktreeGit(async () => known(header("(initial)", "main")), noPause).inspect(clone);
+  assert.equal(unborn.ok, false, "an unborn HEAD names no commit to lease");
+  if (!unborn.ok) assert.equal(unborn.outcomeUnknown, false);
+  // A real detached linked worktree, because a `(detached)` header is confirmed against HEAD - on
+  // the files backend, since these cases read the HEAD file itself.
+  const detachedRepo = filesBackendRepo(clone, "files-backend-detached");
+  const detachedSha = gitIn(detachedRepo, "rev-parse", "HEAD");
+  const detachedTree = mkLinkedDetached(detachedRepo, "mission-native-git-unknown-detached");
+  const answered = await new NativeWorktreeGit(async () =>
+    known(`${header(detachedSha, "(detached)")}? .pipeline/DONE\0`), noPause).inspect(detachedTree);
+  assert.ok(answered.ok);
+  assert.equal(answered.value.head, detachedSha);
+  assert.equal(answered.value.detached, true);
+  // A `.git` that is a symbolic link to the gitfile is a layout git accepts; it is read through.
+  const gitfile = join(detachedTree, ".git");
+  const movedGitfile = join(detachedTree, "..", "detached-gitfile-elsewhere");
+  renameSync(gitfile, movedGitfile);
+  symlinkSync(movedGitfile, gitfile);
+  try {
+    const linked = await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree);
+    assert.ok(linked.ok, linked.ok ? "" : linked.reason);
+    assert.equal(linked.value.detached, true);
+  } finally {
+    unlinkSync(gitfile);
+    renameSync(movedGitfile, gitfile);
+  }
+  // HEAD moving between status and the file read: status saw one commit, the file holds another.
+  // Neither read is trustworthy alone, so the inspection is unknown rather than detached at a
+  // commit the slot no longer stands on.
+  assertUnknown(
+    await new NativeWorktreeGit(async () => known(header("b".repeat(40), "(detached)")), noPause).inspect(detachedTree),
+    /moved during the inspection/,
+  );
+  // `(detached)` is also a legal branch name, so that header is only believed once the
+  // checkout's own HEAD file confirms it. A HEAD file that cannot be read settles nothing:
+  // the inspection is unknown, never "detached", because detachment gates the lease.
+  const privateHead = join(gitIn(detachedTree, "rev-parse", "--absolute-git-dir"), "HEAD");
+  renameSync(privateHead, `${privateHead}.moved`);
+  try {
+    assertUnknown(
+      await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree),
+      /whether HEAD is detached/,
+    );
+  } finally {
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
+  // A symbolic-link HEAD (`core.preferSymlinkRefs`) names a branch by linking to it, and reading
+  // through the link yields a commit - a detached HEAD's shape. Git is asked instead.
+  renameSync(privateHead, `${privateHead}.moved`);
+  const linkTarget = `${privateHead}.target`;
+  writeFileSync(linkTarget, `${detachedSha}\n`);
+  symlinkSync(linkTarget, privateHead);
+  try {
+    const symlinked = await new NativeWorktreeGit(async (_bin, args) =>
+      args.includes("symbolic-ref") ? known("refs/heads/(detached)\n") : known(header(detachedSha, "(detached)")), noPause,
+    ).inspect(detachedTree);
+    assert.ok(symlinked.ok, symlinked.ok ? "" : symlinked.reason);
+    assert.equal(symlinked.value.detached, false, "a symbolic-link HEAD that git calls a branch is a branch");
+  } finally {
+    unlinkSync(privateHead);
+    unlinkSync(linkTarget);
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
+  // Git reads `ref:` followed by any whitespace as a symbolic ref, a tab included, so a HEAD
+  // written that way names the branch - here one called `(detached)` - and is not detached.
+  renameSync(privateHead, `${privateHead}.moved`);
+  writeFileSync(privateHead, "ref:\trefs/heads/(detached)\n");
+  try {
+    const tabbed = await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree);
+    assert.ok(tabbed.ok, tabbed.ok ? "" : tabbed.reason);
+    assert.equal(tabbed.value.detached, false, "`ref:<tab>` is a symbolic ref, so the slot holds a branch");
+  } finally {
+    unlinkSync(privateHead);
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
+  const changed = await new NativeWorktreeGit(async () =>
+    known(`${header(sha, "feature")}1 .M N... 100644 100644 100644 ${sha} ${sha} keep.txt\0`), noPause).inspect(clone);
+  assert.ok(changed.ok);
+  assert.equal(changed.value.detached, false);
+  assert.equal(changed.value.dirty, true, "a tracked change is dirty before any path is considered");
 
   const added = await new NativeWorktreeGit(async () => unknown()).add(
     identity,
@@ -243,16 +409,65 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   assertUnknown(merged, /git merge-base --is-ancestor/);
 });
 
-test("concurrent acquires receive different exact slots and respect capacity", async () => {
+test("concurrent acquires receive different exact slots and respect capacity", async (t) => {
   const { clone, sha } = repository("mission-native-concurrent-");
+  let announceFirstAdd!: () => void;
+  let releaseFirstAdd!: () => void;
+  let announceSecondReservation!: () => void;
+  const firstAddStarted = new Promise<void>((resolve) => { announceFirstAdd = resolve; });
+  const firstAddGate = new Promise<void>((resolve) => { releaseFirstAdd = resolve; });
+  const secondReserved = new Promise<void>((resolve) => { announceSecondReservation = resolve; });
+  let addCalls = 0;
+  let activeAdds = 0;
+  let peakAdds = 0;
+  class ObservedAddGit extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>): Promise<GitResult<void>> {
+      addCalls++;
+      activeAdds++;
+      peakAdds = Math.max(peakAdds, activeAdds);
+      try {
+        if (addCalls === 1) {
+          announceFirstAdd();
+          await firstAddGate;
+        }
+        return await super.add(...args);
+      } finally {
+        activeAdds--;
+      }
+    }
+  }
   const m = manager({
+    git: new ObservedAddGit(),
     resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
   });
-  const results = await Promise.all([
-    acquire(m, clone, sha, "task-1"),
-    acquire(m, clone, sha, "task-2"),
-    acquire(m, clone, sha, "task-3"),
-  ]);
+  const reserveNew = m.store.reserveNew.bind(m.store);
+  t.mock.method(m.store, "reserveNew", (input: Parameters<typeof reserveNew>[0]) => {
+    const slot = reserveNew(input);
+    if (slot && input.ownerKey === "task-2") announceSecondReservation();
+    return slot;
+  });
+  const attempts = [acquire(m, clone, sha, "task-1")];
+  let results: Awaited<ReturnType<typeof acquire>>[];
+  try {
+    await firstAddStarted;
+    attempts.push(acquire(m, clone, sha, "task-2"));
+    await secondReserved;
+    // Reservation is past the filesystem work. Drain its promise continuations through the
+    // slot/add locks while the first add stays held; this is an event-loop turn, not a delay.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(addCalls, 1, "the second same-repository add must wait for the held first add");
+    assert.equal(activeAdds, 1, "the first add is still held at the synchronization point");
+    attempts.push(acquire(m, clone, sha, "task-3"));
+    assert.equal((await attempts[2]!).outcome, "notAcquired", "both reserved slots count toward capacity while Git waits");
+  } finally {
+    // Also drain both acquires after a failed assertion, before the test database is cleared.
+    releaseFirstAdd();
+    results = await Promise.all(attempts);
+  }
+  assert.equal(addCalls, 2, "the waiting add starts after the first is released");
+  // Distinct slot paths still share Git's worktrees metadata. A second add can read
+  // the first registration before its commondir file exists, so creation must serialize.
+  assert.equal(peakAdds, 1, "same-repository Git worktree adds must not overlap");
   const acquired = results.filter((result) => result.outcome === "acquired");
   // The refusals are named in the message, not just counted. This case failed once under a
   // loaded full-suite run with a bare `1 !== 2`, which says nothing about WHY a second slot
@@ -581,6 +796,7 @@ test("an exact active lease can be released after a transient observation quaran
   const held = lease(await acquire(m, clone, sha, "task-quarantined"));
   const quarantined = m.store.quarantine(
     held.slotId,
+    "observation",
     "slot process occupancy is unknown",
     "cwd listing failed: exit 1",
     Date.now(),

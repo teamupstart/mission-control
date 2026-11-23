@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { ENTERPRISE_PACKAGES_FLAG, type RecommendedPackageView } from "@shared/enterprise-packages.ts";
+import { ENVIRONMENT_CHECK_IDS } from "@shared/environment-checks.ts";
 import {
+  ENVIRONMENT_ROW_METADATA,
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
+  SETUP_REPOSITORY_ANCHORS,
+  SETUP_SERVICE_INFO,
   homeRelative,
+  setupFamilyFlagOn,
   setupRowAnchor,
+  type SetupCommandPurpose,
   type SetupDependencyId,
   type SetupFamilyId,
   type SetupRowView,
@@ -13,6 +20,10 @@ import type {
   PipelineInstallerCandidatesResult,
   PipelineProviderId,
 } from "@shared/pipeline.ts";
+import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
+import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { FeatureFlagsContext, useFeatureFlag } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
   resolveEmulatorBackend,
@@ -23,15 +34,18 @@ import {
 } from "@shared/terminal.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
+  api,
   fetchPipelineInstallers,
   openSetupInstaller,
   startSetupService,
   type SetupInstallerLaunchResult,
   type SetupServiceStartResult,
 } from "../lib/api.ts";
-import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
+import { initialTerminalTarget, useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
 import { useTerminalsConfig, type TerminalsConfigState } from "../useTerminalsConfig.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
+import { useRepoIndex } from "../useRepoIndex.ts";
+import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   EMULATOR_GROUPS,
@@ -83,17 +97,25 @@ interface TerminalChoice {
   select(id: TerminalBackendId): void;
 }
 
+/**
+ * The panel's own terminal read, which Re-check refreshes. Every installer picker reads it, so
+ * a Re-check that finds the system default reaches pickers already on screen; a picker mounted
+ * outside the panel falls back to the shared memoized read.
+ */
+const SetupTerminalTargetsContext = createContext<TerminalTargetsState | null>(null);
+
 function useTerminalChoice(): TerminalChoice {
-  const terminals = useTerminalTargets();
-  const [selectedId, setSelectedId] = useState<TerminalBackendId | null>(null);
+  const shared = useContext(SetupTerminalTargetsContext);
+  const own = useTerminalTargets();
+  const terminals = shared ?? own;
+  // Only an operator's pick is stored. The automatic choice is derived from the catalog as it
+  // stands now, so a later read that marks the system default moves an untouched picker to it
+  // instead of leaving it on whatever the first read happened to list first.
+  const [pickedId, setPickedId] = useState<TerminalBackendId | null>(null);
   const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
-  const selected = available.find((target) => target.id === selectedId) ?? available[0] ?? null;
+  const selected = available.find((target) => target.id === pickedId) ?? initialTerminalTarget(available);
 
-  useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
-  }, [selected, selectedId]);
-
-  return { ...terminals, selected, select: setSelectedId };
+  return { ...terminals, selected, select: setPickedId };
 }
 
 function TerminalPicker({
@@ -120,7 +142,7 @@ function TerminalPicker({
             {!choice.targets && <option value="">Checking terminals...</option>}
             {choice.targets?.map((target) => (
               <option key={target.id} value={target.id} disabled={target.unavailable !== null}>
-                {target.label}{target.unavailable ? `: ${target.unavailable}` : ""}
+                {target.label}{target.systemDefault ? " (system default)" : ""}{target.unavailable ? `: ${target.unavailable}` : ""}
               </option>
             ))}
           </select>
@@ -157,14 +179,21 @@ function RemedyNotice({
   );
 }
 
-function LaunchNotice({ result }: { result: SetupInstallerLaunchResult | null }): React.JSX.Element | null {
+function LaunchNotice({
+  result,
+  purpose = "install",
+}: {
+  result: SetupInstallerLaunchResult | null;
+  purpose?: SetupCommandPurpose;
+}): React.JSX.Element | null {
   if (!result) return null;
   const attention = result.outcome === "opened" || result.outcome === "maybe-opening";
+  const what = purpose === "sign-in" ? "sign-in" : "installer";
   return (
     <RemedyNotice
       tone={attention ? "attention" : "error"}
-      detail={result.detail || result.error || "The installer terminal was refused."}
-      hint={attention ? "When the installer finishes, press Re-check." : undefined}
+      detail={result.detail || result.error || `The ${what} terminal was refused.`}
+      hint={attention ? `When the ${what} finishes, press Re-check.` : undefined}
     />
   );
 }
@@ -173,13 +202,15 @@ function RunButton({
   disabled,
   opening,
   onClick,
+  purpose = "install",
 }: {
   disabled: boolean;
   opening: boolean;
   onClick(): void;
+  purpose?: SetupCommandPurpose;
 }): React.JSX.Element {
   return (
-    <Tooltip label="Open this daemon-owned install command in the selected visible terminal">
+    <Tooltip label={`Open this daemon-owned ${purpose === "sign-in" ? "sign-in" : "install"} command in the selected visible terminal`}>
       <button
         type="button"
         className="btn btn-primary"
@@ -195,11 +226,13 @@ function RunButton({
 function CommandRemedy({
   id,
   label,
+  purpose,
   argv,
   note,
 }: {
   id: SetupDependencyId;
   label: string;
+  purpose: SetupCommandPurpose;
   argv: readonly string[];
   note: string;
 }): React.JSX.Element {
@@ -227,9 +260,10 @@ function CommandRemedy({
           disabled={!terminal.selected || opening}
           opening={opening}
           onClick={() => void launch()}
+          purpose={purpose}
         />
       </div>
-      <LaunchNotice result={result} />
+      <LaunchNotice result={result} purpose={purpose} />
     </div>
   );
 }
@@ -255,18 +289,67 @@ function ServiceRemedy({
 }): React.JSX.Element {
   const [starting, setStarting] = useState(false);
   const [result, setResult] = useState<SetupServiceStartResult | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
-  async function start(): Promise<void> {
+  const [installDidNotRegister, setInstallDidNotRegister] = useState(false);
+
+  async function start(): Promise<SetupServiceStartResult> {
     setStarting(true);
+    // A new attempt replaces the whole outcome, including an earlier inline install failure.
     setResult(null);
+    setInstallError(null);
+    setInstallDidNotRegister(false);
     try {
       const next = await startSetupService({ service });
       setResult(next);
       if (next.ok) onRepaired();
+      return next;
     } finally {
       setStarting(false);
     }
   }
+
+  // The trust write needs a server table to edit, and only the integration install writes
+  // one. Offer that install here, where the refusal is read, then finish the trust the
+  // operator asked for - rather than a sentence pointing somewhere else on the page.
+  async function installThenStart(): Promise<void> {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      // Only the install is guarded here, so its failure sentence is never pinned on the
+      // trust retry below, which reports its own outcome through `result`.
+      let installed: { ok: boolean; message: string };
+      try {
+        installed = await window.missionDesktop!.installIntegrations();
+      } catch {
+        setInstallError("Integration install could not finish. Check the app log and retry.");
+        return;
+      }
+      if (!installed.ok) { setInstallError(installed.message); return; }
+      onRepaired();
+      const retried = await start();
+      // The installer preserves an existing entry it does not own (a disabled or custom
+      // `mission-control` table) and still reports success. Offering the same install again
+      // would loop, so say what it did and what is left to fix by hand.
+      if (retried.prerequisite === "mission-integrations") {
+        setInstallDidNotRegister(true);
+        setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. In config.toml, give its [mcp_servers.mission-control] table a command or url and remove enabled = false if it is there, then press Trust again.`);
+      }
+    } catch {
+      // The install already succeeded; only the trust retry can land here.
+      setInstallError("Integrations installed, but the trust request could not finish. Press Trust again.");
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  const needsIntegrations = result?.prerequisite === "mission-integrations";
+  // `request()` resolves a transport failure without an HTTP status: the daemon never
+  // answered, so no file or service is at fault and the per-service hint would mislead.
+  const unreachable = !!result && !result.ok && result.status === undefined;
+  const canInstall = typeof window !== "undefined" && !!window.missionDesktop?.installIntegrations;
+  const busy = starting || installing;
 
   return (
     <div className="setup-remedy-actions">
@@ -275,7 +358,7 @@ function ServiceRemedy({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={starting}
+            disabled={busy}
             onClick={() => void start()}
           >
             {starting ? "Starting..." : label}
@@ -285,10 +368,89 @@ function ServiceRemedy({
       {result && (
         <RemedyNotice
           tone={result.ok ? "attention" : "error"}
-          detail={result.detail || result.error || `${label} did not finish.`}
-          hint={result.ok ? undefined : "Start it yourself in a terminal, then press Re-check."}
+          detail={unreachable
+            ? `Mission Control did not answer the request${result.error ? ` (${result.error})` : ""}.`
+            : result.detail || result.error || `${label} did not finish.`}
+          hint={result.ok || installDidNotRegister ? undefined : unreachable
+            ? `Check that Mission Control is running, then press ${label} again.`
+            : needsIntegrations
+            ? canInstall
+              ? "Install Claude integrations also registers the Mission Control MCP server with Codex, then this retries the trust automatically."
+              : "Open Setup in the Mission Control desktop app and choose Install Claude integrations, which registers the MCP server with Codex too, then retry."
+            : SETUP_SERVICE_INFO[service].retry}
         />
       )}
+      {needsIntegrations && canInstall && !installDidNotRegister && (
+        <div className="setup-run-controls">
+          <Tooltip label="Register Mission Control MCP with Claude Code and Codex using this app's runtime, then retry the trust.">
+            <button type="button" className="btn" disabled={busy} onClick={() => void installThenStart()}>
+              {installing ? "Installing..." : "Install Claude integrations"}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+      {installError && <p role="status" className="settings-error">{installError}</p>}
+    </div>
+  );
+}
+
+/**
+ * Install Mission Control's own Claude integrations with one press, then re-read the machine.
+ *
+ * The desktop shell owns the installer, so a dashboard opened in a plain browser has no button
+ * to offer. It says where the button is instead, and keeps the checkout command copyable for
+ * an operator who runs Mission Control from one.
+ */
+function IntegrationsRemedy({
+  note,
+  fallback,
+  onRepaired,
+}: {
+  note: string;
+  fallback: { argv: readonly string[]; note: string };
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const install = typeof window !== "undefined" ? window.missionDesktop?.installIntegrations : undefined;
+
+  if (!install) {
+    return (
+      <div className="setup-remedy-actions">
+        <p className="setup-remedy-hint">
+          Open Settings &gt; Setup in the Mission Control desktop app and press Install, or run this
+          from a Mission Control checkout:
+        </p>
+        <CopyCommand argv={fallback.argv} note={fallback.note} />
+      </div>
+    );
+  }
+
+  async function run(): Promise<void> {
+    setInstalling(true);
+    setResult(null);
+    try {
+      const next = await install!();
+      setResult(next);
+      // Re-read even after a refusal: a partial install can still have repaired this row.
+      onRepaired();
+    } catch {
+      setResult({ ok: false, message: "The install could not finish. Check the app log and retry." });
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={installing} onClick={() => void run()}>
+            {installing ? "Installing..." : "Install"}
+          </button>
+        </Tooltip>
+      </div>
+      {result && <RemedyNotice tone={result.ok ? "attention" : "error"} detail={result.message} />}
     </div>
   );
 }
@@ -403,8 +565,60 @@ function ProviderInstallerRemedy({
   );
 }
 
+/**
+ * Turn on the preview flags a row names, one `PUT /api/feature-flags` each, the way the Feature
+ * flags panel switches them. Stops at the first refusal and says which flag it was.
+ */
+function FeatureFlagsRemedy({
+  flags,
+  label,
+  note,
+  onRepaired,
+}: {
+  flags: readonly FeatureFlagId[];
+  label: string;
+  note: string;
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function turnOn(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      for (const id of flags) {
+        const result = await api.setFeatureFlags({ kind: "flag", id, enabled: true });
+        if (!result.ok) {
+          // Named by its label, the name Settings > Feature flags shows, so the hint below leads there.
+          const label = FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+          setError(`${label} could not be turned on${result.error ? `: ${result.error}` : "."}`);
+          return;
+        }
+      }
+    } finally {
+      setBusy(false);
+      onRepaired();
+    }
+  }
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void turnOn()}>
+            {busy ? "Turning on..." : label}
+          </button>
+        </Tooltip>
+      </div>
+      {error && <RemedyNotice tone="error" detail={error} hint="Switch it in Settings > Feature flags, then press Re-check." />}
+    </div>
+  );
+}
+
 function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element {
   const remedy = row.remedy;
+  if (remedy.kind === "feature-flags") {
+    return <FeatureFlagsRemedy flags={remedy.flags} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+  }
   if (remedy.kind === "service") {
     return (
       <ServiceRemedy
@@ -415,9 +629,12 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
       />
     );
   }
+  if (remedy.kind === "integrations") {
+    return <IntegrationsRemedy note={remedy.note} fallback={remedy.fallback} onRepaired={onRepaired} />;
+  }
   if (remedy.kind === "command") {
     return row.rowId.source === "dependency"
-      ? <CommandRemedy id={row.rowId.id} label={row.label} argv={remedy.argv} note={remedy.note} />
+      ? <CommandRemedy id={row.rowId.id} label={row.label} purpose={remedy.purpose} argv={remedy.argv} note={remedy.note} />
       : <CopyCommand argv={remedy.argv} note={remedy.note} />;
   }
   if (remedy.kind === "provider-installer") {
@@ -575,6 +792,71 @@ function MultiplexerTerminal({
   );
 }
 
+/** Where the outside-sessions switch is, for a deep link or the settings palette. */
+export const SETUP_EXTERNAL_SESSIONS_ANCHOR = "setup/external-sessions";
+
+/** The warning shown under the outside-sessions setting, always, whether it is on or off. */
+export const EXTERNAL_SESSIONS_WARNING =
+  "Off by default. When on, Mission Control also shows Claude, Codex, and Pi sessions you " +
+  "started yourself in a terminal. This works poorly on some setups: cards can show the wrong " +
+  "state, name, or pane, and sending to them can fail. Sessions Mission Control starts are " +
+  "always shown.";
+
+/**
+ * The Terminals family's one switch that is not about a multiplexer: whether passive discovery
+ * shows sessions Mission Control did not start (`TerminalsConfig.externalSessions`). Workers in
+ * an observed pipeline worktree are shown either way.
+ *
+ * The warning is outside the label and always rendered, so it is read before anyone turns
+ * this on rather than discovered after. Disabled until the config has been read, like the
+ * multiplexer choosers beside it, so the box never shows a guess as the stored value.
+ */
+export function ExternalSessionsSetting({ terminals }: { terminals: TerminalsConfigState }): React.JSX.Element {
+  const on = terminals.config?.externalSessions === true;
+  return (
+    <div className="setup-external-sessions" data-anchor={SETUP_EXTERNAL_SESSIONS_ANCHOR}>
+      <label className={`settings-toggle${on ? " is-on" : ""}`}>
+        <Tooltip label="Also show Claude, Codex, and Pi sessions you started yourself in a terminal">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={terminals.config === null}
+            aria-describedby="setup-external-sessions-warning"
+            onChange={(e) => { void terminals.update({ externalSessions: e.target.checked }); }}
+          />
+        </Tooltip>
+        <span className="settings-toggle-text">
+          <span className="settings-toggle-label">Show sessions started outside Mission Control</span>
+        </span>
+      </label>
+      <p className="settings-warn" id="setup-external-sessions-warning">{EXTERNAL_SESSIONS_WARNING}</p>
+    </div>
+  );
+}
+
+function PackageRecommendations({ packages, home }: { packages: RecommendedPackageView[]; home: string }): React.JSX.Element {
+  return (
+    <section aria-label="Recommended packages">
+      <h4>Recommended packages</h4>
+      {packages.map(({ label, source, description, guide, status }) => (
+        <article className="setup-row" aria-label={label} key={source}>
+          <div className="setup-row-main">
+            <div className="setup-row-title">
+              <strong>{label}</strong>
+              {status && <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>}
+            </div>
+            <code>{source}</code>
+            <p className="setup-impact">{description}</p>
+            {status && "why" in status && <p className="setup-why">{status.why}</p>}
+            {status && "evidence" in status && status.evidence && <Evidence evidence={status.evidence} home={home} />}
+            <a className="setup-link" href={guide} target="_blank" rel="noreferrer">Installation guide for {label}</a>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
 function SetupRow({
   row,
   home,
@@ -587,6 +869,7 @@ function SetupRow({
   aside?: React.JSX.Element | null;
   onRepaired(): void;
 }): React.JSX.Element {
+  const packagesEnabled = useFeatureFlag(ENTERPRISE_PACKAGES_FLAG);
   const status = row.status;
   const satisfied = status.state === "satisfied";
   const main = (
@@ -629,6 +912,7 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
+      {packagesEnabled && row.recommendations && <PackageRecommendations packages={row.recommendations} home={home} />}
       {row.guide && (
         <div className="setup-guide">
           <Tooltip label={row.guide.label}>
@@ -683,8 +967,8 @@ function tally(rows: readonly SetupRowView[]): FamilyTally {
  * answer behind a click - and the Setup banner links straight here precisely when something
  * required is unsatisfied.
  */
-function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
-  const byFamily = SETUP_FAMILY_IDS.map((family) => ({
+function defaultFamily(rows: readonly SetupRowView[], flagOn?: (flag: FeatureFlagId) => boolean): SetupFamilyId {
+  const byFamily = visibleSetupFamilyIds(rows, undefined, flagOn).map((family) => ({
     family,
     tally: tally(rows.filter((row) => row.family === family)),
   }));
@@ -704,10 +988,32 @@ function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
  * so a jump to one has to select that family first, or the page's flash observer waits for
  * an element that will never mount and silently lights nothing.
  */
-export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
-  const named = SETUP_FAMILY_IDS.find((family) => anchor === `setup/family-${family}`);
+export function familyForAnchor(
+  anchor: string,
+  rows: readonly SetupRowView[],
+  /** The resolved flags, so a link to a family behind an off flag (Voice) names nothing. */
+  flagOn?: (flag: FeatureFlagId) => boolean,
+): SetupFamilyId | null {
+  // Only a family the rail draws: a link to one hidden with its integration names nothing.
+  const named = visibleSetupFamilyIds(rows, undefined, flagOn).find((family) => anchor === `setup/family-${family}`);
   if (named) return named;
-  return rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family ?? null;
+  // The Repositories family's directory editor is not a row, but it is only mounted while
+  // that family is selected, so its controls resolve the same way a row anchor does.
+  if ((Object.values(SETUP_REPOSITORY_ANCHORS) as string[]).includes(anchor)) return "repositories";
+  // Likewise the Terminals family's outside-sessions switch, which is not a row either.
+  if (anchor === SETUP_EXTERNAL_SESSIONS_ANCHOR) return "terminals";
+  const listed = rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family;
+  if (listed) return listed;
+  // An environment-check row exists only while its check warns, and the snapshot on screen
+  // may predate the warning that sent the operator here (the dispatch form re-reads the
+  // machine on every open; this panel reads it at startup and on Re-check). Its family is
+  // fixed by the catalog, so the rail moves now and the page's flash waits for the row to
+  // mount once the refreshed snapshot lands, rather than the request being consumed
+  // unresolved against rows that do not carry it yet.
+  const check = ENVIRONMENT_CHECK_IDS.find(
+    (id) => anchor === setupRowAnchor({ source: "environment-check", id }),
+  );
+  return check ? ENVIRONMENT_ROW_METADATA[check].family : null;
 }
 
 /** Which family the rail is showing, and which deep-link request settled it. */
@@ -734,16 +1040,20 @@ export function nextSetupSelection(
   current: SetupSelection,
   input: SetupSelectionInput,
 ): SetupSelection | null {
-  // Nothing to decide from. The request is deliberately left unconsumed: the panel starts
-  // fetching as it mounts, so a link from the command palette or Foreman routinely arrives
-  // before the rows that would resolve it.
-  if (input.rows.length === 0) return null;
-
   const unseen = input.jumpRequestId !== current.seenRequest;
-  // A fresh deep link outranks the default and the operator's last click alike.
+  // A fresh deep link outranks the default and the operator's last click alike. Latched as
+  // soon as it resolves, rows or not: an environment-check anchor resolves from the catalog
+  // before the snapshot lands (`familyForAnchor`), and the page stops handing the jump down
+  // once it has started waiting for the control. Waiting for rows here as well let a slow
+  // first read lose the jump and open the default family instead.
   if (unseen && input.jumpFamily) {
     return { chosen: input.jumpFamily, seenRequest: input.jumpRequestId };
   }
+
+  // Nothing else to decide from. An unresolved request is deliberately left unconsumed: the
+  // panel starts fetching as it mounts, so a link from the command palette or Foreman
+  // routinely arrives before the rows that would resolve it.
+  if (input.rows.length === 0) return null;
 
   // An unresolvable request is consumed rather than waited on, so a link to a row this build
   // does not render cannot pin the rail forever.
@@ -865,8 +1175,20 @@ export function SetupPanel({
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
   // and a new identity every render makes both of them run every render.
-  const rows = state.view?.rows ?? NO_ROWS;
+  // The event stream's flags, so a family behind a preview flag (Voice) appears and leaves the
+  // rail the moment it is switched, in every window.
+  const flags = useContext(FeatureFlagsContext);
+  const flagOn = useCallback((flag: FeatureFlagId) => resolveFeatureFlag(flag, flags), [flags]);
+  // A snapshot read while a family's flag was on still holds its rows after the flag goes off,
+  // until the re-read lands. The live flag wins: those rows leave the rail, the pane and the
+  // verdict's counts at once, so no repair button outlives the feature it repairs.
+  const readRows = state.view?.rows ?? NO_ROWS;
+  const rows = useMemo(() => {
+    const shown = readRows.filter((row) => setupFamilyFlagOn(row.family, flagOn));
+    return shown.length === readRows.length ? readRows : shown;
+  }, [readRows, flagOn]);
   const home = state.view?.home ?? "";
+  const families = useMemo(() => visibleSetupFamilyIds(rows, undefined, flagOn), [rows, flagOn]);
 
   // A remedy that settles in the daemon re-reads the machine itself, so the row it repaired
   // reports the new truth rather than waiting for the operator to press Re-check on a
@@ -884,8 +1206,8 @@ export function SetupPanel({
   // explicit request to look at one thing. Keyed on the request id so the same anchor asked
   // for twice still moves the rail back after the operator has clicked elsewhere.
   const jumpFamily = useMemo(
-    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows) : null),
-    [jumpAnchor, rows],
+    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows, flagOn) : null),
+    [jumpAnchor, rows, flagOn],
   );
 
   // Applied during render rather than only in the effect below, and both are needed.
@@ -896,7 +1218,10 @@ export function SetupPanel({
   // The effect is what makes it STICK: the page clears the jump as soon as it has flashed the
   // control, so a family held only by the live prop would snap back the moment it went away.
   const unseenJump = jumpRequestId !== seenRequest ? jumpFamily : null;
-  const active = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows) : SETUP_FAMILY_IDS[0]);
+  const picked = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows, flagOn) : SETUP_FAMILY_IDS[0]);
+  // A family chosen while its flag was on stops being drawn when the flag goes off; the pane
+  // follows the rail rather than showing a family nothing selects.
+  const active = families.includes(picked) ? picked : families[0] ?? SETUP_FAMILY_IDS[0];
 
   // One effect applying one decision, because the jump and the opening default both write
   // `chosen`: as two effects they fire in the same commit and the loser is decided by
@@ -910,8 +1235,12 @@ export function SetupPanel({
 
   const info = SETUP_FAMILY_INFO[active];
   const activeRows = rows.filter((row) => row.family === active);
+  // Polled only while its family is on screen, like every other Settings reader: the index
+  // walks the filesystem, and nothing else in Setup needs its directory list.
+  const repoIndex = useRepoIndex(active === "repositories");
 
   return (
+    <SetupTerminalTargetsContext.Provider value={terminalTargets}>
     <section className="settings-section setup-panel">
       {/* No standing intro paragraph. It spent the top of the panel restating the question
           ("see what Mission Control can use on this machine") that the verdict now answers
@@ -925,7 +1254,9 @@ export function SetupPanel({
       {state.error && <p className="settings-error">{state.error}</p>}
       <div className="setup-split" ref={dependenciesTourRef}>
         <nav className="setup-rail" aria-label="Setup families">
-          {SETUP_FAMILY_IDS.map((family) => {
+          {/* A family emptied by a hidden integration (Pipelines, while ai-conductor is
+              hidden) is not drawn at all, rather than drawn as a family with nothing in it. */}
+          {families.map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
             const counts = tally(familyRows);
             const label = SETUP_FAMILY_INFO[family].label;
@@ -971,6 +1302,9 @@ export function SetupPanel({
             <h3 id={`setup-family-${active}-title`}>{info.label}</h3>
             <p>{info.description}</p>
           </header>
+          {active === "agents" && flagOn(ENTERPRISE_PACKAGES_FLAG) && state.view?.packageCatalogError && (
+            <p className="settings-error" role="alert">{state.view.packageCatalogError}</p>
+          )}
           {active === "runtime" && (
             <div className="setup-row" aria-label="Serving runtime">
               <div className="setup-row-main">
@@ -1034,8 +1368,15 @@ export function SetupPanel({
                 </div>
               )
             : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}
+          {/* Outside the row list, so it is there before the machine check answers: it is a
+              setting about what the dashboard shows, not a dependency of this machine. */}
+          {active === "terminals" && <ExternalSessionsSetting terminals={terminals} />}
+          {/* Below the row that requires a detected repository, so the check and the list it
+              reads are one screen: an edit here re-reads the machine and the row follows. */}
+          {active === "repositories" && <RepositoriesPanel state={repoIndex} onChanged={onRepaired} />}
         </div>
       </div>
     </section>
+    </SetupTerminalTargetsContext.Provider>
   );
 }

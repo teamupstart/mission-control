@@ -1,11 +1,14 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { isPaused } from "@shared/pause.ts";
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
-import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
+import { stackStartEdge } from "@shared/stacking.ts";
+import { foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
-import { settledIdle } from "@shared/session.ts";
-import { allowsBacklogAutopilot } from "@shared/task.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
+import { taskAllowsBacklogAutopilot, taskKindAllowsBacklog } from "@shared/task.ts";
+import { launchWorkUnitConflicts } from "@shared/work-unit.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
 // plan, what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring
@@ -215,6 +218,12 @@ export function agentIsFree(
   now: number,
 ): boolean {
   if (reportBucket(s, sessions) !== "idle") return false;
+  // A blocked session is still working its own task; it is not free for another.
+  if (hasBlocker(s)) return false;
+  // Nor is one idle on purpose while its own background process finishes.
+  if (isAwaiting(s, now)) return false;
+  // A paused session is not free: nothing may be handed to it until the operator resumes it.
+  if (isPaused(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
   if (!s.hooksSeen) return false;
   // Only sessions Mission Control created. Note this is the SELECTION side only: the
@@ -251,6 +260,17 @@ function freeAgentFor(
   // Returning null here makes the caller `continue` to the next candidate, and the task is
   // still reachable through the dispatch branch below - which is the only way it can start.
   if (task.extraRepos.length > 0) return null;
+  // The same reasoning for a task released to start on its prerequisite's open pull request:
+  // it has to be CUT from that pull request's head, which only a fresh worktree can be, so
+  // `TaskManager.assign` refuses it with `scope: "task"` and only the dispatch branch can
+  // start it.
+  if (stackStartEdge(task, new Map(tasks.map((candidate) => [candidate.id, candidate])))) return null;
+  // And for a task that names a Persona: it rides the launch's standing instructions, which a
+  // live process cannot take on, so `TaskManager.assign` refuses it and only dispatch starts it.
+  if (task.personaId) return null;
+  // And for a mission-filed chat: its opener is a new conversation's first message, so
+  // `TaskManager.assign` refuses to type it into a session already holding another one.
+  if (!taskKindAllowsBacklog(task.kind)) return null;
   for (const s of sessions) {
     if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a
@@ -263,6 +283,11 @@ function freeAgentFor(
     // the tick. The drag gesture is permissive here on purpose - a human picked that
     // pane - but nobody picked this one.
     if (s.agent !== task.agent) continue;
+    // Decision D7, on the selection side: an agent started with one work unit is not offered a
+    // task of another, because its MCP calls would carry the first. Judged per task, so the
+    // agent stays free for its own work unit's tasks, and treated like any agent that is not
+    // free - the task can still be dispatched below. `TaskManager.assign` refuses the same pair.
+    if (launchWorkUnitConflicts(s.launchWorkUnitId, task.workUnitId)) continue;
     if (agentIsFree(s, sessions, tasks, cfg, now)) return s;
   }
   return null;
@@ -314,7 +339,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
 
   const backlog = backlogTasks(tasks);
   if (backlog.length === 0) return { kind: "none", why: "the backlog is empty" };
-  const automatableBacklog = backlog.filter((task) => allowsBacklogAutopilot(task.kind));
+  const automatableBacklog = backlog.filter((task) => taskAllowsBacklogAutopilot(task));
   if (automatableBacklog.length === 0) {
     return { kind: "none", why: "no backlog item allows unattended scheduling" };
   }
@@ -348,7 +373,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   }
 
   const ready = readyBacklog(tasks, plan).filter(
-    (t) => allowsBacklogAutopilot(t.kind) && taskReposAllowlisted(t, cfg.allowlist),
+    (t) => taskAllowsBacklogAutopilot(t) && taskReposAllowlisted(t, cfg.allowlist),
   );
   if (ready.length === 0) {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an

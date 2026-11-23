@@ -16,4 +16,5 @@ playwright-report/
 e2e/.probe/
 e2e/.artifacts/
 .evidence/
+/docs/reports/resident-skill-isolation-wider/
 .pipeline/

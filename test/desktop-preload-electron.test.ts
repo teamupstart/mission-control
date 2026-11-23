@@ -15,6 +15,7 @@ interface DesktopPreloadResult {
   isDesktop: boolean;
   hasDesktopClass: boolean;
   capability: string | null;
+  windowBackground: string | null;
   preloadError: string | null;
   authorization: {
     withoutClick: boolean;
@@ -24,6 +25,7 @@ interface DesktopPreloadResult {
     duringClick: boolean;
     afterClick: boolean;
   };
+  keyboardAuthorization: Record<string, boolean>;
 }
 
 test("the sandboxed preload identifies the desktop shell before the dashboard paints", () => {
@@ -81,6 +83,11 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       true,
       "the desktop-only traffic-light inset will not be applied",
     );
+    assert.equal(
+      result.windowBackground,
+      "#f5f7fa",
+      "the preload does not expose setWindowBackground, so a light skin opens on a dark frame",
+    );
     assert.match(
       result.capability ?? "",
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -94,6 +101,25 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       duringClick: true,
       afterClick: false,
     }, "only a trusted click in progress with the private capability can arm a report");
+    assert.deepEqual(result.keyboardAuthorization, {
+      synthetic: false,
+      syntheticWrongCapability: false,
+      plain: false,
+      plainWrongCapability: false,
+      plainAfter: false,
+      other: false,
+      otherWrongCapability: false,
+      otherAfter: false,
+      repeat: false,
+      repeatWrongCapability: false,
+      repeatAfter: false,
+      meta: true,
+      metaWrongCapability: false,
+      metaAfter: false,
+      control: true,
+      controlWrongCapability: false,
+      controlAfter: false,
+    }, "only a trusted Cmd/Ctrl+Enter in progress with the private capability can arm a report");
   } finally {
     rmSync(dir, { force: true, recursive: true });
     rmSync(profile, { force: true, recursive: true });

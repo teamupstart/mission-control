@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  truncateSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,6 +17,7 @@ import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import {
   ARCHIVE_PRIMARY_REPORT_PATH,
+  ARCHIVE_LIMITS,
   parseArchiveManifest,
   type ArchiveManifestPromptTrail,
 } from "../src/shared/archives.ts";
@@ -77,6 +79,7 @@ interface JobSpec {
   summary?: string;
   tags?: string[];
   supporting?: Array<{ repoSlot: string; path: string }>;
+  files?: Array<{ repoSlot: string; path: string }>;
   extraRoots?: Array<{ slot: string; root: string | null; label: string }>;
   taskId?: string;
   title?: string;
@@ -115,6 +118,7 @@ function makeJob(spec: JobSpec) {
     summary: spec.summary ?? "Resume rebuilt the session without replaying the grant.",
     tags: spec.tags ?? ["resume"],
     supporting: spec.supporting ?? [],
+    files: spec.files,
   })!;
   return { store, job: updated, key: updated.operationKey };
 }
@@ -864,4 +868,146 @@ test("a supporting path is archived under the file it resolved to, not the strin
   if (!manifest.ok) return;
   const supporting = manifest.manifest.artifacts.find((a) => a.role === "supporting")!;
   assert.equal(supporting.originalPath, "evidence/trace.log", "provenance is the resolved path");
+});
+
+// Explicit selection is a different consent boundary from legacy directory discovery.
+const selectedReport = "docs/reports/resume/report.html";
+const selected = (...paths: string[]) => paths.map((path) => ({ repoSlot: "repo-01", path }));
+
+for (const ignoreSource of ["repository", "global"] as const) {
+  test(`explicit selection publishes only chosen files under a ${ignoreSource} directory ignore rule`, async () => {
+    const dir = "docs/reports/resume";
+    const contents = {
+      [selectedReport]: '<!doctype html><html><body><img src="images/screen.png"><a href="data.csv">Data</a><a href="logs/run.log">Log</a></body></html>',
+      [`${dir}/images/screen.png`]: "image bytes",
+      [`${dir}/data.csv`]: "a,b\n1,2\n",
+      [`${dir}/logs/run.log`]: "passed",
+    };
+    const root = makeCheckout({ ...contents, [`${dir}/private.txt`]: "must stay local" });
+    // An unlisted symlink must not even be inspected by explicit capture.
+    symlinkSync(join(home, "absent"), join(root, dir, "unlisted-link"));
+    const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const globalConfig = join(home, `global-${ignoreSource}.gitconfig`);
+    const excludes = join(home, `global-${ignoreSource}.ignore`);
+    writeFileSync(excludes, "docs/reports/\n");
+    writeFileSync(globalConfig, `[core]\nexcludesFile = ${excludes}\n`);
+    if (ignoreSource === "repository") writeFileSync(join(root, ".gitignore"), "docs/reports/\n");
+    else process.env.GIT_CONFIG_GLOBAL = globalConfig;
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      git("check-ignore", "-q", selectedReport);
+      const before = { index: git("ls-files", "--stage"), status: git("status", "--porcelain"),
+        head: git("symbolic-ref", "HEAD"), config: git("config", "--list"),
+        ignore: readFileSync(join(root, ".gitignore"), "utf8") };
+      const { job, store } = makeJob({ root, reportPath: selectedReport, files: selected(...Object.keys(contents)) });
+      const reloaded = new ArchiveCaptureStore(db).get(job.operationKey)!;
+      assert.deepEqual(reloaded.submission?.files, selected(...Object.keys(contents)), "durable selection survives a new store reader");
+      const outcome = await captureArchive(reloaded, deps);
+      assert.equal(outcome.ok, true, JSON.stringify(outcome));
+      if (!outcome.ok) return;
+      assert.equal(outcome.artifactCount, 4);
+      const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
+      for (const [source, bytes] of Object.entries(contents)) {
+        assert.equal(readFileSync(join(bundle, "report", source.slice(dir.length + 1)), "utf8"), bytes);
+      }
+      assert.equal(existsSync(join(bundle, "report/private.txt")), false);
+      assert.equal(existsSync(join(bundle, "report/unlisted-link")), false);
+      assert.equal((await verifyArchiveBundle(library, outcome.identity)).kind, "verified");
+      assert.deepEqual({ index: git("ls-files", "--stage"), status: git("status", "--porcelain"),
+        head: git("symbolic-ref", "HEAD"), config: git("config", "--list"),
+        ignore: readFileSync(join(root, ".gitignore"), "utf8") }, before, "publication never mutates Git state or ignore rules");
+      assert.equal(existsSync(join(root, ".git/refs/heads", before.head.replace("refs/heads/", ""))), false, "no commit created");
+
+      // A new submission deliberately changes mode; no stale explicit list survives.
+      store.recordSubmission(job.operationKey, { reportPath: selectedReport, summary: "legacy", supporting: [], tags: [] });
+      assert.equal(store.get(job.operationKey)?.submission?.files, undefined);
+    } finally {
+      if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = oldGlobal;
+    }
+  });
+}
+
+test("explicit selection refuses a referenced local file that was not selected", async () => {
+  const root = makeCheckout({
+    ".gitignore": "docs/reports/\n",
+    [selectedReport]: '<!doctype html><html><body><a href="evidence.csv">Data</a></body></html>',
+    "docs/reports/resume/evidence.csv": "a,b\n",
+  });
+  const { job } = makeJob({ root, reportPath: selectedReport, files: selected(selectedReport) });
+  const outcome = await captureArchive(job, deps);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.problems.join(" "), /evidence\.csv/);
+  assert.equal((await verifyArchiveBundle(library, { producerId: PRODUCER, archiveId: job.archiveId })).kind, "absent");
+});
+
+test("explicit selection keeps slot, containment, symlink, duplicate and file-size checks", async () => {
+  const root = makeCheckout({
+    ".gitignore": "docs/reports/\n",
+    [selectedReport]: validReportHtml(),
+    "docs/reports/resume/data.csv": "a,b\n",
+    "docs/reports/resume/.hidden": "hidden",
+    "docs/reports/resume/large.bin": "",
+  });
+  const dir = "docs/reports/resume";
+  symlinkSync(join(root, dir, "data.csv"), join(root, dir, "link.csv"));
+  symlinkSync(join(root, dir), join(root, "linked-dir"));
+  truncateSync(join(root, dir, "large.bin"), ARCHIVE_LIMITS.supportingFileBytes + 1);
+  const cases: Array<[Array<{ repoSlot: string; path: string }>, RegExp]> = [
+    [selected(`${dir}/data.csv`), /files must include the primary report/],
+    [selected(selectedReport, `${dir}/data.csv`, `${dir}/./data.csv`), /submitted twice/],
+    [selected(selectedReport, selectedReport), /submitted twice/],
+    [[...selected(selectedReport), { repoSlot: "repo-99", path: "data.csv" }], /not a repository slot/],
+    [selected(selectedReport, "../outside.txt"), /leaves the checkout/],
+    [selected(selectedReport, join(root, dir, "data.csv")), /relative to the checkout/],
+    [selected(selectedReport, `${dir}/link.csv`), /symbolic link/],
+    [selected(selectedReport, "linked-dir/data.csv"), /symbolic link/],
+    [selected(selectedReport, `${dir}/.hidden`), /cannot be represented/],
+    [selected(selectedReport, `${dir}/large.bin`), /supporting-file limit/],
+    [selected(selectedReport, dir), /not an ordinary file/],
+  ];
+  for (const [files, error] of cases) {
+    const { job } = makeJob({ root, reportPath: selectedReport, files });
+    const outcome = await captureArchive(job, deps);
+    assert.equal(outcome.ok, false, JSON.stringify(files));
+    if (!outcome.ok) assert.match(outcome.problems.join(" "), error);
+  }
+  const { job } = makeJob({ root, reportPath: selectedReport, files: selected(selectedReport),
+    supporting: selected(`${dir}/data.csv`) });
+  const outcome = await captureArchive(job, deps);
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.match(outcome.problems.join(" "), /files and supporting cannot be combined/);
+});
+
+test("explicit selection retains primary size and static HTML validation", async () => {
+  const root = makeCheckout({ ".gitignore": "docs/reports/\n", [selectedReport]: "<script>alert(1)</script>" });
+  for (const oversized of [false, true]) {
+    if (oversized) truncateSync(join(root, selectedReport), ARCHIVE_LIMITS.primaryReportBytes + 1);
+    const { job } = makeJob({ root, reportPath: selectedReport, files: selected(selectedReport) });
+    const outcome = await captureArchive(job, deps);
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.match(outcome.problems.join(" "), oversized ? /report limit/ : /not a static report/);
+  }
+});
+
+test("explicit ignored supporting files from another issued checkout preserve their archive location", async () => {
+  const root = makeCheckout({ [selectedReport]: validReportHtml() });
+  const other = makeCheckout({
+    ".gitignore": "evidence.local\n",
+    "evidence.local": "second checkout evidence",
+  });
+  assert.equal(
+    execFileSync("git", ["check-ignore", "--", "evidence.local"], { cwd: other, encoding: "utf8" }).trim(),
+    "evidence.local",
+    "the selected evidence is ignored in its own checkout",
+  );
+  const { job } = makeJob({ root, reportPath: selectedReport,
+    extraRoots: [{ slot: "repo-02", root: other, label: "other" }],
+    files: [...selected(selectedReport), { repoSlot: "repo-02", path: "evidence.local" }] });
+  const outcome = await captureArchive(job, deps);
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  if (!outcome.ok) return;
+  assert.equal(readFileSync(join(library, job.producerId, job.archiveId, "artifacts/repo-02/evidence.local"), "utf8"), "second checkout evidence");
+  assert.equal((await verifyArchiveBundle(library, outcome.identity)).kind, "verified");
 });

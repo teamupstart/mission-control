@@ -214,6 +214,82 @@ export function applyFileRecheck(
   return applyFileLoadSuccess(state, filePath, result.file, true);
 }
 
+/**
+ * The one checkout listing behind both the ambiguous-link probe and the transcript's path
+ * links, memoized per session, and the rules for when a transcript may share it.
+ *
+ * Two callers meant two `git ls-files` runs over the same checkout and, worse, two answers
+ * to "does this file exist" that could disagree while one was in flight. Those two and no
+ * more: the Files tab's `ensure` and `refresh` list for themselves, because they need the
+ * full `SessionFileEntry` rows and the request-ordering guard that goes with rendering a
+ * list, and publish into `pathIndex` instead.
+ *
+ * A class rather than closures in the hook so the ordering below can be driven directly
+ * with listings that resolve out of order, which no render-only test can do.
+ */
+export class WorkspacePathListings {
+  private readonly pending = new Map<string, Promise<ReadonlySet<string>>>();
+  /** Sessions a transcript has already asked to list, so a re-ask never reuses that request. */
+  private readonly asked = new Set<string>();
+
+  constructor(
+    private readonly list: (sessionId: string) => Promise<ReadonlySet<string>>,
+    /** The store's own request generations, so its `forgetSession` reaches these too. */
+    private readonly requests: LatestFileRequests,
+  ) {}
+
+  /** The shared listing, taken once and reused until something asks again. */
+  paths(sessionId: string): Promise<ReadonlySet<string>> {
+    let pending = this.pending.get(sessionId);
+    if (!pending) {
+      pending = this.list(sessionId);
+      this.pending.set(sessionId, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * A transcript asking for the listing, answered with the paths, or null when a newer ask
+   * or a drop has superseded this one while it was in flight.
+   *
+   * A resolved listing is a snapshot, not durable checkout state. The agent can create a
+   * report while its conversation is closed; reusing that promise on the next open leaves
+   * the path as dead prose until Files performs its separate listing. So an ask made while
+   * an index already stands (`hasIndex`) lists again, and later probes share the new answer.
+   *
+   * The same holds for a re-ask that arrives while the FIRST listing is still in flight:
+   * there is no index yet, but that request was taken before the file this re-ask is for -
+   * a mock-up presented mid-turn - so sharing it would answer the new question with the old
+   * checkout. Which is also why the older listing must not land after the newer one: the
+   * generation booked here drops it.
+   *
+   * That generation is load bearing for a dropped session too. A warm still in flight when
+   * the session goes away would otherwise land afterwards and write an index back for a
+   * session nobody is showing, and if the id is ever reused the new transcript would link
+   * against the OLD checkout's files. "Is the key still absent" cannot see this, because
+   * after a drop it is absent by design.
+   */
+  async warm(sessionId: string, hasIndex: boolean): Promise<ReadonlySet<string> | null> {
+    if (hasIndex || this.asked.has(sessionId)) this.pending.delete(sessionId);
+    this.asked.add(sessionId);
+    const key = `${sessionId}\0paths`;
+    const request = this.requests.begin(key);
+    const paths = await this.paths(sessionId);
+    return this.requests.isCurrent(key, request) ? paths : null;
+  }
+
+  /** The next asker lists again; whatever is already rendered stays standing until then. */
+  invalidate(sessionId: string): void {
+    this.pending.delete(sessionId);
+  }
+
+  /** The session is gone. Its in-flight generations are the store's `forgetSession`. */
+  forget(sessionId: string): void {
+    this.pending.delete(sessionId);
+    this.asked.delete(sessionId);
+  }
+}
+
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
   const [sessions, setSessions] = useState<Record<string, SessionFilesState>>({});
   const [pathIndex, setPathIndex] = useState<Record<string, ReadonlySet<string>>>({});
@@ -223,33 +299,21 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const inFlight = useRef(new Set<string>());
   const requests = useRef(new LatestFileRequests());
-  const probeFiles = useRef(new Map<string, Promise<ReadonlySet<string>>>());
+  const [listings] = useState(() => new WorkspacePathListings(
+    (sessionId) => api.listFiles(sessionId).then((result) => (
+      new Set(result.ok ? result.files.map((file) => file.path) : [])
+    )),
+    requests.current,
+  ));
   sessionsRef.current = sessions;
   pathIndexRef.current = pathIndex;
   connectedRef.current = connected;
 
-  /**
-   * The one listing behind both the ambiguous-link probe and the transcript's path links,
-   * memoized per session. Two callers meant two `git ls-files` runs over the same checkout
-   * and, worse, two answers to "does this file exist" that could disagree while one was in
-   * flight.
-   *
-   * Those two and no more: `ensure` and `refresh` deliberately do not come through here,
-   * because they need the full `SessionFileEntry` rows and the request-ordering guard that
-   * goes with rendering a list, not the set of paths. They publish into `pathIndex`
-   * instead, which is what keeps the answers in step without pretending one request serves
-   * every reader.
-   */
-  const listPaths = useCallback((sessionId: string): Promise<ReadonlySet<string>> => {
-    let pending = probeFiles.current.get(sessionId);
-    if (!pending) {
-      pending = api.listFiles(sessionId).then((result) => (
-        new Set(result.ok ? result.files.map((file) => file.path) : [])
-      ));
-      probeFiles.current.set(sessionId, pending);
-    }
-    return pending;
-  }, []);
+  /** The listing a written link's probe shares with the transcript; see `WorkspacePathListings`. */
+  const listPaths = useCallback(
+    (sessionId: string): Promise<ReadonlySet<string>> => listings.paths(sessionId),
+    [listings],
+  );
 
   /** A listing the Files tab just fetched answers the transcript's question too. */
   const publishPaths = useCallback((sessionId: string, files: SessionFileEntry[]) => {
@@ -438,25 +502,10 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [listPaths]);
 
   const warmPaths = useCallback((sessionId: string) => {
+    // Kept standing while the refresh is in flight, so a re-ask never blanks the links.
     const previous = pathIndexRef.current[sessionId];
-    // A resolved listing is a snapshot, not durable checkout state. The agent can create a
-    // report while its conversation is closed; reusing this promise on the next open leaves
-    // that path as dead prose until Files performs its separate listing. Keep the rendered
-    // index standing while the refresh is in flight, but make this mount ask the checkout
-    // again and make subsequent written-link probes share the new answer.
-    if (previous) probeFiles.current.delete(sessionId);
-    // The same staleness guard every other fetch in this file uses, and it is load
-    // bearing for the SAME reason `drop` already calls `forgetSession`: a warm that is
-    // still in flight when the session goes away would otherwise land afterwards and
-    // write an index back for a session nobody is showing. Nothing clears that - `drop`
-    // has already run - so it leaks until the tab closes, and if the id is ever reused
-    // the `pathIndexRef` check above turns it into a real defect: the new transcript
-    // skips its own warm and links against the OLD checkout's files. Checking "is the
-    // key still absent" cannot see this, because after `drop` it is absent by design.
-    const key = `${sessionId}\0paths`;
-    const request = requests.current.begin(key);
-    void listPaths(sessionId).then((paths) => {
-      if (!requests.current.isCurrent(key, request)) return;
+    void listings.warm(sessionId, Boolean(previous)).then((paths) => {
+      if (!paths) return;
       setPathIndex((all) => {
         // A listing that lost a race to Files' `ensure` or `refresh` must not replace the
         // newer one. Identity is the generation here: publishPaths always installs a new Set.
@@ -466,7 +515,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
         return next;
       });
     });
-  }, [listPaths]);
+  }, [listings]);
 
   const edit = useCallback((sessionId: string, filePath: string, text: string) => {
     update(sessionId, (s) => {
@@ -490,7 +539,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     // standing until the new listing lands below: clearing it here would un-link every
     // path in the open transcript for the length of one `git ls-files`, and leave them
     // that way if the re-list fails.
-    probeFiles.current.delete(sessionId);
+    listings.invalidate(sessionId);
     const key = `${sessionId}\0list`;
     const request = requests.current.begin(key);
     update(sessionId, (s) => ({ ...s, listState: "loading", listError: null }));
@@ -503,7 +552,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       const buffer = selected ? sessionsRef.current[sessionId]?.buffers[selected] : null;
       if (selected && buffer?.saveState === "saved") void loadFile(sessionId, selected, true);
     });
-  }, [loadFile, update, updateExisting]);
+  }, [listings, loadFile, update, updateExisting]);
 
   const recheck = useCallback((sessionId: string, filePath: string) => {
     const buffer = sessionsRef.current[sessionId]?.buffers[filePath];
@@ -549,7 +598,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [save]);
   const drop = useCallback((sessionId: string) => {
     requests.current.forgetSession(sessionId);
-    probeFiles.current.delete(sessionId);
+    listings.forget(sessionId);
     setPathIndex((all) => {
       if (!all[sessionId]) return all;
       const next = { ...all };
@@ -569,7 +618,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       sessionsRef.current = next;
       return next;
     });
-  }, []);
+  }, [listings]);
 
   useEffect(() => {
     if (!connected) return;
@@ -593,6 +642,54 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   ]);
 }
 
+export interface WorkspacePathsWarmKey {
+  sessionId: string;
+  /**
+   * The newest transcript message while the session is between turns, or null mid-turn.
+   * An empty string is a settled transcript with no messages yet.
+   */
+  settledOn: string | null;
+  /**
+   * Mid-turn only: the newest recent turn that names a previewable path the listing lacks
+   * (`unlistedArtifactTurn`), or null. Absent or null between turns, where `settledOn`
+   * already re-asks for every message that lands.
+   */
+  presenting?: string | null;
+}
+
+/**
+ * Whether a transcript should ask for its checkout listing again.
+ *
+ * Once when a session's transcript first shows, and again whenever a new message lands while
+ * the session is between turns. The second is what makes a file the agent wrote while the
+ * operator was watching - a report, a mock-up - linkable and previewable in the very turn
+ * that names it. A listing taken only on mount predates every such file, so the turn
+ * presenting it rendered its path as dead text until something remounted the conversation.
+ *
+ * Keyed on the newest message rather than on seeing the session leave `working`: a turn can
+ * start and finish between two renders, so a dashboard may never observe the working state
+ * at all, while the message it produced always arrives. Mid-turn the settled key is null, so
+ * a streaming turn's frames - and the tool calls writing its files - never each pay for a
+ * `git ls-files`.
+ *
+ * Mid-turn is not always brief, though. A turn that presents its mock-ups and then blocks on
+ * `request_input` stays `working` for as long as the operator takes to decide, which is the
+ * whole time they need those mock-ups. So a turn that names a page or image the listing does
+ * not hold re-asks once, mid-turn, keyed on that turn (`presenting`). `asked` is every
+ * presenting turn this transcript has already re-asked for: a path the agent named but never
+ * wrote stays unlisted after the re-ask, and must not cost a listing on every frame after.
+ */
+export function shouldWarmWorkspacePaths(
+  previous: WorkspacePathsWarmKey | null,
+  next: WorkspacePathsWarmKey,
+  asked: ReadonlySet<string> = new Set(),
+): boolean {
+  if (previous?.sessionId !== next.sessionId) return true;
+  if (next.settledOn !== null && next.settledOn !== previous.settledOn) return true;
+  const presenting = next.presenting ?? null;
+  return presenting !== null && presenting !== (previous.presenting ?? null) && !asked.has(presenting);
+}
+
 /**
  * The checkout listing behind one session's transcript, asked for only when a transcript
  * is actually on screen.
@@ -600,18 +697,38 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
  * A hook rather than two props because the read and the ask are one decision: a caller
  * that reads the index without warming it renders dead paths for ever, and one that warms
  * without reading pays for a listing it never uses. `enabled` is where the cost is
- * declined - a session with no checkout has nothing to list. The optional controller is
- * for the render-only tests that stub it away; there is no session-files store in a
- * `renderToStaticMarkup` tree, and no effects run there either.
+ * declined - a session with no checkout has nothing to list. `settledOn` re-asks when a turn
+ * lands, and `presenting` when a turn still running names a page the listing lacks; see
+ * `shouldWarmWorkspacePaths`. The optional controller is for the render-only tests that stub
+ * it away; there is no session-files store in a `renderToStaticMarkup` tree, and no effects
+ * run there either.
  */
 export function useWorkspacePaths(
   files: SessionFilesController | undefined,
   sessionId: string,
   enabled: boolean,
+  settledOn: string | null = "",
+  presenting: string | null = null,
 ): ReadonlySet<string> | null {
   const warm = files?.warmPaths;
+  const warmedFor = useRef<{
+    key: WorkspacePathsWarmKey;
+    warm: (id: string) => void;
+    asked: Set<string>;
+  } | null>(null);
   useEffect(() => {
-    if (enabled) warm?.(sessionId);
-  }, [enabled, sessionId, warm]);
+    if (!enabled || !warm) {
+      warmedFor.current = null;
+      return;
+    }
+    const next = { sessionId, settledOn, presenting };
+    // A replaced store holds no index for this session, so it is asked as if for the first time.
+    const prior = warmedFor.current?.warm === warm ? warmedFor.current : null;
+    const asked = prior?.key.sessionId === sessionId ? prior.asked : new Set<string>();
+    const ask = shouldWarmWorkspacePaths(prior?.key ?? null, next, asked);
+    if (presenting !== null) asked.add(presenting);
+    warmedFor.current = { key: next, warm, asked };
+    if (ask) warm(sessionId);
+  }, [enabled, sessionId, warm, settledOn, presenting]);
   return (enabled ? files?.pathIndex?.[sessionId] : null) ?? null;
 }

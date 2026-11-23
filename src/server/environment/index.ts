@@ -8,7 +8,7 @@ import {
 } from "@shared/environment-checks.ts";
 
 import { piExtensionCheck } from "./pi-extension.ts";
-import { claudeHookScriptCheck } from "./claude-hooks.ts";
+import { claudeHookEventsCheck, claudeHookScriptCheck } from "./claude-hooks.ts";
 import { upstartclawSetupCheck } from "./upstartclaw.ts";
 import type {
   EnvironmentCheckImpl,
@@ -39,6 +39,7 @@ export const ENVIRONMENT_CHECKS: Record<EnvironmentCheckId, EnvironmentCheckImpl
   "upstartclaw-core-setup": upstartclawSetupCheck,
   "mission-hook-script": claudeHookScriptCheck,
   "pi-extension": piExtensionCheck,
+  "mission-hook-events": claudeHookEventsCheck,
 };
 
 /**
@@ -151,10 +152,25 @@ async function runCheck(
 export async function environmentCheckViews(
   deps: EnvironmentDeps = defaultEnvironmentDeps(),
 ): Promise<EnvironmentCheckView[]> {
+  // Within ONE request, each file is read once however many checks ask: both Claude hook checks
+  // read the same settings file and probe the same scripts. Scoped to this call, so the next
+  // request still reads the disk afresh, which is the whole rule above.
+  const reads = new Map<string, Promise<FileRead>>();
+  const shared: EnvironmentDeps = {
+    ...deps,
+    readText: (path) => {
+      let read = reads.get(path);
+      if (!read) {
+        read = deps.readText(path);
+        reads.set(path, read);
+      }
+      return read;
+    },
+  };
   return Promise.all(
     ENVIRONMENT_CHECK_IDS.map(async (id): Promise<EnvironmentCheckView> => {
       const impl = ENVIRONMENT_CHECKS[id];
-      const result = await runCheck(impl, deps);
+      const result = await runCheck(impl, shared);
       return {
         id: impl.id,
         label: impl.label,

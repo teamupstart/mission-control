@@ -34,3 +34,22 @@ test("upgrading the non-null task ledger preserves every existing value and inde
   closeDb();
   assert.equal(new ArchiveCaptureStore(openDb()).get(taskless.operationKey)?.archiveId, taskless.archiveId);
 });
+
+test("adding explicit file selection preserves legacy jobs and survives database reopening", () => {
+  const db = openDb();
+  const store = new ArchiveCaptureStore(db);
+  const job = store.reserve({ kind: "scout", taskId: "selection-upgrade", sessionId: "session",
+    episodeId: "ep", producerId: "11111111-2222-4333-8444-555555555555", title: "Report",
+    question: null, origin: { agent: "codex", model: null, source: null }, repos: [] });
+  const legacy = { reportPath: "docs/reports/upgrade/report.html", summary: "summary", supporting: [], tags: [] };
+  store.recordSubmission(job.operationKey, legacy);
+  // Emulate the immediately previous schema, then exercise the real startup migration.
+  db.exec("ALTER TABLE archive_capture_jobs DROP COLUMN files_json");
+  closeDb();
+  const upgraded = new ArchiveCaptureStore(openDb());
+  assert.deepEqual(upgraded.get(job.operationKey)?.submission, legacy);
+  const files = [{ repoSlot: "repo-01", path: legacy.reportPath }];
+  upgraded.recordSubmission(job.operationKey, { ...legacy, files });
+  closeDb();
+  assert.deepEqual(new ArchiveCaptureStore(openDb()).get(job.operationKey)?.submission, { ...legacy, files });
+});

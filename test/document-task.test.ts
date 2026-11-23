@@ -18,8 +18,8 @@ test("document is a reviewable, schedulable shipping kind with its own default",
   assert.equal(hasReviewableDiff("document"), true);
   assert.equal(taskKindAllowsBacklog("document"), true);
   assert.equal(isShippingTaskKind("document"), true);
-  assert.equal(taskDefaultWorkflowId("document", "machine-choice"), "builtin-workflow:documentation-review");
-  assert.equal(taskDefaultWorkflowId("ship", "machine-choice"), "machine-choice");
+  assert.equal(taskDefaultWorkflowId("document", {}), "builtin-workflow:documentation-review");
+  assert.equal(taskDefaultWorkflowId("ship", { ship: "machine-choice" }), "machine-choice");
   assert.equal(automaticWrapupBlock({ taskKind: "document", workflowId: null, objective: "Write a documentation page", changedPaths: ["docs/setup.md"], skipScoutWrapup: true, skipReviewArtifactWrapup: true }), null);
 });
 

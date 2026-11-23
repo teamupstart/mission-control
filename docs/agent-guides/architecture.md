@@ -14,6 +14,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
+| Resident loop | `src/server/residents/loop.ts` | Sole coordinator of resident loop turns, timers and driver calls |
+| Resident loop store | `src/server/residents/loop-store.ts` | Durable loop transitions, wake claims and pacing transactions |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
@@ -28,6 +30,62 @@ while daemons using independent homes may run concurrently. The kernel releases 
 process exit, including crashes; orderly shutdown closes SQLite before releasing it. The lock
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
+
+Electron requests shutdown over each owned utility's private message port and holds the shell
+open while Foreman and the daemon drain, bounded by the shared quit deadline. A utility timeout
+or failed message requests termination and awaits its exit; the overall deadline lets Electron
+reap any remaining utilities before the update helper handles verified survivors.
+The daemon stops workflow checks before slower
+session drains. The workflow engine's abort signal also follows a check through lease
+acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
+check shims tear down their own group on loss of the private owner pipe. Orderly shutdown also
+closes that pipe, so an unreadable identity or refused group signal
+does not leave the engine waiting for the command's full timeout. The daemon remains
+the only writer of interruption outcomes and lease recovery.
+
+The detached update helper outlives the desktop and drains verified owned processes before
+replacing the app. It never writes workflow state or releases leases; the daemon's existing
+recovery owns those transitions after relaunch. The [desktop update ownership contract](../desktop-and-packaging.md#updates-from-the-installed-app)
+defines capture, identity verification, cleanup and diagnostics for both helper modes.
+
+## Resident loop ownership
+
+`ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`
+reads pinned run revisions and observes Registry work-cycle completions and delivered human
+turns. Its durable state and claim transactions live in `residents/loop-store.ts`; timers are
+only a projection of `next_wake_at`. No browser, MCP process or Foreman worker sends loop turns.
+
+The loop uses the supervisor's serialized idle-send boundary, rechecking human priority before
+crossing it. Maintenance compaction uses that same boundary and completes only from native
+harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
+conservatively. Recovery confirms a claim only from the complete pinned wake text after its
+recorded transcript offset. Startup restores native sessions before reconciling claims and prunes only after
+reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
+before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
+completion of the old task cannot strand a replacement that has not yet reserved its request.
+
+Resident transcript attribution requires a sent iteration in the same native conversation.
+The store binds its first matching turn after the recorded transcript offset to a native message
+id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
+without conversation evidence are not attributed from their marker syntax.
+
+The SDK driver reports the resident native token limit it actually configured. The supervisor
+persists it with the SDK session and passes it back on resume. Codex therefore keeps its measured
+backstop across catalog refreshes, rather than recomputing from missing metadata or silently
+dropping the layer. Fresh launches and legacy rows without a saved limit still require the catalog.
+
+`schedule_next_iteration` uses the existing signed session/episode credential, without granting
+session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
+its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
+
+`get_resident_instructions` and `propose_resident_instruction_changes` attribute the caller the
+same way. A proposal is validated against the current profile and Persona text, stored in
+`resident_instruction_proposals` keyed by the `request_input` review the daemon opens for it
+(`requestInputReview` in `src/shared/request-input.ts`, the tool's own builder),
+and applied by `ResidentInstructionChanges.resolution` (`src/server/residents/instruction-changes.ts`)
+inside the transaction `/api/reviews/:id/resolve` writes the human's answer in. Revisions are
+announced only after that commit. A resident's retro is a packet `runRetro` types into the
+resident's own session (`src/server/residents/retro-packet.ts`), with no skill gate.
 
 ## Executable environment and subprocesses
 
@@ -57,8 +115,8 @@ There are two explicit exceptions:
   shared child environment, under the Workflow process supervisor. Their resolved record carries
   `id: null` so it cannot impersonate a built-in catalog entry.
 - Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
-  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, and `/usr/bin/open`.
-  Do not add a bare command to this class.
+  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, `/usr/bin/open` and
+  `/bin/cp`. Do not add a bare command to this class.
 
 ## Session ownership
 
@@ -74,7 +132,8 @@ Startup order matters:
 5. Restore the prepared SDK rows serially in the background.
 6. Register or evict every restored session through the existing Registry lifecycle, replacing
    each projection by the same stable id.
-7. Start terminal discovery only after the owned SDK restore promise settles.
+7. Start `ResidentLoop` claim reconciliation, then terminal discovery, only after the owned SDK
+   restore promise settles. `ResidentManager.start()` has already settled pending launches.
 8. Reconcile task, workflow, and review bindings after the first completed observation.
 
 Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,
@@ -166,7 +225,10 @@ successfully released resource facts.
 A terminal task that still holds a worktree also carries a durable activity clock. The daemon
 observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
 whole index, tracked worktree changes, and non-ignored untracked files - and records the
-fingerprint plus a 30-day deadline in `task_worktree_retention`. The clock has one boundary per
+fingerprint plus a configurable deadline in `task_worktree_retention`. See the
+[configuration reference](../configuration.md#task-worktree-retention) for the default.
+The daemon reads `worktrees.taskRetentionDays` on each observation. The ledger stores the applied
+window so shortening grants a single six-hour grace period; lengthening preserves existing grace. The clock has one boundary per
 task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
 activity signal and must never be used as one. The observation service reclaims nothing; it is
 structurally incapable of it. The retention cleanup worker consumes the ledger through
@@ -177,6 +239,19 @@ row at all - a first observation is what starts a window, never a pre-existing t
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
+A repo-less resident is the exception to task repository ownership. Its task carries a nullable
+workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
+grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
+and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+Profile state is separate: `residents/state.ts` owns
+`residents/profiles/<profile-id>/state`, never removed by run cleanup. The resident launch
+contributor describes it, and the SDK supervisor derives it from the run's profile identity
+on launch and restore. Drivers expose it and grant directory access; Claude also sets its
+flag-layer auto-memory directory. `ResidentManager.resetState` excludes launch reservations
+while clearing state and refuses all open runs or surviving runtimes, including ended runs.
+Archival retains state, matching the profile's durable history.
+
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
@@ -186,9 +261,31 @@ After provisioning, dispatch branches once:
 - Terminal: home, discovery wait, readiness wait, and intent delivery.
 - SDK: no terminal home, no discovery wait, no terminal readiness wait, and the initial prompt is turn one.
 
+The terminal discovery wait binds only the worker the launch's own spawn started, never the
+first agent in the checkout. A cancelled launch and its replacement can share a worktree while
+the old worker waits to be retired, so `Registry.waitForLaunchedSessionAtCwd` accepts a session
+only through the identity the spawn returned: its terminal resource, or the launch wrapper
+(`launchProcess`, else the one recorded in `launchStateHome`) the agent descends from. The real
+spawner returns `launchStateHome` on every backend, because the wrapper always runs from it. A
+spawn that returns no identity at all fails the dispatch before discovery and leaves its
+terminal standing: when a worker appeared is not evidence of whose it is, since a cancelled
+launch's agent can be discovered late. Prompt acceptance is read from the delivered session
+alone, for the same reason.
+
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
-A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. A dispatch declaring no tools never spawns the probe and is unaffected.
+A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. An MCP-client dispatch declaring no tools never spawns that probe and is unaffected.
+
+Installed-extension harnesses carry those tools through their extension instead of an MCP
+descriptor. Pi's pre-provisioning health check probes the actual bridge with `tools/list` and
+requires the entire `MISSION_MCP_TOOLS` registry, including every plan and scout requirement.
+An extension that loads but lacks even one registered tool cannot pass dispatch availability.
+
+Managed Pi SDK dispatch requires a healthy extension even for kinds such as `ship` and
+`bugfix` that declare no MCP requirement. Pipeline tasks use a separate provider-owned
+host path instead of the managed Pi SDK dispatcher. Task-backed SDK launch,
+restart restore, and `/new` preserve that policy; an unhealthy replacement preserves the
+current conversation. Direct SDK sessions without a task keep the optional-extension behavior.
 
 Scout report publication is also available on request from other registered sessions. Registry
 observations project signed session capabilities; the archive gateway checks live ownership,
@@ -220,9 +317,29 @@ consumes it over the private utility-process channel; HTTP supplies only the req
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check before enabling control. Standalone
 daemons fail closed.
-Main registers every dashboard click arm, this one and the Feedback report's, through
-`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
-desktop e2e fixtures use the same registrar.
+Main registers every dashboard click arm, this one, the resident Launch and the Feedback
+report's, through `serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the
+reply rule. The desktop e2e fixtures use the same registrar.
+A resident's desktop Launch click is the only other way a grant is created, and it reuses every
+part of the above. `launchResident()` arms `mission:resident-launch-click` for the launch's
+request id, profile id and revision through the same preload capability. Main keeps both arms in
+`src/main/session-control-authorization.ts` and answers both asks over the same utility-process
+port. `ResidentManager.launch` consumes the click after reserving the run and before creating its
+task, and only for a caller `sessionControlCallerRefusal` accepts and a pinned revision with
+`authority.controlOtherSessions` on. It records `control_authorized_at`, then calls
+`Registry.setSessionControlEnabled` once the run's session has a `sessionControlIdentity` bound
+to the run's task, and records the conversation, cwd and work episode it applied to before it
+logs the grant. A grant it cannot apply or record is taken back and the record cleared. After SDK
+restore, on the first completed sweep, it re-applies the grant only when those three and the task
+match exactly, and otherwise clears the record. A revoke through the toggle route clears it
+through `ResidentManager.sessionControlRevoked` before the live grant is turned off. Resident
+launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
+session-control route's trusted menu click above is the other grant source, as
+[security](../security.md#delegated-session-control) states.
+**Restart on new profile** arms the same resident-launch capability synchronously from its
+desktop click, using `residentRestartRequestId` and the displayed new revision. Its route passes
+the same caller check to `ResidentManager.launch`. The replacement receives its own grant only
+when its pinned revision requests control and the click matches; it never copies the old grant.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control
@@ -270,6 +387,57 @@ controller twice cannot swap names and stays bindable. Withdrawing a send and re
 delivery both call `reconsider`, which clears a contest only when no other send is remembered
 and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
 
+The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
+uses it unchanged. Both ledgers are constructed and registered together in `delivery-ledgers.ts`,
+which each table's owner imports, so the shared claim space never depends on import order. The ledgers share one claim space: a turn is bound by at most one row of
+either table, and an unbound row of the same words in the other table is a rival that contests
+both, exactly as two controllers do. Outbox rows the daemon writes about a review
+(`review-continuation:` ids) start with a marker line owned by
+`src/shared/review-message-envelope.ts`: a message-mode answer always, and a call-mode late answer
+or a snooze instruction only while `async-input` is enabled when the row is queued
+(`queueReviewPendingTurn`); with the flag off those two are written unmarked, exactly as before.
+At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row through
+`review-deliveries.ts` for such a row instead of noting another send, and only for a row with
+that id prefix, so an operator message that starts with the marker is noted like any other send.
+`attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
+(`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
+`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available",
+or "Couldn't load the question" once the history read was refused or its retries ran out), never as the raw turn. The resolved-reviews route adds every review the
+conversation's deliveries name, bound yet or not (`deliveredReviewIds`), to its capped history, so an old delivered answer keeps its
+card however many newer reviews there are. A delivery's words on a turn no delivery claims drop the live label, as a
+delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
+(they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
+delivery window is pruned on the goal tick only once a binding walk has expired it (the tick
+walks live conversations itself, so a turn nobody read for a day is bound, not dropped), or once
+no live session holds its conversation and the delivery itself is older than the goal table's prune
+age (the cutoff compares `delivered_at`, not when a session last held the conversation, so an old
+unbound row can go on the first tick after its session exits). A steered delivery's plain echo record (the same words
+right after its mid-turn record, before any agent turn) is found by walking the file from the
+row's offset, so it is answered like its record whichever page holds it. That decision is
+persisted on the row (`steer_echo`), and any other send of the same words - an operator or
+Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
+`DeliveryLedger.reserve` - settles it from what the file already holds before that send is
+written (`onSend`), so an identical copy that lands right after a steered delivery is never
+taken for its echo. That listener (`review-steer-echo.ts`) is installed in `delivery-ledgers.ts`
+with the review ledger itself, so it runs before every send into the claim space even in a
+process that never imported `review-deliveries.ts`. Only a read that reaches the end of the file settles "no echo"; a failed read
+or a missing transcript decides nothing. Each row also persists the one prompt-hook echo it owes:
+`captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
+delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
+work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
+operator sends of the same words yield M Goal revisions whenever each delivery's own hook echo
+arrives before its debt clears. A delivery whose echo never arrives leaves its debt standing until
+then, and an operator copy of the same words submitted in that time spends it and is not captured. The debt's turn is stamped when
+the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
+terminal write boundary), not at reservation, and no completion or TTL clears it before then.
+That handoff is persisted (`handed_at`) before the write, and only a handed-over delivery's debt
+can be spent, so a reservation a restart interrupted before the handoff never swallows an
+operator prompt;
+the TTL itself restarts at the handoff. Bound rows are kept for good, so a conversation's rows
+grow with its history; the Goal reader and the expiry scan only a per-conversation list of the
+deliveries that still owe an echo, rebuilt from the rows whenever the ledger's caches drop. An arrival that spent the
+echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
+
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through
 `workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
 other targets require the existing Registry grant. The daemon enforces ownership for list,
@@ -312,6 +480,25 @@ The Registry is the sole owner of normalized work-cycle state. Terminal hook ada
 their raw event vocabulary into `work_started` and `turn_completed`; SDK driver state reaches the
 same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
 raw hook event names to identify a completed turn.
+
+An SDK `turn_done` that carries a capacity `failure` is not a completion while the supervisor
+holds a retry for it: the Registry keeps the card working with the retry countdown as its
+activity and emits no `turn_completed`. When an accepted turn is already queued behind the
+failure, no retry is scheduled because that turn is the retry, and the cycle likewise stays
+open until it ends. Cancelling the retry timer does not by itself complete
+the cycle. The cycle completes when:
+
+- a later turn ends without a capacity failure. That turn can be the retry's own continuation,
+  a delivered message that replaced the retry, or a turn the driver was already running when
+  the retry came due;
+- the attempts are spent, on the last failed turn;
+- an operator interrupt cancels the waiting retry, or the driver refuses the retry's send;
+- a context clear the driver confirms. The completion is recorded against the replaced
+  conversation's logical key, never the replacement's.
+
+Stopping the session cancels the timer and leaves the cycle active, because the work was not
+finished. A clear, stop, or interrupt the driver refuses re-arms the retry at the same attempt
+and emits no completion.
 
 `session_work_cycles` stores one current projection per logical conversation key: generation,
 active state, completion time, and update time. It is separate from `session_events`, whose any-row
@@ -436,7 +623,14 @@ is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 gra
 v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
 Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
 repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
-readiness before that graph can create its first attempt. Exhausting a round's evidence
+readiness before that graph can create its first attempt. Canonical publication-only criteria may
+carry `fulfilledByAction: pull_request`; the evaluator defers their proof only while a forward
+successful route in the pinned graph still reaches a `pull_request` completion contract.
+Readiness and Persona review inputs preserve `deferredToAction` without marking the criterion
+satisfied or changing its materiality. The annotation survives run-criteria reuse. Existing runs classify missing timing metadata once
+without recompacting their stable rubric; the first successful result, including explicit nulls,
+is persisted on the run. A recovery segment can classify a paused run using its existing evidence.
+Past submission contexts and override records are never rewritten. Exhausting a round's evidence
 refinements advances the final packet with its gaps intact so the judges can evaluate it.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.
@@ -455,3 +649,16 @@ The GitHub Inspector stays in the daemon so it is present in packaged Electron b
 The GitHub Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.
 
 The GitHub Inspector's poll is also the only place a PR's remote state is READ. Its tick writes what it saw - `observed_head_sha`, `observed_state`, `head_ref_name` - onto the adoption ledger beside `head_sha`, which records only what the last completed review was about. That split matters: "has the branch reached the pull request yet" is a question the review head cannot answer, and it is the question a `pull_request` session action must answer before downstream stages read fresh evidence. Anything else that needs a PR's remote state reads those columns; adding a second poller would double the API cost of every open PR to answer a question this one already answers.
+
+
+### CodeRabbit observation and delivery
+
+The Inspector adoption ledger owns CodeRabbit state through the validated `code_rabbit_state`
+column. The same daemon poll runs for Inspector or the independent Shipping switch, completing
+thread observation before review work. Inspector review/posting and Shipping merge consent stay
+separate. The nested `InspectorSummary.codeRabbit` projection carries equivalent primary and
+attached-PR observations through Registry/SSE; it is not an Inspector finding or review receipt.
+
+Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `/inject` route
+rebuilds ownership and consent, assembles the text, claims current root generations atomically,
+and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.

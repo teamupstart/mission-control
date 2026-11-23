@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -104,6 +105,9 @@ test("the table reaches a database that already had rows", () => {
       "turn_in_progress",
       "display_name",
       "recovery_process_json",
+      "resident_compaction_token_limit",
+      "advisor_model",
+      "resume_deferrals",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -124,6 +128,8 @@ test("the table reaches a database that already had rows", () => {
   // exactly what null means here - so an upgraded database keeps deriving rather than coming
   // back with every card blank-titled.
   assert.equal(getSdkSession("sdk:pre-continuation")?.displayName, null);
+  assert.equal(getSdkSession("sdk:pre-continuation")?.residentCompactionTokenLimit, undefined,
+    "upgrading an old session does not invent a measured native compaction limit");
 });
 
 test("a row round-trips, and the id is upserted rather than duplicated", () => {
@@ -261,7 +267,7 @@ test("the status vocabulary is what the live check is built from", () => {
   // rather than something that slipped in.
   assert.deepEqual(
     [...SDK_SESSION_STATUSES],
-    ["starting", "running", "exited", "failed", "suspended"],
+    ["starting", "running", "exited", "failed", "suspended", "hibernated"],
   );
   for (const status of SDK_SESSION_STATUSES) {
     upsertSdkSession(
@@ -284,6 +290,7 @@ test("the status vocabulary is what the live check is built from", () => {
       // `suspended` is live for the reason it exists: WE stopped it on the way down, and a
       // restart owes it a resume. Reading it as settled is how a clean restart reclaims the
       // worktree of work that was merely interrupted.
+      // `hibernated` is NOT: only the operator's Resume brings it back (`SdkSupervisor.wake`).
       status === "starting" || status === "running" || status === "suspended",
       `${status} liveness`,
     );
@@ -296,7 +303,7 @@ test("restore fails a row nothing can resume, and leaves an unreadable one alone
   // a driver that was removed - so `restore` exercises its refusal path without this test
   // ever spawning a real agent. (`sdk:alien` from the previous case is that row.)
   setSdkSessionStatus("sdk:alien", "running", 8_000);
-  await new SdkSupervisor(new Registry()).restore();
+  await new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
   // A row nothing can resume is FAILED, which is what makes the task it was running settle
   // visibly through the ordinary path instead of sitting `running` for ever with no session
   // anyone can see.
@@ -331,7 +338,7 @@ test("a restored card comes back under the name a person gave it", async () => {
   setSdkSessionDisplayName("sdk:restored-name", "the name I typed", 9_100);
 
   const registry = new Registry();
-  await new SdkSupervisor(registry).restore();
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
   assert.equal(registry.getSession("sdk:restored-name")?.name, "the name I typed");
 });
@@ -357,7 +364,7 @@ test("a restored card with no rename still derives its name from the checkout", 
   );
 
   const registry = new Registry();
-  await new SdkSupervisor(registry).restore();
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
   assert.equal(registry.getSession("sdk:derived-name")?.name, "other-checkout");
 });

@@ -26,7 +26,7 @@ test("the preview redraws as items are toggled, and never navigates", async ({
   page,
   daemon,
 }) => {
-  // Tall enough for the whole panel to be on screen at once. The checklist is nineteen rows
+  // Tall enough for the whole panel to be on screen at once. The checklist is twenty rows
   // of label-over-prose across three sections, beside a sticky card, and a screenshot of it
   // taken across a scroll is stitched rather than photographed - which is not what a frame
   // meant for pixel review should be.
@@ -51,11 +51,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   // Every registry item has a reachable checkbox, and the LAST one is reachable too - the
   // panel is the tallest thing in Display and its final row is the one a layout mistake
-  // would push off the end of the section rather than merely below the fold. Nineteen now:
-  // fifteen card items - including both compact progress meters, the jump shortcut, and the
-  // workflow-details switch - the console band's two, and the working indicator's two,
-  // which share this panel rather than a second one.
-  await expect(panel.getByRole("checkbox")).toHaveCount(19);
+  // would push off the end of the section rather than merely below the fold. Twenty-five now:
+  // twenty-one card items - including both compact progress meters, the jump shortcut, the
+  // workflow-details switch, the resident marker and the five blocker items - the console
+  // band's two, and the working indicator's two, which share this panel rather than a second one.
+  await expect(panel.getByRole("checkbox")).toHaveCount(25);
   await expect(panel.getByRole("checkbox", { name: "Git branch", exact: true }))
     .toBeVisible();
   await expect(panel.getByRole("checkbox", { name: "Reply box progress bar", exact: true }))
@@ -93,6 +93,10 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     // are siblings in the checklist rather than one container.
     const heading = panel.getByRole("heading", { name: "Conversation header" });
     const lastRow = panel.getByRole("checkbox", { name: "Git branch", exact: true });
+    // Scrolled to the top of its scroller BEFORE measuring: `boundingBox` is in viewport
+    // coordinates and `clip` must lie inside the viewport, so a section that panels above it
+    // push below the fold would otherwise be clipped from outside the image.
+    await heading.evaluate((el) => el.scrollIntoView({ block: "start" }));
     const top = await heading.boundingBox();
     const bottom = await lastRow.boundingBox();
     // The first checklist, which holds this section: the Working indicator brings its own.
@@ -124,6 +128,17 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   await panel.getByRole("checkbox", { name: "Model", exact: true }).uncheck();
   await expect(card.locator(".rt-model")).toHaveCount(0);
+
+  // The resident marker: the preview card is drawn as a resident, so the glow and its chip
+  // come and go with the box like every other card item.
+  await expect(card).toHaveClass(/\bis-resident\b/);
+  await expect(card.locator(".resident-chip")).toHaveText("⤒TRI");
+  await panel.getByRole("checkbox", { name: "Resident marker", exact: true }).uncheck();
+  await expect(card).not.toHaveClass(/\bis-resident\b/);
+  await expect(card.locator(".resident-chip")).toHaveCount(0);
+  await panel.getByRole("checkbox", { name: "Resident marker", exact: true }).check();
+  await expect(card.locator(".resident-chip")).toHaveCount(1);
+  expect(page.url()).toBe(before);
 
   await panel.getByRole("checkbox", { name: "Worktree", exact: true }).check();
   await expect(card.locator(".tile-worktree")).toBeVisible();

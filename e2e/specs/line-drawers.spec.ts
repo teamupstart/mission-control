@@ -1387,8 +1387,10 @@ test("blocked and parked rows sit in their own band, saying why, and moving betw
   daemon,
 }) => {
   const base = await seedTask(daemon, "Lay the base");
+  // After merge, explicitly: Stack is the shipped default, and a stackable edge says how it
+  // will stack instead of "after X". This case is about the bands, not about stacking.
   await seedTask(daemon, "Build on the base", {
-    dependencies: [{ type: "task", taskId: base.id }],
+    dependencies: [{ type: "task", taskId: base.id, mode: "merge" }],
   });
   const held = await seedTask(daemon, "Held back for now");
   await api(daemon, `/api/tasks/${held.id}/update`, { enabled: false });

@@ -207,7 +207,7 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   await shoot(page, "setup-tour-trust-matrix");
 
   await step.getByRole("button", { name: "Next" }).click();
-  step = tourStep(page, "Add a repository, then grant it");
+  step = tourStep(page, "Add the repositories you work in");
   await expect(step).toBeVisible();
   await expect(step).toContainText("Step 7 of 7");
   await expectSpotlight(page.locator(".trust-add"));

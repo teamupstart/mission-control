@@ -8,7 +8,7 @@ import type {
 import type { Task } from "@shared/types.ts";
 import { inTransaction, recordTaskSourceSeen } from "../db.ts";
 import type { TaskManager } from "../tasks.ts";
-import { canPushTo, pushToSource } from "./index.ts";
+import { canPushTo, canRelateTo, pushToSource } from "./index.ts";
 
 // The outward twin of `ingest.ts`, and the only thing on the push path that writes to our
 // database. A source implementation publishes and returns the ref it minted; what becomes
@@ -253,10 +253,12 @@ export async function pushTask(
     //    was created for it and provenance is not a provisioning field (`attachSource`).
     let attached: { ok: boolean; error?: string; task?: Task };
     try {
+      // The dependencies baseline is exactly the blocking links the source confirms the new
+      // item carries, so a later upstream change to them merges without review.
       attached = tasks.attachSource(task.id, ref, (link) => transaction(() => {
         remember(inst.id, ref.externalId, ref.url);
         return link();
-      }));
+      }), canRelateTo(inst) ? result.blockedBy : undefined);
     } catch (err) {
       // The transaction rolled back, so neither write landed - but the ISSUE still exists.
       // Reported as an unknown outcome rather than as a refusal for exactly that reason: a

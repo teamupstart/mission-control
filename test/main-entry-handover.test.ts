@@ -238,6 +238,9 @@ test("packaged startup diagnoses an unregistered current process in its log, pag
       const logPath = join(paths.state, "daemon.log");
       const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
       if (registration === "missing") {
+        // The unregistered start is read through the bundled addon, which the CommonJS main must
+        // be able to locate; an unlocatable addon reads as "could not verify" instead.
+        assert.ok(observed.inspection.some(({command}) => command === "processArguments"), "the argument record was read");
         assert.match(log, /\[main pid=\d+\] unmanaged app launch: .*not registered as a Foreground app/);
         assert.match(log, /launchctl bootout 'gui\/501\/com.fixture.startup-respawner'/);
         assert.match(observed.pages[0]!, /not registered as a Foreground app/);

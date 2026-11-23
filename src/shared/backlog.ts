@@ -1,6 +1,9 @@
 import type { BacklogPlan, BacklogPlanEntry, Task } from "./types.ts";
+import type { TaskDependencyInput } from "./protocol.ts";
+import { dependencyInputOf, dependencyKey } from "./task-dependency.ts";
 import { backlogTasks } from "./session.ts";
-import { taskKindAllowsBacklog } from "./task.ts";
+import { taskAllowsBacklog } from "./task.ts";
+import { stackStartEdge } from "./stacking.ts";
 
 // The backlog autopilot's predicates, defined once - the same reason
 // `foremanAllowlisted` and `reportBucket` live in src/shared rather than being
@@ -37,6 +40,11 @@ export interface BacklogBlocker {
   state: BlockerState;
   /** Declared blockers are policy and cannot be manually overridden; inferred ones can. */
   source: "declared" | "inferred";
+  /**
+   * Set when the blocker is an item in an external tracker (a `source` edge) rather than
+   * a task - `taskId` is then the edge's key, which names no task.
+   */
+  external?: { sourceId: string; externalId: string; url: string | null };
 }
 
 /** The plan's entries by task id. Empty map for a missing plan, so callers need no branch. */
@@ -95,7 +103,7 @@ export const PLANNABLE_LIMIT = 400;
  * ones that get a dependency read, instead of the ones a priority chip happened to lift.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).filter((task) => taskKindAllowsBacklog(task.kind)).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).filter((task) => taskAllowsBacklog(task)).slice(0, PLANNABLE_LIMIT);
 }
 
 /**
@@ -165,6 +173,12 @@ function dependencyState(target: Task): BlockerState {
 
 function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
   const out: BacklogBlocker[] = [];
+  // Stacked pull requests: the one unmerged same-repository prerequisite whose edge the daemon
+  // stamped ready (open, non-draft pull request; agent finished the episode) does not block
+  // STARTING. Its `satisfiedAt` stays null - completion, Mark done and Unblock dependents are
+  // unchanged - and an unstamped edge, including one stored before stacking existed, blocks
+  // exactly as it always did. See `stackStartEdge`.
+  const stackedOn = task.status === "backlog" ? stackStartEdge(task, byId)?.taskId ?? null : null;
   const planProblem = task.planInputError ?? task.planPolicyError;
   if (planProblem) out.push({ taskId: task.id, title: planProblem, state: "stopped", source: "declared" });
   for (const dependency of task.dependencies) {
@@ -182,6 +196,33 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
       });
       continue;
     }
+    if (dependency.type === "source") {
+      // Closed as not planned, the item's work will not happen: the same "a human has to
+      // act" answer as a cancelled task. Open, it is on its way.
+      out.push({
+        taskId: dependencyKey(dependency),
+        title: dependency.title,
+        state: dependency.state === "not_planned" ? "stopped" : "waiting",
+        source: "declared",
+        external: {
+          sourceId: dependency.sourceId,
+          externalId: dependency.externalId,
+          url: dependency.url,
+        },
+      });
+      continue;
+    }
+    if (dependency.type === "unknown") {
+      // A newer build's edge. Never satisfied here, so an older build cannot release work.
+      out.push({
+        taskId: dependencyKey(dependency),
+        title: dependency.title,
+        state: "waiting",
+        source: "declared",
+      });
+      continue;
+    }
+    if (dependency.taskId === stackedOn) continue;
     const target = byId.get(dependency.taskId);
     out.push({
       taskId: dependency.taskId,
@@ -302,7 +343,7 @@ function declaredReachable(
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const index = backlogIndex(tasks, plan);
   return backlogTasks(tasks)
-    .filter((task) => task.enabled && task.error === null && taskKindAllowsBacklog(task.kind))
+    .filter((task) => task.enabled && task.error === null && taskAllowsBacklog(task))
     .filter((task) => blockersIn(task, index).length === 0);
 }
 
@@ -362,12 +403,62 @@ export function dependentsIn(task: Task, tasks: Task[], index: BacklogIndex): Ta
  * gates scheduling.
  */
 export function deadBlockersFor(task: Task, index: BacklogIndex): Task[] {
+  return walkDeadBlockers(task, index).tasks;
+}
+
+/** An external item closed as not planned, blocking a backlog card. */
+export interface DeadSourceBlocker {
+  /** The task whose `source` edge names the item - the one to edit to drop it. */
+  ownerTaskId: string;
+  /** The edge's key (`dependencyKey`), which names it in an update body. */
+  key: string;
+  title: string;
+  sourceId: string;
+  externalId: string;
+  url: string | null;
+  /**
+   * The edge to remove, and nothing else. A list of the owner's other edges, built when the
+   * card rendered, would erase any edge a sweep or another edit added before the click.
+   */
+  dependency: TaskDependencyInput;
+}
+
+/**
+ * The external items closed as not planned that stop `task` from ever reaching the front
+ * of the queue - on its own edges, or up the same chain `deadBlockersFor` walks.
+ *
+ * The external twin of `deadBlockersFor`, from the same walk, so the two can never
+ * disagree about which chain gates a card. Each names the task that holds the edge,
+ * because that is the task an operator's "remove this dependency" has to edit.
+ */
+export function deadSourceBlockersFor(task: Task, index: BacklogIndex): DeadSourceBlocker[] {
+  return walkDeadBlockers(task, index).sources;
+}
+
+function walkDeadBlockers(
+  task: Task,
+  index: BacklogIndex,
+): { tasks: Task[]; sources: DeadSourceBlocker[] } {
   const dead = new Map<string, Task>();
+  const sources = new Map<string, DeadSourceBlocker>();
   const visiting = new Set<string>();
   const walk = (current: Task): void => {
     if (visiting.has(current.id)) return;
     visiting.add(current.id);
     for (const blocker of blockersIn(current, index)) {
+      if (blocker.external) {
+        const edge = current.dependencies.find((dependency) => dependencyKey(dependency) === blocker.taskId);
+        if (blocker.state === "stopped" && edge) {
+          sources.set(`${current.id}\0${blocker.taskId}`, {
+            ownerTaskId: current.id,
+            key: blocker.taskId,
+            title: blocker.title,
+            ...blocker.external,
+            dependency: dependencyInputOf(edge),
+          });
+        }
+        continue;
+      }
       const dep = index.byId.get(blocker.taskId);
       if (!dep) continue; // a declared edge to a task that is GONE - nothing to act on
       if (blocker.state === "stopped") {
@@ -381,5 +472,5 @@ export function deadBlockersFor(task: Task, index: BacklogIndex): Task[] {
     visiting.delete(current.id);
   };
   walk(task);
-  return [...dead.values()];
+  return { tasks: [...dead.values()], sources: [...sources.values()] };
 }

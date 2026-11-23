@@ -23,12 +23,12 @@ test("all three switches on, in a trusted repo: live", () => {
   assert.equal(inspectorPosture(live, "/repo", "/repo"), "live");
 });
 
-test("the shipped defaults are the off position", () => {
-  const fresh = InspectorConfigSchema.parse({});
-  assert.equal(fresh.enabled, false);
-  assert.equal(fresh.mode, "dry-run");
-  assert.deepEqual(fresh.repoAllowlist, []);
-  assert.equal(inspectorPosture(fresh, "/repo", "/repo"), "off");
+test("a legacy config with missing fields retains its original off posture", () => {
+  const legacy = InspectorConfigSchema.parse({});
+  assert.equal(legacy.enabled, false);
+  assert.equal(legacy.mode, "dry-run");
+  assert.deepEqual(legacy.repoAllowlist, []);
+  assert.equal(inspectorPosture(legacy, "/repo", "/repo"), "off");
 });
 
 test("disabled reports off, whatever the other two say", () => {
@@ -101,7 +101,11 @@ test("the operator's config: armed for shipping, unpublished by the Inspector, d
       reviewDecision: null,
       checks: "passing",
       unresolvedThreads: 0,
+      baseRefName: "main",
+      defaultBranch: "main",
     },
+    stack: { lineage: false, releasedForHead: false },
+    reviewedBase: "main",
     // A completed, clean review of exactly this head - which dry run produces.
     reviewedSha: "deadbeef",
     reviewPosture: "dry-run",

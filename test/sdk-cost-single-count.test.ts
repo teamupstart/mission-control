@@ -461,3 +461,185 @@ test("a headless run's OTel twin is still admitted, and still kept out of sessio
     "and excluded from session spend at read time, so it is not billed twice",
   );
 });
+
+// The adapter regression covers process replacement; these cover the transaction boundary
+// where a crash or replay must not consume a baseline without booking its matching delta.
+test("cumulative checkpoints commit atomically, reject old replay, and survive ledger pruning", async () => {
+  const { recordDriverSessionUsage, closeDb, pruneUsageLedger } = await import("../src/server/db.ts");
+  const { claudeTurnUsage } = await import("../src/server/harness/claude/sdk.ts");
+  const key = "atomic-checkpoint";
+  function record(turnId: string, total: number, cost: number | null = total) {
+    const usage = claudeTurnUsage({ type: "result", uuid: turnId, total_cost_usd: cost,
+      modelUsage: { "claude-opus-5": { inputTokens: total * 10, outputTokens: total,
+        cacheReadInputTokens: total * 100, costUSD: cost } } }, "claude-opus-5")!;
+    return recordDriverSessionUsage({ noteKey: key, sessionId: null, agent: "claude",
+      turnId, ts: 100, models: usage.models!, snapshot: { usage, resumed: false } });
+  }
+  record("a", 10);
+  openDb().exec(`CREATE TEMP TRIGGER reject_checkpoint BEFORE UPDATE ON driver_usage_snapshots
+    BEGIN SELECT RAISE(ABORT, 'simulated checkpoint failure'); END`);
+  assert.throws(() => record("b", 15), /simulated checkpoint failure/);
+  assert.equal(sessionCostFor(key)?.costUsd, 10, "failed checkpoint rolls back its ledger rows");
+  openDb().exec("DROP TRIGGER reject_checkpoint");
+  assert.equal(record("b", 15)[0]?.reportedCostUsd, 5);
+  assert.deepEqual(record("a", 10), [], "old result must not rewind the durable baseline");
+  record("unpriced", 17, null);
+  closeDb();
+  assert.equal(record("repriced", 20)[0]?.reportedCostUsd, 5, "last known price survives restart");
+  assert.equal(sessionCostFor(key)?.input, 200);
+  pruneUsageLedger(101);
+  assert.equal(sessionCostFor(key), null, "the old economic rows really were pruned");
+  assert.equal(record("after-retention", 25)[0]?.reportedCostUsd, 5, "retention does not erase baseline");
+  closeDb();
+  const checkpointBeforeReplay = openDb().prepare("SELECT snapshot_json FROM driver_usage_snapshots WHERE note_key = ?")
+    .get(key)?.snapshot_json;
+  const costBeforeReplay = sessionCostFor(key)?.costUsd;
+  const fleetBeforeReplay = fleetEstimatedCostSince(0);
+  assert.deepEqual(record("a", 10), [], "a pruned older result must not be mistaken for a provider reset");
+  assert.equal(openDb().prepare("SELECT snapshot_json FROM driver_usage_snapshots WHERE note_key = ?")
+    .get(key)?.snapshot_json, checkpointBeforeReplay, "old replay cannot rewind the checkpoint");
+  assert.equal(sessionCostFor(key)?.costUsd, costBeforeReplay);
+  assert.equal(fleetEstimatedCostSince(0), fleetBeforeReplay);
+  assert.equal(record("after-old-replay", 28)[0]?.reportedCostUsd, 3, "new work still uses the latest baseline");
+  assert.equal(record("reset", 2)[0]?.reportedCostUsd, 2, "a genuine provider reset counts fresh spend");
+});
+
+// Upgrade uncertainty is deliberately persisted, not inferred from a heuristic over spend.
+test("upgrade flags historical Claude rows once and a legacy resume records a durable transition gap", async () => {
+  const { recordDriverSessionUsage, closeDb } = await import("../src/server/db.ts");
+  const { claudeTurnUsage } = await import("../src/server/harness/claude/sdk.ts");
+  const key = "legacy-resume";
+  function record(turnId: string, total: number, resumed?: boolean) {
+    const usage = claudeTurnUsage({ type: "result", uuid: turnId, total_cost_usd: total,
+      modelUsage: { "claude-opus-5": { inputTokens: total * 10, outputTokens: total, costUSD: total } } }, "claude-opus-5")!;
+    return recordDriverSessionUsage({ noteKey: key, sessionId: null, agent: "claude",
+      turnId, ts: 100, models: usage.models!,
+      ...(resumed === undefined ? {} : { snapshot: { usage, resumed } }) });
+  }
+  record("legacy-a", 10);
+  record("legacy-replay", 15); // Inflated history: actual cumulative spend was 15.
+  // Near misses isolate every predicate, alongside the ordinary non-driver writers.
+  // Omitting any one migration guard must fail this fixture.
+  const excluded = [
+    { key: "migration-codex-driver", agent: "codex", writer: "driver", kind: "session" },
+    { key: "migration-claude-otel", agent: "claude", writer: "otel", kind: "session" },
+    { key: "migration-driver-automation", agent: "claude", writer: "driver", kind: "automation" },
+    { key: "migration-codex-rollout", agent: "codex", writer: "rollout", kind: "session" },
+    { key: "migration-claude-report", agent: "claude", writer: "report", kind: "automation" },
+  ];
+  for (const row of excluded) {
+    openDb().prepare(`INSERT INTO usage_ledger
+      (note_key, agent, writer, spend_kind, window_end_ns, ts, cost_usd)
+      VALUES (?, ?, ?, ?, 'historical', 100, 7)`)
+      .run(row.key, row.agent, row.writer, row.kind);
+  }
+  openDb().exec("ALTER TABLE usage_ledger DROP COLUMN accounting_issue");
+  closeDb();
+  const issues = () => openDb().prepare("SELECT accounting_issue FROM usage_ledger WHERE note_key = ? ORDER BY id")
+    .all(key).map(r => r.accounting_issue);
+  assert.deepEqual(issues(), ["possible_resume_replay", "possible_resume_replay"]);
+  for (const row of excluded) {
+    const actual = openDb().prepare("SELECT accounting_issue, cost_usd FROM usage_ledger WHERE note_key = ?")
+      .get(row.key);
+    assert.deepEqual({ ...actual }, { accounting_issue: "", cost_usd: 7 },
+      `${row.agent}/${row.writer}/${row.kind} is outside the migration's scope`);
+  }
+  assert.deepEqual(record("transition", 20, true), [], "do not add history or guess from inflated sums");
+  assert.equal(sessionCostFor(key)?.costUsd, 25, "retain historical figures without silent repair");
+  assert.equal(openDb().prepare("SELECT baseline_gap_turn_id FROM driver_usage_snapshots WHERE note_key = ?")
+    .get(key)?.baseline_gap_turn_id, "transition");
+  closeDb();
+  assert.equal(record("next", 23, true)[0]?.reportedCostUsd, 3);
+  assert.equal(sessionCostFor(key)?.costUsd, 28);
+  assert.deepEqual(record("transition", 20, true), [], "replaying the baseline-only result cannot rewind it");
+  assert.deepEqual(issues(), ["possible_resume_replay", "possible_resume_replay", ""]);
+  closeDb();
+  assert.deepEqual(issues(), ["possible_resume_replay", "possible_resume_replay", ""], "reopening does not flag corrected rows");
+  assert.equal(openDb().prepare("SELECT baseline_gap_turn_id FROM driver_usage_snapshots WHERE note_key = ?")
+    .get(key)?.baseline_gap_turn_id, "transition", "later turns retain the gap marker");
+
+  // Simulate an upgrade from a database that has ledger/checkpoint history but no receipts.
+  // Neither the gap nor the latest result has a ledger row now: both must be seeded
+  // from checkpoint metadata, while the older IDs must come from retained ledger rows.
+  openDb().prepare("DELETE FROM usage_ledger WHERE note_key = ? AND window_end_ns = 'next'").run(key);
+  openDb().exec("DROP TABLE driver_usage_receipts");
+  closeDb();
+  const seeded = openDb().prepare("SELECT turn_id FROM driver_usage_receipts WHERE note_key = ? ORDER BY turn_id")
+    .all(key).map(row => row.turn_id);
+  assert.deepEqual(seeded, ["legacy-a", "legacy-replay", "next", "transition"]);
+  openDb().prepare("DELETE FROM usage_ledger WHERE note_key = ?").run(key);
+  closeDb();
+  assert.deepEqual(record("legacy-a", 10, true), [], "seeded historical IDs survive pruning");
+  assert.deepEqual(record("transition", 20, true), [], "seeded baseline-only IDs survive pruning");
+  assert.deepEqual(record("next", 23, true), [], "seeded latest IDs survive pruning");
+  assert.equal(record("post-upgrade", 26, true)[0]?.reportedCostUsd, 3);
+});
+
+test("a legacy baseline with unknown prices never books historical cost when prices return", async () => {
+  const { recordDriverSessionUsage } = await import("../src/server/db.ts");
+  const { claudeTurnUsage } = await import("../src/server/harness/claude/sdk.ts");
+  function record(turnId: string, tokens: number, price: number | null) {
+    const usage = claudeTurnUsage({ type: "result", uuid: turnId, total_cost_usd: price,
+      modelUsage: { "claude-opus-5": { inputTokens: tokens, outputTokens: tokens, costUSD: price } } }, "claude-opus-5")!;
+    return recordDriverSessionUsage({ noteKey: "legacy-unpriced", sessionId: null, agent: "claude",
+      turnId, ts: 100, models: usage.models!, snapshot: { usage, resumed: true } });
+  }
+  assert.deepEqual(record("gap", 100, null), []);
+  assert.equal(record("priced", 110, 20)[0]?.reportedCostUsd, null);
+  assert.equal(record("delta", 120, 23)[0]?.reportedCostUsd, 3);
+  assert.equal(sessionCostFor("legacy-unpriced")?.input, 20);
+  assert.equal(sessionCostFor("legacy-unpriced")?.costUsd, null, "the price gap remains unknown");
+  record("provider-reset", 1, null);
+  assert.equal(record("fresh-price", 2, 5)[0]?.reportedCostUsd, 5,
+    "once the legacy price baseline is established, a later genuine reset counts fresh cost");
+});
+
+for (const resetIsPriced of [true, false]) {
+  test(`an unpriced legacy baseline yields to a ${resetIsPriced ? "priced" : "temporarily unpriced"} provider reset`, async () => {
+    const { recordDriverSessionUsage, closeDb } = await import("../src/server/db.ts");
+    const { claudeTurnUsage } = await import("../src/server/harness/claude/sdk.ts");
+    const key = `legacy-reset-${resetIsPriced}`;
+    function record(turnId: string, tokens: number, cost: number | null) {
+      const usage = claudeTurnUsage({ type: "result", uuid: turnId, total_cost_usd: cost,
+        modelUsage: { "claude-opus-5": { inputTokens: tokens, outputTokens: tokens, costUSD: cost } } }, "claude-opus-5")!;
+      return recordDriverSessionUsage({ noteKey: key, sessionId: null, agent: "claude",
+        turnId, ts: 100, models: usage.models!, snapshot: { usage, resumed: true } });
+    }
+    assert.deepEqual(record("legacy-gap", 100, null), []);
+    if (!resetIsPriced) {
+      record("reset-unpriced", 1, null);
+      closeDb(); // Clearing the obsolete marker must survive restart before cost is known.
+    }
+    assert.equal(record("reset-priced", 2, 5)[0]?.reportedCostUsd, 5,
+      "lower counters prove the reported cumulative cost belongs to fresh spend");
+    const row = openDb().prepare(`SELECT cost_usd, cost_known FROM usage_ledger
+      WHERE note_key = ? AND window_end_ns = 'reset-priced'`).get(key);
+    assert.deepEqual({ ...row }, { cost_usd: 5, cost_known: 1 });
+    assert.equal(openDb().prepare("SELECT unpriced_baseline_models_json FROM driver_usage_snapshots WHERE note_key = ?")
+      .get(key)?.unpriced_baseline_models_json, "[]");
+    closeDb();
+    assert.equal(record("next-priced", 3, 7)[0]?.reportedCostUsd, 2);
+  });
+}
+
+test("one model's reset clears only its pending legacy cost baseline while aggregate counters grow", async () => {
+  const { recordDriverSessionUsage } = await import("../src/server/db.ts");
+  const { claudeTurnUsage } = await import("../src/server/harness/claude/sdk.ts");
+  const key = "legacy-model-reset";
+  function record(turnId: string, opusTokens: number, haikuTokens: number, opusCost: number | null) {
+    const usage = claudeTurnUsage({ type: "result", uuid: turnId,
+      modelUsage: {
+        "claude-opus-5": { inputTokens: opusTokens, outputTokens: opusTokens, costUSD: opusCost },
+        "claude-haiku-5": { inputTokens: haikuTokens, outputTokens: haikuTokens, costUSD: null },
+      } }, "claude-opus-5")!;
+    return recordDriverSessionUsage({ noteKey: key, sessionId: null, agent: "claude",
+      turnId, ts: 100, models: usage.models!, snapshot: { usage, resumed: true } });
+  }
+  assert.deepEqual(record("gap", 100, 100, null), []);
+  const delta = record("opus-reset", 2, 250, 5);
+  assert.equal(delta.find(m => m.modelId === "claude-opus-5")?.reportedCostUsd, 5);
+  assert.equal(delta.find(m => m.modelId === "claude-haiku-5")?.reportedCostUsd, null);
+  assert.deepEqual(JSON.parse(String(openDb().prepare(
+    "SELECT unpriced_baseline_models_json FROM driver_usage_snapshots WHERE note_key = ?",
+  ).get(key)?.unpriced_baseline_models_json)), ["claude-haiku-5"]);
+});

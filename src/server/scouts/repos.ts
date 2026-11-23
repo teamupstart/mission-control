@@ -1,9 +1,10 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { basename } from "node:path";
 import { archiveRepoSlot } from "@shared/archives.ts";
 import type { Task } from "@shared/types.ts";
 import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
 
-export type ScoutRepoTask = Pick<Task, "repoRoot" | "worktreePath" | "baseSha" | "extraRepos">;
+export type ScoutRepoTask = Pick<Task, "repoRoot" | "worktreePath" | "baseSha" | "extraRepos" | "workspaceKind"> & Partial<Pick<Task, "kind">>;
 
 /**
  * The generated repository slots one scout task works across.
@@ -42,6 +43,7 @@ export function scoutRepoSlots(
   task: ScoutRepoTask,
   fallbackRoot: string | null = null,
 ): ArchiveRepoSlot[] {
+  if (!taskHasRepository(task)) return [];
   const slots: ArchiveRepoSlot[] = [
     {
       slot: archiveRepoSlot(1),

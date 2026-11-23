@@ -30,6 +30,8 @@ export const EXECUTABLE_IDS = [
   "du",
   "treehouse",
   "profiles",
+  "coderabbit",
+  "acli",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

@@ -708,12 +708,18 @@ function stubRegistry(operational: string[]) {
     prPollTargets: () => [],
     extraRepoPrPollTargets: () => [],
     worktreeHeadTargets: () => [],
+    repoChangeEvidenceTargets: () => [],
     dependencyPrPollTargets: () => [],
+    completedDependencyBranchTargets: () => [],
+    dependencyWorkHeadTargets: () => [],
     taskPrPollTargets: () => operational,
     recordWorktreeHeads: () => {},
     reconcilePrs: () => {},
     reconcileRepoPrs: () => {},
+    reconcileClosedDependencyPrs: () => {},
     reconcilePrMerges: (m: Map<string, number>) => merges.push(new Map(m)),
+    // No stacked pull requests here: every merge passes the stacked-merge gate unread.
+    isStackedTaskPr: () => false,
   };
 }
 

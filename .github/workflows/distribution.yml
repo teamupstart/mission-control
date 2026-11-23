@@ -58,7 +58,8 @@ jobs:
   package:
     needs: input
     if: needs.input.outputs.channel != 'skip'
-    # Pin a supported arm64 image; macOS 14 retires on 2026-11-02.
+    # Pin a supported arm64 image, never `macos-latest`. ci.yml's dispatch-only developer
+    # `package` job pins the same image so both build on the shipped OS; move them together.
     runs-on: macos-15
     environment: desktop-distribution
     timeout-minutes: 60

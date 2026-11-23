@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "--version"
+  ],
+  "code": 0,
+  "stdout": "acli version 1.3.40-stable\n",
+  "stderr": ""
+}

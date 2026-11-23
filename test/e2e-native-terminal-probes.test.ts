@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { after, test } from "node:test";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { cmuxControlProbe } from "../src/server/terminal/cmux.ts";
+import { createHerdrClient } from "../src/server/terminal/herdr-client.ts";
+import { stubRun } from "../src/server/util/exec.ts";
+import type { TerminalExec } from "../src/server/terminal/exec.ts";
+
+const root = mkdtempSync(join(tmpdir(), "native-probe-fakes-"));
+after(() => rmSync(root, { recursive: true, force: true }));
+const blockedRuntime = join(root, "blocked-runtime.cjs");
+writeFileSync(blockedRuntime, "process.stderr.write('JavaScript startup unavailable\\n'); process.exit(77);\n");
+
+function fixture(name: string) {
+  const home = join(root, `${name} space ' quote`);
+  const fake = writeFakeAgents(home);
+  const env = { ...process.env, HOME: home, MISSION_HOME: home,
+    MC_E2E_RECORD_DIR: fake.recordDir, NODE_OPTIONS: `--require ${JSON.stringify(blockedRuntime)}` };
+  return { home, fake, env };
+}
+
+// This tests native fixture execution and response classification, not host scheduling.
+// An async execFile timer can expire before a starved worker collects an already-finished
+// child's pipes. Even a ten-second budget did that under full-suite contention. Collect
+// these shell-only responses synchronously, keeping a bounded child timeout and asserting
+// the unchanged production deadline. Production execution still uses the async executor.
+//
+// The child's own budget is deliberately NOT that deadline. The fixture's status path is a
+// `/bin/sh` script reading one file, yet under full-suite contention forking that shell alone
+// has outrun one second (`spawnSync ... ETIMEDOUT`), which measured the host, not the probe.
+// A fall-through into the refused JavaScript runtime exits 77 at once and fails the
+// classification asserts below, so a longer bound cannot hide the regression this file
+// guards; it only stops a busy machine from failing it.
+const FIXTURE_CHILD_BUDGET_MS = 30_000;
+
+function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv): TerminalExec {
+  return async (_bin, args, options) => {
+    assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
+    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: FIXTURE_CHILD_BUDGET_MS });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, "the native fixture must report its own exit");
+    return stubRun({ code: result.status, stdout: result.stdout, stderr: result.stderr });
+  };
+}
+
+for (const mode of ["ready", "stopped", "refused"]) {
+  test(`native cmux ${mode} probe does not depend on JavaScript startup`, async () => {
+    const { fake, env } = fixture(`cmux-${mode}`);
+    const execute = nativeProbeExec(fake.bins.cmux, { ...env, MC_E2E_CMUX_CONTROL: mode });
+    assert.deepEqual(await cmuxControlProbe(execute), mode === "ready"
+      ? { state: "ready", accessMode: "allowAll" } : { state: mode });
+    assert.equal(readdirSync(fake.recordDir).length, 0, "health reads must not become launch records");
+  });
+}
+
+for (const mode of ["stable", "newer", "incompatible"]) {
+  for (const running of [false, true]) {
+    test(`native Herdr ${mode} ${running ? "running" : "stopped"} status survives JavaScript startup refusal`, async () => {
+      const { home, fake, env } = fixture(`herdr-${mode}-${running}`);
+      const socket = join(home, "fake-herdr.sock");
+      if (running) writeFileSync(socket, "fixture socket presence");
+      const execute = nativeProbeExec(fake.bins.herdr, { ...env, MC_E2E_HERDR_MODE: mode });
+      const result = await createHerdrClient(execute, { env: null, candidates: [fake.bins.herdr], dropEnv: [] }).probe();
+      const version = mode === "newer" ? "0.9.0" : mode === "incompatible" ? "0.7.0" : "0.8.2";
+      if (mode === "incompatible") {
+        assert.equal(result.state, "failed");
+        if (result.state === "failed") assert.match(result.error, /incompatible|protocol|restart/i);
+      } else assert.deepEqual(result, running ? { state: "ready", socket, version } : { state: "stopped", socket });
+    });
+  }
+}

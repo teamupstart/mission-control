@@ -1,6 +1,7 @@
-import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
   MISSION_API_TOKEN_ENV,
@@ -22,6 +23,7 @@ import {
   isolatedScoutSubmissionCredentialPath,
   readToken,
 } from "../shared/harness-runtime.mjs";
+import { WORK_UNIT_ENV_VAR } from "../shared/work-unit.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import { shellCommand } from "./terminal/shell.ts";
@@ -29,16 +31,55 @@ import { shellCommand } from "./terminal/shell.ts";
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
 
+/**
+ * Variables a child may carry only when its launch sets them: removed from every inherited
+ * environment, and unset by the terminal wrapper before its exports. Today that is the work
+ * unit (`docs/work-units.md`, "The launch environment").
+ */
+const INHERITED_ONLY_ENV_NAMES = [WORK_UNIT_ENV_VAR] as const;
+
 /** Terminal pane identifiers that a headless or SDK child must never inherit. */
 const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
 
-const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
+// Outside session homes so their cleanup cannot evict another task's warm cache.
+// See docs/configuration.md for the scope of sandbox-writability verification.
+const GO_CACHE_UID = userInfo().uid;
+const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACHE_UID}`);
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Remove only expired Pipeline caller files left by a previous daemon crash. */
+function sharedGoBuildCache(): string {
+  mkdirSync(SHARED_GO_BUILD_CACHE, { recursive: true, mode: 0o700 });
+  const info = lstatSync(SHARED_GO_BUILD_CACHE);
+  // A predictable name in a shared temp directory must not follow another user's link.
+  if (!info.isDirectory() || (GO_CACHE_UID !== -1 && info.uid !== GO_CACHE_UID)) {
+    throw new Error(`Go build cache is not an owned directory: ${SHARED_GO_BUILD_CACHE}`);
+  }
+  return SHARED_GO_BUILD_CACHE;
+}
+
+/**
+ * How long a turn-one outcome is kept after its wrapper wrote it, whoever owns it. A dispatch reads
+ * its outcome seconds after the launch, so this outlasts any in-flight dispatch of another daemon
+ * sharing the disposable root, while still reclaiming the ones a dead daemon left behind.
+ */
+const TURN_ONE_OUTCOME_GRACE_MS = 10 * 60 * 1000;
+
+function outcomeIsStale(path: string, now: number): boolean {
+  try {
+    return now - statSync(path).mtimeMs >= TURN_ONE_OUTCOME_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove only expired Pipeline caller files left by a previous daemon crash, and turn-one outcome
+ * files (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
+ * and the dispatch that would have read and removed them died with that daemon.
+ */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   let entries: string[];
   try {
@@ -48,6 +89,20 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   }
   for (const entry of entries) {
     if (!entry.startsWith("session-")) continue;
+    const outcomeOf = entry.endsWith(".turn-one") ? join(DISPOSABLE_STATE_ROOT, entry.slice(0, -".turn-one".length)) : null;
+    if (outcomeOf) {
+      // Still running under a live wrapper, still owned by this daemon, or young enough that another
+      // daemon's dispatch may not have read it yet: leave it.
+      if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf) && outcomeIsStale(join(DISPOSABLE_STATE_ROOT, entry), now)) {
+        try {
+          rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+        } catch (error) {
+          // One entry that cannot be removed never stops the rest of the scan.
+          console.warn(`[launch] could not remove the orphaned turn-one outcome ${entry}:`, error);
+        }
+      }
+      continue;
+    }
     const stateHome = join(DISPOSABLE_STATE_ROOT, entry);
     if (liveDisposableStateHomes.has(stateHome)) continue;
     try {
@@ -123,6 +178,12 @@ export interface AgentSubprocessEnvOptions {
   loopbackAccess?: boolean;
   /** Checkout whose already-provisioned scoped scout capability should follow the launch. */
   cwd?: string;
+  /**
+   * Harness launch variables a capability rendered for this session (the advisor's Off
+   * switch, today). Applied over the inherited environment and BEFORE the isolation below,
+   * so nothing here can name a state home, a token or a credential back into the child.
+   */
+  extraEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -137,6 +198,12 @@ export function agentSubprocessEnv(
   for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value !== undefined) env[name] = value;
   }
+  // Never inherited: the daemon may have been started from a worker's shell, and no process it
+  // spawns - an agent, a workflow check, a one-shot model call - may carry that unit's id. A
+  // launch that carries one supplies it in `extraEnv`, which is applied after this.
+  for (const name of INHERITED_ONLY_ENV_NAMES) delete env[name];
+  Object.assign(env, options.extraEnv);
+  if (!env.GOCACHE) env.GOCACHE = sharedGoBuildCache();
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
   const stateHome = options.stateHome ?? createDisposableAgentStateHome();
   env.MISSION_HOME = stateHome;
@@ -188,8 +255,9 @@ export function agentSubprocessEnv(
  * Three details are load-bearing:
  *
  *   - The `unset` comes first and names every spelling of the state home, so the login
- *     shell's own `MISSION_HOME` cannot survive into the agent. It replaces the
- *     `env -u NAME` prefix rather than sitting beside it.
+ *     shell's own `MISSION_HOME` cannot survive into the agent, and `WORK_UNIT_ID`, so a
+ *     terminal server started from a worker's shell cannot tag the agent with that unit. It
+ *     replaces the `env -u NAME` prefix rather than sitting beside it.
  *   - The exports carry `PATH`. Herdr's `workspace.create` accepts an `env` map, and it is
  *     NOT a substitute: measured, the map reaches the shell, but the login shell's rc files
  *     then rewrite `PATH` back to the operator's interactive one, which is exactly the
@@ -199,16 +267,82 @@ export function agentSubprocessEnv(
  *     removed. Running it as an ordinary command also leaves the agent's exit status as the
  *     script's, which is what a backend reports.
  */
-function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[]): string {
+function launchAndCleanupScript(
+  env: Record<string, string>,
+  argv: readonly string[],
+  preserveShellGoCache: boolean,
+  fallbackArgv: readonly string[] | null = null,
+): string {
   return [
     "#!/bin/sh",
-    `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
-    ...Object.entries(env).map(([name, value]) => `export ${name}=${shellCommand([value])}`),
+    // The pane already holds the terminal server's environment, so a variable the launch
+    // leaves out would otherwise reach the agent from there. The exports below are then the
+    // only source of a work unit: set when the launch carries one, absent when it does not.
+    `unset ${[...STATE_HOME_ENV_NAMES, ...INHERITED_ONLY_ENV_NAMES].join(" ")}`,
+    ...Object.entries(env).map(([name, value]) => {
+      const assignment = `export ${name}=${shellCommand([value])}`;
+      // Terminal servers and login shells can supply a setting the daemon never saw.
+      return name === "GOCACHE" && preserveShellGoCache
+        ? `if [ -z "\${GOCACHE:-}" ]; then ${assignment}; fi`
+        : assignment;
+    }),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
     `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
-    shellCommand(argv),
+    ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",
   ].join("\n");
+}
+
+/**
+ * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
+ * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
+ * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
+ * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
+ * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
+ * resolved interpreter's own path, which a version manager can make long.
+ */
+function probePadding(program: string): string {
+  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
+  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
+}
+
+/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
+const PATH_MAX_BYTES = 4096;
+
+/**
+ * Run `argv` only if it fits under the platform's argument limit in THIS shell's environment -
+ * the pane's, which the daemon cannot see before the launch - and otherwise run `fallbackArgv`.
+ * Either way `outcome` (`turnOneOutcomePath`) says which ran, before the agent starts.
+ *
+ * The check is an exec of `/bin/sh -c :` carrying every word of `argv` plus padding for the real
+ * exec's image overhead, under the same environment: it fails with `E2BIG` exactly when the
+ * agent's own exec would, and costs one fork of a shell that does nothing. The agent's exit
+ * status after a launch is never read as an exec failure, so the task is never run twice.
+ */
+function fittingLaunch(argv: readonly string[], fallbackArgv: readonly string[], outcome: string): string[] {
+  const probe = shellCommand([FIXED_OS_EXECUTABLES.sh, "-c", ":", "mission-turn-one-probe", probePadding(argv[0] ?? ""), ...argv]);
+  const record = (which: string) => `printf '%s' ${which} > ${shellCommand([outcome])}`;
+  return [
+    `if ${probe} 2>/dev/null; then`,
+    `  ${record("shaped")}`,
+    `  ${shellCommand(argv)}`,
+    "else",
+    `  ${record("original")}`,
+    `  ${shellCommand(fallbackArgv)}`,
+    "fi",
+  ];
+}
+
+/**
+ * The environment `isolatedAgentArgv`'s wrapper exports to the agent, for a caller that has to
+ * measure it before the launch: a launch argument shares `ARG_MAX` with every one of these.
+ * Writes the same loopback token file into `options.stateHome` the wrapper's own call writes,
+ * so `options.stateHome` should be the launch's, already created.
+ */
+export function isolatedAgentEnvironment(
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+): Record<string, string> {
+  return agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
 }
 
 /**
@@ -222,13 +356,21 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
  */
 export function isolatedAgentArgv(
   argv: readonly string[],
-  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> & {
+    /**
+     * The launch to run instead when `argv` would not fit under the platform's argument limit
+     * in the pane's environment (see `fittingLaunch`). Only a launch whose argv carries
+     * optional text - a shaped turn one - has one; every other launch's script is unchanged.
+     */
+    fallbackArgv?: readonly string[] | null;
+  } = {},
 ): string[] {
-  const env = agentSubprocessEnv({}, { ...options, loopbackAccess: true });
+  const { fallbackArgv = null, ...envOptions } = options;
+  const env = isolatedAgentEnvironment(envOptions);
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {
-    writeFileSync(wrapper, launchAndCleanupScript(env, argv), { mode: 0o700 });
+    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE, fallbackArgv), { mode: 0o700 });
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;

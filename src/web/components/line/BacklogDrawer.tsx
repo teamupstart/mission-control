@@ -4,6 +4,8 @@ import {
   backlogIndex,
   blockersIn,
   deadBlockersFor,
+  deadSourceBlockersFor,
+  type DeadSourceBlocker,
   dependentsIn,
   readyBacklog,
 } from "@shared/backlog.ts";
@@ -17,6 +19,9 @@ import {
   blockedLabel,
   blockersNeedYou,
   plannerFacts,
+  stackedStartLabel,
+  stackWaitLabel,
+  type StackShipping,
   type AutopilotGate,
   type BacklogTaskNoticeView,
   type BacklogTrustView,
@@ -26,7 +31,17 @@ import { relativeTime } from "../../lib/format.ts";
 import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
+import { HibernatedSection } from "../HibernatedTasks.tsx";
+import { hibernatedTasks } from "@shared/hibernation.ts";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
+import {
+  BacklogFilterButtons,
+  BacklogFilterEmpty,
+  BacklogFilterStrip,
+  HighlightedTitle,
+  useBacklogFilter,
+} from "../BacklogFilterControls.tsx";
+import { backlogFacetCounts, matchesBacklogFilter } from "../../lib/backlog-filter.ts";
 
 /**
  * BACKLOG - the queue in the order the operator arranged, and the moves that change it.
@@ -83,6 +98,11 @@ interface Row {
   band: Band;
   blockers: BacklogBlocker[];
   deadBlockers: Task[];
+  /** "Stacked on #N" for an item released to start on a prerequisite's open pull request. */
+  stackedOn: string | null;
+  /** Why an item whose dependency is set to Stack is still waiting, in place of "after X". */
+  stackWait: string | null;
+  deadSources: DeadSourceBlocker[];
 }
 
 /**
@@ -94,7 +114,7 @@ interface Row {
  * The row still prints the blocker beside the parked pill, so nothing is hidden - resuming it
  * moves it up one band rather than into the ready list, and it says so before you click.
  */
-function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex): Row[] {
+function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex, stackShipping?: StackShipping): Row[] {
   const ready = readyBacklog(tasks, plan);
   const readyIds = new Set(ready.map((t) => t.id));
   const row = (task: Task, band: Band): Row => ({
@@ -102,6 +122,9 @@ function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex)
     band,
     blockers: blockersIn(task, index),
     deadBlockers: deadBlockersFor(task, index),
+    stackedOn: stackedStartLabel(task, index.byId),
+    stackWait: stackWaitLabel(task, index.byId, stackShipping),
+    deadSources: deadSourceBlockersFor(task, index),
   });
   // One order for both bands now (`backlogTasks` is `byBacklogRank`), which is why this is a
   // plain set difference rather than a re-sort: a blocked row sits exactly where the operator
@@ -151,8 +174,10 @@ function BacklogRow({
   onSetPriority,
   onReschedule,
   onComplete,
+  onRemoveSource,
   notice,
   onManageTrust,
+  highlight = "",
 }: {
   row: Row;
   /**
@@ -170,10 +195,13 @@ function BacklogRow({
   onSetPriority: (next: TaskPriority | null) => void;
   onReschedule: (deadId: string) => void;
   onComplete: (deadId: string) => void;
+  onRemoveSource: (blocker: DeadSourceBlocker) => void;
   notice: BacklogTaskNoticeView | null;
   onManageTrust?: () => void;
+  /** The drawer's search text, marked in the title. */
+  highlight?: string;
 }): React.JSX.Element {
-  const { task, band, blockers, deadBlockers } = row;
+  const { task, band, blockers, deadBlockers, deadSources, stackedOn, stackWait } = row;
   const nextUp = planner !== null;
   // Amber down the leading edge only where a person is genuinely the missing part - a dead or
   // disabled prerequisite. Two rows this deliberately does NOT tone, against the mockup:
@@ -198,7 +226,7 @@ function BacklogRow({
             is - triage almost always means rereading the thing before deciding about it. */}
         <Tooltip label={task.intent || `Open "${task.title}" for editing`}>
           <button type="button" className="line-bl-title" onClick={onEdit}>
-            {task.title}
+            <HighlightedTitle text={task.title} query={highlight} />
           </button>
         </Tooltip>
         <span className="line-bl-meta">
@@ -231,10 +259,15 @@ function BacklogRow({
         {/* Said on a parked row too, not just a blocked one: an item can be both, and a row
             that printed only the pill for the band it landed in would promise that resuming
             it puts it at the front of the queue. */}
+        {stackedOn && (
+          <Tooltip label="Ready to start on its prerequisite's open pull request - it is cut from that branch and opens its own pull request against it">
+            <span className="bl-stacked">{stackedOn}</span>
+          </Tooltip>
+        )}
         {blockers.length > 0 && (
           <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
             <span className={`bl-blocked${needsYou ? " is-stopped" : ""}`}>
-              {blockedLabel(blockers)}
+              {(!needsYou && stackWait) || blockedLabel(blockers)}
             </span>
           </Tooltip>
         )}
@@ -249,9 +282,11 @@ function BacklogRow({
             the chain, so this appears on rows whose own blocker chip says a plain "after X". */}
         <DeadBlockerButton
           deadBlockers={deadBlockers}
+          deadSources={deadSources}
           busy={busy}
           onReschedule={onReschedule}
           onComplete={onComplete}
+          onRemoveSource={onRemoveSource}
         />
         {/* The priority control IS the mark, never a read-only chip with an editor beside it -
             the board card settled this argument and the reasoning carries: two of them meant
@@ -329,6 +364,7 @@ export function BacklogDrawer({
   onSetAutoBacklog,
   backlogTrust = null,
   onManageTrust,
+  stackShipping,
 }: {
   tasks: Task[];
   backlogPlan: BacklogPlan | null;
@@ -344,6 +380,8 @@ export function BacklogDrawer({
   backlogTrust?: BacklogTrustView | null;
   /** Open the Trust matrix after dismissing this drawer. */
   onManageTrust?: () => void;
+  /** The Shipping stacking default and depth cap, so a blocked stack row can say why. */
+  stackShipping?: StackShipping;
 }): React.JSX.Element {
   // Per-task rather than one flag for the panel: two rows are two decisions, and a switch
   // that went inert because somebody launched a different task reads as a broken control.
@@ -355,10 +393,24 @@ export function BacklogDrawer({
     // One index for the whole pass, and the planner's "unblocks N" reads the same one:
     // `blockersIn` is the only definition of what blocks what, forwards or backwards.
     const built = backlogIndex(tasks, backlogPlan);
-    return { rows: partition(tasks, backlogPlan, built), index: built };
-  }, [tasks, backlogPlan]);
+    return { rows: partition(tasks, backlogPlan, built, stackShipping), index: built };
+  }, [tasks, backlogPlan, stackShipping]);
   const ready = rows.filter((r) => r.band === "ready");
-  const held = rows.filter((r) => r.band !== "ready");
+  // The same Hibernated section the board's Backlog column draws, so a hibernated task can be
+  // resumed from the Console layout too, where this drawer is the Backlog.
+  const sleeping = useMemo(() => hibernatedTasks(tasks), [tasks]);
+  /**
+   * Search and filters hide rows and nothing else. `ready` above stays the whole band, so the
+   * next-up mark still sits on the row autopilot takes next, or on no row if that one is
+   * hidden, never on whichever ready row happens to be first through the filter.
+   */
+  const filtering = useBacklogFilter();
+  const subjects = rows.map((r) => ({ task: r.task, blocked: r.blockers.length > 0 }));
+  const shownRows = filtering.active
+    ? rows.filter((r) => matchesBacklogFilter({ task: r.task, blocked: r.blockers.length > 0 }, filtering.filter))
+    : rows;
+  const shownReady = shownRows.filter((r) => r.band === "ready");
+  const held = shownRows.filter((r) => r.band !== "ready");
 
   /**
    * The planner's read of the head of the queue, or null when nothing is ready.
@@ -430,6 +482,13 @@ export function BacklogDrawer({
           true,
           true,
         ), "could not complete that task"),
+      // An external item edits the task that HOLDS the edge, which may be up the chain.
+      onRemoveSource: (blocker) =>
+        void act(
+          id,
+          () => api.removeTaskDependency(blocker.ownerTaskId, blocker.dependency),
+          "could not remove that dependency",
+        ),
       notice: backlogTaskNotice(row.task, backlogTrust),
       onManageTrust: onManageTrust
         ? () => {
@@ -437,18 +496,35 @@ export function BacklogDrawer({
             onManageTrust();
           }
         : undefined,
+      highlight: filtering.filter.query,
     };
   };
 
   return (
     <LineDrawer
       stage="backlog"
-      count={bandCount(rows)}
+      count={filtering.active ? `${shownRows.length} of ${rows.length} shown` : bandCount(rows)}
       // The strip's own amber rule, to the word: a backlog with items in it and none of them
       // ready is a queue that capacity will never clear, which is the one backlog state that
       // needs a person.
       attention={rows.length > 0 && ready.length === 0 ? "nothing ready" : ""}
-      notice={error ? <p className="line-drawer-alert" role="alert">{error}</p> : null}
+      actions={
+        rows.length > 0 ? (
+          <BacklogFilterButtons state={filtering} counts={backlogFacetCounts(subjects, filtering.filter)} />
+        ) : null
+      }
+      notice={
+        <>
+          {error && <p className="line-drawer-alert" role="alert">{error}</p>}
+          {rows.length > 0 && <BacklogFilterStrip state={filtering} />}
+          <BacklogFilterEmpty
+            className="line-bl-hidden"
+            hidden={rows.length - shownRows.length}
+            shown={shownRows.length}
+            onClear={filtering.clear}
+          />
+        </>
+      }
       onClose={onClose}
       footer={(
         <>
@@ -506,8 +582,9 @@ export function BacklogDrawer({
         </>
       )}
     >
+      <HibernatedSection tasks={sleeping} />
       {rows.length === 0 ? (
-        <LineDrawerEmpty>
+        sleeping.length > 0 ? null : <LineDrawerEmpty>
           Nothing is queued. Dispatch files a task here when you shelve it instead of launching
           it, and Intake's sources and recurring missions file their own.
         </LineDrawerEmpty>
@@ -521,9 +598,9 @@ export function BacklogDrawer({
         // that cost the body nothing: the header counts them, every row wears its own state
         // as a mark, and each list is NAMED for a reader who cannot see either.
         <>
-          {ready.length > 0 && (
+          {shownReady.length > 0 && (
             <ul className="line-drawer-rows" aria-label="Ready, in the order autopilot would take them">
-              {ready.map((row) => <BacklogRow key={row.task.id} {...rowProps(row)} />)}
+              {shownReady.map((row) => <BacklogRow key={row.task.id} {...rowProps(row)} />)}
             </ul>
           )}
           {held.length > 0 && (

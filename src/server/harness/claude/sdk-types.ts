@@ -117,6 +117,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
    * lets this live gauge affect the session lifecycle.
    */
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse>;
+  /** The MCP servers this query configured, by name. Absent on scripted test transports. */
+  mcpServerStatus?(): Promise<Array<{ name: string; status: string }>>;
 }
 
 /**
@@ -183,7 +185,27 @@ export interface ClaudeSdkQueryOptions {
     excludeDynamicSections?: boolean;
   };
   resume?: string;
+  /**
+   * Tool rules the CLI auto-approves (`--allowedTools`). Adds approval, never narrows the
+   * toolset. The ask channel pre-approves `request_input` on every launch (`sdkAskChannel`),
+   * so calling it raises no permission ask.
+   */
+  allowedTools?: string[];
+  /** Tools removed from the session (`--disallowedTools`); the ask channel removes `AskUserQuestion`. */
+  disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
+  /**
+   * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
+   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch,
+   * including a resident whose profile imports all native sources.
+   */
+  strictMcpConfig?: boolean;
+  /**
+   * Launch-scoped flag settings, merged over the operator's. A pinned resident run sets
+   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
+   * task's advisor pin sets `advisorModel`. One object carries both when both apply.
+   */
+  settings?: { disableClaudeAiConnectors?: boolean; env?: Record<string, string>; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,
@@ -222,6 +244,8 @@ export interface ClaudeSdkOneShotQueryOptions {
    */
   maxTurns?: number;
   model?: string;
+  /** The SDK's own `effort` option; omitted for the provider default. */
+  effort?: ThinkingLevel;
   maxBudgetUsd?: number;
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   stderr?: (data: string) => void;
@@ -243,6 +267,18 @@ export interface ClaudeSdkDeps {
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
+  /** How long a resident's start waits to confirm its MCP servers. Production uses the default. */
+  residentMcpSettleMs?: number;
+  /**
+   * How long an `authentication_failed` frame may wait for the `result` that normally
+   * closes its turn before the driver closes the turn itself. Production uses the default.
+   */
+  authFailureTurnGraceMs?: number;
+  /**
+   * How long authentication recovery waits for the stale subprocess to drain after its
+   * input closes, and again after `return()` asks it to stop. Production uses the default.
+   */
+  authRecoveryDrainMs?: number;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */

@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
@@ -134,6 +135,7 @@ export const QueueVerdictSchema = z.object({
   gaps: nullAsAbsent(
     z
       .array(GapSchema)
+      .max(LLM_REPLY_COLLECTION_MAX)
       .default([])
       // Same reasoning as the text caps: a 4th gap is not worth discarding a verdict
       // over. The prompt asks for "AT MOST 3, most severe first", so honour that
@@ -155,7 +157,7 @@ export const QueueVerdictSchema = z.object({
   // resolve FEWER prior gaps, which keeps them tracked for another round - the safe
   // direction, and the same reasoning the gaps cap above uses.
   resolved: nullAsAbsent(
-    z.array(z.string().transform(clampTo(GAP_ID_MAX))).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
+    z.array(z.string().transform(clampTo(GAP_ID_MAX))).max(LLM_REPLY_COLLECTION_MAX).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
   ),
   confidence: nullAsAbsent(z.number().min(0).max(1).default(0.5)),
 });
@@ -204,7 +206,7 @@ export async function verifyItem(
         schema: QUEUE_VERDICT_JSON_SCHEMA,
       }),
     buildVerifyPrompt(input),
-    extractQueueVerdict,
+    (raw) => parseModelReply(raw, QueueVerdictSchema),
     "Foreman verify",
   );
   return r.kind === "ok"

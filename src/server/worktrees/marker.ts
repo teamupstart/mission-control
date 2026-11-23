@@ -23,13 +23,37 @@ function parseMarker(raw: string): WorktreePoolMarker | null {
   }
 }
 
+/**
+ * What one read of a pool root's marker established. `absent` and `invalid` are positive
+ * facts about the pool root: no marker file there, or one whose content (or kind of entry) is
+ * not a marker. `unreadable` is a read that did not answer - an I/O error, exhausted
+ * descriptors, a denied open - and says nothing about whether the marker is intact.
+ */
+export type WorktreePoolMarkerReading =
+  | { kind: "present"; marker: WorktreePoolMarker }
+  | { kind: "absent" }
+  | { kind: "invalid" }
+  | { kind: "unreadable"; reason: string };
+
+/** Read the marker at one exact pool root, keeping "not there" apart from "could not read". */
+export async function observeWorktreePoolMarker(poolPath: string): Promise<WorktreePoolMarkerReading> {
+  let raw: string;
+  try {
+    raw = await readFile(join(poolPath, WORKTREE_POOL_MARKER), "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "absent" };
+    if (code === "EISDIR") return { kind: "invalid" };
+    return { kind: "unreadable", reason: String(error) };
+  }
+  const marker = parseMarker(raw);
+  return marker ? { kind: "present", marker } : { kind: "invalid" };
+}
+
 /** Read and validate the provider-neutral marker at one exact pool root. */
 export async function readWorktreePoolMarker(poolPath: string): Promise<WorktreePoolMarker | null> {
-  try {
-    return parseMarker(await readFile(join(poolPath, WORKTREE_POOL_MARKER), "utf8"));
-  } catch {
-    return null;
-  }
+  const reading = await observeWorktreePoolMarker(poolPath);
+  return reading.kind === "present" ? reading.marker : null;
 }
 
 /**

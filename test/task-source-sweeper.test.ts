@@ -17,11 +17,24 @@ writeFileSync(
     "  touch \"$TASK_SOURCE_SWEEP_GATE/started\"\n" +
     "  while [ ! -f \"$TASK_SOURCE_SWEEP_GATE/release\" ]; do sleep 0.01; done\n" +
     "fi\n" +
+    "if [ \"$1\" = issue ] && [ \"$2\" = view ]; then\n" +
+    "  printf '{\"number\":7,\"title\":\"Blocker\",\"url\":\"https://github.com/acme/demo/issues/7\",\"labels\":[],\"state\":\"CLOSED\",\"stateReason\":\"COMPLETED\"}'\n" +
+    "  exit 0\n" +
+    "fi\n" +
+    "if [ -n \"$TASK_SOURCE_SLOW_LIST\" ]; then sleep 5.5; fi\n" +
     "printf '[]'\n",
 );
 chmodSync(join(bin, "gh"), 0o755);
 process.env.HARNESS_HOME = join(home, "state");
+// The floor `sweeper.ts` allows, so one test can outlast a sweep's deadline in seconds.
+process.env.MISSION_TASK_SOURCE_TIMEOUT_MS = "5000";
 process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+// Named outright as well as put first on PATH. `run` resolves a bare name through the
+// executable locator, which may consult the login shell's PATH rather than this process's,
+// so under a runner whose shell finds a real `gh` first the fake never ran and the gate below
+// was never opened. An absolute path is not a lookup at all, and the highest-precedence alias
+// outranks anything the environment brought with it.
+process.env.MISSION_GH_BIN = join(bin, "gh");
 
 const { openDb } = await import("../src/server/db.ts");
 const { sweepOnce, taskSourceStatuses } = await import(
@@ -31,7 +44,7 @@ const { sweepOnce, taskSourceStatuses } = await import(
 openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const tasks = {} as TaskManager;
+const tasks = { list: () => [] } as unknown as TaskManager;
 
 function source(id: string, enabled: boolean): TaskSourceInstance {
   return {
@@ -98,4 +111,25 @@ test("a sweep started before disable cannot restore stale health", async () => {
     writeFileSync(join(gate, "release"), "");
     await sweep;
   }
+});
+
+test("a sweep that used up its deadline still re-checks the blockers its tasks wait on", async () => {
+  const inst = source("slow-sweep", true);
+  const waiting = { id: "waiting", status: "backlog", dependencies: [{
+    type: "source", sourceId: inst.id, externalId: "acme/demo#7", url: "https://github.com/acme/demo/issues/7",
+    title: "acme/demo#7", state: "open", checkedAt: null, selectedAt: 1, satisfiedAt: null,
+  }] };
+  const observed: { externalId: string; state: string | null }[] = [];
+  const recording = {
+    list: () => [waiting],
+    observeSourceItems: (_sourceId: string, observations: typeof observed) => { observed.push(...observations); },
+  } as unknown as TaskManager;
+  process.env.TASK_SOURCE_SLOW_LIST = "1";
+  try {
+    const report = await sweepOnce(inst, recording);
+    assert.equal(report.error, "the sweep was abandoned");
+  } finally {
+    delete process.env.TASK_SOURCE_SLOW_LIST;
+  }
+  assert.deepEqual(observed.map(({ externalId, state }) => ({ externalId, state })), [{ externalId: "acme/demo#7", state: "completed" }]);
 });

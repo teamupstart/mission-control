@@ -156,8 +156,10 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
   // the entire interaction rather than a race this spec would only sometimes catch.
   const config = (await (
     await fetch(`${daemon.baseURL}/api/workflows/config`)
-  ).json()) as { defaultWorkflowId: string };
-  expect(config.defaultWorkflowId, "the daemon should ship a default Workflow").toBeTruthy();
+  ).json()) as { kindWorkflowDefaults: { ship?: string | null } };
+  // Unset, so Ship follows its built-in: the daemon ships a default Workflow.
+  expect(config.kindWorkflowDefaults.ship, "Ship should follow its built-in default").toBeUndefined();
+  const shipDefault = "builtin-workflow:no-mistakes-review";
 
   const title = "Audit The Retry Policy";
   const created = (await (
@@ -171,11 +173,11 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
         agent: "claude",
         kind: "ship",
         backlog: true,
-        workflowId: config.defaultWorkflowId,
+        workflowId: shipDefault,
       }),
     })
   ).json()) as { id: string; title: string; workflowId: string | null };
-  expect(created.workflowId).toBe(config.defaultWorkflowId);
+  expect(created.workflowId).toBe(shipDefault);
   // Titled explicitly rather than derived, so the row can be found by name without
   // waiting on the async model retitle a dispatch would otherwise apply.
   expect(created.title).toBe(title);
@@ -195,14 +197,14 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
   await expect(dialog).toBeVisible();
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
   const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
-  await expect(afterWork).toHaveValue(config.defaultWorkflowId);
+  await expect(afterWork).toHaveValue(shipDefault);
 
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue("__none");
   await kind.selectOption("ship");
 
   // Handed back from what the scout switch put aside, with no config in sight.
-  await expect(afterWork).toHaveValue(config.defaultWorkflowId);
+  await expect(afterWork).toHaveValue(shipDefault);
 
   // And the durable row agrees, which is the failure the whole guard exists to prevent:
   // saving here used to persist None and leave the task finishing with no handoff.
@@ -216,5 +218,5 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
       }[];
       return rows.find((t) => t.id === created.id)?.workflowId ?? "missing";
     })
-    .toBe(config.defaultWorkflowId);
+    .toBe(shipDefault);
 });

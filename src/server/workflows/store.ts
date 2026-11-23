@@ -1,9 +1,12 @@
+import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
@@ -82,6 +85,9 @@ import {
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
@@ -121,6 +127,8 @@ import {
   WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -171,6 +179,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowCommandArtifactDescriptor,
   WorkflowAssetReferenceSet,
   WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
@@ -181,7 +190,8 @@ import {
 } from "./intent-fingerprint.ts";
 import { classifyWorkflowGoalProvenance } from "./goal-provenance.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import type { SessionIntentGuard } from "@shared/types.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
+import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { consumePromptedGeneration, openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
@@ -417,14 +427,18 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 export const WORKFLOW_TABLES = [
   "personas",
   "session_actions",
+  "builtin_session_action_overrides",
   "workflow_commands",
   "workflow_command_overrides",
+  "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
   "workflow_node_attempts",
+  "workflow_command_artifact_reservations",
+  "workflow_command_artifacts",
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
@@ -469,7 +483,7 @@ function rowId(value: unknown): string {
 // absent after they have already been defaulted.
 function parseShape<T>(
   table: (typeof WORKFLOW_TABLES)[number],
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T, unknown>,
   value: unknown,
 ): T {
   const parsed = schema.safeParse(value);
@@ -790,7 +804,20 @@ const PersonaRowSchema = z.object({
    * The blob's own contents are validated separately, and tolerantly.
    */
   import_provenance_json: nullableText.optional(),
+  /** Optional on the shape for the same reason: a pre-effort database returns no key. */
+  effort: nullableText.optional(),
 });
+
+/** A stored effort, or null for absent and for a level this build does not know. */
+function readPersonaEffort(value: string | null | undefined): ThinkingLevel | null {
+  return (THINKING_LEVELS as readonly string[]).includes(value ?? "") ? value as ThinkingLevel : null;
+}
+
+/** An attempt's or call's effort as a spread: absent stays absent, like every pre-effort row. */
+function withEffort(value: string | null | undefined): { effort?: ThinkingLevel } {
+  const effort = readPersonaEffort(value);
+  return effort ? { effort } : {};
+}
 
 /**
  * The provenance blob, or null - and null for a blob this build cannot read.
@@ -857,6 +884,7 @@ export function parsePersonaRow(value: unknown): Persona {
     // runner union; Persona resolution is the tolerant boundary that reports the fallback.
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
+    effort: readPersonaEffort(row.effort),
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -962,6 +990,9 @@ const WorkflowCommandRowSchema = z.object({
    * WHOLE slot to "Not configured", hiding a command that is perfectly good.
    */
   max_runs: z.unknown().optional(),
+  timeout_ms: z.unknown().optional(),
+  on_unavailable: z.unknown().optional(),
+  on_budget_exhausted: z.unknown().optional(),
   revision: positive,
   created_at: integer,
   updated_at: integer,
@@ -991,10 +1022,11 @@ function readCommandArgv(
   id: string,
   column: string,
   raw: string | null,
+  schema = CommandArgvJsonSchema,
 ): string[] | null {
   if (raw === null) return null;
   try {
-    return parseJson(table, id, column, raw, CommandArgvJsonSchema, COMMAND_ARGV_JSON_BYTES);
+    return parseJson(table, id, column, raw, schema, COMMAND_ARGV_JSON_BYTES);
   } catch (error) {
     diagnose(error);
     return null;
@@ -1019,10 +1051,31 @@ function readCommandMaxRuns(raw: unknown): number {
   );
 }
 
+function readCommandTimeoutMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
+  return Math.min(
+    Math.max(raw, WORKFLOW_COMMAND_TIMEOUT_MIN_MS),
+    WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  );
+}
+
+function readCommandFailurePolicy(raw: unknown): "skip" | "block" {
+  return (WORKFLOW_COMMAND_FAILURE_POLICIES as readonly unknown[]).includes(raw)
+    ? raw as "skip" | "block"
+    : "skip";
+}
+
 /** An override, or null when its argv is unreadable - in which case it is not projected. */
 function parseWorkflowCommandOverrideRow(
   row: WorkflowCommandOverrideRow,
 ): WorkflowCommandOverride | null {
+  if (row.slot === "coderabbit") {
+    try {
+      const review = CodeRabbitTuningSchema.parse(JSON.parse(row.command_json));
+      return { repoRoot: row.repo_root, command: [], review };
+    } catch (error) { diagnose(error); return null; }
+  }
   const command = readCommandArgv(
     "workflow_command_overrides",
     `${row.slot}:${row.repo_root}`,
@@ -1045,7 +1098,7 @@ function sameOverrides(
   a: readonly WorkflowCommandOverride[],
   b: readonly WorkflowCommandOverride[],
 ): boolean {
-  const byPath = new Map(a.map((entry) => [entry.repoRoot, entry.command]));
+  const byPath = new Map(a.map((entry) => [entry.repoRoot, JSON.stringify(entry.review ?? entry.command)]));
   // A list carrying the same path twice describes no set at all, so it can never be "the
   // configuration already stored" - the stored side is unique by its composite primary key.
   // Answering "unchanged" for one would silently keep a row it does not contain.
@@ -1055,8 +1108,7 @@ function sameOverrides(
   return b.every((entry) => {
     const command = byPath.get(entry.repoRoot);
     return command !== undefined
-      && command.length === entry.command.length
-      && command.every((arg, index) => arg === entry.command[index]);
+      && command === JSON.stringify(entry.review ?? entry.command);
   });
 }
 
@@ -1068,12 +1120,13 @@ function parseWorkflowCommandRow(
   return {
     slot: row.slot,
     defaultCommand: readCommandArgv(
-      "workflow_commands",
-      row.slot,
-      "default_command_json",
-      row.default_command_json,
+      "workflow_commands", row.slot, "default_command_json", row.default_command_json,
+      row.slot === "coderabbit" ? CodeRabbitCommandSchema : CommandArgvJsonSchema,
     ),
-    maxRuns: readCommandMaxRuns(row.max_runs),
+    maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
+    timeoutMs: readCommandTimeoutMs(row.timeout_ms),
+    onUnavailable: readCommandFailurePolicy(row.on_unavailable),
+    onBudgetExhausted: readCommandFailurePolicy(row.on_budget_exhausted),
     overrides,
     revision: row.revision,
     createdAt: row.created_at,
@@ -1954,6 +2007,8 @@ const WorkflowNodeAttemptRowSchema = z.object({
   review_rejections_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
+  effort: nullableText.optional(),
+  effort_unsupported: nullableText.optional(),
   verdict_json: nullableText,
   output_json: nullableText,
   retry_at: nullableInteger,
@@ -2043,6 +2098,10 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
     ) ?? undefined,
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
+    ...withEffort(row.effort),
+    ...(readPersonaEffort(row.effort_unsupported)
+      ? { effortUnsupported: readPersonaEffort(row.effort_unsupported)! }
+      : {}),
     verdict: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -2215,6 +2274,7 @@ const WorkflowLlmCallRowSchema = z.object({
   purpose: z.enum(WORKFLOW_LLM_PURPOSES),
   runner_id: z.enum(LLM_RUNNER_IDS),
   model_id: nonempty,
+  effort: nullableText.optional(),
   attempt: positive,
   state: z.enum(WORKFLOW_LLM_CALL_STATES),
   started_at: integer,
@@ -2236,6 +2296,7 @@ export function parseWorkflowLlmCallRow(value: unknown): WorkflowLlmCall {
     purpose: row.purpose,
     runner: row.runner_id,
     model: row.model_id,
+    ...withEffort(row.effort),
     attempt: row.attempt,
     state: row.state,
     startedAt: row.started_at,
@@ -2400,7 +2461,9 @@ function transaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
-export interface PersonaInsert extends CreatePersona {
+export interface PersonaInsert extends Omit<CreatePersona, "effort"> {
+  /** Optional for the reason `provenance` is: most inserts take the provider default. */
+  effort?: CreatePersona["effort"];
   id: string;
   normalizedName: string;
   createdAt: number;
@@ -2470,7 +2533,7 @@ export type WorkflowCommandStoreWrite =
   | { ok: true; view: WorkflowCommandView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "duplicate_override";
+      reason: "not_found" | "revision_conflict" | "duplicate_override" | "invalid_recipe";
       current: WorkflowCommandView | null;
     };
 
@@ -2516,7 +2579,9 @@ export type WorkflowStoreWrite =
         | "archived"
         | "not_archived"
         | "active_binding"
-        | "builtin";
+        | "builtin"
+        /** A round limit can be set in place only on a built-in; a copy edits its own draft. */
+        | "not_builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -2925,9 +2990,58 @@ function coverageSchemaReason(error: unknown): string {
  * verification it was captured for. So an unknown episode leaves provenance alone; only a known
  * one moves it.
  */
+/** One `workflow_builtin_round_limits` row, read. A null count is a reset to the shipped value. */
+interface BuiltinRoundLimit {
+  maxRepairRounds: number | null;
+  updatedAt: number;
+}
+
+/**
+ * The built-in with the operator's round limit applied to its definition and to every version.
+ *
+ * Every version, not only the current one, because the setting answers "how many repair
+ * rounds does this workflow get" and a new binding may pin any of them. The versions'
+ * graphs, policies and other binding defaults are untouched. A limit equal to what this
+ * build ships is no change at all, so the built-in comes back exactly as shipped.
+ */
+function withBuiltinRoundLimit(
+  builtin: BuiltinWorkflow,
+  limit: BuiltinRoundLimit | undefined,
+): BuiltinWorkflow {
+  const shippedMaxRepairRounds = builtin.definition.bindingDefaults.maxRepairRounds;
+  if (!limit) return builtin;
+  // A reset, or a value a later build now ships: the shipped built-in, still dated by the
+  // change, so an editor that refetches after a reset sees a newer definition than it holds.
+  if (limit.maxRepairRounds === null || limit.maxRepairRounds === shippedMaxRepairRounds) {
+    return {
+      ...builtin,
+      definition: { ...builtin.definition, updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt) },
+    };
+  }
+  const rounds = limit.maxRepairRounds;
+  const withRounds = <T extends { bindingDefaults: WorkflowDefinition["bindingDefaults"] }>(item: T): T => ({
+    ...item,
+    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: rounds },
+  });
+  return {
+    definition: {
+      ...withRounds(builtin.definition),
+      updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt),
+      shippedMaxRepairRounds,
+    },
+    versions: builtin.versions.map(withRounds),
+  };
+}
+
 function restampsEpisode(stamped: string | null, episodeKey: string | null): boolean {
   return episodeKey !== null && stamped !== episodeKey;
 }
+
+/**
+ * Marks a run-budget reservation a session's Command configuration forgave. Not a slot name,
+ * so the budget's `check_run_slot = <slot>` counts skip it; see `forgiveCheckRuns`.
+ */
+const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
 
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
@@ -3146,9 +3260,9 @@ export class WorkflowStore {
       this.db
         .prepare(
           `INSERT INTO personas (
-             id, name, normalized_name, description, guidance_md, runner_id, model_id,
+             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
              revision, archived_at, created_at, updated_at, import_provenance_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -3158,6 +3272,7 @@ export class WorkflowStore {
           input.guidanceMarkdown,
           input.runner,
           input.model,
+          input.effort ?? null,
           input.createdAt,
           input.updatedAt,
           serializePersonaProvenance(input.provenance ?? null),
@@ -3204,6 +3319,7 @@ export class WorkflowStore {
       if (patch.guidanceMarkdown !== undefined) add("guidance_md", patch.guidanceMarkdown);
       if ("runner" in patch) add("runner_id", patch.runner ?? null);
       if ("model" in patch) add("model_id", patch.model ?? null);
+      if ("effort" in patch) add("effort", patch.effort ?? null);
       // Presence, not truthiness, exactly like the two above: a re-import always names its new
       // provenance, and "no key" is how every other write says it is not touching this column.
       if ("provenance" in patch) {
@@ -3275,19 +3391,102 @@ export class WorkflowStore {
   }
 
   private withBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.builtinActions)));
+    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.currentBuiltinActions())));
   }
 
   private withAddressableBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(rows.concat(this.builtinActions));
+    return this.sortSessionActions(rows.concat(this.currentBuiltinActions()));
+  }
+
+  /**
+   * The shipped actions as this machine runs them: an editable built-in carries the operator's
+   * instruction when one is saved, with that row's revision, so every read - the library, a
+   * draft's validation, Publish's snapshot, Grill me first's delivery - sees one text.
+   */
+  private currentBuiltinActions(): SessionAction[] {
+    const rows = this.db
+      .prepare(`SELECT action_id, prompt_md, revision, updated_at FROM builtin_session_action_overrides`)
+      .all() as Array<{ action_id: string; prompt_md: string | null; revision: number; updated_at: number }>;
+    if (rows.length === 0) return [...this.builtinActions];
+    const overrides = new Map(rows.map((row) => [row.action_id, row]));
+    return this.builtinActions.map((action) => {
+      const row = action.editable ? overrides.get(action.id) : undefined;
+      if (!row) return action;
+      return {
+        ...action,
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+        ...(row.prompt_md === null ? {} : { promptMarkdown: row.prompt_md, customized: true }),
+      };
+    });
   }
 
   private builtinSessionAction(id: string): SessionAction | null {
-    return this.builtinActions.find((action) => action.id === id) ?? null;
+    return this.currentBuiltinActions().find((action) => action.id === id) ?? null;
   }
 
   private builtinSessionActionNamed(normalizedName: string): SessionAction | null {
     return this.builtinActions.find((action) => action.normalizedName === normalizedName) ?? null;
+  }
+
+  /**
+   * Save an editable built-in's instruction. Only the instruction moves: a patch that would
+   * change the name, description, required skill or completion is refused as `builtin`,
+   * because those are the shipped contract. The shipped text itself is stored as a reset.
+   */
+  private updateEditableBuiltinCas(
+    current: SessionAction,
+    expectedRevision: number,
+    patch: SessionActionPatch,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    const contractMoves = (patch.name !== undefined && patch.name !== current.name)
+      || (patch.description !== undefined && patch.description !== current.description)
+      || ("requiredSkillId" in patch && (patch.requiredSkillId ?? null) !== current.requiredSkillId)
+      || (patch.completion !== undefined && patch.completion.kind !== current.completion.kind);
+    if (contractMoves) return { ok: false, reason: "builtin", current };
+    if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+    if (patch.promptMarkdown === undefined) return { ok: true, action: current };
+    const shipped = this.builtinActions.find((action) => action.id === current.id);
+    return this.writeBuiltinOverride(
+      current,
+      patch.promptMarkdown === shipped?.promptMarkdown ? null : patch.promptMarkdown,
+      updatedAt,
+    );
+  }
+
+  /** Put an editable built-in back on its shipped instruction. */
+  resetBuiltinSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    updatedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.builtinSessionAction(id);
+      if (!current) {
+        const row = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: row ? "builtin" : "not_found", current: row };
+      }
+      if (!current.editable) return { ok: false, reason: "builtin", current };
+      if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+      return this.writeBuiltinOverride(current, null, updatedAt);
+    });
+  }
+
+  private writeBuiltinOverride(
+    current: SessionAction,
+    promptMarkdown: string | null,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    this.db
+      .prepare(
+        `INSERT INTO builtin_session_action_overrides (action_id, prompt_md, revision, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(action_id) DO UPDATE SET
+           prompt_md = excluded.prompt_md, revision = excluded.revision, updated_at = excluded.updated_at`,
+      )
+      .run(current.id, promptMarkdown, current.revision + 1, updatedAt);
+    return { ok: true, action: this.builtinSessionAction(current.id)! };
   }
 
   listSessionActions(includeArchived = false): SessionAction[] {
@@ -3391,7 +3590,11 @@ export class WorkflowStore {
   ): SessionActionStoreWrite {
     return transaction(this.db, () => {
       const shipped = this.builtinSessionAction(id);
-      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      if (shipped) {
+        return shipped.editable
+          ? this.updateEditableBuiltinCas(shipped, expectedRevision, patch, updatedAt)
+          : { ok: false, reason: "builtin", current: shipped };
+      }
       const current = this.getSessionActionInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -3496,6 +3699,24 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
+    const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
+    const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    // Earlier builds stored failed resolutions. Retry must resolve those again, while
+    // corrupt metadata still throws above rather than silently changing reviewed identity.
+    return comparison?.error === null ? comparison : null;
+  }
+
+  freezeCodeRabbitComparison(submissionId: string, comparison: CodeRabbitComparison): CodeRabbitComparison {
+    const frozen = this.getCodeRabbitComparison(submissionId);
+    if (frozen) return frozen;
+    if (comparison.error !== null) return comparison;
+    this.db.prepare(`UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ?
+      AND (coderabbit_json IS NULL OR json_extract(coderabbit_json, '$.error') IS NOT NULL)`)
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getCodeRabbitComparison(submissionId) ?? comparison;
+  }
+
   /**
    * Every built-in slot, in registry order, whether or not it has ever been written.
    *
@@ -3549,10 +3770,10 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, revision, created_at, updated_at)
-       VALUES (?, NULL, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
     return wasEmpty;
   }
 
@@ -3572,6 +3793,9 @@ export class WorkflowStore {
       defaultCommand: string[] | null;
       overrides: readonly WorkflowCommandOverride[];
       maxRuns: number;
+      timeoutMs?: number | null;
+      onUnavailable?: "skip" | "block";
+      onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
   ): WorkflowCommandStoreWrite {
@@ -3579,6 +3803,13 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
+    const validRecipe = key === "coderabbit"
+      ? (next.defaultCommand === null || CodeRabbitCommandSchema.safeParse(next.defaultCommand).success)
+        && next.overrides.every((rule) => rule.command.length === 0 && CodeRabbitTuningSchema.safeParse(rule.review).success)
+      : next.overrides.every((rule) => !rule.review && rule.command.length > 0);
+    if (!validRecipe) {
+      return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
+    }
     // Refused here as well as at the route, because the store is the boundary a future
     // caller reaches without passing the schema. The composite PRIMARY KEY would refuse the
     // second row anyway, but as a constraint violation rather than a readable answer.
@@ -3597,7 +3828,8 @@ export class WorkflowStore {
       const updated = this.db
         .prepare(
           `UPDATE workflow_commands
-              SET default_command_json = ?, max_runs = ?, revision = revision + 1, updated_at = ?
+              SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3611,6 +3843,9 @@ export class WorkflowStore {
             Math.max(next.maxRuns, WORKFLOW_LIMITS.commandMaxRunsMin),
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
+          next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
+          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
           now,
           key,
           expectedRevision,
@@ -3632,7 +3867,7 @@ export class WorkflowStore {
         insert.run(
           key,
           entry.repoRoot,
-          JSON.stringify(entry.command),
+          JSON.stringify(entry.review ?? entry.command),
           previous.get(entry.repoRoot) ?? now,
           now,
         );
@@ -3763,13 +3998,13 @@ export class WorkflowStore {
     const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
     const writePersona = this.db.prepare(
       `INSERT INTO personas (
-         id, name, normalized_name, description, guidance_md, runner_id, model_id,
+         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
          revision, archived_at, created_at, updated_at, import_provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, guidance_md=excluded.guidance_md,
-         runner_id=excluded.runner_id, model_id=excluded.model_id,
+         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort,
          revision=excluded.revision, archived_at=excluded.archived_at,
          updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
     );
@@ -3784,6 +4019,7 @@ export class WorkflowStore {
         row.guidanceMarkdown,
         row.runner,
         row.model,
+        row.effort ?? null,
         revision,
         row.archivedAt,
         current?.createdAt ?? row.createdAt,
@@ -3862,11 +4098,15 @@ export class WorkflowStore {
       );
       this.db.prepare(
         `UPDATE workflow_commands
-            SET default_command_json = ?, max_runs = ?, revision = ?, updated_at = ?
+            SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                on_budget_exhausted = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
         row.maxRuns,
+        row.timeoutMs,
+        row.onUnavailable,
+        row.onBudgetExhausted,
         revision,
         now,
         row.slot,
@@ -3881,7 +4121,7 @@ export class WorkflowStore {
         insertOverride.run(
           row.slot,
           override.repoRoot,
-          JSON.stringify(override.command),
+          JSON.stringify(override.review ?? override.command),
           previousOverrides.get(override.repoRoot) ?? now,
           now,
         );
@@ -4060,6 +4300,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
+      if (slot === "coderabbit") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -4149,7 +4390,67 @@ export class WorkflowStore {
    * definition of a version list it did not also consult.
    */
   private builtinWorkflowDefinitions(): WorkflowDefinition[] {
-    return this.builtinWorkflows.map((builtin) => builtin.definition);
+    const limits = this.builtinRoundLimits();
+    return this.builtinWorkflows.map((builtin) =>
+      withBuiltinRoundLimit(builtin, limits.get(builtin.definition.id)).definition);
+  }
+
+  /** Every operator round limit, by built-in id. Rows naming no shipped built-in are ignored. */
+  private builtinRoundLimits(workflowId?: string): Map<string, BuiltinRoundLimit> {
+    const rows = (workflowId === undefined
+      ? this.db.prepare(`SELECT * FROM workflow_builtin_round_limits`).all()
+      : this.db.prepare(`SELECT * FROM workflow_builtin_round_limits WHERE workflow_id = ?`)
+        .all(workflowId)) as Array<Record<string, unknown>>;
+    const out = new Map<string, BuiltinRoundLimit>();
+    for (const row of rows) {
+      const rounds = row.max_repair_rounds === null ? null : Number(row.max_repair_rounds);
+      const updatedAt = Number(row.updated_at);
+      // An unreadable row is the shipped value, never a budget outside the binding schema.
+      if (typeof row.workflow_id !== "string"
+        || !Number.isSafeInteger(updatedAt)
+        || (rounds !== null && (!Number.isInteger(rounds)
+          || rounds < WORKFLOW_LIMITS.repairRoundsMin
+          || rounds > WORKFLOW_LIMITS.repairRoundsMax))) continue;
+      out.set(row.workflow_id, { maxRepairRounds: rounds, updatedAt });
+    }
+    return out;
+  }
+
+  /**
+   * Change the one setting a built-in workflow lets an operator change in place.
+   *
+   * Everything else about a built-in stays read-only, and nothing here can reach it: the only
+   * input is a round count. `null`, or the value this build ships, stores a NULL count so the
+   * built-in follows the shipped value again, including when a later build changes it, while
+   * the row keeps dating the definition with the time of the reset. The new
+   * value is what every NEW binding of any of its versions starts from; a binding or run that
+   * already exists keeps the budget it copied when it was created.
+   */
+  setBuiltinRoundLimit(
+    id: string,
+    maxRepairRounds: number | null,
+    updatedAt = Date.now(),
+  ): WorkflowStoreWrite {
+    return this.mutate((): WorkflowStoreWrite => {
+      const shipped = this.builtinWorkflows.find((builtin) => builtin.definition.id === id);
+      if (!shipped) {
+        const current = this.getWorkflowInTransaction(id);
+        return current
+          ? { ok: false, reason: "not_builtin", current }
+          : { ok: false, reason: "not_found", current: null };
+      }
+      const stored = maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds
+        ? null
+        : maxRepairRounds;
+      this.db.prepare(
+        `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(workflow_id) DO UPDATE SET
+           max_repair_rounds = excluded.max_repair_rounds,
+           updated_at = excluded.updated_at`,
+      ).run(id, stored, updatedAt);
+      return { ok: true, workflow: this.builtinWorkflowById(id)!.definition };
+    }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 
   private sortWorkflows(workflows: WorkflowDefinition[]): WorkflowDefinition[] {
@@ -4157,21 +4458,29 @@ export class WorkflowStore {
       a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
   }
 
+  /**
+   * A shipped workflow as this installation runs it: the catalog entry with the operator's
+   * round limit, if any, applied. Every built-in read goes through here or
+   * `builtinWorkflowDefinitions`, so no reader can see the shipped budget while another sees
+   * the operator's.
+   */
   private builtinWorkflowById(id: string): BuiltinWorkflow | null {
-    return this.builtinWorkflows.find((builtin) => builtin.definition.id === id) ?? null;
+    const builtin = this.builtinWorkflows.find((candidate) => candidate.definition.id === id);
+    return builtin ? withBuiltinRoundLimit(builtin, this.builtinRoundLimits(id).get(id)) : null;
   }
 
   private builtinWorkflowNamed(normalizedName: string): WorkflowDefinition | null {
-    return this.builtinWorkflows
-      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition ?? null;
+    const id = this.builtinWorkflows
+      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition.id;
+    return id === undefined ? null : this.builtinWorkflowById(id)?.definition ?? null;
   }
 
   private builtinWorkflowVersion(id: string): WorkflowVersion | null {
-    for (const builtin of this.builtinWorkflows) {
-      const version = builtin.versions.find((candidate) => candidate.id === id);
-      if (version) return version;
-    }
-    return null;
+    const builtin = this.builtinWorkflows.find((candidate) =>
+      candidate.versions.some((version) => version.id === id));
+    if (!builtin) return null;
+    return this.builtinWorkflowById(builtin.definition.id)!.versions
+      .find((candidate) => candidate.id === id) ?? null;
   }
 
   listWorkflows(includeArchived = false): WorkflowDefinition[] {
@@ -5180,6 +5489,7 @@ export class WorkflowStore {
           gate: gateState,
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
+          recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -5245,6 +5555,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -5376,7 +5687,7 @@ export class WorkflowStore {
         // Global withdrawal retires every live version, including earlier shared proof
         // retained for siblings and legacy versions that survive only in frozen packets.
         const frozen = this.db.prepare(`SELECT c.staging_id AS id, c.repository_scope,
-            CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+            b.session_cwd AS source_root
           FROM workflow_submission_evidence_coverage c JOIN workflow_submissions s ON s.id = c.submission_id
           JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{
@@ -5797,15 +6108,31 @@ export class WorkflowStore {
     });
   }
 
-  listWorkflowEvidence(noteKey: string): WorkflowStagedEvidenceList {
+  /** Registration survives capture; the default tray remains staged-only for editing.
+   * Reserved items require a surviving reservation in this conversation's own workflow.
+   * Episode admission remains the completion reader's responsibility.
+   */
+  listWorkflowEvidence(
+    noteKey: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowStagedEvidenceList {
     const owner = this.db.prepare(
       `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
     ).get(noteKey) as { generation: number } | undefined;
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
-        WHERE note_key = ? AND state = 'staged'
+        WHERE note_key = ? AND (
+          state = 'staged' OR (? = 'registered' AND state = 'reserved' AND EXISTS (
+            SELECT 1 FROM workflow_evidence_reservations reservation
+            JOIN workflow_submissions submission ON submission.id = reservation.submission_id
+            JOIN workflow_runs run ON run.id = submission.run_id
+            JOIN workflow_bindings binding ON binding.id = run.binding_id
+            WHERE reservation.staging_id = workflow_evidence_staging.id
+              AND binding.note_key = workflow_evidence_staging.note_key
+          ))
+        )
         ORDER BY created_at ASC, id ASC`,
-    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    ).all(noteKey, view) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ? AND state = 'staged' AND is_current = 1
@@ -5941,7 +6268,7 @@ export class WorkflowStore {
   /** Retirement is bounded by both the target reservation and its receiving repository. */
   private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
     if (stagingIds.length === 0) return new Set();
-    const target = this.db.prepare(`SELECT CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+    const target = this.db.prepare(`SELECT b.session_cwd AS source_root
       FROM workflow_submissions s JOIN workflow_runs r ON r.id = s.run_id
       JOIN workflow_bindings b ON b.id = r.binding_id WHERE s.id = ?`).get(targetId) as { source_root: string | null } | undefined;
     if (!target) return new Set();
@@ -6831,6 +7158,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
+      const freshPublishedReview = workflowInspectorGateNeedsFreshReview(inspectorGateState(this.mustRun(input.runId)));
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -6846,6 +7174,7 @@ export class WorkflowStore {
         submissionId: input.id,
         triggerKey: input.triggerKey,
         round: input.round,
+        ...(freshPublishedReview ? { freshPublishedReview: true } : {}),
       }, input.now);
       return {
         run: this.mustRun(input.runId),
@@ -6990,11 +7319,10 @@ export class WorkflowStore {
         const latest = this.latestSubmission(run.id);
         if (latest && latest.round <= run.maxRepairRounds) {
           previousFingerprint = latest.evidenceFingerprint;
-          this.insertSubmissionInTransaction({
+          const repair = this.createRepairSubmission({
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
-            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -7002,15 +7330,8 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
-          assertRunLifecycle(run.id, "capturing", "capturing", null);
-          this.db.prepare(
-            `UPDATE workflow_runs
-                SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
-              WHERE id = ?`,
-          ).run(input.now, run.id);
-          run = this.mustRun(run.id);
-          submission = this.mustSubmission(input.submissionId);
+          run = repair.run;
+          submission = repair.submission;
           state = "resubmitted";
           created = true;
         } else {
@@ -7199,6 +7520,45 @@ export class WorkflowStore {
           WHERE id = ? AND run_criteria_json IS NULL`,
       ).run(payload, id);
       return this.getRun(id)?.criteria ?? null;
+    });
+  }
+
+  /** Add timing metadata once; frozen wording, ids, intent and past submissions never change. */
+  freezeRunCriterionFulfillment(input: {
+    runId: string;
+    source: WorkflowRunCriteria;
+    classifications: Array<{ criterionId: string; fulfilledByAction: "pull_request" | null }>;
+    submissionId: string;
+    now: number;
+  }): WorkflowRunCriteria | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run?.criteria || run.intentState !== "frozen") return null;
+      const stable = (criteria: WorkflowRunCriteria) => ({ ...criteria,
+        canonicalCriteria: criteria.canonicalCriteria.map(({ fulfilledByAction: _timing, ...criterion }) => criterion),
+      });
+      if (!isDeepStrictEqual(stable(run.criteria), stable(input.source))) {
+        throw new Error("Criterion fulfillment source does not match this run's frozen criteria");
+      }
+      const missing = input.source.canonicalCriteria.filter((criterion) => criterion.fulfilledByAction === undefined);
+      const assignments = new Map(input.classifications.map((item) => [item.criterionId, item.fulfilledByAction]));
+      if (assignments.size !== missing.length || input.classifications.length !== missing.length
+          || missing.some((criterion) => !assignments.has(criterion.id))
+          || run.criteria.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined && !assignments.has(criterion.id))) {
+        throw new Error("Criterion fulfillment must classify exactly the unclassified frozen criteria");
+      }
+      if (run.criteria.canonicalCriteria.every((criterion) => criterion.fulfilledByAction !== undefined)) return run.criteria;
+      const criteria = WorkflowRunCriteriaSchema.parse({ ...run.criteria,
+        canonicalCriteria: run.criteria.canonicalCriteria.map((criterion) => criterion.fulfilledByAction !== undefined
+          ? criterion : { ...criterion, fulfilledByAction: assignments.get(criterion.id) }),
+      });
+      this.db.prepare("UPDATE workflow_runs SET run_criteria_json = ? WHERE id = ?")
+        .run(durableRunJson(run.id, "run_criteria_json", criteria), run.id);
+      this.appendEvent(run.id, "criterion_fulfillment_classified", {
+        submissionId: input.submissionId,
+        classifications: input.classifications,
+      }, input.now);
+      return criteria;
     });
   }
 
@@ -8279,7 +8639,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND a.state NOT IN ('error', 'cancelled')
+            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -8290,6 +8650,67 @@ export class WorkflowStore {
         .prepare(`UPDATE workflow_node_attempts SET check_run_slot = ? WHERE id = ?`)
         .run(slot, attemptId);
       return { granted: true, spent };
+    });
+  }
+
+  /** Return this attempt's claim after the executor reports that no Command could start. */
+  releaseCheckRun(attemptId: string, slot: string): boolean {
+    return this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET check_run_slot = NULL
+        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+    ).run(attemptId, slot).changes === 1;
+  }
+
+  /**
+   * Re-scope one run's spent executions of one Command after a session configured `command`.
+   *
+   * The run budget bounds re-proving a command, and an execution of an argv the repository
+   * never provided proved nothing about the change. Without this, a session that configures
+   * the right command for its repository resubmits into a gate already skipped as
+   * `budget_spent`, and the command it was asked to fix never runs in this run at all.
+   *
+   * Two rules keep that from becoming a way around `maxRuns`:
+   *
+   * - Only a MISFIT execution is forgiven: one whose outcome recorded `misfitSignal`, the
+   *   launcher refusing a target, script or recipe the repository does not have. A command
+   *   that actually ran is never returned, whatever is configured afterwards.
+   * - Spending stays with the argv that spent it. A forgiven reservation is marked rather than
+   *   erased, and configuring an argv RESTORES its own forgiven reservations. So switching
+   *   A -> B -> A gives A back exactly what it had spent, and re-confirming the command that
+   *   already ran forgives nothing. Each argv gets at most `maxRuns` executions in a run.
+   *
+   * The mark is a `check_run_slot` value no slot can have, so `reserveCheckRun` and
+   * `checkRunsSpent` stop counting it without knowing it exists. Finished attempts only: a
+   * reservation still `running` is an execution in flight.
+   */
+  forgiveCheckRuns(
+    runId: string,
+    slot: string,
+    command: readonly string[],
+  ): { forgiven: number; restored: number } {
+    const forgivenSlot = `${FORGIVEN_CHECK_RUN_PREFIX}${slot}`;
+    const argv = JSON.stringify(command);
+    return transaction(this.db, () => {
+      const inRun = `submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`;
+      const restored = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND ${inRun}
+            AND json_extract(output_json, '$.command') = json(?)`,
+      ).run(slot, forgivenSlot, runId, argv).changes);
+      const forgiven = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND state <> 'running'
+            AND ${inRun}
+            AND json_extract(output_json, '$.misfitSignal') IS NOT NULL
+            AND json_extract(output_json, '$.command') IS NOT NULL
+            AND json_extract(output_json, '$.command') <> json(?)`,
+      ).run(forgivenSlot, slot, runId, argv).changes);
+      return { forgiven, restored };
     });
   }
 
@@ -8307,18 +8728,34 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND a.state NOT IN ('error', 'cancelled')`,
+          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }
 
-  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  /** Capture retries read the boundary frozen when the root left the reviewed-tree hold. */
+  submissionRequiresFreshPublishedReview(submissionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events
+      WHERE run_id = (SELECT run_id FROM workflow_submissions WHERE id = ?)
+        AND event_kind = 'submission_created'
+        AND json_extract(payload_json, '$.submissionId') = ?
+        AND json_extract(payload_json, '$.freshPublishedReview') = 1 LIMIT 1`)
+      .get(submissionId, submissionId);
+  }
+
+  /** The newest executed verdict must pass, and pre-publication-review passes cannot cross
+   * the durable fresh-review boundary recorded atomically with its root submission. */
   priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
     const row = this.db.prepare(
       `SELECT * FROM (
          SELECT a.* FROM workflow_node_attempts a
            JOIN workflow_submissions s ON s.id = a.submission_id
           WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND s.round >= COALESCE((
+              SELECT MAX(json_extract(payload_json, '$.round')) FROM workflow_events
+              WHERE run_id = s.run_id AND event_kind = 'submission_created'
+                AND json_extract(payload_json, '$.freshPublishedReview') = 1
+            ), 0)
             AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
             AND a.runner_id IS NOT NULL
           ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1
@@ -8336,13 +8773,37 @@ export class WorkflowStore {
 
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
   listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
-    return (this.db.prepare(
+    const attempts = (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
          JOIN workflow_submissions s ON s.id = a.submission_id
         WHERE s.run_id = ?
         ORDER BY s.round ASC, s.segment ASC,
                  a.created_at ASC, a.node_id ASC, a.attempt ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_command_artifacts WHERE run_id = ? ORDER BY attempt_id, kind`,
+    ).all(runId) as Array<{
+      id: string; attempt_id: string; kind: "stdout" | "stderr" | "findings";
+      retained_bytes: number; observed_bytes: number; dropped_bytes: number;
+      sha256: string | null; capture_state: "complete" | "partial";
+      availability: "retained" | "pruned" | "unavailable";
+      unavailable_reason: string | null;
+    }>;
+    const byAttempt = new Map<string, WorkflowCommandArtifactDescriptor[]>();
+    for (const row of rows) {
+      const items = byAttempt.get(row.attempt_id) ?? [];
+      items.push({
+        id: row.id, kind: row.kind, retainedBytes: row.retained_bytes,
+        observedBytes: row.observed_bytes, droppedBytes: row.dropped_bytes,
+        sha256: row.sha256, captureState: row.capture_state,
+        availability: row.availability, unavailableReason: row.unavailable_reason,
+      });
+      byAttempt.set(row.attempt_id, items);
+    }
+    return attempts.map((attempt) => {
+      const commandArtifacts = byAttempt.get(attempt.id);
+      return commandArtifacts ? { ...attempt, commandArtifacts } : attempt;
+    });
   }
 
   listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
@@ -8381,6 +8842,10 @@ export class WorkflowStore {
     runner: LlmRunnerId | null,
     model: string | null,
     now = Date.now(),
+    /** Recorded with the model it was resolved for; null is the provider default. */
+    effort: ThinkingLevel | null = null,
+    /** A configured level the model could not run, recorded so the drop stays visible. */
+    effortUnsupported: ThinkingLevel | null = null,
   ): WorkflowNodeAttempt | null {
     return this.mutate(() => {
       const initial = this.getAttempt(id);
@@ -8394,13 +8859,16 @@ export class WorkflowStore {
       }
       const result = this.db.prepare(
         `UPDATE workflow_node_attempts
-            SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
+            SET state = 'running', runner_id = ?, model_id = ?, effort = ?, effort_unsupported = ?,
+                started_at = ?,
                 updated_at = ?, retry_at = NULL,
                 operator_directive_json = COALESCE(operator_directive_json, ?)
           WHERE id = ? AND state IN ('queued', 'retry_wait')`,
       ).run(
         runner,
         model,
+        effort,
+        effortUnsupported,
         now,
         now,
         snapshot ? JSON.stringify(snapshot) : null,
@@ -8483,7 +8951,7 @@ export class WorkflowStore {
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.listEvents(runId).find((event) =>
-        event.kind === "manual_infrastructure_retry"
+        (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry")
         && event.payload
         && !Array.isArray(event.payload)
         && typeof event.payload === "object"
@@ -8494,6 +8962,10 @@ export class WorkflowStore {
           submission: this.mustSubmission(submissionId),
           idempotent: true,
         };
+      }
+      const recoveryPhase = this.mustRun(runId).currentPhase;
+      if (recoveryPhase !== "infrastructure_error" && recoveryPhase !== "command_action_required") {
+        throw new Error(`Workflow run ${runId} is not in a retryable Command phase`);
       }
       const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
       if (!latest || latest.state !== "error") {
@@ -8524,13 +8996,15 @@ export class WorkflowStore {
       if (!this.reviveFailedSubmission(
         submissionId,
         runId,
-        "infrastructure_error",
+        recoveryPhase,
         now,
       )) {
         throw new Error(`Workflow submission ${submissionId} cannot be revived`);
       }
       this.setRunState(runId, "running", "persona_review", null, now);
-      this.appendEvent(runId, "manual_infrastructure_retry", {
+      this.appendEvent(runId, recoveryPhase === "command_action_required"
+        ? "manual_command_retry"
+        : "manual_infrastructure_retry", {
         requestId,
         nodeAttemptId: latest.id,
         reactivatedNodeAttemptIds: errored.map((attempt) => attempt.id),
@@ -8605,6 +9079,19 @@ export class WorkflowStore {
   getDelivery(id: string): WorkflowDelivery | null {
     const row = this.db.prepare(`SELECT * FROM workflow_deliveries WHERE id = ?`).get(id);
     return row ? parseWorkflowDeliveryRow(row) : null;
+  }
+
+  /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events e
+      JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
+        AND d.run_id = e.run_id
+      WHERE e.run_id = ? AND e.event_kind = 'session_action_prompt_observed'
+        AND json_extract(e.payload_json, '$.episodeId') = ?
+        AND json_extract(e.payload_json, '$.promptedAt') = ?
+        AND json_extract(e.payload_json, '$.promptRevision') IS ?
+        AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
+        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
   }
 
   deliveryForPacket(
@@ -8806,6 +9293,58 @@ export class WorkflowStore {
     }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
+  /** The packet the current delivery block can actually reconcile, shared by UI and runtime. */
+  recoverableInspectorFeedback(run: WorkflowRun): WorkflowDelivery | null {
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked") return null;
+    const gate = inspectorGateState(run);
+    if (gate?.waitReason !== "findings" || !gate.prKey || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha) return null;
+    const version = this.getWorkflowVersionById(run.workflowVersionId);
+    const binding = this.getBinding(run.bindingId);
+    if (version?.completionPolicy.kind !== "inspector" || binding?.state !== "active"
+        || binding.deliveryMode !== "live" || !binding.sessionId) return null;
+    const latest = this.latestSubmission(run.id);
+    const delivery = this.listDeliveries(run.id)
+      .filter((item) => item.submissionId === latest?.id).at(-1);
+    if (delivery?.kind !== "inspector_feedback" || delivery.state !== "prepared"
+        || delivery.deliveredAt !== null || delivery.sessionId !== binding.sessionId
+        || delivery.noteKey !== binding.noteKey) return null;
+    return delivery;
+  }
+
+  /** Restore an unsent Inspector packet's wait and retire obsolete bytes atomically. */
+  recoverInspectorFeedback(
+    deliveryId: string,
+    expectedState: WorkflowInspectorGateState,
+    state: WorkflowInspectorGateState,
+    superseded: boolean,
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const version = run ? this.getWorkflowVersionById(run.workflowVersionId) : null;
+      if (!delivery || delivery.kind !== "inspector_feedback" || delivery.state !== "prepared"
+          || delivery.deliveredAt !== null || !run || run.status !== "blocked"
+          || run.currentPhase !== "delivery_blocked"
+          || this.latestSubmission(run.id)?.id !== delivery.submissionId
+          || version?.completionPolicy.kind !== "inspector") return null;
+      const updated = this.updateInspectorGate({
+        runId: run.id, expectedState, state,
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
+          ? "waiting_for_new_head" : "waiting_for_session",
+        phase: "inspector_findings", now,
+      });
+      if (!updated) return null;
+      if (superseded) this.setDeliveryState(deliveryId, "cancelled", "inspector_head_superseded", now);
+      this.appendEvent(run.id, "inspector_feedback_recovered", {
+        deliveryId, superseded, failedHeadSha: state.failedHeadSha,
+        observedHeadSha: state.observedHeadSha, policy: version.completionPolicy.onFindings,
+      }, now);
+      return updated;
+    });
+  }
+
   refuseDeliveryBeforeSend(
     id: string,
     error: string,
@@ -8861,8 +9400,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9103,8 +9641,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"
@@ -9353,7 +9890,7 @@ export class WorkflowStore {
             )
           )
         ) LIMIT 1`)
-      .get(binding.noteKey, binding.repoRoot || binding.sessionCwd || "", parent.id,
+      .get(binding.noteKey, canonicalWorktreePath(binding.sessionCwd || ""), parent.id,
         typeof failure?.itemClientId === "string" ? failure.itemClientId : null,
         parent.stagedImageGeneration ?? 0));
   }
@@ -9401,7 +9938,7 @@ export class WorkflowStore {
       if (!deliveries.some((delivery) => delivery.submissionId === parent.id
           && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered")
           || deliveries.some((delivery) => ["sending", "uncertain", "prepared"].includes(delivery.state))) return null;
-      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || "");
+      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || "");
       if (!this.captureRepairInputsChanged(parent, binding)) return null;
       const attempts = this.listSubmissions(run.id).filter((candidate) => candidate.round === parent.round
         && candidate.refinementReason === "evidence_capture_repair").length;
@@ -9465,7 +10002,7 @@ export class WorkflowStore {
       });
       // Keep the parent's frozen proof, but honor withdrawals committed before this recovery.
       const generation = Math.max(parent.stagedImageGeneration ?? 0,
-        this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
+        this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""));
       this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
         .run(generation, input.id);
       this.inheritSubmissionEvidenceInTransaction({
@@ -9526,7 +10063,7 @@ export class WorkflowStore {
       if (!binding) return { ok: false, reason: "not_waiting" };
       const generation = this.workflowEvidenceGeneration(
         binding.noteKey,
-        binding.repoRoot || binding.sessionCwd || "",
+        binding.sessionCwd || "",
       );
       if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
@@ -9921,13 +10458,13 @@ export class WorkflowStore {
     return this.mutate(() => {
       this.db.prepare(
         `INSERT INTO workflow_llm_calls (
-           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
+           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id, effort,
            attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
            cost_usd, error_code
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
-        call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
+        call.runner, call.model, call.effort ?? null, call.attempt, call.state, call.startedAt, call.finishedAt,
         call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
       );
       workflowLog("info", {
@@ -10171,6 +10708,11 @@ export class WorkflowStore {
               ) AND availability = 'retained'`,
           ).run(input.now, runId);
           this.db.prepare(
+            `UPDATE workflow_command_artifacts
+                SET availability = 'pruned', pruned_at = ?
+              WHERE run_id = ? AND availability = 'retained'`,
+          ).run(input.now, runId);
+          this.db.prepare(
             `UPDATE workflow_deliveries
                 SET payload = '', payload_pruned_at = ?,
                     error = CASE
@@ -10257,6 +10799,8 @@ export class WorkflowStore {
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               )`,
           ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
           this.db.prepare(
             `DELETE FROM workflow_node_attempts
               WHERE submission_id IN (
@@ -10622,6 +11166,79 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The delivery another of this conversation's reviews is still owed a turn for, or null
+   * when the pane is free.
+   *
+   * A multi-repo task's session runs one review per repository it changed, and they share one
+   * pane, one transcript and one turn. At most one may have a packet outstanding: two
+   * instructions typed into one conversation interleave into a turn neither expects, and the
+   * transcript anchor that proves a packet was picked up cannot say which of them the session
+   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
+   * contract is per run and is unchanged; this one is between runs, where serializing is the
+   * only available answer because the runs are genuinely independent reviews.
+   *
+   * A conversation with one active binding - every single-repo session - returns null from
+   * the first line and pays one indexed read, so nothing about its delivery path moves.
+   *
+   * What counts as outstanding is "the session still owes this packet a turn":
+   *
+   *  - `sending`: being typed right now, and the only truly concurrent case.
+   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
+   *    read and the action has not completed.
+   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
+   *    the agent is repairing that repository, and handing it a second repository's findings
+   *    mid-repair is the interleaving this exists to prevent.
+   *
+   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
+   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
+   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
+   */
+  conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
+    const bindings = this.activeBindingsForNote(delivery.noteKey);
+    if (bindings.length < 2) return null;
+    for (const binding of bindings) {
+      const run = this.activeRunForBinding(binding.id);
+      if (!run || run.id === delivery.runId || ["completed", "cancelled", "failed"].includes(run.status)) continue;
+      const latest = this.latestSubmission(run.id);
+      for (const other of this.listDeliveries(run.id)) {
+        if (other.state === "sending") return other;
+        if (other.state !== "delivered") continue;
+        if (other.kind === "session_action") {
+          const attempt = other.nodeAttemptId ? this.getAttempt(other.nodeAttemptId) : null;
+          if (attempt?.state === "waiting") return other;
+          continue;
+        }
+        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
+        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
+            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
+            && other.submissionId === latest?.id) return other;
+      }
+    }
+    return null;
+  }
+
+  /** Current queue ownership, derived from the same predicate that guards delivery. */
+  private runDeliveryHold(run: WorkflowRun, binding: WorkflowBinding): WorkflowRunDetail["deliveryHold"] {
+    if (binding.state !== "active" || binding.deliveryMode !== "live"
+        || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+    const latest = this.latestSubmission(run.id);
+    for (const delivery of this.listDeliveries(run.id)) {
+      if (delivery.state !== "prepared" || delivery.submissionId !== latest?.id) continue;
+      const hold = this.conversationDeliveryHold(delivery);
+      const holdingRun = hold ? this.getRun(hold.runId) : null;
+      const holdingBinding = holdingRun ? this.getBinding(holdingRun.bindingId) : null;
+      if (hold && holdingRun && holdingBinding) return {
+        runId: holdingRun.id,
+        deliveryId: hold.id,
+        repoRoot: holdingBinding.repoRoot || holdingBinding.sessionRepoRoot || holdingBinding.sessionCwd,
+        kind: hold.kind,
+        state: hold.state,
+      };
+    }
+    return null;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -10665,6 +11282,7 @@ export class WorkflowStore {
       repairGrant: this.runRepairGrant(id),
       refusedCompletion: this.runRefusedCompletion(id),
       resumption: this.runResumptionState(run, binding, version),
+      deliveryHold: this.runDeliveryHold(run, binding),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.
@@ -10895,6 +11513,8 @@ export class WorkflowStore {
         `SELECT id FROM workflow_bindings WHERE note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
+        this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
         ).run(runId);
@@ -11120,7 +11740,7 @@ export class WorkflowStore {
   ): void {
     const owner = this.db.prepare(
       `SELECT b.note_key,
-              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+              b.session_cwd AS checkout_root
          FROM workflow_submissions s
          JOIN workflow_runs r ON r.id = s.run_id
          JOIN workflow_bindings b ON b.id = r.binding_id
@@ -11293,7 +11913,7 @@ export class WorkflowStore {
       if (!submission) return { frozen: [], unresolved: [] };
       const owner = this.db.prepare(
         `SELECT b.note_key,
-                CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+                b.session_cwd AS checkout_root
            FROM workflow_runs r
            JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE r.id = ?`,

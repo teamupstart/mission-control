@@ -1,11 +1,17 @@
 import {
   seedHiddenDisplayItems,
+  SkinIdSchema,
   UI_CONFIG_DEFAULTS,
   UiConfigSchema,
 } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
+import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
 // mirroring harnesses.ts/foreman/config.ts/skills/config.ts: a schema-validated blob over
@@ -37,10 +43,63 @@ function migrateRetiredLayout(raw: unknown): unknown {
  * from a build before this key existed. A missing key on an existing record is therefore an
  * explicit off migration, while `undefined` still reaches the schema's shipped true default.
  */
+/**
+ * The one build that stored Disabled as a third density (#1399) wrote `lineDensity: "hidden"`.
+ * This one keeps that as its own key, `lineHidden`, because a third density fails every UI
+ * preference on any daemon before it (see `LINE_DENSITIES`) - so a stored "hidden" is moved
+ * across rather than refused, or the same failure would land on this build instead. The
+ * density it was switched off from was never recorded, so the shipped one stands in.
+ */
+function migrateHiddenLineDensity(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return stored.lineDensity === "hidden"
+    ? { ...stored, lineDensity: UI_CONFIG_DEFAULTS.lineDensity, lineHidden: true }
+    : raw;
+}
+
 function migrateGuidedTour(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const stored = raw as Record<string, unknown>;
   return "guidedTour" in stored ? raw : { ...stored, guidedTour: false };
+}
+
+/**
+ * A record stored before `announcedTours` existed belongs to a profile that predates every tour
+ * on `ANNOUNCED_TOURS`, so it is owed each of them once: an empty list, where a record parsed
+ * from nothing takes the schema's full one. The same absence-on-a-stored-record signal
+ * `migrateGuidedTour` reads, and it holds for the same reason - an older build cannot have
+ * written a key this one invented.
+ */
+function migrateAnnouncedTours(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return "announcedTours" in stored ? raw : { ...stored, announcedTours: [] };
+}
+
+/**
+ * The stored skin id exactly as written, when it is one this build does not ship - a skin a
+ * newer build added, read here after a downgrade. Null for a known id, a missing one, or
+ * anything that is not an id.
+ */
+function unshippedStoredSkin(stored: unknown): string | null {
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return null;
+  const skin = (stored as { skin?: unknown }).skin;
+  return typeof skin === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(skin) && !isSkinId(skin) ? skin : null;
+}
+
+/**
+ * Write the whole `ui` record without losing a skin this build cannot represent.
+ *
+ * An unknown stored id READS as Default (`UiConfigSchema`), so a downgrade still opens. But
+ * every write here persists the whole parsed record, and writing that Default back would erase
+ * the operator's choice for good: changing an unrelated Display setting in an older build, or
+ * this module's own migration write, would leave them on Default after upgrading again. So a
+ * write that is not about the skin keeps the stored id as it was. Choosing a skin replaces it.
+ */
+function persistUiConfig(config: UiConfig, stored: unknown, choosesSkin: boolean): void {
+  const unshipped = choosesSkin ? null : unshippedStoredSkin(stored);
+  setAppConfig(CONFIG_ENTRY, unshipped === null ? config : ({ ...config, skin: unshipped } as unknown as UiConfig));
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -53,10 +112,12 @@ export function getUiConfig(persistMigration = true): UiConfig {
   // marker still means "written before this build".
   const migrated = stored === undefined
     ? {}
-    : seedHiddenDisplayItems(migrateGuidedTour(migrateRetiredLayout(stored)));
+    : seedHiddenDisplayItems(migrateAnnouncedTours(
+      migrateGuidedTour(migrateHiddenLineDensity(migrateRetiredLayout(stored))),
+    ));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
-    setAppConfig(CONFIG_ENTRY, config);
+    persistUiConfig(config, stored, false);
   }
   return config;
 }
@@ -69,7 +130,13 @@ export function getUiConfig(persistMigration = true): UiConfig {
  * would call that unset and let the dashboard adopt stale `localStorage` over it.
  */
 export function uiConfigView(): UiConfigView {
-  return { configured: getAppConfig(CONFIG_ENTRY) !== undefined, config: getUiConfig() };
+  const configured = getAppConfig(CONFIG_ENTRY) !== undefined;
+  const config = getUiConfig();
+  if (featureEnabled(VOICE_FLAG)) return { configured, config };
+  // Behind its flag like every voice surface: with it off the response is the one an install
+  // without voice gave. The stored value is kept, and returns with the flag.
+  const { voice: _withheld, ...withoutVoice } = config;
+  return { configured, config: withoutVoice };
 }
 
 /**
@@ -82,7 +149,53 @@ export function uiConfigView(): UiConfigView {
  * an absent key - and `resetAll` would silently do nothing.
  */
 export function setUiConfig(patch: UiConfigPatch): UiConfig {
+  // The stored schema reads an unknown skin as Default (a downgrade must still open), so the
+  // merged parse below would quietly store Default for a bad id. Refuse it here instead, as
+  // the route's patch schema does, so no caller can write a skin by accident.
+  if (patch.skin !== undefined) SkinIdSchema.parse(patch.skin);
+  const stored = getAppConfig(CONFIG_ENTRY);
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistUiConfig(next, stored, patch.skin !== undefined);
+  if (patch.skin !== undefined) syncWindowBackground(next.skin);
   return next;
+}
+
+/**
+ * The stored skin on its own, for the two readers that run outside a settings request: daemon
+ * startup and serving the dashboard document.
+ *
+ * Deliberately NOT `getUiConfig(false).skin`. That parses the whole record strictly, so one
+ * malformed field elsewhere (a hand-edited `layout`, a record from a newer build) would throw -
+ * aborting daemon startup, or failing every page load. Reading only `skin` keeps a valid stored
+ * Daylight in force even then. An unknown or unreadable skin is Default, as `UiConfigSchema`
+ * reads it, and this never throws.
+ */
+export function storedSkin(): SkinId {
+  try {
+    const stored = getAppConfig(CONFIG_ENTRY) as unknown as { skin?: unknown } | null | undefined;
+    const skin = typeof stored === "object" && stored !== null ? stored.skin : undefined;
+    return isSkinId(skin) ? skin : UI_CONFIG_DEFAULTS.skin;
+  } catch (error) {
+    console.warn("[ui-config] could not read the stored skin:", error);
+    return UI_CONFIG_DEFAULTS.skin;
+  }
+}
+
+/**
+ * Keep the desktop window's launch colour in step with the stored skin.
+ *
+ * The shell paints its window before the dashboard loads, from a file in the state home
+ * (`window-background.ts`), and this is that file's only writer. A page's own reports are
+ * never persisted, since a page can be showing a stale skin, so a skin chosen anywhere -
+ * a browser tab included - reaches the next desktop launch only through here. Called on every
+ * skin write, after a settings restore, and at daemon startup. The colour is the registry's
+ * swatch, which `test/skins.test.ts` holds equal to the skin's own `--bg`. Never throws, so it
+ * can neither fail the write that prompted it nor abort startup.
+ */
+export function syncWindowBackground(skin?: SkinId): void {
+  try {
+    rememberWindowBackground(windowBackgroundPath(STATE_DIR), skinById(skin ?? storedSkin()).swatches.bg);
+  } catch (error) {
+    console.warn("[ui-config] could not remember the window background:", error);
+  }
 }

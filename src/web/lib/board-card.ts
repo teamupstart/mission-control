@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
-import type { TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
+import { BACKGROUND_AGENTS_STYLES, TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
+import type { BackgroundAgentsStyle, TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -181,6 +181,59 @@ export const DISPLAY_ITEMS = [
     description:
       "How long ago the session last did anything, or how long it has been up. Hidden, a stalled card looks the same as a busy one.",
   },
+  {
+    /**
+     * A resident's border glow and label chip, in its profile's color. Like `cardShortcut` it
+     * governs a surface outside the card too: the Console rail row draws the same accent edge
+     * and chip off this one switch. It hides ink only - a pinned resident still sorts first in
+     * its column, and the Console band and the Residents dock still name it.
+     */
+    id: "residentMarker",
+    group: "card",
+    label: "Resident marker",
+    description:
+      "A glowing outline and label chip, in its profile's color, on every resident's card and Console rail row - the quickest way to find a long-running agent on a busy board. Hidden, a resident looks like any other session, though a pinned one still sorts to the top of its column and the Residents dock still lists it.",
+  },
+  /**
+   * A blocked card's own facts. The red tone and the `Blocked · age` flag are the card's STATE
+   * and stay on whatever these say; these five are what the card says about the blocker, and
+   * each draws nothing on a session that has none.
+   */
+  {
+    id: "blockerKind",
+    group: "card",
+    label: "Blocker kind",
+    description:
+      "Whether a blocked card waits on a question, a dependency, a service or something else. Unchecked, the card still says it is blocked and for how long.",
+  },
+  {
+    id: "blockerReason",
+    group: "card",
+    label: "Blocker reason",
+    description:
+      "The one line saying what the session cannot do yet. Unchecked, you open the session to read it.",
+  },
+  {
+    id: "blockerWaitingOn",
+    group: "card",
+    label: "Waiting on",
+    description:
+      "Who owns the answer a blocked session is waiting for, without opening the session.",
+  },
+  {
+    id: "blockerLink",
+    group: "card",
+    label: "Blocker link",
+    description:
+      "One click from a blocked card to the thread, pull request or status page its blocker points at.",
+  },
+  {
+    id: "blockerReply",
+    group: "card",
+    label: "Reply flagged",
+    description:
+      "The pill saying a resident or you saw a likely answer to a blocked session's question. It is never an alert and never counts as something you owe.",
+  },
   /**
    * The console detail's `PATH`/`BRANCH` band.
    *
@@ -329,11 +382,12 @@ export function setDisplayItemShown(
  * Kept beside `DISPLAY_ITEMS` and keyed by the same groups, so the panel renders each one in
  * the section for the surface it governs, but a separate list: an item is one boolean in
  * `hiddenDisplayItems`, while a choice is its own `UiConfig` key holding one of a fixed set of
- * values, `off` among them. Folding these into the item list would make "hidden" a sixth
+ * values, often with `off` among them. Folding these into the item list would make "hidden" a sixth
  * style of a five-way choice and leave two places that can each turn the mark off.
  *
  * Each option's copy is a `Record` over the persisted style list, so a style added to
- * `TASK_KIND_*_STYLES` does not compile until it says how it is offered.
+ * `TASK_KIND_*_STYLES` or `BACKGROUND_AGENTS_STYLES` does not compile until it says how it is
+ * offered.
  */
 export interface DisplayChoiceOption<V extends string> {
   id: V;
@@ -388,10 +442,27 @@ const TASK_KIND_CARD_COPY: Record<TaskKindCardStyle, Omit<DisplayChoiceOption<Ta
 };
 
 /**
+ * The background sub-agent treatments, each named for what the board card does and saying
+ * what the conversation does with it, because one value switches both halves.
+ */
+const BACKGROUND_AGENTS_COPY: Record<BackgroundAgentsStyle, Omit<DisplayChoiceOption<BackgroundAgentsStyle>, "id">> = {
+  nested: {
+    label: "Nested sub-cards",
+    description:
+      "Each agent hangs under its card, and a tray above the reply box lists them. Cards grow while agents run.",
+  },
+  chip: {
+    label: "Chip and popover",
+    description:
+      "A chip in the card's flags opens the list, and the conversation rail gains an Agents tab. Cards keep their height.",
+  },
+};
+
+/**
  * Each choice's `UiConfig` key with the values that key stores, so a key and its styles travel
  * together: the board card's key accepts only card styles, and the header's only header styles.
  */
-export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard">;
+export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard" | "backgroundAgentsStyle">;
 export type DisplayChoiceKey = keyof DisplayChoiceValues;
 
 export interface DisplayChoice<K extends DisplayChoiceKey = DisplayChoiceKey> {
@@ -417,6 +488,15 @@ export const DISPLAY_CHOICES: readonly AnyDisplayChoice[] = [
     description:
       "How a card marks what kind of task it came from - ship, bugfix, scout, plan, pipeline, chat or document. Every kind is marked, ship included.",
     options: TASK_KIND_CARD_STYLES.map((id) => ({ id, ...TASK_KIND_CARD_COPY[id] })),
+  },
+  {
+    // In the Board card group, after Task type, although it governs the conversation too: the
+    // operator decides it by the card, and the card is what this group's preview draws.
+    key: "backgroundAgentsStyle",
+    group: "card",
+    label: "Background sub-agents",
+    description: "How a session shows the sub-agents it launched in the background, on its card and in its conversation.",
+    options: BACKGROUND_AGENTS_STYLES.map((id) => ({ id, ...BACKGROUND_AGENTS_COPY[id] })),
   },
   {
     key: "taskKindHeader",

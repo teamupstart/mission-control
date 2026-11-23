@@ -13,10 +13,13 @@
 import type {
   PlanDecision,
   PlanDecisionAnswer,
+  ReviewActor,
+  ReviewClosedReason,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
 } from "./types.ts";
+import { snoozedToolResultText } from "./review-snooze.ts";
 
 /**
  * The terminal statuses a person can put a review into.
@@ -54,11 +57,121 @@ export function isHumanResolvedReview(review: ReviewItem): boolean {
   return review.resolvedBy === "human" && HUMAN_REVIEW_STATUSES.has(review.status);
 }
 
-/** Delegated answers are conversational records, but never evidence of direct human approval. */
+/**
+ * Delegated and standing-approval answers are conversational records, but never evidence of
+ * direct human approval. A standing approval is logged here so the session shows every final
+ * bundle it approved without asking.
+ */
 export function isConversationResolvedReview(review: ReviewItem): boolean {
-  return (review.resolvedBy === "human" || review.resolvedBy?.startsWith("session:") === true)
+  return (review.resolvedBy === "human" || review.resolvedBy === "standing-approval" || review.resolvedBy?.startsWith("session:") === true)
     && HUMAN_REVIEW_STATUSES.has(review.status);
 }
+
+/**
+ * Whether the conversation records this question for itself, whatever became of it: a
+ * message-mode question (`async-input`), which gets an Asked entry where it was filed and says
+ * there how it ended, and any question a merge closed (`closedReason: "merged"`), whose closure
+ * the operator's merge caused and the conversation must never leave silent.
+ *
+ * Read on both sides for the reason this module exists: the history route admits these rows by
+ * the SQL mirror in `server/db.ts`, and the dashboard admits the live ones by this, so a question
+ * shown on submit is still there on reload. Not an answer: `isConversationResolvedReview` still
+ * decides which of them also gets the gold answer entry.
+ */
+export function isConversationQuestionRecord(review: Pick<ReviewItem, "waitMode" | "closedReason">): boolean {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return (review.waitMode != null && (waitModes as readonly string[]).includes(review.waitMode))
+    || (review.closedReason != null && (closedReasons as readonly string[]).includes(review.closedReason));
+}
+
+/**
+ * The one statement of which questions the conversation records for itself: a review in any of
+ * these wait modes, or closed for any of these reasons. `isConversationQuestionRecord` reads it in
+ * memory, and the history query's SQL (`conversationQuestionRecordSql` in `server/db.ts`) is built
+ * from it, so a new outcome is added here and the live and reloaded conversations agree on it.
+ *
+ * Every value is a fixed identifier, never input: the SQL builder quotes them as literals.
+ */
+export const CONVERSATION_QUESTION_RECORDS = {
+  waitModes: ["message"],
+  closedReasons: ["merged"],
+} as const satisfies {
+  waitModes: readonly NonNullable<ReviewItem["waitMode"]>[];
+  closedReasons: readonly ReviewClosedReason[];
+};
+
+/**
+ * Answers given from a home session or `mctl` (spec 7.8): `home:{sessionId}`,
+ * `home-approval:{sessionId}` and `mctl`. They are never the human's own conversation, so
+ * `isConversationResolvedReview` leaves them out, but plan publication must see them: a later
+ * "needs revision" from any of them beats an earlier approval (7.9).
+ */
+export function isHomeDispatchResolvedReview(review: ReviewItem): boolean {
+  return isHomeDispatchActor(review.resolvedBy) && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
+/**
+ * The one list of who counts as a home-session or command-line actor: an exact name (`mctl`) or a
+ * prefix (`home:{sessionId}`, `home-approval:{sessionId}`). The predicate below and the SQL in
+ * `db.ts` both read it, so a new actor is added here and nowhere else.
+ */
+export const HOME_DISPATCH_ACTOR_NAMES = ["mctl"] as const;
+export const HOME_DISPATCH_ACTOR_PREFIXES = ["home:", "home-approval:"] as const;
+
+export function isHomeDispatchActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  if (!by) return false;
+  return (HOME_DISPATCH_ACTOR_NAMES as readonly string[]).includes(by)
+    || HOME_DISPATCH_ACTOR_PREFIXES.some((prefix) => by.startsWith(prefix));
+}
+
+/**
+ * Whether the actor's answer can count as a human approval of a plan's final bundle: the
+ * operator, their standing approval, or an accepted `home-approval:` (7.9). A plain `home:`,
+ * `session:` or `mctl` answer never approves.
+ */
+export function isApprovingActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  return by === "human" || by === "standing-approval" || by?.startsWith("home-approval:") === true;
+}
+
+/**
+ * Whose resolution of a review is owed to its agent as a message once no MCP call is waiting
+ * for it. The one statement of that rule: `deliversContinuation` reads it in memory, and the
+ * outbox's SQL eligibility (`continuationActorSql` in `server/db.ts`) is built from it, so a new
+ * actor is added here and nowhere else.
+ *
+ * - `anyWait`: the operator, a session driving this one through session control, and a home
+ *   session or `mctl` (`HOME_DISPATCH_ACTOR_NAMES`/`_PREFIXES`), whatever the review's wait mode.
+ * - `messageWait`: Foreman and a standing approval, only for a message-mode question
+ *   (`async-input`). A call-mode call returns those resolutions directly; a message-mode
+ *   question has no call to return them through, so without this the agent never hears them.
+ *
+ * Every value is a fixed identifier, never input: the SQL builder quotes them as literals.
+ */
+export const CONTINUATION_ACTOR_POLICY = {
+  anyWait: { actors: ["human", ...HOME_DISPATCH_ACTOR_NAMES], prefixes: ["session:", ...HOME_DISPATCH_ACTOR_PREFIXES] },
+  messageWait: { actors: ["foreman", "standing-approval"] },
+} as const satisfies {
+  anyWait: { actors: readonly ReviewActor[]; prefixes: readonly string[] };
+  messageWait: { actors: readonly ReviewActor[] };
+};
+
+/**
+ * Whether a settled review's answer is owed to its agent through the continuation outbox: a
+ * human status from an actor `CONTINUATION_ACTOR_POLICY` admits for the review's wait mode.
+ *
+ * Kept apart from `isConversationResolvedReview` on purpose: Foreman's answers are already in
+ * the conversation as its own episode, so widening that predicate would show them twice.
+ */
+export function deliversContinuation(review: ReviewItem): boolean {
+  const by = review.resolvedBy;
+  if (!by || !HUMAN_REVIEW_STATUSES.has(review.status)) return false;
+  const { anyWait, messageWait } = CONTINUATION_ACTOR_POLICY;
+  if ((anyWait.actors as readonly string[]).includes(by) || anyWait.prefixes.some((prefix) => by.startsWith(prefix))) return true;
+  return review.waitMode === "message" && (messageWait.actors as readonly string[]).includes(by);
+}
+
+/** The line a standing approval prefixes onto the agent's tool result and the logged record. */
+export const STANDING_APPROVAL_NOTE = "Approved automatically: the operator chose to approve all future plan bundles for this task.";
 
 /**
  * The semantic result a blocking review tool hands back to its caller.
@@ -75,8 +188,28 @@ export function reviewToolResult(review: ReviewItem): { text: string; isError: b
 }
 
 function reviewResolutionResult(review: ReviewItem): { text: string; isError: boolean } {
+  // Not an answer: the operator parked the question, and the call returns so the agent can
+  // carry on. Read before every other branch, because a snoozed row has no response at all and
+  // would otherwise fall through to "(no answer given)", which reads as a decision.
+  if (review.status === "snoozed") {
+    return { text: snoozedToolResultText(review), isError: false };
+  }
+  if (review.status === "orphaned" && review.closedReason === "merged") {
+    return { text: "Closed unanswered: the task's pull request merged before a human answered.", isError: true };
+  }
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
+  }
+  if (review.status === "withdrawn") {
+    return { text: "Withdrawn without an answer: you took this question back, so the human no longer answers it.", isError: true };
+  }
+  if (review.status === "superseded") {
+    return {
+      text:
+        "Withdrawn without an answer: you asked a newer request_input question after this call " +
+        "ended, so the human answers that one instead.",
+      isError: true,
+    };
   }
   if (review.status === "dismissed") {
     return {
@@ -161,13 +294,59 @@ export function formatResponse(
   const byId = new Map(answers.map((a) => [a.decisionId, a]));
   const blocks = decisions.map((d) => {
     const answer = byId.get(d.id);
-    const labels = selectedOptions(d, answer).map((o) => o.label);
-    const other = answer?.other?.trim() ?? "";
+    const note = answer?.note?.trim() ?? "";
     const lines = [`• ${d.question}`];
-    if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-    if (d.allowOther && other) lines.push(`  Other: ${other}`);
-    if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    const other = answer?.other?.trim() ?? "";
+    if (answer?.chat) {
+      // Moved to the conversation: whatever was picked before the move is not an answer.
+      lines.push(`  → ${CHAT_ABOUT_IT}`);
+      if (d.allowOther && other) lines.push(`  Context: ${other}`);
+    } else {
+      const labels = selectedOptions(d, answer).map((o) => o.label);
+      if (labels.length) lines.push(`  → ${labels.join(", ")}`);
+      // The same box is an answer of its own when nothing is picked, and context for the
+      // pick when something is - so the agent is told which, rather than reading "Other"
+      // beside a single choice as a second, competing answer.
+      if (d.allowOther && other) lines.push(`  ${labels.length ? "Context" : "Other"}: ${other}`);
+      if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    }
+    // Not gated on `allowOther`: the note box is drawn on every decision of the forms that
+    // offer it, so dropping a typed note here would discard what the human sent. Beside a
+    // question moved to chat it says what is unclear, which the agent's explanation should
+    // start from.
+    if (note) lines.push(`  Note: ${note}`);
     return lines.join("\n");
   });
-  return `${lead}\n\n${blocks.join("\n\n")}`;
+  const moved = decisions.filter((d) => byId.get(d.id)?.chat);
+  const body = `${lead}\n\n${blocks.join("\n\n")}`;
+  return moved.length ? `${body}\n\n${chatInstruction(moved, decisions.length)}` : body;
+}
+
+export const CHAT_ABOUT_IT = "Chat about it";
+
+/**
+ * What the agent is told to do with the questions the human moved to chat.
+ *
+ * The gap it closes: before "Chat about it", a human who needed more context could only close
+ * the dialog (the agent stays blocked and the card goes stale) or dismiss it (the agent may
+ * decide on its own). This is the third outcome, and it has to be explicit in the tool result,
+ * because an agent that reads "(no selection)" will reasonably pick something itself or ask
+ * the same form again. So the instruction forbids both, lets the answered questions proceed
+ * where they stand alone, asks for the explanation the human was missing, and ends the turn
+ * so the conversation is where the decision gets made.
+ */
+function chatInstruction(moved: PlanDecision[], asked: number): string {
+  const one = moved.length === 1;
+  const it = one ? "it" : "them";
+  const lines = [
+    `The human wants to discuss ${one ? "this decision" : `these ${moved.length} decisions`} with you in conversation before choosing:`,
+    ...moved.map((d) => `- ${d.question}`),
+    "",
+    `Do not choose ${it} yourself, and do not ask ${it} again with request_input or request_plan_decisions.` +
+      (moved.length < asked ? ` Act on the other answers only where they do not depend on ${it}.` : ""),
+    `Then, in your next message, explain ${one ? "it" : "each one"} in plain terms: the context behind ${it}, ` +
+      "the trade-off you cannot settle on your own, and what you would need to know to decide. " +
+      "End your turn after that message so the human can reply in this session.",
+  ];
+  return lines.join("\n");
 }

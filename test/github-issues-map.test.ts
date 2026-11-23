@@ -7,6 +7,7 @@ import {
 } from "../src/shared/task-source.ts";
 import {
   candidateFrom,
+  githubIssues,
   externalIdFor,
   ghIssueCreateArgs,
   ghIssueListArgs,
@@ -46,7 +47,7 @@ test("the base sweep asks only for open issues, and only for the fields we map",
   assert.ok(args.slice(0, 2).join(" ") === "issue list");
   assert.equal(argAfter(args, "--state"), "open");
   assert.equal(argAfter(args, "--limit"), "50");
-  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt");
+  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent");
   // No filter was configured, so none is passed - the sweep must not narrow itself.
   assert.equal(args.includes("--label"), false);
   assert.equal(args.includes("--search"), false);
@@ -188,6 +189,12 @@ test("a non-zero gh exit is an error, never an empty success", () => {
   assert.match(r.error!, /gh issue list failed: gh: not authenticated/);
 });
 
+test("a gh run refused because the checkout is gone names the checkout, not gh", () => {
+  const r = sweepResultFrom({ stdout: "", stderr: "gh could not start because its working directory /gone does not exist", code: 1, missingCwd: "/gone" }, cfg(), ctx);
+  assert.deepEqual(r.items, []);
+  assert.match(r.error!, /files tasks against \/gone, which no longer exists/);
+});
+
 test("gh output that is not JSON, or not a list, is an error too", () => {
   assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx).error!, /not JSON/);
   assert.match(
@@ -290,6 +297,16 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   assert.equal(r.ref!.externalId, externalIdFor(r.ref!.url!));
 });
 
+test("a clean create vouches for no blocking links; a partial failure vouches for none at all", () => {
+  const out = "https://github.com/acme/widgets/issues/42\n";
+  // A push writes no links, so a clean exit reports "none written", which is not "unknown".
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets");
+  assert.deepEqual(clean.blockedBy, []);
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not add label", code: 1 }), ctx, "acme/widgets");
+  assert.equal(partial.ref?.externalId, "acme/widgets#42");
+  assert.equal(partial.blockedBy, undefined);
+});
+
 // `gh` prints progress above the URL, so the URL is the LAST such line rather than the
 // first - taking the first would make a chatty release turn a progress line into the id.
 test("progress chatter above the URL is not mistaken for it", () => {
@@ -366,5 +383,22 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
     assert.equal(r.ref, null);
+  }
+});
+
+// The preflight's own branch, through the real `run`: a gh that resolves, started in a
+// checkout that is gone. Node refuses that spawn with ENOENT, which this branch used to
+// read as "gh is not installed" or "not authenticated" - neither of which is the fix.
+test("preflight under a vanished checkout names the checkout, never gh", async () => {
+  const before = process.env.MISSION_GH_BIN;
+  process.env.MISSION_GH_BIN = process.execPath;
+  try {
+    const gone = `/definitely/not/here/${process.pid}-gh-checkout`;
+    const said = await githubIssues.preflight({ ...cfg(), repo: "acme/demo" }, { ...ctx, repoRoot: gone });
+    assert.match(said ?? "", new RegExp(`files tasks against ${gone}, which no longer exists`));
+    assert.doesNotMatch(said ?? "", /not installed|not authenticated|gh auth login/);
+  } finally {
+    if (before === undefined) delete process.env.MISSION_GH_BIN;
+    else process.env.MISSION_GH_BIN = before;
   }
 });

@@ -6,7 +6,7 @@ Desktop installation needs no clone, npm, tsx, terminal, package manager, or net
 Start a fresh Pi session after installation or repair so it loads the current extension.
 
 Pi's optional OpenTelemetry package is a separate installation, explained under
-**Settings > Setup > Agent CLIs > Pi OpenTelemetry extension**. See [Pi telemetry setup](pi-telemetry.md)
+**Settings > Setup > Agent CLIs > Pi** with the enterprise package preview enabled. See [Pi telemetry setup](pi-telemetry.md)
 for CodeArtifact authentication, capture defaults and the read-only installation check.
 
 `npm run build` produces a deployable `dist/pi-integration/` directory containing

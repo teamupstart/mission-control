@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -53,6 +54,31 @@ for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "c
     assert.deepEqual(f.counts(), { launches: 1, stops: 1, injections: 0 });
   });
 }
+
+test("a resident never continues in a terminal: the handoff is refused before anything stops or launches", async (t) => {
+  const f = transferFixture(t);
+  // The refused handoff leaves this fixture's SDK row live; a later restart case must not restore it.
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+  f.registry.upsertTask({ ...f.registry.getTask(f.task!.id)!, kind: "resident" });
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /resident runs only in the Agent SDK/);
+  assert.equal(f.counts().launches, 0);
+  assert.equal(transferForSource(f.source.id), null);
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+});
+
+test("a resident whose task already settled is still refused a terminal handoff, from its embedded row", async (t) => {
+  const f = transferFixture(t);
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+  // The agent went away: the task is failed and no longer points at the session.
+  f.registry.upsertTask({ ...f.registry.getTask(f.task!.id)!, kind: "resident", status: "failed", sessionId: null });
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /resident runs only in the Agent SDK/);
+  assert.equal(f.counts().launches, 0);
+  assert.equal(transferForSource(f.source.id), null);
+});
 
 test("resolution revalidates the transfer vocabulary after asynchronous observation", async (t) => {
   const f = transferFixture(t);
@@ -655,7 +681,7 @@ for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached",
         return snapshot;
       } });
     transfers.start(); t.after(() => transfers.stop());
-    const sdk = new SdkSupervisor(registry);
+    const sdk = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     if (sourcePid) {
       const held = await transfers.recheck(before.id);
       assert.equal(held.state, "recovery_required");
@@ -692,7 +718,7 @@ for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached",
         assert.equal(settled.workflowVersionId, pin!.workflowVersionId);
       }
       assert.deepEqual(bindings.map((id) => store.getSubmission(id.replace("binding-", "submission-"))), submissions);
-      const sdkAfterSettlement = new SdkSupervisor(registry);
+      const sdkAfterSettlement = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
       sdkAfterSettlement.prepareRestore();
       assert.equal(registry.snapshot().restoringSessions.some((row) => row.id === sourceId), false);
     } else if (point === "ownership-changed") {

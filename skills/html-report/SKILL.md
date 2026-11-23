@@ -110,10 +110,11 @@ is much closer - it is authored dark-first with a `prefers-color-scheme: light` 
 is clean in dark - but one `.pill.on` reads 2.64:1 in light. Take the structure and the
 typographic scale from them; get your colour pairs from rule 7.
 
-Leave the file untracked unless the investigation is itself the deliverable being shipped.
-`docs/reports/` is not ignored, so an untracked report still lists in the Files tab; a
-report written under an ignored path does not, and that is the one placement mistake that
-silently costs the reader the file.
+Keep local reports and evidence out of Git unless the operator explicitly requests otherwise.
+Existing repository or global ignore rules may exclude `docs/reports/`; leave those rules
+in place. Explicit publication accepts selected ignored files. Ignored working copies may
+not appear in the Files tab, so also return the published archive link from the tool response
+when publication was requested. The archive remains readable independently of the checkout.
 
 ## Always: log the report as a checkout-relative path
 
@@ -163,7 +164,7 @@ Cite the file as visible text with no link:
 ```
 
 The exception is a file you deliberately copied into the report's own directory. That one is
-captured with the report and stays linkable.
+selected in `files` with the report and stays linkable.
 
 Fragment links (`#findings`) work natively, so a long report should have a contents list.
 
@@ -190,7 +191,7 @@ A flow described only in prose is a flow nobody traces.
   skill exists to fix, restated in two places.
 - Don't hand back an absolute path, a `file://` URL, or a description of where the file is
   instead of the path itself.
-- Don't put the report anywhere but `docs/reports/<slug>/`, and never under an ignored path.
+- Don't put the report anywhere but `docs/reports/<slug>/`. Ignored paths are supported by explicit publication.
 - Don't use this for a plan. A plan is `html-plans`, and it owes the human decisions.
 
 
@@ -203,3 +204,34 @@ taskless sessions publish only when requested. Give each report its own
 replays the existing immutable archive. Publish revisions under a new slug. A successful
 submission archives that report and does not complete the session or task; continue the
 requested work. Scout completion verifies every explicitly submitted report in the episode.
+
+Prepare a complete `files` list before calling the tool. Include the primary `report.html`
+itself and each screenshot, CSV, log, or other evidence file to preserve, using the issued
+repository slot and checkout-relative path for each:
+
+```json
+{
+  "reportPath": "docs/reports/resume-audit/report.html",
+  "summary": "The resumed session omitted its saved grant.",
+  "files": [
+    { "repoSlot": "repo-01", "path": "docs/reports/resume-audit/report.html" },
+    { "repoSlot": "repo-01", "path": "docs/reports/resume-audit/images/screen.png" },
+    { "repoSlot": "repo-01", "path": "docs/reports/resume-audit/evidence.csv" },
+    { "repoSlot": "repo-01", "path": "docs/reports/resume-audit/run.log" }
+  ]
+}
+```
+
+Use the actual slot issued for the checkout, not an invented slot or absolute path. With
+`files`, only selected files enter the archive, even if Git ignores their entire directory.
+Neighbors are never collected automatically. Include every local file referenced by the
+report or submission fails with its name. Keep linked evidence beneath the report directory
+and use relative links such as `images/screen.png`; that layout survives publication.
+Files selected elsewhere in an issued checkout are preserved as separate supporting artifacts,
+not as report-relative link targets.
+
+Do not combine `files` with `supporting`. Older callers that omit `files` still use automatic
+directory capture and Git-ignore filtering; this skill uses explicit lists. If the tool says
+the daemon needs an update, report that blocker instead of retrying in legacy mode, staging
+the files, committing them, or removing ignore rules. Publication itself does none of those.
+Path, symlink, size, static-HTML, and archive-integrity checks still apply.

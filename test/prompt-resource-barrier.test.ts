@@ -185,3 +185,31 @@ test("cmux home ownership blocks prompts after cwd changes", async () => {
   assert.equal(result.ok, false);
   assert.deepEqual(writes, []);
 });
+
+test("a blocker reported mid-delivery stops a terminal Foreman write before the pane write", async () => {
+  // The route's Foreman guard, driven through the real terminal transport: it runs inside the
+  // pane lock immediately before the write, so a blocker that lands after the route's own
+  // checks still refuses the delivery.
+  const { foremanBlockedNow } = await import("../src/server/routes.ts");
+  for (const deliver of ["inject", "send"] as const) {
+    const { registry, session, writes, pane, deps } = setup();
+    registry.upsertTask({ ...registry.getTask("cancelled-owner")!, status: "running", sessionId: session.id });
+    pane.mode = async () => {
+      const reported = registry.reportBlocker(session.id, {
+        kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+        referenceUrl: null, details: null,
+      });
+      assert.equal(reported.ok, true);
+      return null;
+    };
+    const guard = () => foremanBlockedNow(registry, session.id, "foreman")
+      ?? registry.promptResourceBlockerForSession(session.id);
+    const result = deliver === "inject"
+      ? await injectPrompt(session, "Wrap up and open the PR", deps, guard)
+      : await sendText(session, "Wrap up and open the PR", true, deps, guard);
+    assert.equal(result.ok, false, `${deliver} wrote into a session that became blocked mid-delivery`);
+    assert.deepEqual(writes, []);
+    // A human write is never held by a blocker.
+    assert.equal(foremanBlockedNow(registry, session.id, "human"), null);
+  }
+});

@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const EVIDENCE = artifactsDir("workflow-submit-accepted");
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -78,7 +79,7 @@ async function dispatchSlowContextSession(
   return sessionId;
 }
 
-test("Bind and submit opens the durable capturing run before compaction finishes", async ({
+test("Cmd+Enter respects Workflow Binding validation and evidence guards then submits a durable run", async ({
   dashboard,
   daemon,
 }) => {
@@ -93,15 +94,48 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Session").selectOption(sessionId);
   await dialog.getByLabel("Published workflow").selectOption(published.versionId);
+  await expectContentClearsBorder(dialog);
+  const bindingWrites: string[] = [];
+  dashboard.on("request", (request) => {
+    if (request.method() === "POST" && /\/api\/workflow-bindings(?:\/[^/]+\/submit)?$/.test(new URL(request.url()).pathname)) {
+      bindingWrites.push(new URL(request.url()).pathname);
+    }
+  });
+  await dialog.getByLabel("Maximum repair rounds").fill("0");
+  await expect(dialog.getByRole("button", { name: "Bind and submit" })).toBeDisabled();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(dialog).toBeVisible();
+  expect(bindingWrites).toHaveLength(0);
+  await dialog.getByLabel("Maximum repair rounds").fill("5");
+  await dialog.getByLabel("Choose workflow evidence images").setInputFiles({
+    name: "shortcut-proof.png", mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"),
+  });
+  // A staged image with no caption is incomplete evidence, even though the binding
+  // fields themselves are now valid. The shortcut must not fall back to Bind only.
+  await expect(dialog.getByRole("button", { name: "Bind and submit" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Bind only" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(dialog).toBeVisible();
+  expect(bindingWrites).toHaveLength(0);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}cmd-enter-incomplete-evidence.png` });
+  }
+  // This preview-only workflow has no Persona evidence consumer. Remove the incomplete
+  // optional image, restoring a valid submission without changing the workflow's policy.
+  await dialog.getByRole("button", { name: "Remove shortcut-proof.png" }).click();
+  await expect(dialog.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
 
   const submitResponse = dashboard.waitForResponse((response) =>
     response.request().method() === "POST"
     && /\/api\/workflow-bindings\/[^/]+\/submit$/.test(new URL(response.url()).pathname));
-  await dialog.getByRole("button", { name: "Bind and submit" }).click();
+  await dashboard.keyboard.press("Meta+Enter");
   const response = await submitResponse;
   expect(response.status()).toBe(202);
   const accepted = await response.json() as { run: { id: string; status: string } };
   expect(accepted.run.status).toBe("capturing");
+  expect(bindingWrites).toHaveLength(2);
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console

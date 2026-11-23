@@ -172,6 +172,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
   return {
     id: "wezterm",
     label: "WezTerm",
+    macBundleId: "com.github.wez.wezterm",
     // A filled window - the emulator axis.
     glyph: "▣",
     bin: WEZTERM_BIN,

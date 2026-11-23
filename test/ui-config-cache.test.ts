@@ -38,6 +38,17 @@ test("startup preference defaults on for old caches and legacy imports, preservi
   assert.equal(readCache().showToursOnStartup, true);
 });
 
+test("a cache without announced tours reads every one as seen, and keeps a stored list", () => {
+  // Only the daemon's record can say a profile predates a tour, and the startup picker waits
+  // for it, so a cold paint must never invent an announcement the daemon would not make.
+  store.set("mission-control.ui", JSON.stringify({ showToursOnStartup: false }));
+  assert.deepEqual(readCache().announcedTours, [...UI_CONFIG_DEFAULTS.announcedTours]);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: [] }));
+  assert.deepEqual(readCache().announcedTours, []);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: ["residents", 7, "from-a-newer-build"] }));
+  assert.deepEqual(readCache().announcedTours, ["residents", "from-a-newer-build"]);
+});
+
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   // Board. Retiring Cards moved this to Console by accident; see `UI_CONFIG_DEFAULTS`.
@@ -47,32 +58,60 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // Pinned here because this one line decides the Line's band height for every profile
   // that has never touched the control.
   assert.equal(config.lineDensity, "condensed");
+  // Today's look: a skin is opt-in.
+  assert.equal(config.skin, "default");
   // A task's kind is marked on both surfaces out of the box, in the styles the operator
   // chose from the mockups: a badge before the console's title, a tab on the card's edge.
   assert.equal(config.taskKindHeader, "badge");
   assert.equal(config.taskKindCard, "tab");
+  // Nested sub-cards, the recommended treatment, for an install that never chose.
+  assert.equal(config.backgroundAgentsStyle, "nested");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
-  // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
-  assert.equal(config.showEmptyColumnStash, true);
+  assert.equal(config.boardSidebarAllSessions, false);
+  assert.equal(config.conversationRailCollapsed, false);
+  // The drawer, floating: residents leave the fleet for an install that never chose.
+  assert.equal(config.residentPlacement, "drawer");
+  assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
+  assert.equal(config.blockedPlacement, "needs-you");
+  assert.equal(config.blockedFrameCollapsed, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
   // `UI_CONFIG_DEFAULTS` for the whole reasoning.
   assert.deepEqual(config.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  // The shipped topbar: every item drawn, every control expanded.
+  assert.deepEqual(config.hiddenTopbarItems, []);
+  assert.deepEqual(config.compactTopbarItems, []);
+  // Voice's half: the floating pill, and the status line as the one indicator.
+  assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] });
 });
 
 test("a written cache round-trips", () => {
   writeCache({
     layout: "console",
+    // Both off their defaults, so neither round-trips by falling back.
+    residentPlacement: "fleet",
+    residentDrawerPinned: true,
+    // Both off their defaults, for the same reason.
+    blockedPlacement: "column",
+    blockedFrameCollapsed: true,
     conversationView: "chat",
     lineDensity: "expanded",
+    // Off its default, so it cannot round-trip by falling back.
+    lineHidden: true,
+    // Not Default, so it cannot round-trip by falling back to the default.
+    skin: "daylight",
     // Off on both, so neither round-trips by falling back to its default.
     taskKindHeader: "off",
     taskKindCard: "off",
+    // Off its default, so it cannot round-trip by falling back.
+    backgroundAgentsStyle: "chip",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -80,6 +119,8 @@ test("a written cache round-trips", () => {
     guidedDispatch: false,
     guidedTour: false,
     showToursOnStartup: false,
+    // Empty, off the all-seen default, so only a copied field round-trips it.
+    announcedTours: [],
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
     // Head-seeded, which is what any record this build writes looks like. That is what makes
@@ -91,18 +132,36 @@ test("a written cache round-trips", () => {
     // for the one operator who turned it off. Asserting the non-default value is the only way
     // round-tripping this field says anything.
     groupBoardByRepo: false,
-    // FALSE for the same reason: it defaults to true.
-    showEmptyColumnStash: false,
+    boardSidebarAllSessions: true,
+    // Off its default, so it cannot round-trip by falling back.
+    conversationRailCollapsed: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
+    // Non-empty, both: the shipped bar hides and minimizes nothing.
+    hiddenTopbarItems: ["cost", "feedback"],
+    compactTopbarItems: ["fleet", "foreman"],
+    // Off their defaults: one is emptied, the other picks a set the build does not ship.
+    pauseCardControls: [],
+    pauseConsoleControls: ["composer", "badge"],
+    // Off both defaults, so only a copied field round-trips it.
+    voice: { confirmation: "toast", indicators: ["topbar", "edge"] },
   });
   const config = readCache();
   assert.equal(config.layout, "console");
+  assert.equal(config.residentPlacement, "fleet");
+  assert.equal(config.residentDrawerPinned, true);
+  assert.equal(config.blockedPlacement, "column");
+  assert.equal(config.blockedFrameCollapsed, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
+  assert.equal(config.lineHidden, true);
+  assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
+  assert.equal(config.backgroundAgentsStyle, "chip");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -110,11 +169,20 @@ test("a written cache round-trips", () => {
   assert.equal(config.guidedDispatch, false);
   assert.equal(config.guidedTour, false);
   assert.equal(config.showToursOnStartup, false);
+  assert.deepEqual(config.announcedTours, []);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
-  assert.equal(config.showEmptyColumnStash, false);
+  assert.equal(config.boardSidebarAllSessions, true);
+  assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
+  assert.deepEqual(config.voice, { confirmation: "toast", indicators: ["topbar", "edge"] });
+  assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
+  assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
+  // An emptied list is the operator's answer, never the default coming back.
+  assert.deepEqual(config.pauseCardControls, []);
+  assert.deepEqual(config.pauseConsoleControls, ["composer", "badge"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {
@@ -179,12 +247,41 @@ test("a rendering this build does not ship reads as the shipped one", () => {
 });
 
 test("a density this build does not ship reads as the shipped one", () => {
-  // The third member the study drew and held in reserve - `hidden`, at zero height - is
-  // the realistic version of this: a profile that used a build which shipped it must not
-  // paint a strip this build cannot draw, and must not PUT the value back as if it were
-  // real. It falls to the shipped default, which is a strip you can see.
+  // A profile that used a build which shipped some other density must not paint a strip
+  // this build cannot draw, and must not PUT the value back as if it were real. It falls
+  // to the shipped default, which is a strip you can see. `hidden` included: switching the
+  // Line off is `lineHidden`, never a density.
+  for (const lineDensity of ["hairline", "hidden"]) {
+    store.set("mission-control.ui", JSON.stringify({ lineDensity }));
+    assert.equal(readCache().lineDensity, "condensed");
+  }
+});
+
+test("a cached Disabled Line survives a cold paint, and only a real true switches it off", () => {
+  // Dropping it here would draw the strip on the first frame and remove it the moment the
+  // daemon answered, stepping the whole fleet up by a band on every load.
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: true, lineDensity: "expanded" }));
+  assert.equal(readCache().lineHidden, true);
+  assert.equal(readCache().lineDensity, "expanded", "switching off keeps the density to return to");
+  // A cache from the build that stored Disabled as a density still reads as switched off.
   store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineHidden, true);
   assert.equal(readCache().lineDensity, "condensed");
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: "yes" }));
+  assert.equal(readCache().lineHidden, false);
+  store.clear();
+  assert.equal(readCache().lineHidden, false);
+});
+
+test("a skin this build does not ship reads as Default, and a cached one paints first", () => {
+  // The first frame is painted from this cache, so dropping a real skin here would flash
+  // Default on every cold load; adopting an unknown one would PUT it to the daemon as real.
+  store.set("mission-control.ui", JSON.stringify({ skin: "daylight" }));
+  assert.equal(readCache().skin, "daylight", "the cached skin was dropped");
+  for (const stray of ["neon-dusk-from-the-future", 7, null, ""]) {
+    store.set("mission-control.ui", JSON.stringify({ skin: stray }));
+    assert.equal(readCache().skin, "default", `${JSON.stringify(stray)} was adopted as a skin`);
+  }
 });
 
 test("a task-kind style this build does not ship reads as the shipped one", () => {
@@ -195,6 +292,14 @@ test("a task-kind style this build does not ship reads as the shipped one", () =
   );
   assert.equal(readCache().taskKindHeader, "badge");
   assert.equal(readCache().taskKindCard, "tab");
+});
+
+test("a background sub-agents treatment this build does not ship reads as Nested sub-cards", () => {
+  // An `off` was never offered, and a treatment from a later build is not this one's to draw.
+  for (const stray of ["off", "lane", 3, null]) {
+    store.set("mission-control.ui", JSON.stringify({ backgroundAgentsStyle: stray }));
+    assert.equal(readCache().backgroundAgentsStyle, "nested", `${JSON.stringify(stray)} was adopted`);
+  }
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {
@@ -339,4 +444,25 @@ test("switching a ships-hidden item on survives the next cold paint", () => {
     ["cost"],
     "a seeded record was seeded again, re-hiding an item the operator switched on",
   );
+});
+
+test("a cached ui.voice this build cannot read falls back alone, keeping every other cached preference", () => {
+  const unreadable = [
+    // A newer build's longer list: over the 32-entry bound.
+    { confirmation: "toast", indicators: Array.from({ length: 40 }, (_, i) => `indicator-${i}`) },
+    // An id that is not a string, and one over 64 characters.
+    { confirmation: "toast", indicators: ["status-line", 7] },
+    { confirmation: "toast", indicators: ["x".repeat(65)] },
+  ];
+  for (const voice of unreadable) {
+    store.set("mission-control.ui", JSON.stringify({ layout: "console", richText: false, keybindings: { select: "shift+Tab" }, voice }));
+    const config = readCache();
+    assert.deepEqual(config.voice, { confirmation: "pill", indicators: ["status-line"] }, "only the voice field falls back");
+    assert.equal(config.layout, "console", "the rest of the cache is kept");
+    assert.equal(config.richText, false);
+    assert.deepEqual(config.keybindings, { select: "shift+Tab" });
+  }
+  // A readable value is kept, and an unknown placement alone reads as the pill.
+  store.set("mission-control.ui", JSON.stringify({ voice: { confirmation: "banner", indicators: ["edge"] } }));
+  assert.deepEqual(readCache().voice, { confirmation: "pill", indicators: ["edge"] });
 });

@@ -15,8 +15,16 @@ type LoadReading = { loaded: false } | { loaded: true; metadata: Metadata | null
 
 export interface PiCandidateReading { healthy: boolean; warning: string | null; detail: string | null }
 
+/**
+ * How long the bounded child may take to start Node and import the extension. A bound on a hung
+ * module, not a guess at a healthy one: at 3s a loaded Mac's Node startup alone ran past it, and a
+ * healthy candidate was refused as one that "could prevent Pi sessions from starting". Matches the
+ * MCP handshake bound in `mission-mcp.ts`.
+ */
+export const PI_EXTENSION_LOAD_TIMEOUT_MS = 15_000;
+
 /** No bundle code enters the daemon. Canonical paths, bounded output, hard timeout, no bearer. */
-export async function loadPiExtensionMetadata(path: string, timeoutMs = 3000): Promise<LoadReading> {
+export async function loadPiExtensionMetadata(path: string, timeoutMs = PI_EXTENSION_LOAD_TIMEOUT_MS): Promise<LoadReading> {
   const descriptor = resolveMissionMcpRuntime();
   const env = agentSubprocessEnv({ ...process.env, ...descriptor.env });
   try {

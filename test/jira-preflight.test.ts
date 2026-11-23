@@ -469,6 +469,33 @@ test("a broken CLI falls through to the credential, and both failures are report
   assert.match(said!, /could not reach Jira/, "and what the credential said");
 });
 
+// The local CLI starts in the source's checkout, so a checkout that has gone is named here -
+// and it ends the ladder: REST would read Jira and ingest would then refuse every candidate
+// for the same missing repository, so the fallback repairs nothing.
+test("a vanished checkout is named by the CLI read and is not routed around through REST", async () => {
+  const gone: SweepContext = { ...ctx, repoRoot: join(home, "renamed-away") };
+  const named = /files tasks against .*renamed-away, which no longer exists/;
+
+  machine({ cli: true });
+  const alone = await jira.preflight(cfg(), gone);
+  assert.match(alone!, named);
+  assert.doesNotMatch(alone!, /reinstall|could not be run/);
+
+  const fetchBefore = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches++; throw new Error("REST must not be reached"); };
+  try {
+    machine({ cli: true, email: "a@b.c", token: "t" });
+    const withCredential = await jira.preflight(cfg(), gone);
+    assert.match(withCredential!, named);
+    assert.doesNotMatch(withCredential!, /REST fallback/);
+    assert.equal((await jira.sweep(cfg(), gone)).items.length, 0);
+    assert.equal(fetches, 0, "no REST request for a checkout REST cannot bring back");
+  } finally {
+    globalThis.fetch = fetchBefore;
+  }
+});
+
 // ---- through the registry, which is how the daemon reaches it ----
 
 // The route and the sweeper hold a source whose config is `unknown`, so the registry parses

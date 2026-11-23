@@ -57,6 +57,22 @@ test("the sdk transport drives the operator's configured binary, not the SDK's b
   );
 });
 
+test("the sdk transport passes a caller's effort as the thread's reasoning effort, and only then", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const deps = {
+    createClient: () => ({
+      startThread: (options: Record<string, unknown>) => {
+        seen.push(options);
+        return { run: async () => ({ finalResponse: "ok" }) };
+      },
+    }),
+  };
+  await runCodexSdkOneShot("review", "/opt/homebrew/bin/codex", { model: "gpt-6-sol", effort: "high" }, deps);
+  await runCodexSdkOneShot("review", "/opt/homebrew/bin/codex", { model: "gpt-6-sol" }, deps);
+  assert.equal(seen[0]?.modelReasoningEffort, "high");
+  assert.equal("modelReasoningEffort" in (seen[1] ?? {}), false);
+});
+
 test("an empty final response is an error rather than an empty answer", async () => {
   // A caller that parses this text would otherwise get "" and report a parse miss, which reads
   // as a model that answered badly rather than a transport that returned nothing.

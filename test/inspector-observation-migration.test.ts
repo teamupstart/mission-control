@@ -105,6 +105,7 @@ test("a row written before the columns existed reads as UNOBSERVED, never as unc
   // waits when it cannot name a remote head, so an unobserved legacy row makes it wait for the
   // next tick rather than complete against a head nobody looked at.
   const row = getInspectorPr(KEY)!;
+  assert.equal(openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(KEY)?.code_rabbit_state, null);
   assert.equal(row.observedHeadSha, null);
   assert.equal(row.observedState, null);
   assert.equal(row.observedAt, null);
@@ -208,7 +209,7 @@ test("a pull request retired after an action was delivered stays visible to it",
     false,
     "the fixture must reproduce the retirement, or this proves nothing",
   );
-  const visible = loadAdoptedInspectorPrsSince(delivered);
+  const visible = loadAdoptedInspectorPrsSince(delivered, null, null);
   const row = visible.find((pr) => pr.key === KEY);
   assert.ok(row, "a pull request retired while an action waited must remain decidable");
   assert.equal(row.observedState, "CLOSED");
@@ -221,13 +222,44 @@ test("a pull request retired BEFORE the action was delivered is history, not a c
   // must not pay for all of them on every fifteen-second sweep - and a pull request closed
   // before this turn began is not evidence about this turn anyway.
   assert.equal(
-    loadAdoptedInspectorPrsSince(9_000).some((pr) => pr.key === KEY),
+    loadAdoptedInspectorPrsSince(9_000, null, null).some((pr) => pr.key === KEY),
     false,
   );
   // And an open row is returned whatever the bound says, because the bound is only about
   // which RETIRED rows still matter.
   assert.equal(
-    loadAdoptedInspectorPrsSince(Number.MAX_SAFE_INTEGER).some((pr) => pr.key === "owner/repo#42"),
+    loadAdoptedInspectorPrsSince(Number.MAX_SAFE_INTEGER, null, null).some((pr) => pr.key === "owner/repo#42"),
     true,
   );
+});
+
+test("an older merged PR is visible only for the requested action branch", () => {
+  updateInspectorPr(KEY, { state: "closed", observedState: "MERGED", observedAt: 1,
+    headRefName: "already-published" }, 1);
+  assert.ok(loadAdoptedInspectorPrsSince(9000, "already-published", null).some(pr => pr.key === KEY));
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "other", null).some(pr => pr.key === KEY), false);
+  updateInspectorPr(KEY, { observedState: "CLOSED" }, 1);
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "already-published", null).some(pr => pr.key === KEY), false);
+});
+
+test("historical adoption pages retain every candidate across equal adoption timestamps", () => {
+  const template = getInspectorPr(KEY)!;
+  const expected: string[] = [];
+  for (let i = 0; i < 55; i++) {
+    const key = `history/repo#${100 + i}`;
+    expected.push(key);
+    adoptInspectorPr({ ...template, key, owner: "history", number: 100 + i,
+      url: `https://github.com/history/repo/pull/${100 + i}`, state: "closed",
+      observedState: "MERGED", observedAt: 1, headRefName: "paged-history", adoptedAt: 1 });
+  }
+  let cursor: { adoptedAt: number; key: string } | null = null;
+  const seen: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const rows = loadAdoptedInspectorPrsSince(9000, "paged-history", cursor);
+    assert.ok(rows.length <= 50, "each database read must bound its result set");
+    if (!rows.length) break;
+    seen.push(...rows.filter(row => row.key.startsWith("history/")).map(row => row.key));
+    cursor = rows.at(-1)!;
+  }
+  assert.deepEqual(seen, expected, "pagination must neither drop nor duplicate tied rows");
 });

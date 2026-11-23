@@ -30,11 +30,11 @@ test("partial updates preserve each window's value and recording time across res
   } });
   const first = registry.snapshot().fleetCost!.lastKnownRateLimits!;
   registry.applyStatusLine({ sessionId: "partial", cwd: null, env: {}, rateLimits: {
-    sevenDay: { usedPercentage: 98, resetsAt: resetsAt + 86_400 },
+    fiveHour: { usedPercentage: 98, resetsAt },
   } });
   const restored = new Registry().snapshot().fleetCost!;
-  assert.deepEqual(restored.lastKnownRateLimits?.fiveHour, first.fiveHour);
-  assert.equal(restored.lastKnownRateLimits?.sevenDay?.usedPercentage, 98);
+  assert.deepEqual(restored.lastKnownRateLimits?.sevenDay, first.sevenDay);
+  assert.equal(restored.lastKnownRateLimits?.fiveHour?.usedPercentage, 98);
   assert.equal(openDb().prepare("SELECT count(*) AS n FROM claude_rate_limit_cache").get()!.n, 1);
 });
 

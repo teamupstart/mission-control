@@ -5,6 +5,7 @@ import type { Task } from "../src/shared/types.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   taskUpdatePatch,
   type DispatchDraft,
@@ -122,6 +123,22 @@ test("un-pinning effort sends null, and pinning one sends the level", () => {
   });
 });
 
+test("a legacy advisor pin reads back and can only be cleared, never set", () => {
+  const pinned = mkTask({ advisorModel: "opus" });
+  assert.equal(draftFromTask(pinned).advisorModel, "opus");
+  assert.equal(draftFromTask(mkTask()).advisorModel, "", "no pin reads back as the empty value");
+  // "Use Settings" empties the draft's pin, and the save sends the clear.
+  assert.deepEqual(taskUpdatePatch(pinned, edited(pinned, { advisorModel: "" }), pinned.intent), {
+    advisorModel: null,
+  });
+  // Saving a pinned task without clearing it leaves the pin alone.
+  assert.equal(taskUpdatePatch(pinned, draftFromTask(pinned), pinned.intent), null);
+  // The advisor is chosen on Settings -> Harnesses, so a draft cannot pin one.
+  const free = mkTask();
+  assert.equal(taskUpdatePatch(free, edited(free, { advisorModel: "sonnet" }), free.intent), null);
+  assert.equal(draftsEqual(draftFromTask(pinned), draftFromTask(free)), false);
+});
+
 test("the composed intent is what the patch compares, so an attachment alone is a change", () => {
   // The stored intent carries the paths `withAttachments` appended, so a drop with no
   // typing still rewrites it - and a save that only re-composed the same text does not.
@@ -178,7 +195,12 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
+    // The one change the form can make to a pin is clearing one saved before the advisor
+    // moved to Settings -> Harnesses, so it is judged against a task that has one.
+    advisorModel: "",
+    personaId: "persona-reviewer",
     workflowId: "workflow-review",
+    grillFirst: true,
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
@@ -196,8 +218,8 @@ test("every field on the form reaches the patch", () => {
     "a field on the form with no entry here is a field nobody has decided how to save",
   );
 
-  const t = mkTask();
   for (const [field, value] of Object.entries(changed)) {
+    const t = field === "advisorModel" ? mkTask({ advisorModel: "opus" }) : mkTask();
     // `intent` is the one field that does not reach the patch off the draft: what gets
     // stored is the typed text with the attachment paths appended, so the modal composes
     // it and passes it in. Changing the draft's copy alone must therefore do nothing.
@@ -208,6 +230,23 @@ test("every field on the form reaches the patch", () => {
     assert.ok(patch, `changing ${field} must produce a patch`);
     assert.equal(Object.keys(patch).length, 1, `changing ${field} must send ${field} alone`);
   }
+});
+
+test("a Persona reads back, is cleared with null, and follows every kind the form offers", () => {
+  const t = mkTask({ personaId: "persona-reviewer" });
+  assert.equal(draftFromTask(t).personaId, "persona-reviewer");
+  assert.equal(draftFromTask(mkTask()).personaId, "", "no Persona is the empty option");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "" }), t.intent), { personaId: null });
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "persona-other" }), t.intent), { personaId: "persona-other" });
+  // A harness-launched kind keeps it, so a kind change travels alone.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "scout" }), t.intent), { kind: "scout" });
+  // A pipeline carries one to its Engineer host, so that move travels alone too.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "pipeline" }), t.intent), { kind: "pipeline" });
+  assert.equal(draftPersonaId({ kind: "pipeline", personaId: "persona-reviewer" }), "persona-reviewer");
+  // The one kind that cannot carry a dispatch Persona never sends the draft's value.
+  assert.equal(draftPersonaId({ kind: "resident", personaId: "persona-reviewer" }), null);
+  assert.equal(draftPersonaId({ kind: "chat", personaId: "persona-reviewer" }), "persona-reviewer");
+  assert.equal(draftPersonaId({ kind: "ship", personaId: "" }), null);
 });
 
 test("a working copy is stale exactly when the row's editable fields moved", () => {
@@ -221,4 +260,45 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
+});
+
+test("converting a non-plan task carries every explicit storage choice", () => {
+  const task = mkTask({ kind: "ship", planPolicy: null });
+  for (const planStorage of ["repository", "local", null] as const) {
+    const draft = edited(task, { kind: "plan", planStorage, workflowId: undefined });
+    assert.deepEqual(taskUpdatePatch(task, draft, task.intent), { kind: "plan", planStorage });
+  }
+  const existingPlan = mkTask({ kind: "plan", planPolicy: { storage: "repository", commitPlanHtml: false } });
+  assert.equal(taskUpdatePatch(existingPlan, draftFromTask(existingPlan), existingPlan.intent), null);
+});
+
+test("plan conversion carries an explicit None even when the ship task also had no workflow", () => {
+  const task = mkTask({ kind: "ship", workflowId: null });
+  assert.deepEqual(taskUpdatePatch(task, edited(task, { kind: "plan", workflowId: null }), task.intent), {
+    kind: "plan", workflowId: null,
+  });
+});
+
+test("Grill me first reads back as a task's choice and saves only when it moves", () => {
+  const ship = mkTask({ kind: "ship", grillFirst: true });
+  assert.equal(draftFromTask(ship).grillFirst, true);
+  assert.equal(taskUpdatePatch(ship, draftFromTask(ship), ship.intent), null, "an untouched pin is not resent");
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), grillFirst: false }, ship.intent), { grillFirst: false });
+  // A row filed before the column existed reads as off, not as a choice nobody made.
+  assert.equal(draftFromTask(mkTask({ kind: "plan" })).grillFirst, false);
+  // Between kinds that both offer it the pin goes with the task, so the patch is the kind.
+  // (`workflowId: undefined` keeps plan conversion's explicit after-work choice out of it.)
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", workflowId: undefined }, ship.intent), { kind: "plan" });
+  // Pipeline has no pin, so switching it to plan untouched leaves the daemon to pin plan's
+  // default, and a choice made on the switch is sent even when it is off.
+  const pipeline = mkTask({ kind: "pipeline" });
+  assert.equal(draftFromTask(pipeline).grillFirst, undefined);
+  assert.deepEqual(taskUpdatePatch(pipeline, { ...draftFromTask(pipeline), kind: "plan", workflowId: undefined }, pipeline.intent), { kind: "plan" });
+  assert.deepEqual(
+    taskUpdatePatch(pipeline, { ...draftFromTask(pipeline), kind: "plan", workflowId: undefined, grillFirst: false }, pipeline.intent),
+    { kind: "plan", grillFirst: false },
+  );
+  // Leaving for pipeline there is no pin to save, whatever the box last said.
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "pipeline" }, ship.intent), { kind: "pipeline" });
+  assert.ok(!draftsEqual(draftFromTask(ship), draftFromTask(mkTask({ kind: "ship", grillFirst: false }))));
 });

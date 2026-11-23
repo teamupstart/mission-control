@@ -87,7 +87,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   Answer the question and the three drain in order, which is the whole point of the affordance.
 - **Ten tasks across every state a board really shows**: `done`, four `running`, `cancelled`,
   and four in `backlog` - one of them blocked on another, one parked (`enabled: false`). Note
-  that "blocked" and "parked" are not statuses; there are only six of those, and neither is
+  that "blocked" and "parked" are not statuses; there are only seven of those, and neither is
   among them.
 - **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
   plan and an answered question in a session's resolved history.
@@ -104,16 +104,9 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   anything less (`reviewOutcome`), because "a completed run" and "a run that reviewed something and
   agreed" are not the same claim.
 
-  **The one stage it does not carry is the GitHub Inspector completion gate**, and that is a property of
-  the machine rather than a shortcut. `WorkflowManager.enterInspectorGate` records a gate entered
-  with the GitHub Inspector off as `blocked` - and the GitHub Inspector is off by default - so a run bound to the
-  built-in itself would put "Workflow blocked" on the demo's showcase card. Armed, the gate then
-  needs a pull request adopted into the GitHub Inspector's store and a fresh observation of its head, and
-  every read of that goes through `gh` against a real GitHub: nine call sites in
-  `src/server/inspector/github.ts`, no env override, while this demo reaches no network and its
-  repositories are local `git init` directories with no remote. `dry-run` mode does not change it -
-  it still adopts and still reviews. So the seeded copy carries `completionPolicy: {kind:"none"}`
-  and ends where its End node says it does.
+  The demo's seeded workflow uses `completionPolicy: {kind:"none"}` and completes at its End node.
+  The built-in workflow's GitHub Inspector gate requires an adopted pull request and a fresh head
+  observation through `gh`. The demo runs offline with local Git repositories that have no remote.
 - **Two Recurring Missions** on the schedule spine, in your own timezone.
 - **A nonzero cost chip**, built the way a real fleet's is. Each session detail's own spend comes from the
   usage its scripted CLI reports on every finished turn's `result` frame - the same figure

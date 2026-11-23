@@ -1,11 +1,12 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
 // The dispatcher's OWN telemetry branches, driven through `Dispatcher.dispatch` rather than by
@@ -40,6 +41,8 @@ const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts")
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 
 // Scout launch must pass its real MCP preflight before reaching the injected spawn failure.
 // CI runs these source tests before build, so never inherit a developer's dist/ bundle.
@@ -99,13 +102,7 @@ let seq = 0;
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return repo;
 }
 
@@ -161,7 +158,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
     let launchedModel: string | null | undefined;
     const dispatcher = new Dispatcher(registry, async () => {}, {
       resolveRuntime: () => "terminal",
-      missionMcpDescriptor: async () => null,
+      ...MISSION_TEST_MCP_DEPS,
       spawn: async (_label, _short, cwd, _bin, args = []) => {
         const modelFlag = args.indexOf("--model");
         launchedModel = modelFlag < 0 ? null : args[modelFlag + 1];
@@ -177,7 +174,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
           transcriptPath: null,
           env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
         });
-        return { homeName: "home-terminal", homeBackend: "tmux", terminalResourceId: null };
+        return { homeName: "home-terminal", homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
       },
       inject: async (_session, text) => {
         registry.applyHook({
@@ -296,7 +293,7 @@ test("an embedded launch reports the SDK runtime, from the resolution and not th
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "sdk",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     supervisor: supervisor as never,
     // Reaching a pane at all would mean the embedded branch did not take.
     inject: async () => assert.fail("an embedded dispatch must never type at a pane"),
@@ -338,7 +335,7 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async () => {
       // The operator cancels while the launch is in flight. The dispatch then fails, but the
       // task's terminal state is the operator's and the dispatcher must not overwrite it.
@@ -380,7 +377,7 @@ test("a failure after resolution carries the model that launch resolved", async 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     // Thrown at the SPAWN, which is after the model and effort ladder has been walked. That
     // ordering is the point: the facts below are the ones this launch resolved, carried
     // forward to an exit three scopes away from where they were computed.
@@ -418,4 +415,37 @@ test("a failure after resolution carries the model that launch resolved", async 
   assert.equal(JSON.parse(later.facts_json).origin, "discovered");
   assert.equal(JSON.parse(later.refs_json).task_id, undefined);
   detach();
+});
+
+test("a failed launch's dispatch span carries that launch's work unit decision, and none with the preview off", async (t) => {
+  const WU = "wu_01JD00000000000000000000DD";
+  const repo = seedRepo("failed-work-unit");
+  const registry = new Registry();
+  const detach = attachSessionTelemetry(registry);
+  t.after(() => {
+    detach();
+    applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled: false });
+  });
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "terminal",
+    ...MISSION_TEST_MCP_DEPS,
+    // Thrown at the spawn: no agent ever starts, and the attempt is still reported.
+    spawn: async () => {
+      throw new Error("no terminal backend could start a session");
+    },
+  });
+  for (const [id, enabled] of [["task-wu-on", true], ["task-wu-off", false]] as const) {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled }).ok, true);
+    registry.upsertTask(mkTask({
+      id, workUnitId: WU, status: "dispatching", repoRoot: repo, title: "Work unit", intent: "fail at spawn",
+      agent: "claude", kind: "scout",
+    }));
+    await dispatcher.dispatch(id);
+    assert.equal(registry.getTask(id)?.status, "failed");
+  }
+  const failed = dispatches().map(({ facts, refs }) => [refs.task_id, facts.outcome, refs.work_unit_id ?? null]);
+  assert.deepEqual(failed, [
+    ["task-wu-on", "failed", WU],
+    ["task-wu-off", "failed", null],
+  ]);
 });

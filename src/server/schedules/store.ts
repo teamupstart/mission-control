@@ -2,7 +2,7 @@ import { observeScheduleOccurrence } from "../telemetry/automation.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { openDb } from "../db.ts";
 import { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
-import { TASK_PRIORITIES, normalizeLabels, taskKindAllowsBacklog } from "@shared/task.ts";
+import { TASK_PRIORITIES, normalizeLabels, taskKindAllowsSchedule } from "@shared/task.ts";
 import {
   SCHEDULE_COMPLETION_POLICIES,
   SCHEDULE_DECISION_KINDS,
@@ -128,7 +128,7 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
   if (typeof t.intent !== "string") return null;
   if (typeof t.repoRoot !== "string" || t.repoRoot === "") return null;
   const kind = readPersistedEnum(TASK_KINDS, typeof t.kind === "string" ? t.kind : null);
-  if (kind === null || !taskKindAllowsBacklog(kind)) return null;
+  if (kind === null || !taskKindAllowsSchedule(kind)) return null;
   // Absent or null is INHERIT - the kind's row decides when the run fires - so this takes the
   // optional reader rather than the required one. Present-but-unknown still fails the template
   // closed, exactly as an unreadable priority does: a harness this build has never heard of is

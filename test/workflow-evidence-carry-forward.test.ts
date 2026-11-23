@@ -2878,7 +2878,7 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) fo
       const { store, noteKey, binding, runId } = fixture(checkout);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-sibling-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       writeFileSync(join(checkout, "proof.log"), "shared proof");
       const original = { id: `${runId}-original`, clientCriterionId: "claim", criterion: "The result works",
         criterionId: "canonical-x", proofClass: "focused_execution" as const, repositoryScope: "all" as const,
@@ -2961,7 +2961,7 @@ for (const replacementScope of ["repo-01", "all"] as const) for (const aliasBind
       const { store, noteKey, binding, runId } = fixture(bindingRoot);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-sibling-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       const canonicalCriteria = [{ id: "canonical-x", text: "The result works", material: true, suggestedProofClass: null }];
       const proof = (clientItemId: string, root = checkout) => {
         writeFileSync(join(root, `${clientItemId}.log`), clientItemId);
@@ -3056,7 +3056,7 @@ for (const oldScope of ["repo-01", "all"] as const) for (const captured of [fals
       const { store, noteKey, binding, runId } = fixture(checkout);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       const canonicalCriteria = [{ id: "canonical-x", text: "The result works", material: true, suggestedProofClass: null }];
       const old = { id: `${runId}-old`, clientCriterionId: "old", criterion: "The result works", criterionId: "canonical-x",
         proofClass: "focused_execution" as const, repositoryScope: oldScope, sourceRoot: checkout,
@@ -3452,4 +3452,46 @@ test("an image_changed capture failure does not sever previous coverage on resub
       evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
     assert.equal(readiness.status, "ready");
   } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test("registered evidence survives reservation once per item and stays conversation-owned", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-registered-reserved-")));
+  try {
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [
+      imageWrite({ id: "registered-image", clientItemId: "screen", root: checkout,
+        locator: "screen.png", caption: "Rendered proof", bytes: PNG }),
+      logWrite({ id: "registered-log", clientItemId: "check", root: checkout,
+        locator: "check.log", caption: "Execution proof", body: "passed" }),
+    ], 2, "intent:1:1");
+    const before = store.listWorkflowEvidence(noteKey);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "registered-root", now: 3 },
+      { id: "registered-first", triggerSource: "manual", triggerKey: "registered-root", context: {}, evidence: {}, now: 3 },
+    );
+    // A second submission reservation of these rows must not multiply their registered count.
+    const second = store.createRepairSubmission({
+      id: "registered-second", runId, round: 2, triggerSource: "manual",
+      triggerKey: "registered-next", evidenceGroupKey: "registered-root",
+      context: {}, evidence: {}, now: 4,
+    });
+    assert.equal(store.listReservedWorkflowEvidence(second.submission.id).length, 2);
+    const registered = store.listWorkflowEvidence(noteKey, "registered");
+    assert.deepEqual(registered.images.map(item => [item.id, item.episodeKey]),
+      before.images.map(item => [item.id, item.episodeKey]));
+    assert.deepEqual(registered.artifacts.map(item => [item.id, item.episodeKey]),
+      before.artifacts.map(item => [item.id, item.episodeKey]));
+    assert.deepEqual(store.listWorkflowEvidence(noteKey).images, []);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey).artifacts, []);
+    assert.deepEqual(store.listWorkflowEvidence("unrelated-conversation", "registered").images, []);
+    // An orphaned or foreign reservation cannot credit this conversation's completion.
+    openDb().prepare("UPDATE workflow_bindings SET note_key = ? WHERE id = ?")
+      .run("foreign-conversation", binding.id);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey, "registered").images, []);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey, "registered").artifacts, []);
+    assert.equal(store.listReservedWorkflowEvidence(first.submission.id).length, 2,
+      "projection never changes the captured reservation");
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
 });

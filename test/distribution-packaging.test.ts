@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import test, { before, after, mock } from 'node:test';
+import timers from 'node:timers/promises';
 import { packageDistribution } from '../scripts/package-distribution.mjs';
 import { qualifiedDistribution } from '../scripts/publish-distribution.mjs';
 import { distributionNames, localDistributionAssets } from '../scripts/distribution-contract.mjs';
@@ -24,16 +26,22 @@ for (const target of ['parent', 'dmg']) test(`${target} ticket validation recove
 
 test('persistent Apple ticket transport failure withholds qualification and retains the failing stage', async (t) => {
   const f = fixture(t, 'parent-staple-network');
-  await assert.rejects(packageDistribution({repoRoot: f.root, env: f.env}), (error: Error) => {
-    const diagnostic = JSON.parse(distributionFailure(error).slice('[distribution] failed '.length));
-    assert.equal(diagnostic.stage, 'qualifySignedRuntime');
-    assert.equal(diagnostic.command, '/usr/bin/xcrun');
-    assert.equal(diagnostic.status, 68);
-    assert.match(diagnostic.stdout, /NSURLErrorDomain Code=-1005/);
-    return true;
-  });
+  // The full backoff is about two minutes; record it instead of sleeping through it.
+  const sleep = mock.method(timers, 'setTimeout', async () => {});
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(packageDistribution({repoRoot: f.root, env: f.env}), (error: Error) => {
+      const diagnostic = JSON.parse(distributionFailure(error).slice('[distribution] failed '.length));
+      assert.equal(diagnostic.stage, 'qualifySignedRuntime');
+      assert.equal(diagnostic.command, '/usr/bin/xcrun');
+      assert.equal(diagnostic.status, 68);
+      assert.match(diagnostic.stdout, /NSURLErrorDomain Code=-1005/);
+      return true;
+    });
+  } finally { sleep.mock.restore(); syncBuiltinESMExports(); }
   const path = [...f.validationAttempts.keys()].find((path) => path.endsWith('/Parent.app'))!;
-  assert.equal(f.validationAttempts.get(path), 4);
+  assert.equal(f.validationAttempts.get(path), 9);
+  assert.deepEqual(sleep.mock.calls.map((call) => call.arguments[0]), [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
   f.assertUnqualified();
 });
 

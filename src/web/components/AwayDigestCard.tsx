@@ -73,7 +73,7 @@ export function AwayDigestCard({
           </button>
         </Tooltip>
         <Tooltip label="Dismiss this digest">
-          <button className="btn btn-primary" onClick={onDismiss}>
+          <button data-dialog-default className="btn btn-primary" onClick={onDismiss}>
             Got it
           </button>
         </Tooltip>

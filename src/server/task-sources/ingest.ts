@@ -1,4 +1,4 @@
-import { sourceContent } from "@shared/task-source-sync.ts";
+import { localSourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./sync-store.ts";
 import { DispatchSchema } from "@shared/protocol.ts";
 import type {
@@ -10,6 +10,9 @@ import type {
 import { inTransaction, recordTaskSourceSeen, seenExternalIds } from "../db.ts";
 import { resolveTaskRepoRoot, type TaskRepoRoot } from "../repos.ts";
 import type { TaskManager } from "../tasks.ts";
+import type { Task } from "@shared/types.ts";
+import { dependenciesFor, orderByBlockers } from "./relations.ts";
+import { canRelateTo } from "./index.ts";
 
 // Everything a task source does NOT get to do. A source returns candidates; this decides
 // which of them become new rows. Optional refresh of existing rows lives in sync.ts.
@@ -28,6 +31,10 @@ export interface IngestDeps {
   remember?: (sourceId: string, externalId: string, url: string | null) => void;
   /** Run the two writes together. */
   transaction?: <T>(fn: () => T) => T;
+  /** The tasks a blocking link may point at. Read per candidate, so a batch sees itself. */
+  linkedTasks?: () => Task[];
+  /** May a new task edge point at this task? `TaskManager` owns the rule. */
+  acceptsTaskEdge?: (taskId: string) => boolean;
   log?: (msg: string) => void;
 }
 
@@ -49,6 +56,8 @@ export interface IngestDeps {
  *     dispatch form takes, carrying the source's autopilot default so the task's initial
  *     enabled state is part of the same insert rather than a follow-up write.
  *  6. Record the seen row, in the same transaction as the insert.
+ *  7. Carry the candidate's blocking links as dependency edges, when the source's kind
+ *     can relate (`relations.ts`). Blockers in the same batch are filed first.
  *
  * A swept task always lands in the BACKLOG. Auto-dispatching is a different risk class
  * and would need its own gate (an allowlist, a rate limit, a dry run) of the kind Foreman
@@ -64,6 +73,8 @@ export async function ingestSweep(
   const seenOf = deps.seen ?? seenExternalIds;
   const remember = deps.remember ?? recordTaskSourceSeen;
   const transaction = deps.transaction ?? inTransaction;
+  const linkedTasks = deps.linkedTasks ?? (() => tasks.list());
+  const acceptsTaskEdge = deps.acceptsTaskEdge ?? ((id: string) => tasks.acceptsNewTaskEdgeTo(id));
   const log = deps.log ?? ((m: string) => console.log(`[task-source] ${m}`));
 
   const report: SweepReport = {
@@ -101,7 +112,7 @@ export async function ingestSweep(
     );
   }
 
-  for (const c of admitted) {
+  for (const c of orderByBlockers(admitted)) {
     // 2. A path that is not a repo's main checkout, refused here rather than discovered
     //    later by a dispatcher half-way through cutting a worktree - or, for a worktree
     //    path, never discovered at all, since the scheduler would simply pass the row
@@ -142,18 +153,29 @@ export async function ingestSweep(
       // 5 + 6, together. A task with no seen row is re-filed on every sweep forever; a
       // seen row with no task is an item silently swallowed. Neither is fixed by
       // retrying, so they are not allowed to happen separately.
+      // 7. Blocking links become dependency edges on the same insert, so the task is never
+      //    visible unblocked. `create` resolves them like any operator's selection, cycle
+      //    refusal included - a refused edge rolls this item back and names why.
+      const { dependencies, sourceDependencies } = dependenciesFor(inst, c, linkedTasks, acceptsTaskEdge);
       transaction(() => {
         remember(inst.id, c.ref.externalId, c.ref.url);
         const task = tasks.create({
           ...parsed.data,
           repoRoot,
           source: c.ref,
+          // Display only: the parent is shown beside the link and never becomes an edge.
+          ...(c.parent ? { sourceParent: c.parent } : {}),
           enabled: inst.defaults.enabled,
+          ...(dependencies.length > 0 ? { dependencies } : {}),
+          ...(sourceDependencies.length > 0 ? { sourceDependencies } : {}),
         });
         saveSourceSync(task.id, inst.id, {
           origin: "imported", externalId: c.ref.externalId,
           defaults: { priority: inst.defaults.priority, labels: inst.defaults.labels },
-          baseline: sourceContent(task), pending: null, conflicts: [],
+          // The edges just made are the dependencies group's baseline.
+          baseline: localSourceContent(task, canRelateTo(inst) ? { sourceId: inst.id,
+            tasks: dependencies.length > 0 ? linkedTasks() : [] } : null),
+          pending: null, conflicts: [],
           checkedAt: Date.now(), appliedAt: Date.now(), error: null,
         });
       });

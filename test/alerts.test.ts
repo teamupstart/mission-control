@@ -16,6 +16,7 @@ import {
 import type { Stall } from "../src/shared/stall.ts";
 import { chimeGate } from "../src/web/lib/chime.ts";
 import type {
+  ReviewItem,
   Session,
   SessionQueueSummary,
   SessionState,
@@ -27,6 +28,8 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",
@@ -53,7 +56,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     firstSeen: 0,
     lastSeen: 0,
     lastActivity: null,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -166,6 +169,46 @@ test("a new pending review alerts as a review", () => {
   assert.equal(r[0]?.body, "2 to review");
 });
 
+test("a new question alerts even while another review is pending, without repeating on updates or answers", () => {
+  const waiting = mkSession({ id: "a", state: "working", pendingReviews: 1 });
+  const question = { ...waiting, pendingReviews: 2 };
+  const alerts = detectAlerts(scope([waiting]), scope([question])).filter(deliverable);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.kind, "review");
+  assert.equal(alerts[0]?.body, "2 to review");
+  assert.deepEqual(detectAlerts(scope([question]), scope([{ ...question, activity: "still waiting" }])), []);
+  assert.deepEqual(detectAlerts(scope([question]), scope([waiting])), []);
+});
+
+test("review notifications name the latest pending question, not an older or resolved review", () => {
+  const review = (over: Partial<ReviewItem>): ReviewItem => ({
+    id: "old", sessionId: "a", kind: "diff", title: "Review the migration", body: "private patch",
+    status: "pending", response: null, createdAt: 1, resolvedAt: null, ...over,
+  });
+  const before = scope([mkSession({ id: "a", pendingReviews: 1 })]);
+  const after: AlertScope = {
+    ...scope([mkSession({ id: "a", pendingReviews: 2 })]),
+    reviews: [
+      review({ id: "new", kind: "input", title: "Short heading", body: "Should we include\n the migration?", createdAt: 2 }),
+      review({}),
+      review({ id: "resolved", body: "Already answered", status: "answered", createdAt: 3 }),
+      review({ id: "other", sessionId: "other", createdAt: 4 }),
+    ],
+  };
+  const alert = detectAlerts(before, after).find((a) => a.kind === "review")!;
+  assert.match(alert.title, /needs your answer$/);
+  assert.equal(alert.body, "Should we include the migration?");
+  assert.match(summarizeAlerts([alert]), /Should we include the migration\?/);
+
+  after.reviews = [review({})];
+  const diff = detectAlerts(before, after).find((a) => a.kind === "review")!;
+  assert.match(diff.title, /needs review$/);
+  assert.equal(diff.body, "Review the migration", "a diff's raw patch must not become notification prose");
+
+  after.reviews = [review({ kind: "input", body: "x".repeat(300) })];
+  assert.equal(detectAlerts(before, after).find((a) => a.kind === "review")!.body.length, 240);
+});
+
 test("a menu appearing alerts, even with no hooks to report it", () => {
   // The gap: `awaiting_input` is hook-reported, so the uninstrumented session a pane
   // dialog is the ONLY evidence for got a correct board badge and no notification - the
@@ -244,7 +287,7 @@ test("a menu opening on a session with reviews waiting announces the MENU", () =
   // `needsYouReason` puts an open review first - correct for triage, where a review is the
   // more specific ask. An alert is the other question: what just happened. Routing the
   // body through it made the one toast the human gets say "to review" about a menu, and
-  // the review alert can't correct that (it only fires when the count rises from zero).
+  // the review alert can't correct that (the pending count has not risen).
   const menu = { options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 };
   const reviewing = mkSession({ id: "a", state: "idle", pendingReviews: 3 });
   const parked = mkSession({ id: "a", state: "idle", pendingReviews: 3, paneDialog: menu });
@@ -759,4 +802,55 @@ test("a parked run alerts through the stall detector, deep-linked to the run", (
   assert.match(alerts[0]?.body ?? "", /never reopened/);
   // Edge-triggered on (session, kind), so a stall that persists across polls says it once.
   assert.deepEqual(detectAlerts(after, after), []);
+});
+
+// ---- names (`inbox` flag): `AlertScope.names` makes a title use the one naming rule ----
+
+const residentNames = [
+  { taskId: "t-resident", settings: { identity: { name: "Linter watcher" }, board: { colorId: "teal" } } },
+];
+const named = (s: Session[], names?: AlertScope["names"]): AlertScope => ({ ...scope(s), ...(names ? { names } : {}) });
+const withTask = (id: string, title: string, over: Partial<Session> = {}) => mkSession({
+  id: `s-${id}`,
+  name: `${id}-session`,
+  task: { id, title } as TaskSummary,
+  ...over,
+});
+
+test("without names an alert title reads exactly as before: task title, then session name", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const plain = mkSession({ id: "bare", name: "bare-session" });
+  const titles = detectAlerts(
+    named([resident, plain]),
+    named([{ ...resident, state: "awaiting_input" }, { ...plain, state: "awaiting_input" }]),
+  ).map((a) => a.title);
+  assert.deepEqual(titles, ["Watch lint needs you", "bare-session needs you"]);
+});
+
+test("with names a resident's alert takes its resident name, and others keep task title then session name", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const task = withTask("t-plain", "Fix the parser");
+  const plain = mkSession({ id: "bare", name: "bare-session" });
+  const prev = named([resident, task, plain], residentNames);
+  const next = named(
+    [resident, task, plain].map((s) => ({ ...s, state: "awaiting_input" as SessionState })),
+    residentNames,
+  );
+  assert.deepEqual(detectAlerts(prev, next).map((a) => a.title), [
+    "Linter watcher needs you",
+    "Fix the parser needs you",
+    "bare-session needs you",
+  ]);
+});
+
+test("a stall's title names its agent by the same rule as the scope it came from", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const stall: Stall = { sessionId: resident.id, kind: "silent-working", forMs: 600_000, reason: "silent for 10m" };
+  const off = detectAlerts({ ...named([resident]), stalls: [] }, { ...named([resident]), stalls: [stall] });
+  const on = detectAlerts(
+    { ...named([resident], residentNames), stalls: [] },
+    { ...named([resident], residentNames), stalls: [stall] },
+  );
+  assert.equal(off[0]?.title, "Watch lint looks stuck");
+  assert.equal(on[0]?.title, "Linter watcher looks stuck");
 });

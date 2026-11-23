@@ -10,10 +10,14 @@ Mission Control's product reference is organized by feature below.
 - [Product overview](overview.md)
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
-- [Optional Pi telemetry setup](pi-telemetry.md): CodeArtifact installation and the read-only Setup check.
+- [Enterprise package recommendations](enterprise-packages.md) covers the per-harness JSON catalog and optional [Pi telemetry installation](pi-telemetry.md).
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
+- [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
+- [Voice addressing](voice.md): the foundation for talking to agents by name, behind the `voice` preview: its settings, the voice state and the Setup row that turns on the previews it needs. Speaking to an agent is not available yet.
+- [Work units](work-units.md): one id shared by a plan task and its phase tasks.
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
+- [Residents](residents.md): long-running agents launched from resident profiles.
 - [Pipelines (external SDLC engines)](pipelines.md)
 - [Archives](archives.md)
 - [Attention, alerts, and away mode](attention-and-alerts.md)
@@ -33,6 +37,7 @@ Mission Control's product reference is organized by feature below.
 - [User interface](ui.md)
 - [GitHub Inspector and shipping](inspector-and-shipping.md)
 - [Worktrees and checks](worktrees-and-checks.md)
+- [Storage](storage.md): disk use by category, backup and idle-cache limits, cleanup, and low-space warnings.
 - [Running Mission Control at Upstart](upstart.md)
 - [Configuration and commands](configuration.md)
 - [Demo mode](demo-mode.md)
@@ -48,6 +53,7 @@ Mission Control's product reference is organized by feature below.
 - [Tasks, queues, and schedules](tasks-and-scheduling.md)
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
+- [Feature flags](feature-flags.md): flag core, live gates and the three-release lifecycle.
 - [Desktop shell and packaging](desktop-and-packaging.md)
 - [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)
@@ -57,6 +63,7 @@ Mission Control's product reference is organized by feature below.
 - [Setup guide](setup-guide.html): install Mission Control, set this machine up from **Settings → Setup**, and keep the app current. Illustrated, for someone installing it for the first time.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
+- [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
 
 ## Support
 

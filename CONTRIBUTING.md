@@ -87,6 +87,12 @@ preflight or add Chromium flags.
 runners with an explicit worker and shard allocation so its behavior does not depend on the local
 fallback and pull request jobs remain isolated from shared self-hosted infrastructure.
 
+Node test commands set a two-minute per-test deadline (`--test-timeout=120000`), so an
+unresolved await fails locally instead of consuming the workflow check's one-hour budget.
+A test with a deliberate longer budget can set its own `timeout`. For a direct focused
+invocation, add the timeout flag to the command documented in `AGENTS.md`. This is a Node
+test deadline, not a preemptive watchdog for synchronous native calls.
+
 ## Test layers
 
 The repository has four complementary test layers:
@@ -155,6 +161,21 @@ CI runs typechecking, linting, unit tests on the supported Node.js releases, pro
 bundle smoke tests, and the browser suite. Pull request jobs run on ephemeral GitHub-hosted
 runners. Review `.github/workflows/ci.yml` before changing runner labels, worker counts, or shard
 counts.
+
+The ordinary CI job target is four minutes of execution, including checkout, cache restore,
+tests, build, and smoke where applicable. Queue time and release-only macOS packaging are
+separate. Unit tests use twelve shards per Node release; browser tests use sixty shards.
+Both keep four workers per runner, and both derive the shard denominator from the matrix.
+More jobs add runner setup cost and can increase queue time when account capacity is full.
+Compiler mutation tests live in separate files so a single serial file cannot dominate a
+unit shard. Keep the clean-copy probe and every negative compiler assertion when regrouping.
+
+The allocation was sized against [successful run 41478674815](https://github.com/teamupstart/mission-control/actions/runs/41478674815):
+its slowest unit job took 373 seconds and its slowest browser job took 447 seconds. Replaying
+recorded browser durations across the new shard listings, with four worker lanes and a
+60-second setup/teardown allowance, projects a 218-second maximum. This is a sizing estimate,
+not a hosted timing guarantee. Check whole-job durations after CI runs the change, especially
+on cold caches or retries. Timeouts remain generous to preserve failure diagnostics.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

@@ -31,6 +31,25 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "workflow-commands", surface: "library" },
   { id: "workflow-definitions", surface: "library" },
   { id: "workflow-versions", surface: "library" },
+  // Resident profiles and their current revisions, authored on the Residents page. Added after
+  // the first published format, so a snapshot written before it carries no such domain and
+  // restores without touching profiles (see `SETTINGS_BACKUP_CATALOGS`).
+  { id: "resident-profiles", surface: "residents" },
+  { id: "resident-skill-sources", surface: "residents" },
+  // Custom MCP server definitions, without their secret values.
+  { id: "resident-mcp-servers", surface: "residents" },
+  // Database backup counts and interval, edited in Settings > Storage. Added after format
+  // v1 shipped.
+  { id: "database-backups", surface: "settings" },
+  // Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget.
+  { id: "storage-limits", surface: "settings" },
+  // Operator choices in Settings > Feature flags.
+  { id: "feature-flags", surface: "settings" },
+  // Task shaping's registered shapers and settings, edited in Settings > Task shaping. It was
+  // `runtime` until that panel landed; the id never changes.
+  { id: "shaping", surface: "settings" },
+  // Voice settings, edited in Settings > Voice. `muted` is operational and never restored.
+  { id: "voice", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

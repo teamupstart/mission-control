@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 import type { ForemanConfig, RecordEpisode, SetNote, SubmitOptions } from "@shared/protocol.ts";
 import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
@@ -6,6 +8,7 @@ import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import { driverFormAnswer } from "../sdk/answer.ts";
 import type { Pending } from "./pending.ts";
+import { nullAsAbsent } from "../llm/json-schema.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -36,7 +39,7 @@ const AnswerField = z.preprocess(
   z
     .object({
       text: z.string().min(1),
-      submit: z.boolean().optional().default(true),
+      submit: nullAsAbsent(z.boolean().optional().default(true)),
       /**
        * The menu row to select, when the child is showing one. Required to answer a menu at
        * all - `text` is prose, and prose is not an answer to a menu (see `pane-dialog.ts`);
@@ -45,12 +48,12 @@ const AnswerField = z.preprocess(
        * Both halves are carried because they check each other: the number says where to
        * navigate, and the label says what that position must still read when we get there.
        */
-      option: z
+      option: nullAsAbsent(z
         .object({
           number: z.number().int().min(1).max(99),
           label: z.string().min(1),
         })
-        .optional(),
+        .optional()),
       /**
        * A whole multi-question form, answered at once - the driver runtime's answer to what
        * `option` is for a single ask.
@@ -71,11 +74,11 @@ const AnswerField = z.preprocess(
        * checks the whole submission against the live request exactly as the route does for a
        * human's click.
        */
-      form: z
+      form: nullAsAbsent(z
         .object({
-          answers: z.record(z.string().min(1), z.union([z.string(), z.array(z.string())])),
+          answers: boundedRecord(z.string().min(1), z.union([z.string(), z.array(z.string()).max(LLM_REPLY_COLLECTION_MAX)]), LLM_REPLY_COLLECTION_MAX),
         })
-        .optional(),
+        .optional()),
     })
     .optional(),
 );
@@ -113,10 +116,10 @@ export const VerdictSchema = z
     /** The reply to deliver, when action === "answer". Textless reads as absent - see `AnswerField`. */
     answer: AnswerField,
     /** Foreman's recommended answer, shown for escalate + dry-run drafts. */
-    recommendation: z.string().optional(),
+    recommendation: nullAsAbsent(z.string().optional()),
     /** Decision-brief markdown for an escalation (the question + the options). */
-    brief: z.string().optional(),
-    confidence: z.number().min(0).max(1).optional(),
+    brief: nullAsAbsent(z.string().optional()),
+    confidence: nullAsAbsent(z.number().min(0).max(1).optional()),
   })
   .refine((v) => v.action !== "answer" || !!v.answer?.text, {
     message: "answer action requires answer.text",

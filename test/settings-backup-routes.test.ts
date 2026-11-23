@@ -24,6 +24,7 @@ const preview = {
   workflowCommandsChanged: 0,
   workflows: { added: 0, changed: 0, archived: 0, reactivated: 0 },
   workflowVersions: { inserted: 0, retained: 1 },
+  residentProfiles: { added: 0, changed: 0, archived: 0, reactivated: 0 },
   externalEffects: [],
   exclusions: ["Tasks and runs"],
   warnings: [],

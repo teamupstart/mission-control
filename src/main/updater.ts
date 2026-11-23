@@ -5,7 +5,7 @@ import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
 import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
-import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME } from "../shared/app-naming.mjs";
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME, binaryBundleName } from "../shared/app-naming.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
 import { execFile } from "node:child_process";
 import { statSync, readFileSync } from "node:fs";
@@ -32,7 +32,8 @@ import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences, type UpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
-import { latestStableBinary, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type BinaryOffer } from "./update-binary-release.ts";
+import { latestStableBinary, latestReadyAlpha, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type AlphaFallback, type BinaryOffer, type UnavailableBinary } from "./update-binary-release.ts";
+import { pendingBuildNotice } from "../shared/update-copy.ts";
 import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff, cleanupSettledBinaryDownloads, type BinaryStageRequest, type BinaryStageOutcome } from "./update-binary.ts";
 import type { UpdateTransfer } from "../shared/update.ts";
 
@@ -55,6 +56,13 @@ const MAX_RELEASE_NOTES = 4_000;
 export interface ReleaseInfo {
   binary?: BinaryOffer;
   unavailable?: string;
+  /** A newer release whose signed binary is not ready, when this older one is offered instead. */
+  pending?: string;
+  /**
+   * Set with `unavailable` only when this release's signed build has not finished publishing.
+   * Absent when it is published but cannot update this installation, which stays blocked.
+   */
+  building?: boolean;
   tagName: string;
   name: string;
   publishedAt: string;
@@ -81,7 +89,8 @@ export interface UpdateDialogs {
     name: string;
     notes: string;
   }): Promise<"apply" | "defer">;
-  upToDate(version: string): Promise<void>;
+  /** `pendingVersion` names a newer build that is still being signed, when there is one. */
+  upToDate(version: string, pendingVersion?: string): Promise<void>;
   /** Preparation is already running, with the stage it last reached. */
   preparing(version: string, stage: string): Promise<void>;
   /** Downloaded, verified, and waiting: the only remaining question is whether to restart now. */
@@ -99,6 +108,8 @@ export interface InstallSnapshot {
 }
 
 export interface HelperHandoff {
+  processNames?: Record<number, string>;
+  userDataDirectory?: string;
   node?: string;
   descriptor?: StagedInstallDescriptor;
   receipt?: InstallReceipt;
@@ -154,7 +165,13 @@ export interface UpdaterPort {
   installSnapshot(): InstallSnapshot;
   latestRelease(): Promise<ReleaseInfo | null>;
   latestMainCommit(): Promise<MainCommitInfo>;
-  binaryForCommit(commit: string): Promise<BinaryOffer | null>;
+  /** Null while the commit's signed build is still publishing; unavailable when it never can be installed. */
+  binaryForCommit(commit: string): Promise<BinaryOffer | UnavailableBinary | null>;
+  /**
+   * The newest complete alpha strictly between the installed commit and main's tip. Without it
+   * the installed commit is never verified, so a still-publishing tip keeps its blocked offer.
+   */
+  latestReadyAlpha?(installedCommit: string, headCommit: string): Promise<AlphaFallback>;
   discard?(descriptor: StagedInstallDescriptor): Promise<void>;
   helperSource(): string;
   stateDirectory(): string;
@@ -170,7 +187,7 @@ export interface UpdaterPort {
   repairMigration?(confirmLogin?: boolean): Promise<void>;
   requestQuit(): void;
   readOutcome(): UpdateApplyOutcome | null | Promise<UpdateApplyOutcome | null>;
-  clearOutcome(expected: UpdateApplyOutcome): void;
+  clearOutcome(expected: UpdateApplyOutcome): boolean;
   now(): number;
   random(): number;
   log(line: string): void;
@@ -418,7 +435,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
   const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
   if (plan) retainBinaryHandoff(descriptor, args.stateDirectory, plan.nonce);
   await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
-    parentPid: args.parentPid, logPath: args.logPath, env: args.env,
+    parentPid: args.parentPid, logPath: args.logPath, env: args.env, processNames: args.processNames, userDataDirectory: args.userDataDirectory,
     handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
       ...(receipt.sourceClone ? ["--source-clone", receipt.sourceClone] : []),
       "--target-tag", args.targetTag, "--app-path", args.appPath,
@@ -432,6 +449,10 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
 export function requestUpdateQuit(setQuitting: () => void, quit: () => void): void {
   setQuitting();
   quit();
+}
+
+function alphaVersion(commit: string): string {
+  return `alpha ${commit.slice(0, 7)}`;
 }
 
 function idleSnapshot(
@@ -481,6 +502,9 @@ export class UpdateController {
   private alpha: boolean;
   private snoozedUntil: UpdatePreferences["snoozedUntil"];
   private snapshot: UpdateSnapshot;
+  // Keep the original marker for compare-and-clear, including an interrupted attempt
+  // projected to a failure notice. This owns the result across asynchronous checks.
+  private pendingOutcome: { stored: UpdateApplyOutcome; notice: UpdateApplyOutcome } | null = null;
   private receipt: InstallReceipt | null = null;
   private checkPromise: Promise<UpdateSnapshot> | null = null;
   private applyPromise: Promise<boolean> | null = null;
@@ -530,9 +554,27 @@ export class UpdateController {
     const status = this.port.migrationStatus?.();
     const migration = status?.status === "repair-required" || (status?.status === "complete" && ["idle", "disabled"].includes(snapshot.phase))
       ? status : snapshot.migration?.status === "offered" ? snapshot.migration : undefined;
-    this.snapshot = { ...snapshot, migration, alpha: this.alpha };
+    this.snapshot = { ...snapshot, lastOutcome: this.pendingOutcome?.notice ?? null, migration, alpha: this.alpha };
     for (const listener of this.listeners) listener(this.snapshot);
     return this.snapshot;
+  }
+
+  /** Both the dialog and banner acknowledge only the result the operator saw. */
+  dismissOutcome(expected: UpdateApplyOutcome): boolean {
+    const pending = this.pendingOutcome;
+    if (!pending || !expected || typeof expected !== "object") return false;
+    const notice = pending.notice;
+    if (notice.result !== expected.result || notice.targetVersion !== expected.targetVersion ||
+      notice.recordedAt !== expected.recordedAt ||
+      (notice.result === "failure" && expected.result === "failure" && notice.message !== expected.message)) return false;
+    try { if (!this.port.clearOutcome(pending.stored)) return false; }
+    catch (error) {
+      this.port.log(`could not retire update outcome: ${String(error)}`);
+      return false;
+    }
+    this.pendingOutcome = null;
+    this.publish(this.snapshot);
+    return true;
   }
 
   /** A channel change cannot retarget a check, consent dialog, or preparation already in flight. */
@@ -581,6 +623,7 @@ export class UpdateController {
         message: "The previous update did not finish. Check the update log before retrying.",
       };
     }
+    this.pendingOutcome = storedOutcome && lastOutcome ? { stored: storedOutcome, notice: lastOutcome } : null;
     const disable = (reason: string) => this.publish({ phase: "disabled", reason, lastOutcome });
     if (this.port.arch !== "arm64") disable("Updates require an Apple silicon Mac.");
     else {
@@ -597,17 +640,13 @@ export class UpdateController {
     if (lastOutcome) {
       try {
         const notice = lastOutcome;
-        const clear = () => {
-          try { this.port.clearOutcome(storedOutcome!); }
-          catch (error) { this.port.log(`could not retire update outcome: ${String(error)}`); }
-        };
         await this.port.dialogs.outcome(notice, {
           delivered: () => {
             // Delivery proves only that the renderer ran once. It may hang before
             // an answer, so preserve the notice across relaunch until acknowledged.
             this.port.log("update outcome delivered; awaiting operator acknowledgment");
           },
-          acknowledged: clear,
+          acknowledged: () => { this.dismissOutcome(notice); },
         });
       } catch (error) {
         this.port.log(`could not show the previous update outcome: ${String(error)}`);
@@ -689,26 +728,70 @@ export class UpdateController {
           this.port.log(`release news unavailable: ${String(error)}`);
           return null;
         });
-        const commit = this.alpha ? await this.port.latestMainCommit() : null;
+        const head = this.alpha ? await this.port.latestMainCommit() : null;
         const checkedAt = this.port.now();
         const releaseVersion = release ? versionFromReleaseTag(release.tagName) : null;
         const newerRelease = releaseVersion && isNewerVersion(this.port.currentVersion(), releaseVersion);
-        if (commit ? commit.sha === this.port.currentCommit() : !release || !newerRelease) {
+        const installedCommit = this.port.currentCommit();
+        if (head ? head.sha === installedCommit : !release || !newerRelease) {
           return this.publish({ phase: "up-to-date", currentVersion, checkedAt, lastOutcome });
         }
+        // A verified candidate retained locally after preparation outlives its remote asset.
+        // The last target asked about is the one offered, so it alone decides reuse.
+        let reusableStaged = false;
+        const retained = (ref: string): BinaryOffer | null => {
+          reusableStaged = this.staged?.releaseTag === ref && !!this.descriptor && this.stagedBundleIsIntact(this.staged);
+          return reusableStaged ? this.staged!.binary : null;
+        };
+        let commit = head;
+        const found = head ? retained(head.sha) ?? await this.port.binaryForCommit(head.sha) : retained(release!.tagName) ?? release!.binary;
+        // Published, but never an update for this installation: that keeps its blocked offer.
+        const unavailable = found && "unavailable" in found ? found.unavailable : undefined;
+        let binary = found && !("unavailable" in found) ? found : undefined;
+        // A newer build is still publishing, and nothing newer than this app can be installed
+        // yet. Only a build discovery saw still publishing counts; any other missing binary is
+        // reported as the blocked offer it always was.
+        let pendingVersion: string | null = !head && !binary && release!.building ? releaseVersion! : null;
+        if (head && !binary && !unavailable && installedCommit) {
+          // Main's tip is still being built and signed - every merge starts one. The previous
+          // complete alpha stays published until its replacement is verified, so when it is
+          // newer than this installation it is a real upgrade, offered now rather than after
+          // the build. With no installed identity there is nothing to compare, so that case
+          // keeps the plain pending offer below.
+          const fallback = await this.port.latestReadyAlpha?.(installedCommit, head.sha);
+          // Up to date is claimed only once the installed commit is verified behind the tip. A
+          // commit the repository cannot place keeps the blocked offer, like a missing identity.
+          if (fallback && fallback.result !== "unverified") pendingVersion = alphaVersion(head.sha);
+          if (fallback?.result === "upgrade") {
+            commit = fallback.prior.commit;
+            binary = retained(fallback.prior.commit.sha) ?? fallback.prior.binary;
+          }
+        }
+        if (!binary && pendingVersion) {
+          // Up to date, not an error: the running app is the newest installable build, and the
+          // schedule offers the pending one once its signed binary is published.
+          return this.publish({ phase: "up-to-date", currentVersion, checkedAt, lastOutcome, pendingVersion });
+        }
         const targetRef = commit?.sha ?? release!.tagName;
-        const newVersion = commit ? `alpha ${commit.sha.slice(0, 7)}` : releaseVersion!;
+        const newVersion = commit ? alphaVersion(commit.sha) : releaseVersion!;
+        const fallback = commit && commit !== head
+          ? [`Main commit ${commit.sha.slice(0, 7)} is the newest signed build. ${pendingBuildNotice(pendingVersion!)}`]
+          : [];
         const notes = commit
-          ? [`Latest main commit ${commit.sha.slice(0, 7)}.`,
+          ? [...(fallback.length ? fallback : [`Latest main commit ${commit.sha.slice(0, 7)}.`]),
               ...(newerRelease ? [`Stable release ${release!.tagName} is also available.`] : []),
               commit.message, ...(newerRelease ? [release!.body] : [])].join("\n\n")
-          : release!.body;
-        const reusableStaged = this.staged?.releaseTag === targetRef && this.descriptor && this.stagedBundleIsIntact(this.staged);
-        const binary = reusableStaged ? this.staged!.binary : commit ? await this.port.binaryForCommit(commit.sha) : release?.binary;
-        this.offeredBinary = binary ? structuredClone(binary) : null;
-        // Check after discovery's final await so a manual request joining a background
-        // check can still show the offer. Explicit checks do not erase its saved snooze.
-        if (!this.manualCheckRequested && (this.snoozedUntil[targetRef] ?? 0) > this.port.now()) {
+          : [...(release!.pending ? [pendingBuildNotice(versionFromReleaseTag(release!.pending) ?? release!.pending)] : []), release!.body].join("\n\n");
+        // Release availability belongs only to a fresh stable offer, not to alpha
+        // release news or a verified candidate retained locally after preparation.
+        const blocker = (!commit && !reusableStaged ? release?.unavailable : undefined)
+          || (!binary ? unavailable || BINARY_PENDING : binaryBundleName(binary.manifest) !== APP_BUNDLE_NAME ? BINARY_PENDING : undefined);
+        this.offeredBinary = binary && !blocker ? structuredClone(binary) : null;
+        // Background discovery stays quiet until there is a usable binary; the existing
+        // schedule will check again. Read manual intent after discovery's final await so
+        // a joining explicit check still gets the blocker and retry action.
+        // Explicit checks also bypass, but do not erase, a saved snooze.
+        if (!this.manualCheckRequested && (blocker || (this.snoozedUntil[targetRef] ?? 0) > this.port.now())) {
           return this.publish(idleSnapshot(currentVersion, lastOutcome, checkedAt));
         }
         return this.publish({
@@ -722,7 +805,7 @@ export class UpdateController {
           publishedAt: commit?.committedAt ?? release!.publishedAt,
           checkedAt,
           lastOutcome,
-          ...(!this.offeredBinary ? { blocker: release?.unavailable ?? BINARY_PENDING } : {}),
+          ...(blocker ? { blocker } : {}),
         });
       } catch (error) {
         const safe = safeUpdateError(error);
@@ -813,7 +896,7 @@ export class UpdateController {
           return this.snapshot;
         }
         case "up-to-date":
-          await this.port.dialogs.upToDate(snapshot.currentVersion);
+          await this.port.dialogs.upToDate(snapshot.currentVersion, snapshot.pendingVersion);
           return this.snapshot;
         case "error":
           await this.port.dialogs.error(snapshot.message);
@@ -1255,6 +1338,8 @@ export class UpdateController {
 }
 
 export function createDefaultUpdaterPort(options: {
+  processNames?: () => Record<number, string>;
+  userDataDirectory?: string;
   packaged: boolean;
   currentVersion: () => string;
   currentCommit: () => string | null;
@@ -1294,13 +1379,14 @@ export function createDefaultUpdaterPort(options: {
     writeSnoozes: (snoozedUntil) => { writeUpdatePreferences(preferencesPath, { ...readUpdatePreferences(preferencesPath), snoozedUntil }); },
     latestRelease: () => latestStableBinary(runGh, options.currentVersion()),
     binaryForCommit: (commit) => binaryForCommit(runGh, commit),
+    latestReadyAlpha: (installedCommit, headCommit) => latestReadyAlpha(runGh, installedCommit, headCommit),
     discard: (descriptor) => discardBinaryUpdate(descriptor, options.stateDirectory),
     latestMainCommit: () => latestMainCommit(runGh),
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
     launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
-      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
+      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath, processNames: options.processNames?.(), userDataDirectory: options.userDataDirectory }),
     stage: async (request) => {
       const gh = await locateExecutable("gh");
       if (!gh) throw new UpdateError("GitHub CLI (gh) is not installed. Install gh, then check again.", true, "gh-missing");

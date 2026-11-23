@@ -73,6 +73,8 @@ const LIVE_CFG: ForemanConfig = {
 /** An embedded session: no terminals, no tty, and instrumented by construction. */
 function mkSdkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
+    awaiting: null,
     id: "sdk:11111111-1111-4111-8111-111111111111",
     agent: "claude",
     name: "embedded work",
@@ -99,7 +101,7 @@ function mkSdkSession(over: Partial<Session> = {}): Session {
     firstSeen: 0,
     lastSeen: NOW,
     lastActivity: NOW - 60_000,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,

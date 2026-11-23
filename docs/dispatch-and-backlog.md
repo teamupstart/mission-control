@@ -39,6 +39,10 @@ request as that first turn and leaves the platform-owned context out. See
 [the first turn of a dispatched session](sessions.md#the-first-turn-of-a-dispatched-session-shows-your-request-not-the-whole-launch-prompt)
 for what is and is not covered by that, and for why no evidence path is affected.
 
+The **pipeline** kind is temporarily unavailable while the ai-conductor integration is rebuilt:
+Dispatch does not offer it, and a stored Pipeline task refuses to dispatch with that reason. The
+rest of this section describes it as it returns.
+
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row plus one durable commission. Before the configured Engineer host
 starts, Mission Control reserves the provider Engineer run with the commission correlation and
@@ -61,8 +65,9 @@ Conductor's background build daemon keeps its own tmux supervision.
 
 Conductor owns worktree creation and every downstream agent, model, and effort choice in both
 modes. Agent, Model, Effort, attached repositories, After work, and the generic runtime picker
-therefore remain unavailable for Pipeline. Pipeline tasks also stay out of Foreman's backlog
-autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
+therefore remain unavailable for Pipeline. A [Persona](#a-persona-for-the-task) chosen under
+**Advanced** stays available, because it reaches the managed Engineer host Mission Control
+starts. Pipeline tasks also stay out of Foreman's backlog autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
 restart recovery use the ordinary managed-session paths. A Terminal task instead records its
 home and no session id.
 
@@ -89,7 +94,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
 | **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, bugfix, and document | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, <kbd>d</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
-| **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
+| **After work** | the kind's dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
 A common dispatch is <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd>, then
 the task. Digits are ordinary filter characters during Repo and position shortcuts in the
@@ -141,6 +146,97 @@ already, and **Ensemble**, whose body replaces Crew and After work outright. The
 offered in either - it appears exactly where flipping it would do something, so it is never a
 control that saves a preference and visibly does nothing. Settings is its durable home.
 
+## A Persona for the task
+
+Every kind the Dispatch form offers has an **Advanced** fold between the crew row and **After
+work**. It starts collapsed, and its summary names the task's Persona (and, for a plan, its
+[plan storage](managed-plans.md)). Opening it offers **Persona**: **No Persona**, which is the
+default for every kind, or any live Persona from the [Library](workflows.md). Built-in Personas
+are offered too; one shadowed by a Persona of your own with the same name is not.
+
+The Persona's guidance is delivered when the agent launches, as part of the session's [standing
+instructions](skills-and-settings.md): a `## Persona: <name>` section, followed by the Persona's
+Markdown, appended after any repository standing instructions. The Markdown is kept as written
+except that blank lines before it and whitespace after it are dropped, since the heading and
+separators stand in for them; everything else, including the indentation of a code block it opens
+with, reaches the agent unchanged. It rides the same channel those do for the harness and runtime
+the task launches on - a system prompt append on Claude, developer instructions on Codex in the
+Agent SDK, and the head of turn one on a pair with no channel of its own - so the agent reads it
+once. It reads it before your request, except in the managed Pipeline host's fallback described
+below. When no repository rules apply, the Persona section is the whole block. The form's
+**Standing instructions will be sent** note previews the composed text, Persona included, and the
+session's **See standing instructions** chip shows what the launch actually sent; a resume replays
+that record.
+
+The task stores the Persona's id, not a copy of its text. Like the model and effort, a backlogged
+task reads the Persona as it stands when it launches, so an edit made while the task waits reaches
+it. A Persona archived or deleted while the task waits refuses the dispatch with the reason. The
+reason stays on the task's backlog card and backlog autopilot passes the task over, so it cannot
+hold up the work behind it; reopen the task and choose another Persona or **No Persona**, which
+clears the reason and returns the task to autopilot. Saving a task with an archived Persona it
+already carries is allowed, so an unrelated edit is never blocked by it.
+
+A Persona is only delivered at launch, so a task that names one cannot be
+[handed to an agent that is already running](#hand-a-shelved-task-to-an-agent-thats-already-running):
+the drag is refused and backlog autopilot dispatches it into a fresh session instead.
+
+**Pipeline** carries a Persona to its managed Agent SDK Engineer host, on that session's own
+channel. Turn one still opens with the Engineer skill invocation, so if the channel turns out to
+be unusable the Persona section is placed at the end of turn one, after the complete Engineer
+prompt - the invocation, your request, the plan discovery and the launch context - rather than in
+front of it, where it would stop the skill from running. The Persona is never written into any
+idea Mission Control hands Conductor. Only the Engineer host receives it: the agents Conductor
+starts later are Conductor's to configure. The Terminal host is Conductor's own CLI, whose only
+input is its idea (your request and the plan discovery Mission Control adds to it), so it has no
+channel for a Persona: a pipeline task with one refuses to launch there, saying to switch
+**Settings → Conductor → Launch runtime** to Managed Agent SDK or choose **No Persona**.
+Repository standing instructions are not part of a Pipeline launch, so for a Pipeline task the
+**Standing instructions will be sent** note previews the Persona alone for the managed host, and
+nothing for the Terminal host.
+
+A [resident](residents.md) takes its Persona from its profile and never from this field. MCP
+`create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
+`personaId`.
+
+## Grill me first
+
+**Grill me first** makes a task interview you before it starts its work. It is offered for every
+kind this app launches: ship, bugfix, document, plan, scout and chat. When it is on, the task's
+intent is delivered with the Library's built-in **Grill** session action in front of the kind's
+own contract: the agent asks in rounds, each one `request_plan_decisions` form holding every
+question that can be asked so far, with its recommended option listed first and a free-text
+**Other**. Facts the agent can look up itself, with its subagents, are never put to you; only
+decisions are. There is always at least one round, rounds continue until nothing is left to ask, and
+dismissing a round stops the session before the work starts. A round may open with nothing
+selected, so an answer is only what you selected or wrote. Grilling rounds are not the review of
+anything the task delivers: a plan's review and phased follow-up still come afterwards. Once the
+interview is done the task carries on exactly as it would have, with the settled decisions as
+part of its request. When it is off, a task is delivered exactly as it always was.
+
+- **Where it is set.** Each kind's default is its chip in the **Grill me first** card on
+  **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+  chip in the bar under the **Task** box for every kind that offers it, so one task can differ
+  from its kind's default, and the backlog editor can change it while the task is shelved. The
+  text opposite the chip says where its value came from: **Follows the ship default**, or
+  **Off for this task** with a dot on the chip and a **Reset** that returns it to the default.
+  In the backlog editor it reads as the task's own pin, with no Reset. What it does is the
+  chip's tooltip.
+- **Pinned when filed.** The choice is stored on the task when it is created, so changing a
+  default later moves no existing task. A task filed by a task source, a recurring mission or
+  MCP `create_task` takes its kind's default. Switching a shelved task between two kinds that
+  offer it keeps its choice; switching it in from a kind without it takes the new kind's default.
+- **Editing the interview.** The Grill action is the one built-in session action edited in
+  place: open it under **Library → Actions**, change its instruction and **Save**, and every later
+  grill-first task is sent your text. **Reset to built-in**, in its `⋯` menu, restores the shipped
+  instruction. Its name, required skill and completion stay as shipped.
+- **It needs the Grill skill.** With Grill me first on, the bundled
+  [Grill skill](skills-and-settings.md) must be switched on as well, or the dispatch is refused on
+  the form naming it, and a launch that reaches the daemon anyway fails rather than starting an
+  interview the agent cannot load. A grill-first task of any kind is granted
+  `request_plan_decisions`. Handing one to an agent that is already running is refused before
+  its checkout is reset when Mission Control's MCP server is not built, or does not publish
+  `request_plan_decisions`.
+
 ## Attaching more than one repository
 
 Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
@@ -150,6 +246,9 @@ terminal-only; this does not introduce an embedded Pi runtime.
 Some work does not fit in one repo: a contract change and its consumers, a lockstep API
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.
+
+A [resident profile](residents.md#attaching-more-than-one-repository) can attach the same kind
+of repository set to every launch, and Dispatch > Resident can change it for one run.
 
 Mission MCP agents can create the same repository set with `create_task`. Omitting repository
 selectors keeps the caller's main checkout as primary. `repository` selects another primary and
@@ -259,28 +358,42 @@ when it launches.
 **After work** can arm any active published Workflow for the task. You can make that
 selection and add the task to the backlog while Foreman is off. When the task is dispatched,
 Foreman must be enabled and the selected harness must support its completion boundary; the
-Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
-machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. New installations start on the built-in
-**No-Mistakes Review** workflow. That default stores the workflow identity rather than today's version, so
-each new binding takes the newest immutable version shipped at the time (see
-[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. The dispatch
-form can override that choice for one task, including an explicit **None** that finishes
-without a Workflow.
+Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
-Choosing **document** selects **Documentation Review**.
-Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
-and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
-mission retains its explicit workflow or None. Returning from a kind default restores the prior
-mission choice, including None; an explicit after-work edit cancels that restoration. These kind defaults apply to API-created
-tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
-keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
+**Settings → Tasks** has an **After work** card with one row per task kind Mission Control
+launches: ship, bugfix, document, plan, scout and chat. Each row picks that kind's Workflow.
+Pipeline has none, because Conductor owns what runs after its work. Each row holds one of three
+answers:
 
-Choosing **scout** or **chat** in the dispatch form preselects **None**. Returning to Ship restores
-the selection put aside by a kind switch. A manual after-work choice clears that restoration,
-so returning to Ship does not overwrite it. Plan, Bugfix, and Document defaults remain selectable workflows rather
-than locks: choose **None** to opt out, or select another published workflow.
+| Row | What a new task of that kind arms |
+| --- | --- |
+| **Built-in default (…)** | The kind's built-in, named in the label: **No-Mistakes Review** for ship, **Bug Fix Review** for bugfix, **Documentation Review** for document, **Plan Validation** for plan, and **None** for scout and chat. A plan pinned to local storage always arms **Local Plan Validation**. Nothing is stored, so a later build that changes a built-in reaches the row. |
+| A published Workflow | That Workflow, for example your own copy of a built-in. Any active published Workflow may be chosen for any kind. |
+| **None** | Nothing runs after the work. |
+
+A row stores the workflow identity rather than today's version, so each new binding takes the
+newest immutable version published at the time (see
+[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. A row
+is read when a task is filed: changing it reaches the next task, and a task already in the
+backlog keeps the Workflow it was filed with. A Workflow a row names cannot be archived or
+deleted until the row changes; the refusal names the kinds that use it.
+
+The rows reach every creation path that leaves the Workflow unnamed: the dispatch form, a
+`POST /api/tasks` without `workflowId`, MCP-created tasks, and task-source sweeps. An explicit
+Workflow or an explicit **None** always wins.
+
+Choosing a kind in the dispatch form preselects that kind's row. Returning to **ship**
+restores the selection a switch put aside, without waiting for the settings fetch. A manual
+after-work choice clears that restoration, so returning to ship does not overwrite it. Rows
+are defaults, not locks: choose **None** to opt out, or select another published
+workflow. Bugfix and Document behave like Ship for dispatch, backlog scheduling, implementation
+handoff, PR follow-through, and recovery; their default workflows are the difference.
+
+In a Recurring Mission, choosing **bugfix**, **document** or **plan** also preselects its row,
+while a saved mission retains its explicit workflow or None. Returning from a kind default
+restores the prior mission choice, including None; an explicit after-work edit cancels that
+restoration. Ship keeps the mission's own choice, which starts on None (see
+[Recurring missions](recurring-missions.md#the-after-work-handoff)).
 
 **document** writes or maintains repository documentation and produces a reviewable diff.
 It is available in Dispatch, backlog, Recurring Missions, and task sources, with per-kind
@@ -296,14 +409,25 @@ diff is not suppressed as an incidental review artifact.
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
-backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
-artifact, or archive contract.
+backlog, carry dependencies, be created by a task source, or be selected for an Ensemble
+member. The one exception is a [Recurring Mission](recurring-missions.md#chat-missions): a
+mission may name **chat**, and each run files a chat into the backlog that Foreman launches in a
+fresh session like any other run. Mission Control adds no task-kind prompt appendix, artifact, or archive
+contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
+launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
+the ordinary backlog and dispatch checks while the original conversation stays a chat.
 
 With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
 that the agent has answered, but it does not offer or send an automatic completion action; the
 session stays live for later turns until you choose **Complete**. If you explicitly select a
 Workflow, that Workflow follows the same completion boundary and safeguards as other work.
+
+**resident** is not a choice in the Kind picker. A resident task is launched only from a
+[resident profile](residents.md), through **Dispatch > Resident**, and every other creation path -
+Single agent Dispatch, MCP `create_task`, a Recurring Mission, a task source, the backlog editors -
+refuses it. It always runs in the Agent SDK with its profile's harness, model and effort, receives
+its Persona and instructions as standing instructions, and, like chat, ends only when you choose
+**Complete & close**.
 
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write self-contained static reports at `docs/reports/<slug>/report.html`, one
@@ -341,6 +465,9 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
+With [Grill me first](#grill-me-first) on, a plan task interviews you before it drafts. The
+plan contract above follows the interview unchanged, review and phased follow-up included.
+
 A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
 the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
@@ -377,23 +504,34 @@ itself satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task of a
-kind those surfaces support.
+Recurring Missions resolve the same per-kind dispatch default when they create an ordinary
+task of a kind those surfaces support without naming a Workflow.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
-listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+listed in the **Repositories** family of **Settings → Setup**, seeded with `~/workspace`, `~/code`, `~/dev`, and
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
 
-The Settings panel is also where the index is maintained. Any directory can be removed, including
-a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
-leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
-checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
-and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+The picker never waits on a rescan it does not need. The daemon answers from its last scan of
+the same directories to the same depth - kept in `repo-index-cache.json` in the state directory,
+so it survives a restart - and walks the disk again behind that answer once the scan is older
+than `MISSION_REPOS_CACHE_MS` (30 seconds by default). Walks of the same directories never overlap: readers share the
+walk in progress, and every Dispatch open that arrives during one shares a single walk queued
+behind it. The form opens on the newest list this window has received, and on every open it also
+asks for a scan that starts after the request. When that answer arrives it replaces the list, so a checkout you
+cloned a moment ago is offered without waiting out the cache. Lists are ordered by when their
+scan started, not by when they arrived, so a slow answer from an older scan never puts a
+repository back or takes one away. Saving a change to the indexed directories, or
+restoring settings, makes every open window forget its list - including a Dispatch form already
+on screen, and a window that was disconnected at the time, which catches up when it reconnects -
+so no picker offers a repository from a directory you just removed. The field reads **indexing workspace…** only when the window holds
+no list and no scan has answered yet.
+
+That Setup family is also where the index is maintained; see
+[Repositories in the setup guide](setup.md#repositories). This same repository picker is reused by Dispatch,
 **Settings → Trust**, **Standing instructions**, and **Task sources**.
 
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
@@ -476,8 +614,10 @@ until you enable or manually launch it. **Dispatch now** still launches immediat
 Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
-The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog. It is offered only on a new dispatch: editing a backlog task and the See the
+The **Single agent / Ensemble / Resident** toggle sits in the modal header, since it reshapes the
+whole dialog. **Resident** replaces the brief with profile cards, an optional repository, optional
+instructions for this run, a read-only summary of what the launch carries, and **Edit profile**;
+see [Residents](residents.md#launching-a-resident). It is offered only on a new dispatch: editing a backlog task and the See the
 work tour's dispatch preview show neither it nor the **Guided** switch, because neither form
 can become another kind of dispatch. Chat calls the fold **Task details** and omits dependencies because they would
 turn an immediate conversation into backlog work.
@@ -488,16 +628,94 @@ is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the 
 forced into the backlog. Every task or standalone active session completes only when its
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
-repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
-primary repository's pull request, but what releases it is the prerequisite's own
-completion, which is the stronger condition. The explicit completion override is the exception:
+repository it changed has; merely opening a PR does not release dependents (unless the
+dependency [stacks](#stacked-dependencies), which lets it start but still does not complete
+it), and an ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
+edges are still checked for verified merges, including after a restart or session closure.
+An unresolved dependency also retains its earlier work episode's branch when the task moves
+on, so a PR first discovered on that historical branch can still release it. Branch discovery
+searches PR candidates within that episode's recorded ownership window, so a newer PR on a
+reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
+its source head exactly matches a branch commit retained while the episode was active. These
+late-opened PRs stay in branch discovery until merged, so a force-push after discovery cannot
+bypass the final head check. If a linked PR closes without merging, a confirmed closure
+reopens discovery for a replacement under the same episode checks. The comparison uses the
+PR's source head, which also supports squash merges. Without that retained match, an unknown historical end or a PR created after
+completion stays unresolved; a later episode's merge does not release an edge pinned to
+earlier unmerged work.
+When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
+unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+For multi-repository work, each episode retains its repositories' change evidence before
+cleanup clears checkout paths and baselines. An edge pinned to a retained episode waits for
+that episode's full changed-repository quorum; another episode's partial delivery cannot
+complete it. New edges use the current episode's evidence. Legacy edges without surviving
+episode provenance retain task-wide recovery from verified merge evidence, never from a bare
+done status or outcome text.
+A dependency edge names the prerequisite's primary pull request, or a merged secondary
+from the same episode when the primary was unchanged. Its release still requires the
+prerequisite's full merge quorum. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
 their next work episode from an earlier merged PR. The board and Sitrep name what a task is
-waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
-Reopen the backlog task to add or remove dependencies; cycles are refused.
+waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early,
+except through a [stacked dependency](#stacked-dependencies).
+Reopen the backlog task to add or remove dependencies; cycles are refused. Recorded merge
+completion remains visible even after the originating session disappears. A prerequisite
+required by a retained exact plan input names that plan and revision in the editor and cannot
+be removed while it is the pin's only matching prerequisite. Change the plan input and its
+prerequisite together through the task API to replace the pair. The editor keeps the pin intact.
+A rejected save leaves the draft open; if Dispatch now triggered the save, the error says that
+dispatch was not attempted. A launch refusal after a successful save is reported separately.
+
+#### Stacked dependencies
+
+A same-repository task dependency can **stack**: the dependent starts as soon as its
+prerequisite has an open, non-draft pull request and its agent has finished the episode,
+instead of waiting for the merge. The chip of a same-repository task dependency that has not
+merged yet carries a **Stack** / **After merge** toggle. A prerequisite that has already merged
+(its task is finished, or its pull request merged) has nothing left to stack on, so its chip
+has no toggle, and neither does a dependency on a session with no task or on a task in
+another repository. Until you pick one the toggle shows the mode it inherits, marked *default*,
+from **Settings → Shipping → Stacked pull requests** (which ships as *Stack on its branch*).
+Changing the setting later moves every chip you never set. Set a chip, or the setting, to
+*After merge* / *Wait for merge* to keep today's wait for that dependency or for all of them.
+
+A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
+until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
+dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
+cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
+prerequisites in one repository, a prerequisite in another repository, or a stack at the
+depth cap. A stacked task is always **dispatched** into a fresh worktree cut from the
+prerequisite pull request's current head, and opens its pull request against that branch;
+drag-to-assign and Foreman never hand it to an existing agent. Session dependencies without
+a task, plan publications and cross-repository dependencies always wait for merge. See
+[Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests) for how the stacked
+pull request is reviewed and released to merge.
+
+After it starts, a stacked task keeps itself current through the
+[stack lifecycle](inspector-and-shipping.md#the-stack-lifecycle). When its prerequisite pushes
+again, its session is asked to merge the prerequisite's branch in. When the prerequisite's pull
+request **merges**, the daemon retargets the stacked pull request to the default branch and asks
+the session to merge `origin/<default branch>` in and push, with no force-push. Once the
+restack is verified, the pull request is reviewed against the default branch and merges
+through the ordinary gates, so under YOLO mode a stack lands bottom-up under the conditions in
+[when a stack lands by itself](inspector-and-shipping.md#the-stack-lifecycle).
+The prompts go through Foreman; when it cannot send one, the merge queue says why and offers to
+send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
+owner again. If the prerequisite's pull
+request closes without merging, or its task is cancelled or rescheduled, the stacked pull
+request is held as *Stack broken* with an action that fixes it. If someone merges the stacked
+pull request on GitHub into its prerequisite's branch instead of the default branch, nothing is
+completed: the task stays open and its own dependents stay blocked. When that merge came after the
+prerequisite's pull request had already merged, the session is asked to carry the work onto the
+default branch in a new pull request, whose merge completes it. When the prerequisite was still
+open, no prompt is sent, and the operator confirms whether the work reached the default branch. See
+[a merge into the parent's branch](inspector-and-shipping.md#a-merge-into-the-parents-branch).
+Flipping the dependency to
+*After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the
@@ -507,7 +725,9 @@ comes back seeded with that repo, not blank. A submit that fails leaves the form
 your fields intact so you can retry.
 
 A backdrop click closes the form only when both the press and release happen outside it.
-Selecting text inside the form and releasing the mouse outside keeps the form open.
+Selecting text inside the form and releasing the mouse outside keeps the form open. See
+[Overlays and shortcuts](agent-guides/change-contracts.md#overlays-and-shortcuts) for the
+shared backdrop rule.
 
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
@@ -594,6 +814,15 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### Work units
+
+Every task has a [work unit](work-units.md) id, `workUnitId`, except a resident run's. A plan
+task and the phase tasks its session files through MCP `create_task` share one. Which other
+tasks share a work unit and which get their own is set out in
+[Which tasks share one](work-units.md#which-tasks-share-one). A task shelved before work units
+existed gets its id when it is next dispatched or assigned. `list_tasks` can list the tasks of
+one work unit.
+
 ### One agent, one task at a time - but not one task per agent
 
 **An agent runs tasks one after another, for as long as it's alive.** Finish one, take the
@@ -606,6 +835,18 @@ recorded finished, which for shipped work is when [its pull request
 merges](inspector-and-shipping.md#when-a-tasks-pull-request-merges) - not when you get round to clicking anything.
 Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
 default it stays, ready for the next drop.
+
+**An agent stays in the work unit it was started for.** An agent started with a
+[work unit](work-units.md#the-launch-environment) has `WORK_UNIT_ID` in its environment for as
+long as it runs, and a drop starts no process, so its MCP calls would tag the next task with the
+first one's work unit. The daemon therefore refuses a drop onto an agent that was started for
+another work unit - "that agent was started for other work, so its MCP calls would be
+attributed to that work" - and the backlog autopilot does not offer it that task; the task can still be
+dispatched to a new agent. An agent started for the task's own work unit takes it, which is how
+a plan's phase tasks can follow one another on one agent. An agent started with none takes any
+task, and that task emits no work unit until the agent's next start. The rule reads only what
+the agent was started with, never the `work-unit-id` preview, so it holds after the preview is
+switched off; with the preview never switched on no agent has one and nothing is refused.
 
 **Each task keeps its own record.** The card shows the task the agent is executing, or the
 one it most recently finished until it takes another; the previous task keeps its own
@@ -668,11 +909,53 @@ remote-default fetch, including broken Git or SSH authentication to `origin`, is
 and retried from the Board instead of disappearing into terminal history. Its next launch starts
 with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
 ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
-SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
-that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task that
+cannot appear in Backlog, such as a chat no Recurring Mission filed, remains failed even in this
+resource-free state. Deterministic
 launch refusals outside that resource phase also remain failed, and once any launch resource
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
+
+Live dispatch failures also write a single-line `dispatch_failed` JSON record to the daemon
+log, prefixed with `[dispatch]`. It includes an ISO timestamp, task ID, dispatch phase,
+repository path, and error text. A remote-default base-freeze failure includes the last Git
+command as an argv array, measured elapsed milliseconds, timeout budget, exit code or signal,
+and timeout, unknown-outcome, and output-overflow flags. A killed child has a null exit code
+rather than the executor's synthetic exit 1. If an attached repository fails, the record names
+that repository. These local diagnostics do not require telemetry to be enabled.
+
+The fetch budget remains 30 seconds. Timeouts, signals, and ordinary remote refusals are not
+automatically retried; only the existing bounded retry for a remote-tracking ref update race
+applies. A failed base freeze still provisions nothing and can be retried manually.
+
+### Hibernated tasks wait at the top of the backlog
+
+A task whose agent you [hibernated](sessions.md#hibernate-a-task-and-resume-it-later) leaves the
+board and waits in a **Hibernated** section above the queued cards, in the Board's Backlog column
+and in the Line's **Backlog** drawer. Each row has **Resume**. These rows are not backlog work:
+they are never ordered, selected, filtered by the column's own search or taken by the backlog
+autopilot. The column's count includes them, and the fleet filter narrows them like any card.
+
+### Search and filter the backlog
+
+The Board's Backlog column and the Line's **Backlog** drawer both carry a search button and a
+**Filter** menu in their header.
+
+- **Search** opens a field that matches every word you type against a task's title, task text,
+  labels, and repository name, ignoring case. Matching words are highlighted in each title.
+  `Esc` in the field, or the search button again, clears the search and hides the field.
+- **Filter** opens a menu with two groups. **Dependencies** offers **Ready to start** (no unmet
+  dependency) and **Blocked** (at least one). **Autopilot** offers **Autopilot on** and
+  **Autopilot off**, read from each task's own [autopilot switch](#hold-a-backlog-item-back).
+  Values in one group widen the view, the two groups narrow each other, and each row's count is
+  how many tasks it would show with the search and the other group applied. **Ready to start**
+  with **Autopilot on** is the list autopilot schedules from.
+
+While anything is filtered, the header count reads `3 of 23`, each active filter shows as a chip
+you can click to remove, and a line says how many tasks are hidden with a **Clear** link. The
+filter only hides tasks: the order, the **next up** mark, and what autopilot takes next do not
+change. Reordering, selecting, and `Cmd`-`A` act on the cards you can see. Search and filters
+reset when the dashboard reloads.
 
 ### Edit or delete several shelved tasks at once
 
@@ -712,6 +995,67 @@ nothing changes and the dialog says which task stopped it.
 **Delete…** asks once, in the bar, and then removes the selected tasks. Every task is checked
 before any is removed, so a selection that includes a task that has left the backlog deletes
 nothing. A task that still fails to go after that check is reported, and the rest are removed.
+
+### When a dispatch does not start
+
+Every dispatch shows a placeholder at the top of **Working** until its session exists: a launch
+from Dispatch, a Backlog task dispatched by you or by Foreman's autopilot, and a resident
+profile's Launch. A task filed by a recurring mission or by an MCP `create_task` waits in the
+Backlog first and gets its placeholder when it is dispatched from there. When the dispatch
+fails first, the failure is drawn where it happened instead of disappearing:
+
+- **Failed with no session** (any kind that cannot return to the Backlog, such as a chat or a
+  resident, and any failure after provisioning): the placeholder becomes a red **Did not
+  start** tile in the same place, on the Board and in the Console rail. It names the phase it
+  stopped in and prints the whole reason. Attempts of the same work that failed for the same
+  reason share one tile with an attempt count, so six launches of one resident read as one
+  problem.
+- **Back in Backlog** (a Backlog kind whose base or worktree step failed before anything was
+  provisioned): the task's Backlog card says **Did not start, back in Backlog** beside the
+  reason it already prints.
+- **Failed with its session kept** (a late failure, such as a first prompt that was not
+  delivered, where the dispatcher kept the agent and its worktree): the session's own card
+  says why. When the task was not yet bound to that session there is no card to carry it, so
+  it is drawn as a tile marked **Launch failed, session kept**. A kept failure never offers
+  Retry, because retrying re-files the task and reclaims the worktree its agent may be using.
+  It offers **Open** only when the task is bound to the kept session; an unbound one has no
+  session to open from here and offers just **Report bug** and **Dismiss**. Find the kept agent
+  through its terminal or Agent SDK session, or cancel the task, as its reason says.
+
+Every open failure always has exactly one place on screen. The Console layout has no Backlog
+column and its rows carry no notices, so there a failure that went back to the Backlog or kept
+its session is a row in the rail, beside the ones that never started. On the Board, a returned
+or kept failure whose card is hidden - a folded Backlog column, a fleet filter - is drawn as a
+tile instead.
+
+Each one offers the way back in for its kind - **Retry**, for a launch that kept nothing,
+dispatches a Backlog kind, or a chat a Recurring Mission filed, again as the same task and files any other chat again as a new one; a resident offers **Launch again** and
+**Open profile**; a kept failure bound to its session offers **Open** - plus **Dismiss** on every
+failure, and **Report bug** on every failure except a report session's own (see below). The
+top bar counts open failures as **N did not start**, and a toast appears the moment one
+happens; it goes away as soon as its failure is dismissed or answered. Dismissing answers the
+failure without erasing it: the task keeps its reason. A failure also clears itself when the
+same work later starts - for a resident, a launch of the same profile, whatever it is named now
+and however many other profiles share its name; for anything else, the same kind, repository
+and title.
+
+**Report bug** asks first, then starts a Claude chat session named
+`Report: <title> did not start` in the repository you choose (the failed task's own by
+default). The daemon writes that session's brief from the failed task: its kind, agent, the
+phase it stopped in, the reason, and every attempt that failed the same way. The session
+reads the daemon log around those attempts and drafts a bug with
+[`report_product_issue`](sessions.md#review-channel-mcp), leaving out intents, profile
+instructions, paths, repository names, MCP URLs and secrets because the issue is public.
+Nothing is filed until you review the exact text and press **Submit public issue**. A report
+session is marked as one on its own task, so if it fails to start itself it never offers a
+Report bug of its own - even after the failure it was reporting has been retried. While a
+report session for that failure is running, the button reads **Open report session** instead
+of starting another.
+
+Only a launch failure carries this state. The dispatcher records it at the moment the
+dispatch fails, in `tasks.launch_failure`; a session that ran and was later lost to a restart
+or an exit is described in the next section and is never drawn as **Did not start**. Failures
+recorded before this existed are not shown.
 
 ### When a task's agent goes away
 
@@ -766,8 +1110,10 @@ cannot postpone cleanup forever.
 When a dispatched task should run *later* rather than now, press **backlog** (<kbd>b</kbd>)
 in its session detail's footer. A confirm names the one cost, then the task goes back into
 the Backlog column at the [position it had](#the-backlog-order-is-the-one-you-set) before it
-was dispatched: re-enabled, with no outcome, error or pull-request link, ready to dispatch
-again (`POST /api/tasks/:id/requeue`).
+was dispatched: with **Allow backlog autopilot** turned off and no outcome, error or
+pull-request link (`POST /api/tasks/:id/requeue`). It stays parked until you dispatch it
+manually or turn its autopilot permission back on, even when Foreman's backlog autopilot
+is enabled.
 
 On the way back the task is cancelled: the agent Mission Control launched for it is stopped,
 any scout report is archived, and its checkout is removed so the next attempt starts from a
@@ -777,8 +1123,14 @@ difference from Kill: Kill keeps the tree and settles the task `failed`. An agen
 it keeps running; only the task leaves it.
 
 The control is disabled, with the reason in its tooltip, on a session with no task, a done
-task, a chat task (chat never sits in the backlog), and a Pipeline commission, which has a
-lifecycle of its own and is restarted by filing a new Pipeline task.
+task, any chat task, and a Pipeline commission, which has a lifecycle of its own and is
+restarted by filing a new Pipeline task. A chat's session is a conversation, so it is never
+sent back from there - that holds for a chat a Recurring Mission filed, too. A mission-filed
+chat returns to its Backlog card on its own when its launch fails while freezing its base or
+cutting its worktree, before anything was provisioned, the way other backlog work does. A
+refusal before that phase leaves it failed instead. When a failed launch kept no session,
+**Retry** dispatches that same chat again; one that kept its session offers **Open**, not
+Retry. Its mission's next run files a new chat rather than returning this one.
 
 A task that has already stopped - `cancelled` or `failed`, including one whose agent you
 killed - no longer has a session to press this from. It is re-filed from its own row in
@@ -807,6 +1159,16 @@ list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent sho
 see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
 item **unless the request explicitly claims an override** - which the dashboard's own
 buttons do, and Foreman never does.
+
+An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
+to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
+is an autopilot hold, not a human approval or permission boundary against the calling agent.
+Dependencies, workflow readiness, and the remaining launch checks still apply. The operator's
+launch hold is different: while Pause all holds launches or a priority session runs, an agent's
+`dispatch_task` is refused, and the tool offers no override for it. Nor does any other route:
+the daemon honours the override only on the operator's own request, never on one carrying the
+daemon token, so an agent calling the dashboard's dispatch or assign route directly is held too. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override
@@ -900,6 +1262,14 @@ Opening it names the stopped prerequisite and offers two ways out:
 
 Either action targets the *dead* task, so resolving it once frees every dependent behind
 it, not just the card you clicked from.
+
+A dependency can also be an **item in an external tracker** that a [task
+source](#blocking-links-become-dependencies) recovered from a blocking link. It is satisfied
+when the item closes as completed. Closed as **not planned** (on GitHub, a duplicate counts as
+not planned too), it is stopped in exactly the sense above, and the same warning button names
+it with its tracker id and a link to it. Mission Control cannot reschedule or complete
+somebody else's issue, so its way out is **Remove dependency**, which drops that edge from the
+task that holds it - possibly a task up the chain rather than the card you clicked from.
 
 ### The backlog order is the one you set
 
@@ -1085,6 +1455,140 @@ that harness offers it *for the model this launch resolved*. Codex drops `max` o
 but its newest two, so a `max` chosen for `plan` reaches a Codex launch on one of those and
 falls back to this card's default on the others rather than passing a flag the CLI rejects.
 
+### Advisor
+
+Claude Code's **advisor** lets the model a session runs on (the executor) consult a stronger
+model at key moments. The executor gets a server-side `advisor` tool; when it calls it, the
+Anthropic API forwards the conversation to the advisor model and hands its review back. Claude
+Code stores the choice as `advisorModel` in its settings, and `/advisor opus` (or `sonnet`, or
+`off`) sets it. Claude Code's own recommended pairing is Sonnet as the executor with Opus as the
+advisor.
+
+**Mission Control inherits it.** Both Claude runtimes load the operator's Claude Code settings:
+a Terminal pane starts the `claude` CLI with no settings-source restriction, and an Agent SDK
+session loads the user, project and local layers. So when `advisorModel` is set in
+`~/.claude/settings.json`, or in a project's `.claude/settings.json` or
+`.claude/settings.local.json`, every eligible Claude session Mission Control dispatches runs with
+that advisor, unless [Settings → Harnesses](#choosing-the-advisor-on-settings--harnesses) chooses
+another for the session's model. Codex and Pi have no advisor.
+
+**Eligibility is the CLI's decision, not Mission Control's.** The advisor works only:
+
+- on the first-party Anthropic API, not Bedrock or Vertex;
+- when the advisor feature is enabled for the account (a server-side flag, which
+  `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` overrides);
+- when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is not set, which turns it off completely;
+- when the advisor is at least as capable as the executor. An Opus session with a Sonnet advisor
+  does not consult it on the main conversation, though its subagents still may.
+
+**Typing `/advisor` writes your global settings.** In any Claude session, including the composer
+of an Agent SDK session, `/advisor` writes `advisorModel` to `~/.claude/settings.json`. That
+changes every Claude session you start afterwards, inside Mission Control and out of it.
+
+**Where you see it.** Each advisor call appears in the session's conversation as one line in
+both renderings. A review reads "Advisor (Opus 5.5) reviewed the conversation"; when the API
+returned the advisor's words, clicking the line shows them. The API can return the review
+encrypted, in which case there are no words to show. A refusal reads "Advisor declined to
+advise on this request", and a failed call reads "Advisor unavailable" with the API's error
+code. A session whose newest turn names an advisor model carries a read-only
+**Advisor: Opus 5.5** chip beside its model, on the board card and in the console header. The
+chip shows only what the transcript records, never what a settings file says, so a session that
+has not run a turn yet shows no chip even when an advisor is configured, and a turn that runs
+without the advisor (after `/advisor off`, for example) clears it.
+
+What the transcript records was observed on Claude Code 2.1.317 on 2026-11-03, from one
+captured headless turn that called the advisor: every assistant record of that turn, including
+the reply after the advisor call, carries a top-level `advisorModel`. So the chip appears from
+the first turn that calls the advisor. Whether Claude Code also stamps a turn that offered the
+advisor but did not call it is **inferred, not verified**: the CLI's code appears to stamp every
+record of a request that carries the advisor tool, but no such turn has been captured. If it does
+not, the chip shows only after turns that called the advisor, and clears after a turn that did
+not. A later Claude Code version may change either behaviour.
+
+**Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
+2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,
+committed as `test/fixtures/claude-advisor/result-frame.json`), the per-model usage
+(`modelUsage`) listed the advisor model, `claude-opus-5-5`, with its own token counts and reported
+cost. The per-model costs added up to the turn's `total_cost_usd`. So the session's cost and the
+usage ledger carry the advisor as its own model row next to the executor's. That is what one
+capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
+version may report it differently.
+
+#### Choosing the advisor on Settings → Harnesses
+
+The advisor is a harness setting, not a task field. The **Claude Code** card on
+**Settings → Harnesses** carries it, below Model and Effort. Codex and Pi have no advisor, so
+their cards do not show it. It has two parts:
+
+- **Advisor**, the default for every model. **Harness default** ships selected: Mission Control
+  renders nothing, so the session gets whatever your Claude Code settings name, exactly as it
+  did before the setting existed. **Opus** and **Sonnet** pin that advisor, and **Off** turns
+  the advisor off.
+- **Advisor Overrides**, one row per model that should get something else. **+ Add model
+  override** adds a row for the first model without one, starting on Opus, or on Off when Opus
+  is less capable than that model. Each row picks the model and its advisor, and **×** removes
+  it, so that model goes back to the default.
+
+At launch Mission Control resolves the model the session will run on, through the same ladder
+as the Model field (the task's pin, then the kind's row on **Settings → Models**, then the
+harness default), and uses that model's override when it has one and the default otherwise. A
+launch that passes no `--model` uses the default. The setting is read when the task launches,
+so a change reaches tasks already in the backlog. A choice reaches the launch the same way on
+both runtimes:
+
+- **Opus** or **Sonnet**. The launch carries `advisorModel` in Claude Code's session-scoped flag
+  layer: `--settings '{"advisorModel":"opus"}'` on a Terminal launch, and `Options.settings` on an
+  Agent SDK launch. That layer sits above your user, project and local settings for this session
+  only, and Mission Control never writes any settings file.
+- **Off**. The launch sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` in the session's environment,
+  the switch the eligibility list above says turns the advisor off completely, so it is expected
+  to apply even when your settings name one. The verified case is the variable beside an Opus pin
+  on the same launch, described below.
+
+**Whether the advisor will be used.** Under the Advisor select a status line says whether a
+dispatched session will be offered an advisor. On Harness default it reads your user settings
+file (`~/.claude/settings.json`, or the file `CLAUDE_CONFIG_DIR` or `CLAUDE_SETTINGS_PATH`
+names) and reports the advisor it names, for example "On: inherits Opus from
+~/.claude/settings.json", or "Off" when it names none. It reports Off whatever is chosen when
+`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in that file's `env` block or in Mission Control's own
+environment, or when Claude Code is set to use Amazon Bedrock or Google Vertex AI. It is re-read
+when the window regains focus. It cannot see two things: a project's own `.claude/settings.json`,
+which differs per checkout, and whether your account has the advisor feature, which is a
+server-side flag. "On" therefore means configured and not ruled out.
+
+When an advisor is less capable than the model it would advise (a Sonnet advisor for an Opus
+session, or Opus for Fable), the card warns that Claude Code will not consult it on the main
+conversation. Mission Control still passes the choice and leaves the pairing to the CLI.
+
+**On the dispatch form.** The Crew row has no Advisor field. Under it, a read-only line names the
+advisor this launch will get and where it came from, for example "Advisor Off for Opus 5.5, from
+Settings → Harnesses". It follows the Model field as you change it.
+
+**Tasks saved with an advisor.** Before the advisor moved to Settings, a task could pin its own.
+Such a pin still applies to that task at launch, ahead of the setting, so nothing already in the
+backlog changes on upgrade. Its dispatch form shows "saved on this task before the advisor moved
+to Settings → Harnesses" with a **Use Settings** button; saving after that clears the pin.
+Switching the task's agent also clears it. A new task cannot pin one: `POST /api/tasks` ignores
+an `advisorModel` field, the MCP `create_task` tool refuses it, and `update_task` and
+`POST /api/tasks/:id/update` accept only `advisorModel: null`, which clears an old pin.
+
+**Resume.** An Agent SDK session restarted by the daemon relaunches with the advisor it started
+with. Continuing a conversation in a terminal resolves the advisor again, from the setting in
+force for the model the session is running on.
+
+Mission Control does not check whether your account has the advisor feature; it passes the
+choice and leaves that to the CLI, under the eligibility rules listed above. What was verified,
+on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched with an Opus pin marks
+Opus as the current choice in `/advisor`, where the same launch without the pin marks "No
+advisor", and that the Off variable removes the `/advisor` command even with an Opus pin on the
+same launch.
+
+How the CLI treats a pin that breaks the pairing rule or a pin on an account without the advisor
+feature is **inferred, not verified**: no such launch has been observed, so the session may
+ignore the pin, or the CLI may refuse to start. If the CLI refuses a launch outright, the refusal
+is reported as a launch failure. Fable is not offered as an advisor, and an advisor cannot be
+changed on a session that is already running.
+
 ### Session runtime
 
 **Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
@@ -1145,7 +1649,7 @@ turning it on is consent. Per source:
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
-| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential, acli OAuth login, or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 | **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
@@ -1177,6 +1681,13 @@ works in that checkout, the source works.
 
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
+
+Blocking links come with it: the sweep asks `gh` for each issue's `blockedBy` and `parent`,
+and the issues blocking it arrive as the task's dependencies. See [Blocking links become
+dependencies](#blocking-links-become-dependencies). Those fields need gh 2.101 or newer. An older
+`gh` refuses them, and the sweep then asks again without them: issues are still filed and kept
+updated, but without their blocking links or parent, and keep-updated leaves a task's existing
+dependencies and parent as they are until `gh` is upgraded.
 
 #### Sweeping the public product-feedback tracker
 
@@ -1321,7 +1832,7 @@ else, it never dispatches, and a task you delete stays deleted.
 | Field | Meaning |
 |---|---|
 | **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
-| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
+| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **Atlassian CLI (acli)** uses acli's own OAuth login, with no Jira environment variables. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
 | **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
@@ -1356,7 +1867,7 @@ issue more than the page size, which is an exact test for whether anything follo
   saying the tail is out of reach and naming the two ways to change that (set the variables, or
   narrow the JQL). Work still arrives; it is just bounded, and it says so.
 
-**The query method is explicit, and neither method stores a secret.**
+**The query method is explicit, and no method stores a secret.**
 
 The local method uses this ladder:
 
@@ -1366,6 +1877,48 @@ The local method uses this ladder:
 2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
+
+The **Atlassian CLI (acli)** method needs a one-time install and sign-in. **Settings → Setup →
+Jira** checks both and runs each in a visible terminal, or run them yourself:
+
+```sh
+brew install atlassian/acli/acli
+acli jira auth login --web
+```
+
+If Mission Control cannot find an installed acli, set `MISSION_ACLI_BIN` to its path. When a
+source's **Files tasks against** checkout has been moved or deleted, every check, sweep and
+write-back names that directory instead: the CLI starts in the checkout, and a missing working
+directory is refused with the same `ENOENT` a missing binary produces, so it is reported as
+its own fault rather than as "not installed".
+
+The contract behavior below was verified on **2026-11-02** with `acli version 1.3.40-stable`;
+see the [read-only capture record](../test/fixtures/acli/README.md). These are version-specific
+observations to recheck when updating acli.
+
+Select **Atlassian CLI (acli)** in **Query via**, set **Jira site** to the site acli is
+logged in to, and press **Check it works**. Every check, sweep and linked read first proves
+that `acli jira auth status` names that site. A missing, unknown or different active site
+files nothing and names the fix (`acli jira auth login --web` or `acli jira auth switch`).
+Search results carrying another public site's `self` URL also refuse the whole sweep. Captured
+[search responses](../test/fixtures/acli/search-one.json) instead carry internal
+`jira-prod-<region>-<number>-<number>.prod.atl-paas.net` HTTPS issue URLs. Those exact-format API links are normalized to the configured public site
+for browse links. They do not identify a tenant, so every search checks auth status again
+before returning any results; a changed, failed or unknown site discards the entire result.
+The CLI has no per-command site flag: switching to another site and back entirely during a
+search cannot be detected. Keep the active login stable while reads run. This method
+uses acli only, with no fallback to `jira` or `JIRA_API_TOKEN`, and Mission Control never
+reads acli's keychain entry or stores its OAuth credential.
+
+acli reads with `--paginate --limit 1001`: up to 1000 issues plus one probe row. The
+[paginated capture](../test/fixtures/acli/search-paginate.json) shows `--paginate` honoring the
+total `--limit` in the verified version; **Issues per page** does not change this acli bound.
+A larger filter files the bounded results and shows the
+existing too-broad advisory so you can narrow the JQL. Empty results are healthy. The
+same summary, ADF description, browse link and priority mapper serves every query method.
+
+For comments, pull request links, status moves and write-site safety, see
+[Writing the pull request back onto the issue](#writing-the-pull-request-back-onto-the-issue).
 
 The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
 exposes only `Skill`, `ToolSearch`, and the five exact read-only `searchJiraIssuesUsingJql`
@@ -1455,10 +2008,10 @@ ticket is consent, not configuration. Two things can be written:
   what opened the pull request, the pull request's URL, the completion's own words when it
   left any, and the task's title. Nothing about Mission Control's internals goes in it.
 
-Both by default, because they answer different questions. A source can be set to one or the
-other.
+Both by default, because they answer different questions. A local source can be set to one
+or the other.
 
-**The remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
+**For the local method, the remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
 command at all, so on a CLI-only machine that half cannot run. The comment still goes, and
 the source reports what it did and what it could not - rather than failing the whole
 delivery, which would retry a comment that has no idempotency of its own and leave one per
@@ -1469,11 +2022,11 @@ refuses and says so, because then there is nothing it can do at all.
 project's own workflow decides both what finished is called and which transitions are
 reachable from where an issue is standing right now. So the status is per source and typed
 by a person - it cannot be inferred, and inferring it would move somebody's ticket somewhere
-they did not ask for. It is matched case-insensitively against both the transition's own
+they did not ask for. On the local method it is matched case-insensitively against both the transition's own
 name and the status it lands in, since the board shows one and the workflow button may say
 the other.
 
-When it does not fit, the refusal names the transitions that **are** available from where
+When it does not fit, the local method's refusal names the transitions that **are** available from where
 the issue is:
 
 ```
@@ -1486,7 +2039,7 @@ sends the reader to Jira's workflow administration screens to work out what this
 should have said. An issue already standing in the target status is reported as **already
 there** rather than transitioned again.
 
-**Resolving therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
+**Resolving through the local method therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
 them.** That list is the reason. The `jira` CLI can *move* an issue but cannot be asked what
 an issue is able to do - jira-cli ships no command that lists transitions, and its own move
 error prints them on recent versions and not on older ones. On a CLI-only machine the good
@@ -1496,6 +2049,38 @@ before it spawns anything, naming the credential as the fix. With the credential
 CLI still goes first, exactly as a sweep does, and only a move it *refuses* is handed to the
 credential rung - which then either performs it or refuses with the list above. Commenting
 and remote links are unaffected: `annotate` still works on the CLI alone.
+
+**acli write-back uses its OAuth login, with no Jira environment variables.** Every link style
+posts the Mission Control comment with a clickable pull request link. acli has no remote-link
+command: **Remote link and comment** and **Remote link only** report that link as unavailable
+while delivering the comment. A completion without a pull request still posts its comment.
+Only `https://github.com/<owner>/<repo>/pull/<number>` URLs receive a clickable link in an
+acli comment; query strings, fragments and a trailing slash are allowed. Other supplied
+completion URLs remain readable as plain text.
+Write diagnostics redact known credential shapes, Authorization fields, email addresses and SSN-like
+identifiers before reaching the ledger, logs or settings. Normal workflow reasons remain
+available; an unrecognized transition response is not copied into the diagnostic.
+No local CLI or REST credential fallback is attempted.
+
+Resolving reads the current status, moves to the configured **Target status**, and confirms it
+with another read. The Phase 1
+[read-only capture record](../test/fixtures/acli/README.md), verified on **2026-11-02** with
+`acli version 1.3.40-stable`, records `transitions: null` in both the
+[status view](../test/fixtures/acli/view-status.json) and
+[`*all` view](../test/fixtures/acli/view-all.json). These captures cover one issue in that
+version; transition data may differ for other issues, workflows or releases. Recheck when
+updating acli. On this evidence Mission Control skips an extra transition probe and moves by
+status name. If a status response supplies a transition list, it constrains the move. A configured
+status or a matched transition destination that is already current settles without writing. A refusal
+names the current status and quotes acli's reason, which may list reachable statuses. Select a
+reachable status in the source settings.
+
+Each write requires fresh positive proof of the configured site and checks it again afterwards.
+Status reads also check the site before and after. A missing, unknown or mismatched site before
+the write refuses without writing. A site change after a write, a killed write, or a failed
+confirming read reports an unknown outcome and is never retried automatically. Check the issue
+on both named sites before manually retrying a site mismatch. The verified CLI version cannot
+pin a command to a site, so switching away and back entirely within a command remains undetectable.
 
 Everything else about a resolve is arranged around one rule: **an outcome that cannot be
 read is never retried automatically**. A refusal Jira actually sent means nothing was
@@ -1515,6 +2100,48 @@ Two limits worth knowing before turning it on:
   through the CLI and the remote link says why it did not.
 
 
+### Blocking links become dependencies
+
+A source whose kind can report blocking links (GitHub issues can; Jira cannot yet) files each
+item with the items blocking it as [dependencies](#resolve-a-stopped-dependency), on the same
+insert, so a swept task is never visible unblocked:
+
+- A blocker that is already one of your tasks, still backlogged or running under a live session,
+  becomes an ordinary task dependency (the same rule that decides what you can select by hand). It follows that task to its merge like one you selected yourself. Blockers
+  filed by the same sweep are filed first, so the order issues are listed in does not matter.
+  Issues that block each other upstream would leave two tasks waiting on each other, so the one
+  that would close the cycle is not filed: the sweep reports it as refused, and files it once the
+  cycle is broken upstream.
+- Any other blocker - outside the source's filter, in another repository, or linked to a task
+  that is still starting, already finished, or stopped - becomes a **source dependency** on the
+  external item. It
+  is released when the item closes as completed. Closed as not planned, the card shows the
+  [stopped-dependency warning](#resolve-a-stopped-dependency).
+- A **parent** (sub-issue) link is never a dependency. A parent is the larger piece of work an
+  item belongs to, not something it waits on. It is kept for display instead: the task
+  editor shows **Sub-issue of #M** beside the **Filed upstream as** link, linking to the
+  parent. The parent is recorded when the item is filed and on every
+  [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
+
+Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
+`gh issue view` each), at most 25 per sweep, least recently checked first, with a deadline of its
+own so a slow sweep or refresh cannot crowd it out. A failed read never changes a dependency's
+state. An item whose own read failed moves to the back of that queue, and so does a whole batch
+the deadline cut off, so a few slow links cannot hold the rest.
+Whether the source is enabled or not, **Sweep now** runs the same re-check.
+The links are read when an item is first filed. A blocking link added or removed upstream
+afterwards changes the task's dependencies only with
+[Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on. The usual
+rules still hold: a dependency that would close a cycle is refused, and removing one in the task
+editor or from the warning stays removed: with that setting on, a later upstream change to the
+item's blocking links is offered for review rather than applied over it. Only a sweep creates a source dependency: the task editor and the
+task API can keep or remove one, never add one.
+
+A source dependency is stored in the task's existing dependency list, so no migration is
+involved. A build that does not recognize an edge's type keeps it, treats it as unsatisfied,
+and writes it back unchanged, so running an older build never releases work a newer one was
+holding back.
+
 ### A task you delete stays deleted
 
 Each source keeps its own ledger of what it has already filed, keyed on the item's id in
@@ -1533,10 +2160,19 @@ filed. It uses the existing sweep schedule, and **Sweep now** performs the same 
 when the schedule is paused. Leaving the setting off preserves import-only behavior.
 
 The same task keeps its ID and backlog position. The source can update its title and generated
-intent together, mapped priority, and copied labels where the provider offers them. Agent,
-model, task kind, workflow, dependencies, repositories, backlog position and autopilot eligibility
-remain local. Source defaults are captured when an item is imported; changing those defaults
-does not rewrite previously imported tasks. The existing description limit still applies:
+intent together, mapped priority, and copied labels where the provider offers them. A source
+whose kind can relate (GitHub today) also updates **dependencies**: the task's edges that stand
+for the source's own items, a `source` edge to an item or a task edge to the task linked to one,
+follow the item's blocking links. A new blocker becomes a task edge when a task is linked to it
+and a `source` edge otherwise, exactly as on import. Every other edge (a session, a task with no
+link to this source, another source's item) is local and never touched. A synced edge that a hand
+edit would refuse, most often one that would close a cycle, is refused the same way: the whole
+update is held, the task is kept as it is, and the reason is shown beside it until a later sweep
+no longer meets it. Agent, model, task
+kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
+does not rewrite previously imported tasks. The item's **parent** (a GitHub sub-issue's parent
+issue) is source-owned display data outside every group: each refresh overwrites it from the
+source, with no baseline and no review, and it never becomes a dependency. The existing description limit still applies:
 GitHub and Jira carry at most 4,000 characters of the issue description into the intent.
 
 A saved import baseline lets Mission Control distinguish a remote change from an operator edit.
@@ -1547,8 +2183,16 @@ Independent, nonconflicting fields can still update. A review that changed while
 refused so an old click cannot overwrite newer work.
 
 Tasks imported before this feature have no baseline or reliable import-versus-push provenance.
-Sweep once, then review each older task before adopting it. Newly pushed tasks are excluded from
-automatic inbound updates. Turning the setting off retains existing baselines and reviews, but
+Sweep once, then review each older task before adopting it. A task imported before dependencies
+joined the sync has no dependencies baseline: when its local and source blockers already agree
+they become the baseline, and otherwise that group alone is flagged for review and never applied.
+Newly pushed tasks take only the dependencies group: their title, intent, priority and labels
+were written here and stay local. A push writes no blocking links, so it records an empty
+dependencies baseline, in the same transaction as the ledger row and the link, and a blocker added
+upstream later is applied without review. A blocker the task already had locally never went out:
+it stays local-only and is never read as removed upstream. When `gh` creates the issue but reports
+an error, the push records no dependencies baseline and the group falls to the rule above.
+Mission Control never writes dependency changes back upstream from this setting. Turning the setting off retains existing baselines and reviews, but
 prevents applying them until updates are enabled again.
 
 Refresh reads linked issues independently of the discovery filter, including closed GitHub issues
@@ -1595,3 +2239,33 @@ publication prerequisite plus direct implementation task merge dependencies. Art
 never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
 using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
 the versioned tool contract, validation compatibility, retention and recovery.
+
+### Change a pinned plan revision (preview)
+
+Enable **Change pinned plan revision** in Settings > Feature flags. In a backlog task's
+Dependencies section, choose **Change pinned revision**, enter the exact plan ID, revision,
+and comma-separated Markdown filenames, then choose **Preview revision change**. The preview
+shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
+the input and originating prerequisite together; Cancel revision change leaves them untouched.
+Save any separate dependency edits before using this action.
+Dependency editing stays disabled while the revision editor is open; cancel the revision change
+to edit prerequisites separately.
+Dispatch availability follows the validated preview's prerequisites. **Dispatch now** saves the
+selected pin and prerequisites before requesting launch.
+
+Only the superseded pin's prerequisites are removed. An origin still required by another pin
+stays, as do unrelated implementation dependencies and recorded merge evidence. A completed
+replacement origin can be added only with merge proof for the exact saved work episode.
+Missing files, revisions from another repository, stale previews, and invalid dependencies
+are refused without saving either half. No newer revision is selected automatically.
+
+The MCP **update_task** tool accepts the same action as
+`planInputChange: { from, to, expectedUpdatedAt? }`, where both inputs contain
+`repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
+`before` and `after` without writing, then repeat with `previewOnly: false` to save.
+The optional timestamp binds the preview to the task configuration you read.
+This release also adds explicit `planInputs` and `dependencies` array edits to MCP `update_task`,
+independently of the preview flag. This extends to MCP the raw atomic edit already supported by
+the dashboard endpoint. MCP requests remain authenticated and use existing task, repository, and
+dependency validation. Do not combine those arrays with `planInputChange`. Only the `planInputChange`
+action and `previewOnly` mode require the flag; omitted fields keep their saved values.

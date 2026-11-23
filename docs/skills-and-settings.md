@@ -58,6 +58,12 @@ choice or per-skill off choice stays off across restarts and updates. New valid 
 follow the default-on policy unless explicitly disabled. A stored configuration from an older
 build keeps its original sparse-map meaning: rows it never enabled stay off.
 
+The Mockups rollout is a one-time exception: the first upgrade across database schema 23
+switches the **Mockups** row on, including an existing off choice. It preserves the master
+switch, other skill choices, and the catalog default policy. If the master switch is off,
+Mockups stays inactive until you turn it on. Disabling Mockups after that upgrade keeps it
+off across later restarts and upgrades; the rollout is not repeated for each release.
+
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
@@ -103,6 +109,12 @@ pull request merged. Neither happens, because this skill carries the human-appro
 than merely describing it. A post-merge follow-up also requires the **Pull Request** skill so
 approved changes can open their own review. Switch both on for that path. The procedure lives in
 [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
+
+The **HTML Plans** row applies when explicitly invoked or required by the active Mission
+Control planning workflow. Installing it does not override a selected repository-native
+workflow's artifact or approval contracts, and missing Mission Control tools do not block
+that workflow. Selected Mission Control planning still requires the
+[managed-plan tools and policy](managed-plans.md).
 
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
@@ -150,6 +162,14 @@ backlog while the skills are off and dispatch cleanly once they are on. A pointe
 that is not installed points at nothing, and an agent left to improvise a plan looks exactly
 like one that followed a procedure.
 
+The **Grill** row is the skill that
+[Grill me first](dispatch-and-backlog.md#grill-me-first) needs: a task dispatched with it runs
+the Library's Grill session action, which invokes this skill, before its work. That section owns
+how the interview behaves. While this row is off, a task that grills first is refused at
+dispatch. The skill adapts Matt Pocock's `grilling` skill (MIT, credited in the skill and in
+`NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
+procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
+
 The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or
 research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and
@@ -170,6 +190,32 @@ its skill because the archive enforces the outcome whatever the agent does; a pl
 a human saying the plan is right, so there is nothing to enforce it against and the contract
 hands the procedure over instead. That is the whole reason the two planning rows above are a
 launch requirement and this one is not.
+
+The **Mockups** row applies when someone asks to see what something could look like:
+mock-ups, mockups, wireframes, UI sketches, or design comps. The session writes each one as a
+self-contained HTML page or a browser image under `docs/mockups/<slug>/` in its own checkout,
+and names each checkout-relative path on its own line, such as
+`Mockup: docs/mockups/settings-panel/two-column.html`. The conversation links that path to the
+Files tab and previews the page or image inline at the foot of the turn, as
+[Message formatting](ui.md#message-formatting) describes.
+
+**Mock-ups are not committed unless a plan needs them.** Every mock-up under `docs/mockups/` must
+be git-ignored before it is written, so it never appears in `git status`, is never staged by
+`git add -A`, and is never captured in a workflow's review snapshot - the snapshot a workflow's
+pull request step commits. When `docs/mockups/.gitignore` does not exist yet, the session creates
+it holding `*`; a repository's own `docs/mockups/.gitignore` is left as it is and may not ignore
+anything, so the marker alone proves nothing. Either way, the session confirms with
+`git check-ignore` that each mock-up path is ignored before writing it. Where it is not, it adds
+`docs/mockups/` to the checkout's local `info/exclude`, which is never committed, and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
+another name. Before presenting mock-ups, it checks again that every `docs/mockups/` path it names
+is ignored and that git has nothing to commit there. The Files list shows the ignored HTML pages
+and browser images in `docs/mockups/` anyway. It is the only ignored directory it lists, and the
+exception admits nothing else that git ignores there, such as a stray `.env`. The one mock-up that is committed is one a plan in
+the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
+committed with the plan. That mock-up is deliberately not ignored, so the hand-over check above
+leaves it out; the session confirms instead that it sits in the plan's directory and the plan
+links it. The contract lives in
+[`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
@@ -260,20 +306,31 @@ verified preview plus the exact final confirmation text. A successful restore re
 window that submitted it. Every other open window keeps its unsaved drafts and offers
 **Reload now** in a persistent notice.
 
+**Storage**, just above Restore, holds full-database backups: the interval and how many
+scheduled and pre-migration copies are kept, **Back up now**, the last success and failure of
+each kind, the kept copies and their total size, and a **Problems** list whose rows link to
+where each is fixed. It updates live from the `storage_health` event, and a config saved in
+another window reaches it through `storage_config_changed`. See
+[Backup and restore](sqlite-database.html#backup).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
-| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+Display's **Skin** is the exception in the other group: it sits under *This screen*, but the
+choice is the machine's, not one browser's. It is stored once in `app_config.ui.skin`, every
+browser profile and the desktop window open in it, and the daemon also records the skin's
+background in the state home so the desktop window's first frame matches it.
 
 **Cost** and **Telemetry** sit next to each other because they are the pair people confuse, and
 reading them side by side is what separates them. Cost configures Claude Code reporting its usage
@@ -286,10 +343,31 @@ pseudonym. See [Observability and telemetry](observability.md).
 **Setup** checks external tools and configures this installation. It groups agent CLIs,
 terminal backends, GitHub CLI and authentication, agent extensions, pipelines, and the runtime.
 Re-check runs a fresh probe sweep; missing or incomplete rows offer the supported remedy.
+Its **Terminals** family also holds **Show sessions started outside Mission Control**, off by
+default, which decides whether discovery cards sessions Mission Control did not start. Some
+sessions are carded either way; [sessions started outside Mission
+Control](sessions.md#sessions-started-outside-mission-control) lists which.
 In the desktop app, **Application updates** also offers **Check for updates** and the
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
+
+**Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers
+searchable preview toggles, Enable all, and Advanced for default-on features. Alpha builds
+do not enable previews. See [Feature flags](feature-flags.md).
+
+**Task shaping** (`#/settings/task-shaping`) sits after Tasks and exists only while the
+`task-shaping` preview flag is on. It appears and disappears in the rail, the panel, settings
+search and the palette of every open window the moment the flag changes, with no reload. It
+lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
+on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
+budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
+
+Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
+(today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
+and **Neon Dusk** skins. A tile applies the moment it is picked,
+repainting the page behind the settings and persisting per machine in `app_config.ui.skin`,
+which settings backup carries with the rest of Display. See [Skins](ui.md#skins).
 
 Display's **Layout** panel also carries **Group by repository**, which ships checked: it
 collects each fleet column's cards under a coloured heading naming the repository their session
@@ -299,12 +377,11 @@ card draws - and a one-tile preview, which is what the Board card panel offers, 
 grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
 why a repository can appear in more than one column.
 
-The same panel carries **Show the empty-column stash**, which also ships checked. The Board
-folds each empty column into a chip beside its last column, and a chip brings its column
-back. Uncheck it to hide that stash, so empty columns leave the board entirely. An empty
-**needs you** column is never in the stash: it stays as a slim all-clear rail either way.
+There is no setting for empty columns. The Board draws a column only while it has a card in
+it - **needs you**, **unconfirmed**, **gone** and the **Backlog** included - and an empty one
+leaves nothing behind. See [Layout](ui.md#layout-console-or-board-in-settings).
 
-Display's last panel is **Board card**, and it is the checklist of every optional item a
+Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
 permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card
 in every column immediately, and a live preview card in the panel redraws as you toggle, so
@@ -322,6 +399,50 @@ The same panel holds two **Task type** pickers, one under **Board card** and one
 how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
 medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
 the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+Each group has its own live preview, so picking a style shows what it changes without leaving
+Settings: the card's for **Board card**, and a console header for **Conversation header**. Each
+preview sits beside its group's controls, or under the group's heading when Settings is too
+narrow to hold it beside them.
+
+**Board card** also holds **Background sub-agents**, after its Task type picker: **Nested
+sub-cards** (the default) or **Chip and popover**, and nothing else. It decides how a session
+shows the sub-agents it launched in the background on its card and in its conversation
+together: sub-cards under the card and a tray above the reply box, or one chip in the card's
+flags that opens the list and an **Agents** tab on the conversation rail. The preview card
+carries sample agents, so it draws whichever you pick. Searching Settings for "sub-agents",
+"background agents", "agents tab" or "popover" lands on this panel. See
+[Chip and popover](ui.md#chip-and-popover).
+
+**Pause controls**, after the Session display panel, chooses where you pause and resume a
+session. It has three card controls (**Corner buttons**, **Run chip** and **Card menu**) and
+three console controls (**Toolbar button**, **Message box button** and **State badge and
+band**). Each is a checkbox, any number can be on at once, and each has its own preview that
+draws that control alone on a running session and on a paused one. The run chip, the toolbar
+button and the state badge ship on. A paused session looks paused whichever controls are on.
+Searching Settings for "pause", "resume", "priority" or "bandwidth" lands on this panel. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
+Display's last panel is **Top bar**, which chooses what the bar across the top of every page
+draws. A live preview of the real bar sits above its two lists and redraws as you change them.
+
+- **Show or hide** covers the bar's optional readouts and tools: the **Session count**,
+  **Need you** and **Working** counts in the fleet pulse, **Search** (the fleet filter),
+  **Cost estimate**, **Report product feedback**, **Alerts and away mode** and **Pause all**. Hiding Search
+  also clears any filter term, so the fleet is never filtered by a box you cannot see. The
+  feedback form stays in the palette (<kbd>⌘</kbd><kbd>K</kbd>), cost settings stay in
+  Settings → Cost, and the pulse's **to answer** count is not on the list: it is the only way
+  into the attention inbox.
+- **Expanded or minimized** covers the controls that are always on the bar: the **Fleet**,
+  **Library**, **Runs** and **Scouts** page buttons, **Recurring missions** and **Foreman**.
+  **Minimized** hides the control's text label at every window width, the way the bar does
+  when it runs out of room, and keeps its glyph. A page button also drops its shortcut keycap,
+  and Foreman drops its mode chip (`live`, `off`). Counts stay visible: the Recurring missions
+  attention badge, and Foreman's issue count and queue count. Its name, tooltip and shortcut
+  still work.
+
+The shipped bar hides nothing and minimizes nothing. Whatever you choose, the bar still
+minimizes what is left when the window narrows, so it stays on one row. **Reset all** in the
+panel header puts the shipped bar back.
 
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a
@@ -370,11 +491,27 @@ and size as well as showing the exact text. That matters on Claude, where the te
 system prompt and never enters the transcript. Neither read-only surface is editable: one
 editor, in Settings, is the point.
 
+**Conductor** is temporarily unavailable: while `CONDUCTOR_INTEGRATION_ENABLED` is off it is
+absent from the rail, search, the palette and the router, and `#/settings/conductor` opens
+Display. The rest of this section describes it as it returns.
+
 **Conductor** is the one category whose subject is somebody else's software. It is
-**not** conditional, and that is the current rule for every category:
-[change contracts](agent-guides/change-contracts.md#registries) states that categories are
-unconditional destinations, so the rail, the arrow-key walk, the valid routes, the palette and
-the render tests all read one registry with no availability filter. A destination for software
+**not** conditional on runtime state such as whether an engine is installed, and that holds
+for every category: [change contracts](agent-guides/change-contracts.md#registries) allow a
+category to be withheld only by a build-time switch or a registered feature flag, never by a
+probe of installed software. Both go through one availability gate, `settingsCategoryAvailable`,
+which the rail, the arrow-key walk, the page, settings search, the palette and the render tests
+all read, so none of them can disagree:
+
+- **Build-time switch.** While `CONDUCTOR_INTEGRATION_ENABLED` above is off, Conductor is
+  withheld from every reader at once, and the router does not route to it.
+- **Feature flag.** A category that declares a preview flag, such as Task shaping's
+  `task-shaping`, is drawn only while that flag resolves on. The gate reads the live flags the
+  event stream holds, so the category appears and disappears in every open window the moment
+  the flag changes. The router keeps its link, because the flags are not known until the first
+  snapshot; the page shows Display while the flag is off.
+
+Engine presence, consent and probes never add or remove Conductor. A destination for software
 that is not installed explains that inside its own panel; a local visibility check is how a
 panel becomes reachable from search but absent from the rail, or how a valid deep link
 unexpectedly falls back to Display. It is the consent surface for observing an external SDLC
@@ -410,6 +547,20 @@ promising it changes what the daemon does, for sessions this page never opened. 
 costs less than a badge that overclaims. What the row buys is the thing the header switch
 could not: the preference is now in ⌘K by name, flippable from a search result without
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
+
+**Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
+with when nothing names its own choice, for each kind it launches (ship, bugfix, document, plan,
+scout and chat), as one card per setting. **Grill me first** is a row of kind chips, and
+**After work** is one row per kind. **After work** is the kind's after-work Workflow (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**). These rows replace the
+single **Dispatch default** that **Settings → Workflows** used to hold, because they describe a
+task kind rather than the Workflow subsystem's policy. **Grill me first** is whether a new task
+of that kind interviews you before it starts (see
+[Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
+what it does on the `i` in its card's head. Both are daemon-backed, so they reach tasks from the API,
+task sources and recurring missions as well as the dispatch form, and Grill me first is pinned
+on each task when it is filed. The page warns when a kind grills first while the Grill skill is
+off, because such a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
@@ -483,7 +634,7 @@ is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
-Repository candidates come from **Settings → Repositories**. Its indexed directories are
+Repository candidates come from the **Repositories** family in **Settings → Setup**. Its indexed directories are
 searched at every depth unless `MISSION_REPOS_MAX_DEPTH` limits the walk. Both ordinary and
 bare clones are recognized; discovery stops at a repository instead of searching its contents.
 Dependency directories, hidden folders other than bare `.bare` metadata, and descendant
@@ -508,10 +659,27 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
-- **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
-  first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
-  off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
-  survives a reload before you come back to grant it.
+- **Add several repositories at once.** The page is two panes side by side. **Add
+  repositories**, on the left, lists every repository the workspace scan found that is not
+  in the matrix yet: search it, tick any number (or **Select all shown**), type a path for a
+  checkout the scan missed, and **Add** them in one batch. Each path is resolved and
+  canonicalized first, so a typo is refused. **Trusted**, on the right, is the matrix with a
+  filter of its own. Each pane scrolls inside itself, so the add controls never sit below a
+  long table.
+- **New repositories start with three grants.** An added repo gets **Foreman sends live**,
+  **Workflows act** and **GitHub Inspector posts reviews** straight away; **YOLO merges**
+  stays off until you click its cell. Every default is one click to revoke. Because the
+  Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
+  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. The
+  add waits until Foreman, Workflows and GitHub Inspector have all answered, and says which it
+  is waiting for, so an add is never made while one of them is still loading.
+- **A failed write is reported, not hidden.** The three grants are separate writes, so one
+  can fail while the others land. The new row then holds only the grants that landed, and
+  the pane names the ones that did not so you can click their cells to retry. If none of the
+  three can be written, the repo is kept as an ungranted row on this machine, which survives
+  a reload until its cells are granted. If that fallback cannot be saved either, no row is
+  created: the pane says the add was lost and keeps your picks and typed path, so adding
+  again is one click.
 - **Repository labels use directory names.** Read-only repository labels normally show only
   the final directory name; hover the label to see its complete path. If a Trust warning names
   two repositories with the same directory name, it shows their full paths in the warning so
@@ -523,7 +691,7 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   records the bare Git directory as the owner, including when it is named `.git`, rather
   than granting the containing folder. Tasks use the same owner and run in linked checkouts.
 - **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
-  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  the Trust row in the rail to the matrix and its add pane, and the tour leaves you on this
   page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
   a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,
@@ -558,3 +726,39 @@ another review-only workflow validates the frozen approved text; explicit None u
 merge edges stay blocked until their normal publication condition. Missing tools never permit
 fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
 home separately to retain plan contents and their daemon ledger.
+
+## Resident skill catalog
+
+**Residents > Skill sources** indexes global skills and operator-registered folders, independently
+of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
+YAML frontmatter, including folded descriptions, and reports source problems in place. The index
+is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+Rescans and source saves share a one-second cooldown after completion across windows and local
+API clients. An early retry reports how long to wait without starting another scan or changing
+registrations. The panel briefly disables its source controls after a request before allowing
+another action.
+Concurrent source edits are compared against the list a window loaded. A stale add or removal
+is refused and refreshes the list so the operator can review it before retrying.
+If restored registrations have an invalid shape, the catalog still shows global skills and
+explains the problem. **Reset source list** explicitly replaces those invalid registrations
+with an empty list before new folders can be added. Reads and rescans leave the stored value
+intact, and a reset also refuses a stale revision.
+
+The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
+must be absolute or start with `~/`; broad roots and canonical duplicates are refused. Child
+directory links resolving to the home directory or an ancestor are also refused. Claude entries
+are omitted only when their resolved directory is already indexed by the Mission Control source;
+independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
+including the source root, each SKILL.md read, ordinary files and hidden entries. An over-limit source reports
+truncation; the retained subset follows filesystem enumeration order. The complete serialized
+catalog is capped at 4 MiB, including source metadata, escaped descriptions and scan problems.
+Scanning stops before retaining an entry that would exceed that total; the panel explicitly
+reports the partial catalog. Remove unneeded sources or shorten descriptions, then rescan.
+The
+`residents.skillSources` setting stores stable ids and paths, backed up under
+`resident-skill-sources`. Skill content is never included in settings backups.
+
+This catalog is read-only with respect to the skills themselves. It currently offers no profile
+selection because neither harness has a verified frozen-isolation mechanism. See
+[Residents](residents.md#skill-sources) for the launch policy and current limitation.

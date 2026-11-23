@@ -41,10 +41,15 @@ async function captureForemanEvidence(
   mkdirSync(FOREMAN_EVIDENCE, { recursive: true });
 
   console.log("OBSERVED Foreman Then exposes Ask and Straight to PR, with no automatic review option");
-  console.log("OBSERVED review-comment and CI follow-through are separate checked controls");
+  console.log("OBSERVED GitHub Inspector findings and CI follow-through are separate checked controls");
   console.log("OBSERVED the CI control says it does not create a PR and requires one to exist");
   await popover.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-settings.png") });
   console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-settings.png");
+  // The popover scrolls, so its own screenshot stops above the Pull requests group.
+  const pullRequests = popover.getByRole("group", { name: "Pull requests" });
+  await pullRequests.scrollIntoViewIfNeeded();
+  await pullRequests.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-pull-requests.png") });
+  console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-pull-requests.png");
 
   // The workflow evidence packet can name a binary PNG but cannot display its pixels. Serialize
   // the exact asserted browser DOM beside it and link the dashboard's real stylesheet, giving the
@@ -236,6 +241,9 @@ test("the dispatch shortcut works after focus leaves the task description", asyn
   // Reproduce the reported boundary: the task textarea no longer owns DOM focus. The
   // shortcut belongs to the dialog, so moving into another field must not disable it.
   const kind = dialog.getByLabel("Kind");
+  // The select is disabled while the dialog settles, and focusing a disabled control is a
+  // no-op that `toBeFocused` cannot recover from. Wait for it to take focus first.
+  await expect(kind).toBeEnabled();
   await kind.focus();
   await expect(kind).toBeFocused();
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
@@ -596,7 +604,7 @@ test("Foreman completion safeguards default on and persist independently", async
   await expect(recoveryWait).toHaveValue("37");
 });
 
-test("Foreman removes automatic review and separates CI follow-through from review comments", async ({
+test("Foreman removes automatic review and separates CI follow-through from GitHub Inspector findings", async ({
   dashboard,
   daemon,
 }) => {
@@ -617,13 +625,17 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await expect(popover.getByRole("radio", { name: /Straight to PR/ })).toBeVisible();
 
   const comments = popover.getByRole("checkbox", {
-    name: "Keep sessions on track with review comments",
+    name: "Keep sessions on track with GitHub Inspector findings",
   });
   const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
   const recovery = popover.getByRole("checkbox", { name: "Keep pre-PR ship tasks moving" });
   await expect(recovery).toBeChecked();
   await expect(comments).toBeChecked();
   await expect(ci).toBeChecked();
+  await expect(popover).toContainText(
+    "Relays every unresolved finding, including dry-run drafts that were never posted.",
+  );
+  await expect(popover.getByText("Keep sessions on track with review comments")).toHaveCount(0);
   await expect(popover).toContainText(
     "Does not create a PR. Once one exists, sends failing CI back to its session.",
   );
@@ -649,7 +661,7 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
   const reopened = dashboard.getByRole("dialog", { name: "Foreman settings" });
   await expect(reopened.getByRole("checkbox", {
-    name: "Keep sessions on track with review comments",
+    name: "Keep sessions on track with GitHub Inspector findings",
   })).toBeChecked();
   await expect(reopened.getByRole("checkbox", {
     name: "Keep sessions on track with CI",
@@ -664,6 +676,9 @@ test("Foreman recovers one settled pre-PR ship turn, records it, and stops at th
   daemon,
 }) => {
   test.setTimeout(180_000);
+  // The compact header may legitimately shed its PR chip at rung 7. This case owns
+  // recovery and its recorded PR boundary, so give those readouts room to stay visible.
+  await dashboard.setViewportSize({ width: 1600, height: 1000 });
   await dispatch(dashboard, daemon, {
     task: "Implement the retry path and leave shipping to Mission Control",
     kind: "ship",
@@ -1273,7 +1288,12 @@ test("a managed launch shows only the human task request, and the agent still ge
 }) => {
   await dispatch(dashboard, daemon, { task: HUMAN_REQUEST });
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  // The launch turn moves this row from the Working group to the Idle one, which remounts it.
+  // A click that lands during that move reaches neither copy and selects nothing, so select it
+  // only once it has regrouped.
+  const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click();
   const detail = dashboard.locator(".console-detail");
   // The agent has replied, so the launch turn has certainly been written and read back.
   await expect(detail.locator(".turn").getByText(`Mock reply to: ${HUMAN_REQUEST}`)).toBeVisible();

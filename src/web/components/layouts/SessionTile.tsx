@@ -1,9 +1,24 @@
+import { ResidentLoopControls, ResidentLoopStatusLine, type ResidentLoopFeedbackBinding } from "../../residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL } from "../../residents/loop-presentation.ts";
+import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
+import {
+  PausedActivityLine,
+  PauseCardMenu,
+  PauseCornerButtons,
+  PauseResumePill,
+  PauseRunChip,
+  PauseTileFlag,
+} from "../PauseControls.tsx";
+import { usePauseCardControls } from "../../lib/pause-controls.ts";
+import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
@@ -11,9 +26,14 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
+import { openQuestionsLabel } from "../../lib/async-questions.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
+import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   CostChip,
   InspectorTileFlag,
   PrTileFlag,
@@ -24,15 +44,21 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ShapingTileFlag } from "../ShapingChip.tsx";
+import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { TaskKindMark } from "../TaskKindMark.tsx";
+import { SubagentChip } from "./SubagentChip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { StackLifecycle } from "../StackLifecycle.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
 import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
+import { ResidentChip } from "../../residents/ResidentChip.tsx";
+import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -69,6 +95,8 @@ export function SessionTile({
   pipelineRun = null,
   pipelineCommission = null,
   shortcutChord = null,
+  resident = null,
+  residentLoopFeedback,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -130,6 +158,12 @@ export function SessionTile({
    * Console rail, and every card while the operator has the item switched off.
    */
   shortcutChord?: string | null;
+  /**
+   * The resident this session is, from App's join of its task to the live run, or null. Its
+   * marker and pin come from the run's pinned revision, never the profile as it is now.
+   */
+  resident?: ResidentSessionMark | null;
+  residentLoopFeedback?: ResidentLoopFeedbackBinding;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
@@ -138,7 +172,9 @@ export function SessionTile({
   // it is pressed.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = pipelineSessionDisplay(session, pipelineCommission, pipelineRun, runtimeState);
-  const ticker = liveActivity(session);
+  // An idle or waiting parent whose background agents are still at work says so, so a card
+  // whose own turn is over is not read as finished.
+  const ticker = liveActivity(session) ?? subagentActivityLine(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
@@ -147,6 +183,10 @@ export function SessionTile({
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);
   const held = heldBy !== null;
+  // A durable blocker is the card's state, like `held`: the red tone and the `Blocked · age`
+  // flag are always drawn, and only the blocker's own facts below are card items.
+  const blocker = session.blocker ?? null;
+  const blockerLink = blocker ? blockerHref(blocker.referenceUrl) : null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>("see-work:demo-task", session.task?.id);
@@ -201,6 +241,11 @@ export function SessionTile({
   // is what makes the settings preview honest - the preview mounts one tile with a slot and
   // no board behind it, so unchecking the box has to be visible from the tile's own side.
   const jump = shown("cardShortcut") ? shortcutChord : null;
+  // The resident's border glow and label chip. Decoration over the tone spine, never instead of
+  // it: `--resident` drives the outline and glow, `--tone-color` still draws the state. Gated
+  // like every optional item, so Settings > Display can take it off; the PIN is ordering, not
+  // ink, and stays whatever this says.
+  const residentMark = shown("residentMarker") ? resident : null;
   const workflowDetails = shown("workflowDetails");
   // The expand chord drives the same transition as the disclosure button, so it is offered on
   // exactly the same condition THE PANEL is drawn under. Registering it while the button is
@@ -268,9 +313,19 @@ export function SessionTile({
 
   // The task's kind, in the operator's chosen style, for every kind - `ship` included. A
   // session with no task, or the style set to `off`, draws none.
+  // The pause controls the operator chose for cards (Settings > Display > Pause controls).
+  // The paused LOOK - spine, flag, frozen activity line - is not a control and is always on.
+  const pauseControls = usePauseCardControls();
+  const fleetPause = useFleetPause();
+  const paused = session.pause != null;
+  const priority = isPrioritySession(fleetPause, session.id);
   const kindStyle = useDisplayChoice("taskKindCard");
   const taskKind = session.task?.kind ?? null;
   const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  // The board half of the background sub-agent treatment the operator chose. Nested sub-cards
+  // hang beneath the tile (`SubagentTree`, drawn by the board beside this card), so only the
+  // chip is this tile's to draw.
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
   const agentDot = <AgentDot agent={session.agent} />;
 
   return (
@@ -278,13 +333,16 @@ export function SessionTile({
       ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
         selected ? " selected" : ""
-      }${held ? " is-held" : ""}${
+      }${held ? " is-held" : ""}${blocker ? " is-blocked" : ""}${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}${
         workflowVisiblyExpanded ? " workflow-expanded" : ""
       }${
         isTourTask ? " mc-tour-task" : ""
-      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}`}
+      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}${
+        residentMark ? " is-resident" : ""
+      }${paused ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
+      style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();
@@ -356,6 +414,7 @@ export function SessionTile({
           agentDot
         )}
         {kindMark === "chip" && <TaskKindMark kind={taskKind!} variant="chip" />}
+        {residentMark && <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} />}
         <Tooltip label={`Open ${openName}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>
@@ -374,12 +433,60 @@ export function SessionTile({
             never pushes the title's ellipsis around. `Keycap` is the shared component every
             other printed chord in the app uses, so these switch off with the rest of them
             and cannot come to look like a different kind of thing. */}
+        {pauseControls.has("corner") && <PauseCornerButtons session={session} />}
+        {pauseControls.has("menu") && <PauseCardMenu session={session} />}
         {jump && <Keycap chord={jump} />}
       </span>
+
+      {/* The menu's popover is portalled, and React still bubbles a portal's clicks through
+          this tree, so without the stop every menu action would also open the session. */}
+      {resident?.loop && <span className="resident-card-loop">
+        <ResidentLoopStatusLine loop={resident.loop} session={session} />
+        <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
+          <SessionToolbarMenu label={RESIDENT_LOOP_CONTROLS_LABEL} title={RESIDENT_LOOP_CONTROLS_LABEL} icon={<span aria-hidden>⋯</span>}>
+            {() => <ResidentLoopControls mark={resident} menu feedback={residentLoopFeedback} />}
+          </SessionToolbarMenu>
+        </span>
+      </span>}
 
       {shown("goal") && session.goal?.text && (
         <span className="tile-goal">{session.goal.text}</span>
       )}
+
+      {blocker && (shown("blockerKind") || shown("blockerReason") || shown("blockerWaitingOn")
+        || (shown("blockerLink") && blockerLink) || (shown("blockerReply") && blocker.reply)) && (
+        <span className="tile-blocker">
+          {shown("blockerKind") && (
+            <span className="tile-blocker-kind">{BLOCKER_KIND_LABELS[blocker.kind]}</span>
+          )}
+          {shown("blockerReason") && <span className="tile-blocker-reason">{blocker.reason}</span>}
+          {shown("blockerWaitingOn") && (
+            <span className="tile-blocker-waiting">waiting on {blocker.waitingOn}</span>
+          )}
+          {shown("blockerLink") && blockerLink && (
+            <Tooltip label={`Open ${blockerLink}`}>
+              <a
+                className="tile-blocker-link"
+                href={blockerLink}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open blocker link"
+                onClick={(e) => e.stopPropagation()}
+              >
+                ↗
+              </a>
+            </Tooltip>
+          )}
+          {shown("blockerReply") && blocker.reply && (
+            <span className="tile-blocker-reply">Reply flagged</span>
+          )}
+        </span>
+      )}
+
+      {/* A wait the session declared on its own background process: what, when it is due,
+          and how far through the window it is. Always drawn while it stands, like the blocker
+          state above, because it is why this idle card is quiet; nothing for any other card. */}
+      <AwaitingTileTrack session={session} />
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
@@ -387,7 +494,10 @@ export function SessionTile({
           something happening for it to describe, which is also what the conversation's
           in-progress row asks. This tile established the rule; the shared predicate is what
           stops the two from drifting apart. */}
-      {shown("activity") && ticker && (
+      {/* Frozen: say when it stopped and what it was doing, instead of a ticker that would
+          go on naming work that is not happening. Always drawn, like the paused spine. */}
+      {session.pause?.phase === "frozen" && <PausedActivityLine session={session} />}
+      {shown("activity") && ticker && session.pause?.phase !== "frozen" && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳
@@ -418,6 +528,8 @@ export function SessionTile({
           choice (`workflowDetails`, off by default); the rung, the stage track and the repair
           budget are not. So the collapsed peek is what a card says about a run unless someone
           asks it for more. */}
+      <WorkflowActionWait runs={workflowRuns ?? (workflowRun ? [workflowRun] : [])} />
+
       {shown("workflow") && workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}
@@ -449,17 +561,34 @@ export function SessionTile({
       )}
 
       <span className="tile-marks">
+        {/* Paused or priority: an attention-class fact, so it leads the flags whatever
+            controls are on. Card menu adds its one-click way back beside it. */}
+        <PauseTileFlag session={session} />
+        {pauseControls.has("menu") && <PauseResumePill session={session} />}
+        {/* With the runtime row switched off, the run chip still needs somewhere to live. */}
+        {pauseControls.has("chip") && !runtimeLine && <PauseRunChip session={session} />}
         {/* Where this session lives, in the tile's flag vocabulary. Nothing renders for a
             pane-backed one, which is every session until an operator turns the runtime on.
             The DECISION and the tooltip are shared with the card chip and the rail glyph
             (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
         <RuntimeTileFlag session={session} />
+        {blocker && (
+          <Tooltip label={blockerFlagTitle(blocker)}>
+            <span className="tile-flag tf-blocked">Blocked · {blockerAge(blocker.startedAt)}</span>
+          </Tooltip>
+        )}
         {session.note && (
           <span className={`tile-flag tf-${session.note.disposition}`}>
             {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
           </span>
         )}
         {session.pendingReviews > 0 && <span className="tile-flag tf-review">review</span>}
+        {/* Message-mode questions (`async-input`): listed while the agent keeps working, in the
+            working blue rather than amber. Once the agent stops on them the tile's tone turns
+            amber through `stateDisplay`, and the flag stays to say what it is waiting on. */}
+        {openQuestionCount(session) > 0 && (
+          <span className="tile-flag tf-question">{openQuestionsLabel(openQuestionCount(session))}</span>
+        )}
         {session.queue && session.queue.openCount > 0 && (
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}
@@ -467,10 +596,19 @@ export function SessionTile({
             through the console. The DECISION and the tooltip are shared (`PrTileFlag`);
             only the presentation differs, matching how the Inspector flag beside it works. */}
         <PrTileFlag session={session} />
+        {/* Background sub-agents, as one chip beside the PR when the operator chose Chip and
+            popover. Draws nothing for a session without background agents. */}
+        {agentsChip && <SubagentChip session={session} />}
         {/* The Inspector, in the tile's own flag vocabulary. The DECISION and the tooltip
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <ShapingTileFlag session={session} />
+        {/* Stacked pull requests: why this child is held and what moves it - the same
+            component, label and actions as its merge-queue row. */}
+        {session.inspector?.stack?.label && (
+          <StackLifecycle prKey={session.inspector.prKey} standing={session.inspector.stack} />
+        )}
         {/* A generated task's recurring-mission origin, in the tile's flag vocabulary.
             The DECISION and the tooltip are shared (`ScheduleOriginTileFlag`) with the
             card chip and rail glyph, so the four surfaces can't drift. */}
@@ -512,6 +650,9 @@ export function SessionTile({
           keeps one spelling of the number per surface rather than two. */}
       {runtimeLine && (
         <span className="tile-runtime-line">
+          {/* Leads the row: the same kind of thing as the mode chip beside it - what this
+              session may do right now, changeable from here. */}
+          {pauseControls.has("chip") && <PauseRunChip session={session} />}
           <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
           {shown("effort") && (session.meta?.thinkingLevel || session.meta?.nativeEffort) && <EffortPicker session={session} />}
           {/* On this row rather than in `.tile-foot`: a
@@ -526,20 +667,24 @@ export function SessionTile({
         </span>
       )}
 
+      {/* A launch that failed after this session was created: the session stays, and this is
+          the one place its card can say why. Draws nothing for every other session. */}
+      <LaunchFailureNotice sessionId={session.id} />
+
       {foot && (
         <span className="tile-foot">
           {/* The branch, with its fallback intact: a session with no branch prints where its
               NAME came from instead, so hiding "branch" hides the branch and does not empty
               the cell for a session that never had one. */}
           {shown("branch") && (
-            <span className="tile-branch">{workspaceBranch ?? session.nameSource}</span>
+            <span className="tile-branch">{taskHasRepository(session.task ?? {}) ? workspaceBranch ?? session.nameSource : "no repository"}</span>
           )}
           {/* Which checkout this is - the one fact on this card that the console detail used
               to be the only place to read. The LEAF, not the path: a pool worktree path is
               sixty characters of bookkeeping, and this row is two cells sharing one line's
               width. The whole path is on hover, which is the same bargain every other
               shortened path in the app makes. */}
-          {shown("worktree") && workspaceRoot && (
+          {shown("worktree") && workspaceRoot && taskHasRepository(session.task ?? {}) && (
             <Tooltip label={workspaceRoot}>
               <span className="tile-worktree">{repoLeaf(workspaceRoot)}</span>
             </Tooltip>

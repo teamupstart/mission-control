@@ -57,6 +57,9 @@ app.whenReady().then(async () => {
         // window and stop the pane following the conversation.
         const progress = host.querySelector('.turn-progress');
         const progressText = host.querySelector('.turn-progress-text');
+        // The Background agents tray, docked between the split and the composer.
+        const tray = host.querySelector('.bg-tray');
+        const trayList = host.querySelector('.bg-tray-list');
         const boxRect = box.getBoundingClientRect();
         const composeRect = compose.getBoundingClientRect();
         // Ask for the bottom and report where it landed: a region that cannot scroll
@@ -70,6 +73,11 @@ app.whenReady().then(async () => {
           activityScrolledTo = Math.round(body.scrollTop);
           activityContentHeight = body.scrollHeight;
           activityViewHeight = body.clientHeight;
+        }
+        let trayListScrolledTo = null;
+        if (trayList) {
+          trayList.scrollTop = 1e6;
+          trayListScrolledTo = Math.round(trayList.scrollTop);
         }
         // Where the secondary region sits relative to the log: beside it at rail
         // widths, below it once the container query stacks the split. A column that
@@ -118,6 +126,13 @@ app.whenReady().then(async () => {
           progressClipped: progressText
             ? progressText.scrollWidth > progressText.clientWidth
             : null,
+          trayHeight: tray ? Math.round(tray.getBoundingClientRect().height) : null,
+          trayBottomOverflow: tray ? Math.round(tray.getBoundingClientRect().bottom - boxRect.bottom) : null,
+          trayAboveCompose: tray ? tray.getBoundingClientRect().bottom <= composeRect.top + 1 : null,
+          trayBelowLog: tray ? tray.getBoundingClientRect().top >= split.getBoundingClientRect().bottom - 1 : null,
+          trayListContentHeight: trayList ? trayList.scrollHeight : null,
+          trayListViewHeight: trayList ? trayList.clientHeight : null,
+          trayListScrolledTo,
         };
       }
       return out;

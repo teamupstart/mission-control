@@ -40,6 +40,49 @@ The overlay has three screens:
 - **Run history** - the spine on its own, for a generated task's deep link into a mission the
   live catalog no longer lists because it was archived. History survives archive.
 
+### Creating missions from a session through MCP
+
+Enable **Settings > Feature flags > Recurring missions through MCP** (`mcp-schedules`).
+Then ask a session, for example: "Create a recurring mission to audit dependencies every
+Monday at 8am America/New_York in this repository."
+
+The MCP server exposes three tools:
+
+- `preview_schedule`: validate the definition and show future instants without saving.
+- `create_schedule`: save the mission, enabled by default; `enabled: false` saves paused.
+- `list_schedules`: read the live catalog, including paused missions, templates, health and
+  next run times. Check this before retrying a create whose response was lost.
+
+For example, preview and then create with this definition:
+
+```json
+{
+  "name": "Weekly dependency audit",
+  "expression": "0 8 * * 1",
+  "timezone": "America/New_York",
+  "completionPolicy": "auto-on-conclusion",
+  "template": {
+    "title": "Audit dependencies",
+    "intent": "Audit this repository's dependencies and report actionable findings."
+  }
+}
+```
+
+`template.repoRoot` defaults to the MCP process's current checkout and is canonicalized by
+Mission Control to the repository root. Supply an absolute checkout path to target another
+repository. The template accepts the existing kind, agent, model, effort, priority, labels
+and workflow settings. Omitted agent inherits the kind default; omitted workflow means None.
+The default policies are `skip-active`, `coalesce-latest` and `manual` completion. Choose
+`auto-on-conclusion` explicitly for a mission whose settled runs may have nothing to merge.
+
+Creation returns the saved schedule id, canonical definition and `nextRunAt`. It does not
+launch an agent. Due runs enter the backlog and remain subject to Foreman's usual launch
+controls. The existing one-hour minimum interval, five-field cron, time-zone validation,
+catch-up and overlap rules all apply. Edit, pause, resume or archive in **Missions**.
+Turning the preview flag off closes these MCP entry points; saved missions keep their cadence
+and remain manageable in the dashboard. An older daemon requires an update or restart before
+these tools work.
+
 ### The spine
 
 A mission's detail is arranged around **one time axis**, read downward: what has run, where
@@ -141,7 +184,7 @@ policy**:
 | **Skip** | no task; every crossed instant is recorded as skipped |
 
 Then the **overlap policy** asks whether this mission's previous work is still in flight -
-a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
+a task in `backlog`, `dispatching`, `running` or `hibernated`. **Skip if active** (the default) records
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
 
@@ -151,10 +194,10 @@ A mission's template names the **Workflow** that runs when the task a run files 
 and it rests on **None**: nothing runs after the task unless the mission says so.
 
 That is deliberately not what an ordinary dispatch does. Dispatch may leave the field on
-*Dispatch default* and inherit whatever `Settings -> Workflows` currently names, resolved when
-the task is created. A recurring mission fires unattended, on a cadence, for as long as it is
-enabled - so inheriting would mean a default chosen in Settings today silently arming a review
-over a mission written months ago, on every run, with nobody watching. A mission states its
+*Dispatch default* and inherit whatever the kind's row under `Settings -> Tasks -> Dispatch
+defaults` currently names, resolved when the task is created. A recurring mission fires
+unattended, on a cadence, for as long as it is enabled - so inheriting would mean a default
+chosen in Settings today silently arming a review over a mission written months ago, on every run, with nobody watching. A mission states its
 own answer instead, and the daemon passes it to task creation explicitly so `null` reaches it
 as "no Workflow" rather than as an omission.
 
@@ -170,6 +213,21 @@ Three consequences worth knowing:
 - **An archived Workflow is kept, not erased.** A mission naming a Workflow the library no
   longer publishes still shows it in the editor and on its detail, so the next save cannot
   silently convert it into "no handoff". A run that fires meanwhile finishes without one.
+
+### Chat missions
+
+Choose **chat** as the task kind when each run should open a conversation rather than deliver
+a change, so nothing reviews it afterwards. A chat has no diff, so the After work control stands
+down and the template saves no Workflow. Each run files a chat into the backlog, and Foreman
+launches it in a fresh session with the mission's intent as the opening message. It is never
+handed to an agent that is already running, because the opener starts a new conversation.
+
+Foreman never ships a chat, so the [completion policy](#when-a-run-finishes-but-its-task-does-not)
+decides when a run ends. Under **Leave it open**, the chat stays open for you to continue, and with the
+default `skip-active` overlap policy the next run is skipped until you choose **Complete**. Under
+**Complete the task automatically**, the run completes once Foreman sees the agent has answered.
+Only a mission files a chat into the backlog. A chat you dispatch yourself still launches immediately,
+and a mission-filed chat cannot be returned to the backlog from its session.
 
 ### When a run finishes but its task does not
 

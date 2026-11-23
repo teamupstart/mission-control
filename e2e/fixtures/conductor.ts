@@ -64,6 +64,12 @@ interface FakeEngineerState {
   runs: FakeEngineerRun[];
 }
 
+function publishEngineerState(path: string, state: FakeEngineerState): void {
+  const next = `${path}.tmp-${process.pid}`;
+  writeFileSync(next, JSON.stringify(state, null, 2));
+  renameSync(next, path);
+}
+
 /** Add one provider event to the currently active fake Engineer run. */
 export function appendConductorEngineerEvent(
   home: string,
@@ -94,7 +100,7 @@ export function appendConductorEngineerEvent(
   }
   if (type === "engineer_run_failed") run.state = "failed";
   if (type === "engineer_run_cancelled") run.state = "cancelled";
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  publishEngineerState(path, state);
   return event;
 }
 
@@ -149,7 +155,7 @@ export function seedDirectConductorEngineerSuccessor(home: string): FakeEngineer
     type: "engineer_run_started",
   });
   state.runs.push(run);
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  publishEngineerState(path, state);
   return run;
 }
 
@@ -186,10 +192,22 @@ export function writeConductorProjects(
 /** The version the fake installation reports, through its `VERSION` file. */
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
 
+/** Quote one word for a POSIX shell: inside single quotes nothing is special but `'` itself. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /**
  * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
- * actually executes fixture scripts. Every invocation other than the read-only version probe
- * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ * actually executes fixture scripts. Every invocation other than the installer's two
+ * read-only probes is `exec`ed into the real Node binary, so fake CLIs with
+ * `#!/usr/bin/env node` keep working.
+ *
+ * A shell script, not a Node one. The installer's runtime check gives each of its two probes
+ * five seconds, and a shim that was itself a Node process paid a cold Node start per probe:
+ * under the full unit suite's concurrency that ran out the budget, and the route reported no
+ * runtime at all. The shell answers both probes without starting Node, and `exec` hands every
+ * other call to the real binary with no second process in between.
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
@@ -198,19 +216,11 @@ export function writeConductorNodeRuntime(home: string, version: string): string
   writeFileSync(
     nextBin,
     [
-      `#!${process.execPath}`,
-      'const { spawnSync } = require("node:child_process");',
-      `const reported = ${JSON.stringify(version)};`,
-      'if (process.argv.length === 3 && process.argv[2] === "--version") {',
-      '  process.stdout.write(`v${reported}\\n`);',
-      "  process.exit(0);",
-      "}",
-      'if (process.argv.length === 4 && process.argv[2] === "-p" && process.argv[3] === "process.execPath") {',
-      '  process.stdout.write(`${process.argv[1]}\\n`);',
-      "  process.exit(0);",
-      "}",
-      "const child = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
-      "process.exit(child.status ?? 1);",
+      "#!/bin/sh",
+      `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf 'v%s\\n' ${shellWord(version)}; exit 0; fi`,
+      // `$0` is this shim's own path: what `process.execPath` names for the runtime probed.
+      `if [ "$#" -eq 2 ] && [ "$1" = "-p" ] && [ "$2" = "process.execPath" ]; then printf '%s\\n' "$0"; exit 0; fi`,
+      `exec ${shellWord(process.execPath)} "$@"`,
       "",
     ].join("\n"),
   );
@@ -285,7 +295,7 @@ export function seedConductorInstallerCheckout(repo: string): string {
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
@@ -319,7 +329,12 @@ const readEngineerState = () => {
   catch { return { runs: [] }; }
 };
 const writeEngineerState = (state) => {
-  if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
+  if (!engineerStatePath) return;
+  // Inspect/replay readers do not take the mutation lock. Publish a complete snapshot
+  // so an overlapping read cannot mistake a truncated JSON file for missing history.
+  const next = engineerStatePath + ".tmp-" + process.pid;
+  writeFileSync(next, JSON.stringify(state, null, 2));
+  renameSync(next, engineerStatePath);
 };
 /**
  * Hold an exclusive lock across a read-modify-write of the Engineer state file.

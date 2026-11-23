@@ -33,7 +33,8 @@ after(() => rmSync(checkTree, { recursive: true, force: true }));
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
-const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowEngine, reviewedCommit } = await import("../src/server/workflows/engine.ts");
+const { recordedRoutingLabel, verdictMeta } = await import("../src/web/workflows/run-model.ts");
 const { evidenceTelemetryKey, guidanceDigest } = await import(
   "../src/server/workflows/test-evidence-audit.ts"
 );
@@ -144,6 +145,7 @@ function seedNamedVersion(id: string, executionGraph: PublishedWorkflowGraph): v
 function seedSubmission(
   id: string,
   executionGraph: PublishedWorkflowGraph,
+  captured: WorkflowContextSnapshot = context,
 ): InstanceType<typeof WorkflowStore> {
   seedNamedVersion(id, executionGraph);
   const store = new WorkflowStore();
@@ -173,8 +175,8 @@ function seedSubmission(
     },
   );
   store.updateSubmissionCapture(`submission-${id}`, {
-    context: workflowJson(context),
-    evidence: workflowJson(context.evidence),
+    context: workflowJson(captured),
+    evidence: workflowJson(captured.evidence),
     fingerprint: `fingerprint-${id}`,
     status: "running",
   }, 3);
@@ -182,12 +184,17 @@ function seedSubmission(
 }
 
 async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const started = Date.now();
+  const started = performance.now();
   while (!check()) {
-    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
+    if (performance.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("workflow polling times out while Date is frozen", { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000 });
+  await assert.rejects(waitFor(() => false, 20), /timed out waiting for workflow engine/);
+});
 
 test("concurrent provider-neutral Personas share one snapshot and Join aggregates fail receipts", async () => {
   seedVersion();
@@ -570,6 +577,149 @@ test("a Persona call carries its own timeout rather than inheriting the runner's
   // (two minutes in `claude-cli.ts`), which reads as a model that cannot answer rather than
   // as a budget that was never passed.
   assert.deepEqual(budgets, [600_000]);
+});
+
+test("a node's effort reaches the provider and is recorded on the attempt and its call", async () => {
+  // The override names an effort; the resolver seam (the Persona tier) names a different one,
+  // so a pass here proves the node override won and that the level that RAN is what is stored.
+  const effortGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      {
+        id: "p",
+        kind: "persona",
+        persona: persona("effort", "Effort", "claude", "review"),
+        position: { x: 100, y: 0 },
+        executionOverride: { runner: "claude", model: "claude-opus-5-5", effort: "xhigh" },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("effort", effortGraph);
+  const efforts: Array<string | undefined> = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "effort",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      efforts.push(opts?.effort);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+      effort: { level: "low", unsupported: null },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-effort");
+  await waitFor(() => store.getRun("run-effort")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(efforts, ["xhigh"]);
+  const [attempt] = store.listAttemptsForRun("run-effort").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.model, "claude-opus-5-5");
+  assert.equal(attempt?.effort, "xhigh");
+  const calls = openDb().prepare(
+    `SELECT effort FROM workflow_llm_calls WHERE run_id = 'run-effort'`,
+  ).all() as unknown as Array<{ effort: string | null }>;
+  assert.deepEqual(calls.map((call) => call.effort), ["xhigh"]);
+});
+
+test("an effort the resolved model cannot run is not passed, but is recorded and shown on the run", async () => {
+  // A frozen `max` whose resolved model turned out not to offer it: the call must run at the
+  // provider default (a CLI would reject the flag) and the drop must stay visible.
+  const droppedGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("dropped", "Dropped", "codex", "review"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("dropped", droppedGraph);
+  const seen: Array<{ hasEffort: boolean }> = [];
+  const fake: LlmRunner = {
+    id: "codex",
+    label: "dropped",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      seen.push({ hasEffort: opts !== undefined && "effort" in opts });
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const logged: string[] = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const capture = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+  console.log = capture;
+  console.warn = capture;
+  try {
+    const engine = new WorkflowEngine(store, () => {}, {
+      runnerFor: () => fake,
+      resolveExecution: () => ({
+        runner: { id: "codex", source: "config", unknown: null },
+        model: { id: "gpt-5.6-luna", source: "config" },
+        effort: { level: null, unsupported: "max" },
+      }),
+    });
+    engine.start();
+    engine.activateSubmission("submission-dropped");
+    await waitFor(() => store.getRun("run-dropped")?.status === "completed");
+    await engine.stop();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(seen, [{ hasEffort: false }]);
+  const [attempt] = store.listAttemptsForRun("run-dropped").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.effort, undefined);
+  assert.equal(attempt?.effortUnsupported, "max");
+  assert.equal(
+    recordedRoutingLabel(attempt!),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.equal(
+    recordedRoutingLabel(verdictMeta(attempt!, [])),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.ok(
+    logged.some((line) => line.includes("event=persona_effort_unsupported") && line.includes("effort=max")),
+    `expected an unsupported-effort log line, saw: ${logged.join(" | ")}`,
+  );
 });
 
 test("each structured provider attempt has its own durable LLM call receipt", async () => {
@@ -1311,7 +1461,7 @@ const checkPolicy = (over: Record<string, unknown> = {}) => ({
   skipPassedJudges: true,
   liveEnabled: false,
   repoAllowlist: ["/repo"],
-  defaultWorkflowId: null,
+  kindWorkflowDefaults: { ship: null },
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
   ...over,
@@ -1451,6 +1601,7 @@ test("a downstream Persona receives frozen Check evidence in its prompt and inpu
     exitCode: 0,
     outputTail: "TAP version 13\nok 13 - regression retained\n",
     omittedBytes: 1_393,
+    artifacts: [],
     headSha: "abc",
     note: "`npm test` passed.",
   }]);
@@ -1565,6 +1716,43 @@ test("a repository-neutral global default runs, at the checkout root", async () 
   assert.equal((attempt.output as Record<string, unknown>).status, "passed");
 });
 
+test("an uncommitted submission pins its Commands to the review snapshot, never the HEAD it started from", async () => {
+  // A ship task submits before committing. Pinned to HEAD, its gates judged the base commit
+  // and passed whatever the task had done.
+  const snapshot = "d".repeat(40);
+  const store = seedSubmission("check-snapshot", checkGraph, {
+    ...context,
+    evidence: { ...context.evidence, workingTreeDirty: true, workingTreeStatus: [" M src/app.ts"], reviewCommit: snapshot },
+  });
+  const pinned: Array<string | null> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog({}, { test: ["npm", "test"] }),
+    checkDeps: () => ({
+      execute: async (request) => {
+        pinned.push(request.headSha);
+        return { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-snapshot");
+  await waitFor(() => store.getRun("run-check-snapshot")?.status === "completed");
+  await engine.stop();
+  assert.deepEqual(pinned, [snapshot]);
+});
+
+test("reviewedCommit prefers an observed PR head, then the review snapshot, then the legacy HEAD", () => {
+  assert.equal(reviewedCommit("p".repeat(40), { headSha: "abc", reviewCommit: "d".repeat(40) }), "p".repeat(40));
+  assert.equal(reviewedCommit(null, { headSha: "abc", reviewCommit: "d".repeat(40) }), "d".repeat(40));
+  assert.equal(reviewedCommit(null, { headSha: "abc", reviewCommit: null }), "abc");
+  assert.equal(reviewedCommit(null, { headSha: "abc" }), "abc");
+});
+
 test("a failing check returns a repair packet to the Session, citing its own output", async () => {
   const store = seedSubmission("check-fail", checkGraph);
   const manager = new WorkflowManager(new Registry(), store, {
@@ -1612,6 +1800,110 @@ test("a failing check returns a repair packet to the Session, citing its own out
   assert.equal(delivery.state, "prepared");
   assert.match(delivery.payload, /## Command · test/);
   assert.match(delivery.payload, /TS2345/);
+  // A repository override was written for this checkout, so no configuration note is added.
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "override");
+  assert.doesNotMatch(delivery.payload, /configure_workflow_command/);
+});
+
+async function failingDefaultPacket(name: string, output: string, truncatedBytes = 0) {
+  const store = seedSubmission(name, checkGraph);
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: checkCatalog({}, { test: ["make", "test"] }),
+      checkDeps: () => ({
+        execute: async () => ({ kind: "exited", exitCode: 2, output, truncatedBytes }),
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission(`submission-${name}`);
+  await waitFor(() => store.listDeliveries(`run-${name}`).length === 1);
+  await manager.stop();
+  const attempt = store.listAttempts(`submission-${name}`).find((item) => item.nodeId === "gate")!;
+  const change = (attempt.verdict as { requestedChanges: Array<{ title: string; rationale: string }> })
+    .requestedChanges[0]!;
+  return { attempt, change, payload: store.listDeliveries(`run-${name}`)[0]!.payload };
+}
+
+test("a machine-wide default the repository does not provide asks for configuration, never a Makefile", async () => {
+  const { attempt, change, payload } = await failingDefaultPacket(
+    "check-misfit",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "default");
+  assert.equal(change.title, "Configure the test Command for this repository; do not add files to satisfy it");
+  assert.doesNotMatch(change.title, /Fix the failing/);
+  assert.match(change.rationale, /`make test`, which is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  assert.match(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /asks the operator to confirm through a request_input card that Mission Control writes/);
+  assert.match(change.rationale, /configure_workflow_command\(\{ runId: "run-check-misfit", slot: "test"/);
+  assert.match(change.rationale, /resubmitUnchanged: true/);
+  // The procedure reaches the Session intact, ahead of the command output it explains.
+  assert.match(payload, /Configure the test Command for this repository/);
+  assert.match(payload, /configure_workflow_command/);
+  assert.ok(payload.indexOf("request_input") < payload.indexOf("Command output:"));
+});
+
+test("a nested make failing inside a real `make test` target stays an ordinary failure", async () => {
+  // The repository provides `make test`; its recipe runs a sub-make that cannot find its own
+  // target. That is a failure inside a real test command, never a missing workflow Command.
+  const { change } = await failingDefaultPacket(
+    "check-nested-make",
+    "make -C fixtures build\nmake[1]: *** No rule to make target 'build'.  Stop.\nmake: *** [Makefile:4: test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make\[1\]: \*\*\* No rule to make target 'build'/);
+});
+
+test("an independent nested make refusing `test` inside a real `make test` recipe stays an ordinary failure", async () => {
+  // Captured from GNU make 3.81: the recipe `cd sub && env -u MAKELEVEL make test` starts a
+  // SEPARATE make, so its refusal speaks as `make:` and names `test` exactly like the outer
+  // make refusing would. The echoed recipe and the outer `*** [test] Error 2` show the
+  // configured target ran, so this is a failure inside the repository's own test command.
+  const { change } = await failingDefaultPacket(
+    "check-independent-make",
+    "cd sub && env -u MAKELEVEL make test\nmake: *** No rule to make target `test'.  Stop.\nmake: *** [test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make: \*\*\* \[test\] Error 2/);
+});
+
+test("a refusal in the tail of truncated output stays an ordinary failure", async () => {
+  // A launcher's refusal is a few lines. Output large enough to be truncated came from a
+  // command that ran, so a matching refusal in its retained tail is something that command
+  // ran - never the configured command being missing - whatever the tail happens to hold.
+  const { attempt, change } = await failingDefaultPacket(
+    "check-truncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+    50_000,
+  );
+  assert.ok(((attempt.output as Record<string, unknown>).truncatedBytes as number) > 0);
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  // The same bytes untruncated are the configuration repair, so truncation alone decided it.
+  const { change: whole } = await failingDefaultPacket(
+    "check-untruncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.match(whole.title, /^Configure the test Command for this repository/);
+});
+
+test("an unrecognized failure of a machine-wide default keeps the code repair and adds the configuration note", async () => {
+  const { change } = await failingDefaultPacket("check-default-fail", "1 failing\n  AssertionError: expected 2\n");
+  assert.equal(change.title, "Fix the failing test check");
+  assert.match(change.rationale, /AssertionError/);
+  assert.match(change.rationale, /Note: `make test` is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /do not add files to satisfy it/);
+  assert.match(change.rationale, /configure_workflow_command/);
 });
 
 test("startup recovery retries a persisted Check infrastructure error", async () => {
@@ -2645,4 +2937,199 @@ test("a disabled node with an override still launches nothing and stamps no prov
   // A stamped provider here would claim an expensive model ran when nothing did.
   assert.equal(skipped.runner, null);
   assert.equal(skipped.model, null);
+});
+
+for (const [label, firstReply, expected] of [
+  ["a schema miss", JSON.stringify({ verdict: "pass", summary: "LEAK-ME", approvalDetails: { reason: "Proven", evidence: [] }, confidence: "high" }),
+    "Correction required: the prior reply was valid JSON but did not match the required shape (confidence: Expected number, received string)."],
+  ["unparseable prose", "I approve this change.", "Correction required: the prior reply was not valid JSON."],
+] as const) test(`the Persona correction names ${label} rather than a generic parse failure`, async () => {
+  const id = `correction-${label.replaceAll(" ", "-")}`;
+  const reviewer = persona("p", "Contract reviewer", "claude", "Review");
+  const executionGraph: PublishedWorkflowGraph = {
+    nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
+    edges: [{ id: "start", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" }, { id: "pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" }, { id: "fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" }],
+  };
+  const store = seedSubmission(id, executionGraph);
+  const { personaReviewInput, personaReviewInputDigest } = await import("../src/server/workflows/persona-contract.ts");
+  const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
+  store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: personaReviewInputDigest(input), now: 4 });
+  store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
+  const prompts: string[] = [];
+  const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
+    prompts.push(prompt);
+    return prompts.length === 1
+      ? firstReply
+      : JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [{ kind: "decision", quote: "Chosen", path: null }] }, confidence: 1 });
+  } };
+  const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
+  engine.start();
+  try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
+  finally { await engine.stop(); }
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts[1]!.includes(expected), prompts[1]!.slice(-600));
+  assert.doesNotMatch(prompts[1]!, /could not be executed or parsed|LEAK-ME/);
+  assert.equal(store.getRun(`run-${id}`)?.status, "completed");
+});
+
+// A disconnect must retain the review gate across retries, restart and allowance exhaustion.
+for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
+  const timerLimit = 2_147_483_647;
+  const vendorWaitMs = scenario === "long-vendor-wait" ? timerLimit + 120_000 : 120_000;
+  const id = `cr-connection-${scenario}`;
+  const crGraph: PublishedWorkflowGraph = { ...checkGraph, nodes: checkGraph.nodes.map(node => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
+  const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
+  const store = seedSubmission(id, crGraph, { ...context, evidence: { ...context.evidence, coderabbit: yaml } });
+  const comparison = store.freezeCodeRabbitComparison(`submission-${id}`, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: ["allowance", "resubmit"].includes(scenario) ? 1 : 10,
+    timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  let clock = Date.now();
+  let calls = 0;
+  const makeEngine = () => new WorkflowEngine(store, () => {}, {
+    now: () => clock, runnerFor: passingRunner, resolveExecution: passingExecution, workflowPolicy: () => checkPolicy(),
+    workflowCommand: () => ({ ...emptyWorkflowCommandView("coderabbit"), maxRuns: comparison.maxRuns }),
+    checkDeps: () => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async request => {
+        calls++;
+        assert.equal(request.headSha, comparison.head);
+        assert.deepEqual(request.coderabbit, comparison);
+        assert.ok(!request.command.includes("--use-credits"));
+        const recovered = scenario === "recover" && calls === 2;
+        return { kind: "exited", exitCode: recovered ? 0 : 1, output: "", truncatedBytes: 0,
+          review: { comparison, status: recovered ? "complete" : "incomplete",
+            counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 }, titles: [],
+            diagnostic: recovered ? "Complete CodeRabbit review" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
+            ...(!recovered ? { retryableConnection: true as const } : {}),
+            ...(["vendor-wait", "long-vendor-wait"].includes(scenario) ? { retryAt: clock + vendorWaitMs } : {}),
+          } };
+      },
+    }),
+  });
+  let engine = makeEngine();
+  engine.start(); engine.activateSubmission(`submission-${id}`);
+  try {
+    if (scenario === "allowance" || scenario === "resubmit") {
+      await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /allowance exhausted/);
+      assert.equal(calls, 1);
+      if (scenario === "resubmit") {
+        const repair = store.createRepairSubmission({
+          id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
+          triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
+        });
+        const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
+        store.updateSubmissionCapture(repair.submission.id, {
+          context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+          fingerprint: `${id}-round-2`, status: "running",
+        }, clock);
+        engine.activateSubmission(repair.submission.id);
+        await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
+        assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
+        assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
+        assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        assert.equal(calls, 1, "resubmission cannot grant another execution");
+      }
+    } else {
+      await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.state === "retry_wait");
+      const waiting = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+      assert.ok(waiting.retryAt! >= clock + 30_000);
+      assert.ok(waiting.retryAt! <= clock + (["vendor-wait", "long-vendor-wait"].includes(scenario) ? vendorWaitMs + 15_000 : 45_000));
+      assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+      await engine.stop();
+      if (scenario === "extended-vendor-wait") {
+        // Another node records a longer vendor wait after this retry was scheduled.
+        const extended = waiting.retryAt! + 120_000;
+        store.insertAttempt({ id: `${id}-peer`, submissionId: waiting.submissionId,
+          nodeId: "peer-coderabbit", attempt: 1, state: "running", persona: null,
+          inputFingerprint: "peer", now: clock });
+        const failed = store.listAttempts(waiting.submissionId).find(a => a.nodeId === "gate" && a.attempt === 1)!;
+        const output = failed.output as { review: Record<string, unknown> };
+        store.finishAttempt(`${id}-peer`, { state: "error",
+          output: workflowJson({ review: { ...output.review, retryAt: extended } }) }, clock);
+        t.mock.timers.enable({ apis: ["Date"], now: waiting.retryAt! });
+        clock = waiting.retryAt!;
+        engine = makeEngine(); engine.start();
+        await waitFor(() => store.latestAttemptForNode(waiting.submissionId, "gate")!.retryAt === extended
+          || store.getRun(`run-${id}`)!.status === "blocked");
+        assert.equal(store.getRun(`run-${id}`)!.status, "running", "a later shared vendor wait must defer rather than block");
+        const deferred = store.getAttempt(waiting.id)!;
+        assert.equal(deferred.state, "retry_wait");
+        assert.equal(deferred.retryAt, extended);
+        assert.equal(deferred.startedAt, null);
+        assert.equal(calls, 1);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+        assert.equal(store.listReceipts(waiting.submissionId).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        clock = extended;
+        t.mock.timers.setTime(clock);
+        engine.wake();
+        await waitFor(() => calls === 2);
+        return;
+      }
+      if (scenario === "long-vendor-wait") {
+        // Mock time only after the first real attempt settles. Spy on the actual scheduler
+        // boundary too: MockTimers does not emulate Node's overflow-to-1ms behavior.
+        t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: clock });
+        const timers = t.mock.method(globalThis, "setTimeout");
+        const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+        const advance = async (ms: number) => {
+          clock += ms;
+          t.mock.timers.tick(ms);
+          await turn();
+        };
+        engine = makeEngine(); engine.start();
+        await turn();
+        assert.ok(waiting.retryAt! > clock + timerLimit);
+        assert.equal(timers.mock.calls.at(-1)!.arguments[1], timerLimit,
+          "a wait beyond Node's timer limit must schedule a capped wake, not overflow to 1ms");
+        const pending = () => {
+          assert.equal(calls, 1, "the review must not execute before the vendor deadline");
+          assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.state, "retry_wait");
+          assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt, waiting.retryAt);
+          assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        };
+        const scheduled = timers.mock.callCount();
+        await advance(1);
+        pending();
+        assert.equal(timers.mock.callCount(), scheduled, "no immediate retry/wake loop");
+        await advance(timerLimit - 1);
+        pending();
+        const remaining = waiting.retryAt! - clock;
+        assert.ok(remaining >= 120_000 && remaining <= 135_000);
+        assert.equal(timers.mock.callCount(), scheduled + 1, "the capped wake rearms the remaining wait");
+        assert.equal(timers.mock.calls.at(-1)!.arguments[1], remaining);
+        await advance(remaining - 1);
+        pending();
+        assert.equal(timers.mock.callCount(), scheduled + 1, "no extra wakes before the deadline");
+        return;
+      }
+      engine = makeEngine(); engine.start();
+      assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt, waiting.retryAt);
+      assert.equal(calls, 1, "restart must not launch before the durable deadline");
+      if (scenario === "cancel" || scenario === "vendor-wait") {
+        if (scenario === "vendor-wait") assert.ok(waiting.retryAt! >= clock + 120_000);
+        store.cancelRun(`run-${id}`, "test cancellation", clock);
+        clock = waiting.retryAt!; engine.wake();
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(calls, 1);
+      } else {
+        clock = waiting.retryAt!; engine.wake();
+        if (scenario === "limit") {
+          await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.attempt === 3);
+          const last = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+          assert.equal(last.state, "retry_wait");
+          assert.ok(last.retryAt! >= clock + 60_000 && last.retryAt! <= clock + 90_000);
+          clock = last.retryAt!; engine.wake();
+        }
+        await waitFor(() => store.getRun(`run-${id}`)?.status === (scenario === "recover" ? "completed" : "blocked"));
+        assert.equal(calls, scenario === "recover" ? 2 : 3);
+        if (scenario === "limit") {
+          assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /WebSocket closed.*retry limit reached/);
+          assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        }
+      }
+    }
+  } finally { await engine.stop(); store.cancelRun(`run-${id}`, "test cleanup", clock); }
 });

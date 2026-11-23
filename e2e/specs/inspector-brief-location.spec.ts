@@ -109,6 +109,10 @@ test("the GitHub Inspector panel names both places a repo may keep its brief", a
 });
 
 test("Shipping and Trust name the remote reviewer as GitHub Inspector", async ({ page, daemon }) => {
+  const config = await page.request.put(`${daemon.baseURL}/api/inspector/config`, {
+    data: { enabled: false },
+  });
+  expect(config.ok()).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/shipping`);
   await expect(page.getByText(/once GitHub Inspector has reviewed the current push/)).toBeVisible();
 
@@ -127,7 +131,8 @@ test("Shipping and Trust name the remote reviewer as GitHub Inspector", async ({
   await page.goto(`${daemon.baseURL}/#/settings/trust`);
   const matrix = page.getByRole("table", { name: "Repository trust grants" });
   await expect(matrix).toBeVisible();
-  await expect(matrix.getByText("GitHub Inspector posts reviews", { exact: true })).toBeVisible();
+  // The header prints the short name; the full grant name rides its tooltip and every cell.
+  await expect(matrix.getByText("GitHub Inspector", { exact: true })).toBeVisible();
   await shootWholePage(page, "trust-github-inspector-grant");
 });
 

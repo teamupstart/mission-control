@@ -61,7 +61,7 @@ export function ForemanGuide({
       <header className="modal-head">
         <h2>About Foreman</h2>
         <Tooltip label="Close the Foreman guide (Escape)">
-          <button ref={closeRef} type="button" className="btn btn-ghost" onClick={onClose}>
+          <button data-dialog-default ref={closeRef} type="button" className="btn btn-ghost" onClick={onClose}>
             Close
           </button>
         </Tooltip>

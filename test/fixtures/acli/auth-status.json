@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "code": 1,
+  "stdout": "",
+  "stderr": "✗ Error: unauthorized: use 'acli auth login' to authenticate\n"
+}

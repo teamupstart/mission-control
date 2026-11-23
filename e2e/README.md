@@ -1,3 +1,15 @@
+`feature-flags-stream.spec.ts` exercises Phase 1's real dashboard event consumer against the
+isolated production daemon. A private Vite build substitutes a preview fixture registry and
+adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` values plus a
+consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
+hook, routes or SSE transport. Two open windows assert both config and the resolved answer
+from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
+without navigation. The probe build replaces the shipped registry and adds no product controls.
+`MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
+private build; `hook` forces the hook's answer to false. Each negative control must fail.
+`MC_E2E_EVIDENCE=1` captures the peer window after reconnection under
+`e2e/.artifacts/feature-flags-stream/`.
+
 # Browser end-to-end tests
 
 `specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
@@ -89,8 +101,8 @@ npm run test:e2e -- --workers=1
 ```
 
 The CI shards remain concurrent because each job runs on its own machine. The lease coordinates
-processes sharing one host; it does not serialize separate runners. CI currently uses fifteen
-shards with a target of three minutes or less for every browser-test step. That target is measured,
+processes sharing one host; it does not serialize separate runners. CI currently uses sixty
+shards with a target of four minutes or less for each complete job, including setup and build. That target is measured,
 not enforced with a timeout, so a slow run retains its complete failure diagnostics.
 
 Finish the build before starting a browser run. After acquiring the host lease, global setup
@@ -110,6 +122,50 @@ npm run test:e2e -- e2e/specs/dispatch-and-converse.spec.ts   # one spec file
 npx playwright show-trace test-results/<dir>/trace.zip
 ```
 
+## Stable fixture startup
+
+The `dashboard` fixture seeds browser preferences on the daemon's health document before it
+opens the application. Booting the dashboard and immediately reloading it left the first
+boot's Setup and model-catalog probes running in the daemon, multiplying subprocess startup
+work across four workers. `fixture-startup.spec.ts` measures one application navigation while
+checking that the ordinary dashboard preferences still apply.
+
+cmux `capabilities` and Herdr `status server --json` are native CLI health reads. Their fixture
+entry points answer through a small shell launcher; recorded terminal commands and Herdr's
+socket server still run through the existing Node runtime. Herdr's runtime and health reply
+share generated version/protocol metadata. Production probe deadlines remain unchanged.
+`test/e2e-native-terminal-probes.test.ts` drives the production adapters with JavaScript
+startup deliberately refused, covering ready, stopped, denied and incompatible states.
+
+An SDK invocation count must be attributed to the selected conversation's checkout. A model
+catalog refresh also starts an SDK subprocess in the temporary directory; it is not a session
+relaunch. The auth-recovery spec deliberately refreshes that catalog while recovering.
+Worktree-return setup waits for the session's first turn to settle before selecting it, and
+the spent-command queue spec waits for capture before measuring admission to occupied slots.
+
+The fake pipeline provider publishes Engineer history by atomic rename. Its read-only CLI
+calls do not take the writer lock, so overwriting the live JSON file could briefly erase the
+history seen by dispatch. The state-lock regression pauses a write halfway through and
+checks that inspection still sees the previous complete reservation. Failed browser tests
+attach their daemon log before the isolated fixture home is removed.
+
+The native-probe fixture test asserts the production one-second probe request separately from
+its bounded child execution budget. It verifies JavaScript refusal and status classification,
+including a stalled test worker, without making host scheduling part of that contract.
+
+## Diff loading performance
+
+`diff-performance.spec.ts` opens a real checkout with one tracked edit and 80 new files,
+checks the complete file list and first/last file contents, and verifies fresh reads on tab
+re-entry. To compare builds on an otherwise idle host, build the baseline, then run
+`MC_DIFF_BENCHMARK=baseline npm run test:e2e -- e2e/specs/diff-performance.spec.ts --workers=1`.
+Build the changed version and repeat with `MC_DIFF_BENCHMARK=result`. Each run records seven
+click-to-paint samples for the first diff and complete navigation list. Result mode requires
+the median to be at most half the saved baseline. This timing gate is opt-in; ordinary CI
+checks behavior without a host-dependent time limit. Logs, JSON and screenshots belong in
+gitignored `e2e/.artifacts/diff-performance/`. This workload emphasizes untracked-file reads;
+it is not a guarantee of the same speedup for every repository or patch size.
+
 ## Evidence
 
 Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright
@@ -121,6 +177,69 @@ submitted to workflow personas.
 Video is off. Recording it cost 16s of every CI shard whether or not anything failed, and it
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
+
+### Accepting a desktop update during a workflow check
+
+`update-during-workflow.spec.ts` runs on macOS with complete disposable Electron bundles.
+It dispatches a fake agent, submits a workflow with a real four-minute shell check, opens
+the production Check for Updates menu action, and clicks Update Now and Restart and Install
+in the real renderer. The production helper downloads and extracts the local release asset,
+replaces the bundle, commits the receipt, and relaunches the app through LaunchServices.
+The spec checks the new running version, the interrupted attempt's reason, and the returned
+check lease. Release discovery, asset transport, and Apple trust responses are fixture ports;
+this does not verify Developer ID signing or notarization.
+
+The acceptance case also leaves a real stopped utility reparented to PID 1 before the update.
+It has no check lease or ancestry under the active desktop. The spec verifies its ownership
+and work association in the helper's update log, and automatic cleanup
+before the new build opens.
+
+The daemon is paused briefly across `before-quit`, then resumed, to select the shutdown race
+where its signal handler has not run before Electron exits. The same scheduling barrier runs
+against both versions. No shutdown, migration outcome, attempt result, or lease is seeded.
+
+The companion reopen case holds the helper at that boundary, closes its progress dialog,
+opens the installed app through LaunchServices, and verifies that the transient launch exits
+without an installation error or journal change. It then resumes the same helper, observes
+its newly visible native progress window through CoreGraphics, and verifies completion within
+the original transaction. The dialog's displayed text is checked against its production
+osascript invocation; no Accessibility or Screen Recording permission is required.
+After successful installation it also verifies that the reopened progress process and its
+helper have exited. Nonvisual updater tests in `test/` inject an inert or recorded display
+through `realApplyOperations`; they must not open native update dialogs on the operator's
+desktop. The copied Electron fixture injects that port at the helper entry point so it also
+applies after LaunchServices relaunch and detached recovery.
+
+After building, run:
+
+```sh
+MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/update-during-workflow.spec.ts
+```
+
+For the pre-fix comparison, prepend
+`MC_E2E_UPDATE_BASELINE_REF=588d8c17c08a2ac7258fe64a0be0c2302278aa2e` to the same command.
+The fixture builds that revision's affected lifecycle files in its private app copy, without
+changing the checkout. Screenshots, process/receipt measurements, and logs are retained under
+gitignored `e2e/.artifacts/update-during-workflow/`, with separate `baseline` and `fixed` names.
+To isolate the reopen regression, also set `MC_E2E_UPDATE_BASELINE_REOPEN=1` and select
+`-g 'opening the app during'`. This restores only that revision's startup gate in the fixture;
+the corrected shutdown still lets the active-check update reach the reopen boundary.
+
+`update-blocker-progress.spec.ts` separately drives `realApplyOperations.waitForBundle` with
+an identity-verified process in a disposable bundle. It observes the native dialog change from
+generic waiting text to the blocker's PID, executable and owning work while the wait is active,
+then verifies automatic cleanup. Its legacy case invokes `runApplyUpdate` without a migration
+handoff or an existing dialog, keeping the real wait, lock and outcome with fixture install
+and relaunch ports. It verifies that the same blocker-specific progress appears and closes
+after the wait. Setting `MC_E2E_UPDATE_PROGRESS_MUTATION=1` removes only the transaction's
+progress update call in a private helper copy; that visible-dialog assertion must fail.
+
+With `MC_E2E_EVIDENCE=1`, that spec also captures the native dialog's pixels and requires
+macOS Screen Recording permission for the application hosting the test process.
+`update-recovery-guidance.spec.ts` seeds a completed fixture transaction and serves an
+incompatible daemon health response to the production main entry. It observes the native
+recovery dialog and can capture it with the same evidence flag and permission. This covers
+rendered recovery guidance; the detached-install tests separately exercise actual recovery.
 
 ### Dispatched Ghostty names
 
@@ -228,6 +347,32 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/board-card-jump-shortcut.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/board-card-jump-shortcut/focused-playwright-transcript.txt
+```
+
+### The folded session rail
+
+`e2e/.artifacts/session-rail-fold/` carries seven frames; `07` is the Board's all-sessions
+drill-in folded, with the back to the board now at the left of the detail head. `01` and `02` are the same Console
+session with the rail open and then folded to its strip, which is the "the conversation takes
+the rail's width" claim: compare the reply box's left edge between them. `03` is a folded strip
+after a session started waiting on you, with the Needs you count drawn and pulsing, and `06` is
+the same strip after a second one did, the count risen to 2 and pulsing again. `04` and `05` are
+the Board drill-in's column rail, open and then folded. The spec also asserts what a frame cannot
+show: the fold survives a reload, `[` toggles it from the keyboard but not while you type a reply,
+<kbd>↑</kbd>/<kbd>↓</kbd> still switch the open session while no rail row is drawn, Escape out of
+the reader hands the keyboard to the strip, and the risen count is a fresh pill rather than the
+spent one, which is what makes its pulse replay.
+
+Regenerate them with:
+
+```sh
+mkdir -p e2e/.artifacts/session-rail-fold
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/session-rail-fold.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/session-rail-fold/focused-playwright-transcript.txt
 ```
 
 ### The Board card panel and its preview
@@ -1910,6 +2055,29 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### A task handed to a running agent
+
+A dispatched agent can never take a handover (`TaskManager.assign`): its session is an Agent SDK
+one, which `paneAcceptsPrompt` refuses, and it holds its task's worktree, which
+`taskResourceOwnerForSession` refuses. `fixtures/pane-agent.ts` stands up the kind that is
+accepted. `startPaneAgent` runs `fixtures/pane-agent.mjs` in a real tmux pane in the fixture
+repository, under a link named `claude`. Discovery cards it as an idle terminal session, and its
+first hook makes it instrumented. `paneSession` returns that session's id, `handOver` posts the
+assign the board's drop posts, and `sessionIdle` waits for the session to settle between
+handovers. A spec using it sets `test.use(PANE_AGENT_DAEMON)` (discovery on, outside sessions
+shown) and skips with `hasTmux()`. It addresses only its own pane's session, never the fleet.
+
+`startPaneAgent(daemon, { turns: true })` logs each submission's full text for `turns()` and
+reports each turn through `UserPromptSubmit` and `Stop`. In that mode a pending multi-line paste
+is drawn as Claude draws it, `[Pasted text #N +M lines]`. Seeing that placeholder leave the
+composer is how `injectPrompt` verifies a submit. Without it every handover's shaping record
+would read as unconfirmed.
+
+`specs/task-shaping.spec.ts` uses it to hand two tasks in turn to one agent. It asserts that the
+session header chip and "Context this session received" show exactly the section the agent
+received for the second task, and nothing from the first. With `MC_E2E_EVIDENCE=1` it writes
+`handover-chip.png` and `handover-viewer.png` under `e2e/.artifacts/task-shaping/`.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and
@@ -2011,6 +2179,21 @@ Kill on "the only card", is the failure mode this note exists to prevent. Both a
 `tmux` - the one multiplexer with no binary override, since `TMUX_BIN` declares `env: null` -
 which CI installs for exactly this reason, and which both specs skip themselves over when
 absent.
+
+**A spec that turns discovery on and starts its agent by hand must also set
+`outsideSessions: true`** in `test.use`. While **Show sessions started outside Mission Control**
+is off, discovery shows only the sessions its admission rule keeps (see [sessions started outside
+Mission Control](../docs/sessions.md#sessions-started-outside-mission-control)), and a fake binary started in a
+tmux pane, a scripted terminal-boundary session, or the fake Herdr server's own agent is an
+outside session. The option turns the setting on for that test's daemon before the test body
+runs. A spec whose sessions all come from a dispatch, a managed resume, Continue in terminal, or
+an observed pipeline worktree leaves it off, because proving those stay visible with the default
+is part of what it covers. A spec that pairs one of those with a hand-started control session
+sets it, because the control is an outside session: `session-driven-by-engine.spec.ts` starts a
+pipeline worker and an ordinary agent in the repository root beside it. Its pipeline worker is
+then visible either way, so the default-off admission of pipeline workers is covered by
+`test/discovery-admission.test.ts` rather than by that spec. `external-sessions-setting.spec.ts`
+covers the setting itself.
 
 `startDaemon()` then verifies two things before any test runs, because the whole isolation
 story is worthless if the daemon under test is not the one it thinks it is:
@@ -2114,3 +2297,31 @@ tool list, including the planning tools; no external provider or account is used
 Pi's isolated extensions directory to the installer's isolated directory, proves automatic
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
+
+`feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
+**Resident active hours**, **Task shaping** and **Session control requests** rows appear, and toggling each of the first two in
+one window changes a second window without a reload. `headless-mode-flag.spec.ts` covers the
+`headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
+the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
+uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
+`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+Use this build when a spec needs populated flag controls, search, palette or daemon writes.
+The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
+after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots
+under `e2e/.artifacts/feature-flags/`. No product module contains a fixture switch.
+
+### Resident active hours
+
+`specs/residents-active-hours.spec.ts` covers the `resident-active-hours` preview. The editor
+draws the **Active hours** card while the flag is on, and a Settings toggle in another window adds
+or removes it live. The one exception: a draft whose schedule cannot be saved, such as one with
+no day chosen, keeps the card on screen after the flag is turned off, so the error stays
+reachable; once it is fixed the card goes away and the profile saves. Turning hours on fills the
+zone picker with the browser's zone. Days, times and zone chosen in the card are saved with the
+profile. In the dock, a launched resident outside its window reads as **asleep**, with the time
+its held wake goes out, or the wake's own time when it is already due inside the next window,
+and reads as waiting again once the flag is off. Inside its window, a resident whose next wake
+falls after the window closes reads as **waiting** with the held wake's time.
+`MC_E2E_EVIDENCE=1` writes `01-active-hours-card.png`, `02-dock-asleep.png`,
+`03-dock-awake-held.png` and `04-dock-asleep-due-inside.png` under
+`e2e/.artifacts/residents-active-hours/`; attach them to the pull request, never commit them.

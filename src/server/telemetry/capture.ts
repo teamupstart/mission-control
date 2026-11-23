@@ -80,8 +80,14 @@ export interface CaptureRequest<Facts extends z.ZodTypeAny> {
    * Bounded and minimized like everything else; this is not a place to put an object.
    */
   context?: Record<string, string>;
-  /** Correlate this fact into an existing trace instead of starting one. */
-  trace?: { traceId: string; parentSpanId: string | null };
+  /**
+   * Correlate this fact into an existing trace instead of starting one.
+   *
+   * `spanId` pins this fact's own span id instead of minting a random one. Only an owner that
+   * has already handed that id to somebody else needs it: a session start is the parent an
+   * embedded agent was launched under, so its id is decided before the fact exists.
+   */
+  trace?: { traceId: string; parentSpanId: string | null; spanId?: string };
   now?: number;
 }
 
@@ -170,7 +176,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
     // exactly the kind of thing a later phase trips without noticing.
     const { context, omitted: contextOmitted } = boundContext(request.context ?? {});
     const traceId = request.trace?.traceId ?? newTraceId();
-    const spanId = newSpanId();
+    const spanId = request.trace?.spanId ?? newSpanId();
     refs[TRACE_REF] = traceId;
     refs[SPAN_REF] = spanId;
     if (request.trace?.parentSpanId) refs[PARENT_SPAN_REF] = request.trace.parentSpanId;

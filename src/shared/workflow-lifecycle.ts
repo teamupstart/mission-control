@@ -1,5 +1,5 @@
 import { WorkflowInspectorGateStateSchema } from "./protocol.ts";
-import type { WorkflowInspectorGateState } from "./workflow.ts";
+import type { WorkflowCompletionPolicy, WorkflowInspectorGateState } from "./workflow.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_RUN_TERMINAL_STATUSES,
@@ -83,6 +83,7 @@ export const WORKFLOW_INSPECTOR_GATE_PHASES = [
   "inspector_unadopted_pr",
   "inspector_working_tree_not_pushed",
   "inspector_clean_review",
+  "inspector_reviewed_tree_changed",
 ] as const;
 
 /**
@@ -104,6 +105,7 @@ export const WORKFLOW_INSPECTOR_ENTRY_PHASE: Record<WorkflowGateWaitReason, Work
   inspector_disabled: "inspector_disabled",
   awaiting_fresh_observation: "inspector_awaiting_fresh_observation",
   working_tree_not_pushed: "inspector_working_tree_not_pushed",
+  reviewed_tree_changed: "inspector_reviewed_tree_changed",
   head_mismatch: "inspector_head_mismatch",
   review_pending: "inspector_review",
   clean_review_pending: "inspector_clean_review",
@@ -157,6 +159,7 @@ export const WORKFLOW_RUN_PHASES = [
   "capture_interrupted",
   "capturing",
   "check_cleanup_unresolved",
+  "command_action_required",
   "complete",
   "conversation_changed",
   "delivery_blocked",
@@ -255,6 +258,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   capture_interrupted: ["blocked"],
   capturing: ["capturing"],
   check_cleanup_unresolved: ["blocked"],
+  command_action_required: ["blocked"],
   complete: ["completed"],
   conversation_changed: ["blocked"],
   delivery_blocked: ["blocked"],
@@ -304,6 +308,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   inspector_round_limit: ["blocked"],
   inspector_unadopted_pr: ["waiting_for_pr"],
   inspector_working_tree_not_pushed: ["waiting_for_session"],
+  inspector_reviewed_tree_changed: ["waiting_for_session"],
 };
 
 /**
@@ -339,6 +344,7 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // it means a later code change cannot silently produce "inspector round limit" prose.
   inspector_round_limit: "out of GitHub Inspector rounds",
   infrastructure_error: "review execution failed",
+  command_action_required: "Command needs operator action",
   provider_token_exhausted: "provider token or quota limit reached",
   evidence_reconciliation_error: "criterion mapping unavailable",
   inspector_findings: "GitHub Inspector findings",
@@ -530,6 +536,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   capture_interrupted: ["error"],
   capturing: [],
   check_cleanup_unresolved: ["nodeId", "attempts", "error"],
+  command_action_required: ["nodeId", "attempts", "error"],
   complete: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
   conversation_changed: ["reason"],
   delivery_blocked: ["deliveryId", "reason"],
@@ -591,6 +598,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   inspector_round_limit: ["maxRepairRounds", "parkedPhase"],
   inspector_unadopted_pr: [],
   inspector_working_tree_not_pushed: [],
+  inspector_reviewed_tree_changed: [],
 };
 
 /** The reserved key a phase detail carries the sticky gate under. See `withInspectorGate`. */
@@ -692,6 +700,7 @@ export type WorkflowGateDetail =
   | { kind: "none" }
   | { kind: "round_limit"; budget: WorkflowRoundLimitBudget }
   | { kind: "check_cleanup"; block: WorkflowCheckCleanupBlock }
+  | { kind: "command_action_required"; block: WorkflowCheckCleanupBlock }
   | { kind: "capture_failure"; failure: WorkflowCaptureFailure }
   | { kind: "opaque"; detail: WorkflowJson };
 
@@ -879,6 +888,10 @@ function decodeDetail(
     const block = checkCleanupBlock(own);
     return block ? { kind: "check_cleanup", block } : { kind: "opaque", detail: own };
   }
+  if (record.phase === "command_action_required" && record.status === "blocked") {
+    const block = checkCleanupBlock(own);
+    return block ? { kind: "command_action_required", block } : { kind: "opaque", detail: own };
+  }
   // Phase-first, like the branch above: `capture_error` and `image_evidence_capture` persist
   // the same two keys, so only the phase tells them apart.
   if (
@@ -905,6 +918,20 @@ export function workflowInspectorGate(
   record: WorkflowRunLifecycleRecord,
 ): WorkflowInspectorGateState | null {
   return decodeWorkflowRunLifecycle(record).gate;
+}
+
+/** A different visible hold, such as disabling Inspector, cannot erase an unreviewed tree. */
+export function workflowInspectorGateNeedsFreshReview(gate: WorkflowInspectorGateState | null): boolean {
+  return gate?.waitReason === "reviewed_tree_changed" || gate?.reviewedContent != null;
+}
+
+/** Inspector-only repair cannot waive an outstanding full review of published content. */
+export function workflowInspectorOnlyRepair(
+  policy: WorkflowCompletionPolicy | undefined,
+  gate: WorkflowInspectorGateState | null,
+): boolean {
+  return policy?.kind === "inspector" && policy.onFindings === "inspector_only"
+    && !workflowInspectorGateNeedsFreshReview(gate);
 }
 
 /** The withheld check retry, only on a run actually blocked in the cleanup phase. */

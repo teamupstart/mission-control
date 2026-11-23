@@ -1,3 +1,7 @@
+import { workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -33,7 +37,6 @@ import {
   type WorkflowRunPhase,
 } from "@shared/workflow-lifecycle.ts";
 import {
-  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
   checkRunBudgetSpent,
@@ -42,7 +45,7 @@ import {
 } from "@shared/workflow.ts";
 import { envVar } from "../config.ts";
 import { llmRunner } from "../llm/index.ts";
-import { runStructured } from "../llm/structured.ts";
+import { ModelReplyMiss, replyMissClause, runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
@@ -50,7 +53,7 @@ import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution, resolveWorkflowNodeExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
-import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
+import { normalizePersonaVerdict, parsePersonaVerdictReply, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
@@ -65,8 +68,10 @@ import {
   tailBounded,
   type CheckRunDeps,
   type CheckScheduler,
+  type CheckSlot,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
+import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -113,7 +118,16 @@ function providerRetryDelayMs(failures: number): number {
  */
 export const CHECK_CLEANUP_UNRESOLVED_PHASE = WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE;
 
+import type { StackDiffBase } from "../stacking/diff-base.ts";
+import type { WorkflowBinding } from "@shared/workflow.ts";
+
 export interface WorkflowEngineOptions {
+  /**
+   * Stacked pull requests: the verified base a stacked task's review compares against, for
+   * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
+   * be refreshed, which the comparison reports as its error rather than using a stale ref.
+   */
+  stackDiffBase?: (binding: WorkflowBinding) => Promise<StackDiffBase | null>;
   /**
    * The daemon's shared review budget. Injected from `src/server/index.ts` so Persona
    * attempts and context compaction cannot each spend a private ceiling of their own.
@@ -145,6 +159,12 @@ export interface WorkflowEngineOptions {
    * the manager owns. The engine's whole job is to make the wait durable and say so.
    */
   onSessionActionWaiting?: (attemptId: string) => void;
+  /**
+   * Called each time a submission is activated, once its run is durably running: the start of
+   * the after-work step. Fires again for a repair round, a resubmit and a continuation; a
+   * subscriber that acts once per launch keeps its own guard. Must not throw.
+   */
+  onSubmissionActivated?: (submissionId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -252,6 +272,18 @@ function upstreamNodeIds(
   return upstream;
 }
 
+/**
+ * The commit a submission's Commands and CodeRabbit are pinned to: an observed pull-request
+ * head first, then the capture's review snapshot (which carries uncommitted work), then the
+ * captured HEAD for a snapshot written before review snapshots existed.
+ */
+export function reviewedCommit(
+  prHeadSha: string | null,
+  evidence: { headSha: string | null; reviewCommit?: string | null },
+): string | null {
+  return prHeadSha ?? evidence.reviewCommit ?? evidence.headSha;
+}
+
 /** Completed same-submission Check outcomes frozen for one newly-runnable Persona attempt. */
 export function personaCheckEvidence(
   graph: PublishedWorkflowGraph,
@@ -288,6 +320,7 @@ export function personaCheckEvidence(
       omittedBytes: parsed.data.truncatedBytes + retained.droppedBytes,
       headSha,
       note: parsed.data.note,
+      artifacts: parsed.data.artifacts,
     }));
   }
   return evidence;
@@ -327,7 +360,11 @@ export function sessionActionCompleteEdges(
  * A build log with an empty tail would otherwise produce an empty `rationale`, which the
  * strict schema refuses.
  */
-function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
+function checkVerdict(
+  outcome: WorkflowCheckOutcome,
+  runId: string,
+  attemptId: string,
+): PersonaVerdict | null {
   const summary = outcome.note;
   if (checkOutcomePasses(outcome)) {
     return normalizePersonaVerdict({
@@ -337,21 +374,47 @@ function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): Persona
       confidence: 1,
     });
   }
-  const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
+  const coderabbit = outcome.slot === "coderabbit";
+  const fit = { slot: outcome.slot, command: outcome.command, commandSource: outcome.commandSource, runId };
+  // A Command the repository does not provide is a configuration repair, never a code one.
+  // `runCheck` classified it against the argv that ran and its complete output, so a nested
+  // command failing inside a real target stays an ordinary failure. The output tail is
+  // shortened so the procedure, which comes first, always fits.
+  const signal = coderabbit ? null : outcome.misfitSignal ?? null;
+  const misfit = signal ? misfitCommandRepair({ ...fit, signal }) : null;
+  const tail = tailBounded(
+    outcome.output,
+    misfit ? WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput / 2 : WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
+  );
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
-  const rationale = dropped > 0
+  const reader = outcome.artifacts
+    .filter((artifact) => artifact.availability === "retained")
+    .map((artifact) =>
+      `read_workflow_command_output({ runId: ${JSON.stringify(runId)}, attemptId: `
+      + `${JSON.stringify(attemptId)}, artifactId: ${JSON.stringify(artifact.id)} })`)
+    .join("\n");
+  const output = (dropped > 0
     ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
-    : quote;
+    : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
+  const rationale = coderabbit
+    ? `${output}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.`
+    : misfit
+    ? `${misfit.guidance}\n\nCommand output:\n${output}`
+    : outcome.commandSource === "default"
+    ? `${output}\n\n${defaultCommandFailureNote(fit)}`
+    : output;
   return normalizePersonaVerdict({
     verdict: "fail",
     summary,
     requestedChanges: [{
-      title: `Fix the failing ${outcome.slot} check`,
+      title: coderabbit
+        ? "Verify all retained CodeRabbit findings and repair valid issues"
+        : misfit?.title ?? `Fix the failing ${outcome.slot} check`,
       rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
-    confidence: 1,
+    confidence: coderabbit ? 0.8 : 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }
 
@@ -393,17 +456,28 @@ export class WorkflowEngine {
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
   private readonly onSessionActionWaiting:
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
+  private readonly onSubmissionActivated:
+    NonNullable<WorkflowEngineOptions["onSubmissionActivated"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
+  private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
   private stopped = true;
+  private checkShutdown = new AbortController();
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  /**
+   * One abort controller per check attempt from the moment it is claimed until it settles.
+   * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
+   * signal wherever the attempt has got to: a claim already running is stopped, and one that has
+   * not registered yet is stopped the moment it does.
+   */
+  private readonly checkAttemptAborts = new Map<string, AbortController>();
 
   constructor(
     readonly store: WorkflowStore,
@@ -418,6 +492,7 @@ export class WorkflowEngine {
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
     this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
+    this.onSubmissionActivated = options.onSubmissionActivated ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
@@ -426,17 +501,20 @@ export class WorkflowEngine {
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
+    this.stackDiffBase = options.stackDiffBase ?? (async () => null);
   }
 
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.checkShutdown = new AbortController();
     this.recover();
     this.wake();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.checkShutdown.abort();
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
     // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
@@ -481,6 +559,11 @@ export class WorkflowEngine {
     }
     this.store.setSubmissionState(submission.id, "running", this.now());
     this.store.setRunState(run.id, "running", "persona_review", null, this.now());
+    try {
+      this.onSubmissionActivated(submission.id);
+    } catch (error) {
+      console.warn(`[workflow] a submission-activated subscriber failed for ${submission.id}:`, error);
+    }
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
     this.wake();
@@ -592,7 +675,7 @@ export class WorkflowEngine {
                   target.id,
                   this.store.listAttempts(submission.id),
                   currentReceipts,
-                  submission.prHeadSha ?? captured.data.evidence.headSha,
+                  reviewedCommit(submission.prHeadSha, captured.data.evidence),
                 )
               : [];
             let reviewInput: WorkflowNodeAttempt["reviewInput"];
@@ -889,7 +972,9 @@ export class WorkflowEngine {
         const skipCheckLimit = target?.kind === "check"
           && this.checkBudgetAlreadySpent(attempt, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
-        const run = () => this.runAttempt(attempt, checkLimitHeld);
+        // The held check slot goes to the attempt, which gives it up while a dependency claim
+        // runs and takes one again before its Command spawns.
+        const run = (slot?: CheckSlot) => this.runAttempt(attempt, checkLimitHeld, slot);
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
@@ -911,10 +996,11 @@ export class WorkflowEngine {
       const next = this.store.listAttemptsDueAfter(schedulingNow);
       if (next !== null && !this.stopped) {
         if (this.wakeTimer) clearTimeout(this.wakeTimer);
+        // Long vendor waits must not overflow Node timers into a one-millisecond loop.
         this.wakeTimer = setTimeout(() => {
           this.wakeTimer = null;
           this.wake();
-        }, Math.max(1, next - this.now()));
+        }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
       }
     } finally {
       this.pumping = false;
@@ -967,11 +1053,15 @@ export class WorkflowEngine {
     );
     return checkRunBudgetSpent(
       spent,
-      command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+      command?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
     );
   }
 
-  private async runAttempt(initial: WorkflowNodeAttempt, checkLimitHeld = false): Promise<void> {
+  private async runAttempt(
+    initial: WorkflowNodeAttempt,
+    checkLimitHeld = false,
+    checkSlot?: CheckSlot,
+  ): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
@@ -989,7 +1079,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, checkSlot);
       return;
     }
     if (!isPersona(node)) return;
@@ -1023,8 +1113,29 @@ export class WorkflowEngine {
     // reached only once the skip above has declined to reuse an earned pass: a skipped judge
     // spawns nothing, so it must resolve nothing.
     const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
-    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
+    const effort = execution.effort?.level ?? null;
+    // Still run at the provider default - a CLI would reject the level - but never silently:
+    // the dropped level is recorded on the attempt, which the run detail prints, and logged.
+    const effortUnsupported = execution.effort?.unsupported ?? null;
+    const claimed = this.store.claimAttempt(
+      initial.id,
+      execution.runner.id,
+      execution.model.id,
+      this.now(),
+      effort,
+      effortUnsupported,
+    );
     if (!claimed) return;
+    if (effortUnsupported) {
+      workflowLog("warn", {
+        event: "persona_effort_unsupported",
+        run: run.id,
+        submission: submission.id,
+        runner: execution.runner.id,
+        model: execution.model.id,
+        effort: effortUnsupported,
+      });
+    }
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success) {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
@@ -1075,6 +1186,7 @@ export class WorkflowEngine {
           purpose: "persona_review",
           runner: execution.runner.id,
           model: execution.model.id,
+          ...(effort ? { effort } : {}),
           attempt,
           state: "running",
           startedAt: this.now(),
@@ -1116,6 +1228,9 @@ export class WorkflowEngine {
     const priorRejection = claimed.reviewInput
       ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
     let violation = priorRejection === "parse" ? null : priorRejection;
+    // What was wrong with the previous execution's reply, when it was a parse miss this
+    // process observed. A restart only knows the persisted basis, so it keeps the generic text.
+    let replyMiss: ModelReplyMiss | null = null;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
       const providerState = claimed.reviewInput
         ? this.store.personaProviderRetryState(claimed.reviewInput.operationId) : null;
@@ -1125,11 +1240,20 @@ export class WorkflowEngine {
         this.blockProviderRetryExhausted(claimed, run.id, failure);
         return;
       }
+      const correction = violation
+        ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
-        (request) => runner.run(request, { model: execution.model.id, timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs), images }),
-        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
+        (request) => runner.run(request, {
+          model: execution.model.id,
+          ...(effort ? { effort } : {}),
+          timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
+          images,
+        }),
+        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
-          const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          replyMiss = reply instanceof ModelReplyMiss ? reply : null;
+          const parsed = replyMiss ? null : reply as PersonaVerdict;
           violation = parsed && claimed.reviewInput ? personaContractViolation(parsed) : null;
           if (violation) {
             this.store.appendEvent(run.id, "persona_contract_violation", {
@@ -1140,7 +1264,7 @@ export class WorkflowEngine {
             return null;
           }
           if (!parsed && claimed.reviewInput) this.store.retainRejectedPersonaVerdict(claimed.id, index + 1, "parse", raw);
-          return parsed;
+          return parsed ?? replyMiss;
         },
         `${node.persona.name} Persona`,
         { start: (_attempt, request) => observer.start(index + 1, request), finish: (_attempt, result) => observer.finish(index + 1, result) },
@@ -1323,12 +1447,81 @@ export class WorkflowEngine {
     version: WorkflowVersion,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
     checkLimitHeld: boolean,
+    scheduledSlot?: CheckSlot,
   ): Promise<void> {
+    // A sibling may extend the vendor wait after this retry was scheduled or while it
+    // waited for a check slot. Re-read before claiming, probing or reserving an execution.
+    const pending = node.slot === "coderabbit" ? this.store.getAttempt(initial.id) : null;
+    if (pending?.state === "retry_wait" && run.status === "running" && submission.status === "running") {
+      const retryAt = Math.max(pending.retryAt ?? 0, this.codeRabbitRetryAt(submission.id));
+      if (retryAt > this.now()) {
+        this.store.finishAttempt(pending.id, {
+          state: "retry_wait", retryAt, error: pending.error, output: pending.output, verdict: pending.verdict,
+        }, this.now());
+        this.onRunChanged(run.id);
+        return;
+      }
+    }
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
     if (!claimed) return;
+    // Armed in the same synchronous run as the claim, so there is no moment at which the
+    // attempt is running and a run cancel cannot reach it.
+    const abort = new AbortController();
+    this.checkAttemptAborts.set(claimed.id, abort);
+    try {
+      await this.runClaimedCheckAttempt(
+        claimed,
+        submission,
+        run,
+        version,
+        node,
+        checkLimitHeld,
+        scheduledSlot,
+        abort.signal,
+      );
+    } finally {
+      if (this.checkAttemptAborts.get(claimed.id) === abort) this.checkAttemptAborts.delete(claimed.id);
+    }
+  }
 
+  private codeRabbitRetryAt(submissionId: string): number {
+    return this.store.listAttempts(submissionId).reduce((latest, attempt) => {
+      const output = attempt.output;
+      if (!output || typeof output !== "object" || Array.isArray(output)) return latest;
+      const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+      return parsed.success ? Math.max(latest, parsed.data.retryAt ?? 0) : latest;
+    }, 0);
+  }
+
+  /**
+   * Abort these check attempts' work in progress: the dependency claim each is running or is
+   * about to run. A cancelled run calls it with the attempts it was running. Returns how many
+   * of them were check attempts still in flight. The command a check already spawned is not
+   * signalled; its result is recorded as audit-only, as it always was after a cancel.
+   */
+  stopCheckAttempts(attemptIds: readonly string[]): number {
+    let stopped = 0;
+    for (const id of attemptIds) {
+      const abort = this.checkAttemptAborts.get(id);
+      if (!abort) continue;
+      abort.abort("cancelled");
+      stopped += 1;
+    }
+    return stopped;
+  }
+
+  private async runClaimedCheckAttempt(
+    claimed: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+    checkLimitHeld: boolean,
+    scheduledSlot: CheckSlot | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1340,25 +1533,70 @@ export class WorkflowEngine {
       return;
     }
 
+    const catalogCommand = this.workflowCommand(node.slot);
+    let frozenComparison: import("@shared/workflow.ts").CodeRabbitComparison | null = null;
+    if (node.slot === "coderabbit") {
+      try { frozenComparison = this.store.getCodeRabbitComparison(submission.id); }
+      catch { /* The comparison callback below reports corruption after YAML/budget gating. */ }
+    }
+    const commandView = node.slot === "coderabbit"
+      ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
+          ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
+      : catalogCommand;
+    // On the fallback path the slot is only taken around the executor, after the attempt ref
+    // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
+    let fallbackSlot: CheckSlot | undefined;
+    const checkSlot: CheckSlot | undefined = checkLimitHeld
+      ? scheduledSlot
+      : {
+          release: () => fallbackSlot?.release(),
+          reacquire: () => fallbackSlot?.reacquire() ?? Promise.resolve(),
+        };
     const attemptRef = {
+      runId: run.id,
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
+      signal,
+      ...(checkSlot ? { checkSlot } : {}),
     };
     const baseDeps = this.checkDeps(attemptRef);
-    const deps = !checkLimitHeld && baseDeps.execute
-      ? {
-          ...baseDeps,
-          execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
-            this.checkLimit(() => baseDeps.execute!(request)),
-        }
-      : baseDeps;
+    const shutdown = this.checkShutdown.signal;
+    const gated = <T>(fn: () => Promise<T>): Promise<T> => this.checkLimit((slot) => {
+      fallbackSlot = slot;
+      return fn();
+    });
+    const deps = baseDeps.execute ? {
+      ...baseDeps,
+      execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) => {
+        const execute = () => baseDeps.execute!({...request, signal: shutdown});
+        return checkLimitHeld ? execute() : gated(execute);
+      },
+    } : baseDeps;
 
     let result: Awaited<ReturnType<typeof runCheck>>;
     try {
       result = await runCheck({
         slot: node.slot,
-        command: this.workflowCommand(node.slot),
+        coderabbit: node.slot === "coderabbit" ? {
+          yaml: context.data.evidence.coderabbit,
+          dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
+          // Carry an unresolved review across submissions. A later complete review clears
+          // it; a skip cannot. The store orders attempts from oldest to newest.
+          incompleteReview: this.store.listAttemptsForRun(submission.runId).reduce((incomplete, attempt) => {
+            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return incomplete;
+            const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
+            return parsed.success && parsed.data.status !== "skipped" ? parsed.data.status === "incomplete" : incomplete;
+          }, false),
+          retryAt: this.codeRabbitRetryAt(submission.id),
+          comparison: async () => this.store.getCodeRabbitComparison(submission.id)
+            ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
+              repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
+              yaml: context.data.evidence.coderabbit!, command: commandView!,
+              stackBase: () => this.stackDiffBase(binding),
+            })),
+        } : undefined,
+        command: commandView,
         policy: this.workflowPolicy(),
         /*
          * Handed as a claim rather than a count, because the budget belongs to the COMMAND:
@@ -1370,16 +1608,26 @@ export class WorkflowEngine {
          * Called only if the ladder gets as far as spawning - resolution, authorization and
          * locatability are all asked first, and none of them may spend a run.
          */
-        reserveRun: () => this.store.reserveCheckRun(
-          run.id,
-          claimed.id,
-          node.slot,
-          this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
-          run.checkBudgetEpochRound ?? null,
-        ),
+        reserveRun: () => {
+          const reservation = this.store.reserveCheckRun(
+            run.id,
+            claimed.id,
+            node.slot,
+            commandView?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
+            run.checkBudgetEpochRound ?? null,
+          );
+          return reservation.granted
+            ? {
+                ...reservation,
+                release: () => { this.store.releaseCheckRun(claimed.id, node.slot); },
+              }
+            : reservation;
+        },
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
-        headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+        headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
+        publicationTreeOid: context.data.evidence.publication
+          ? workflowPublicationTree(context.data.evidence) : null,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
       }, deps);
@@ -1389,13 +1637,21 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
       return;
     }
+    if (result.kind === "retryable_connection") {
+      this.store.transact(() => this.handleCodeRabbitConnectionFailure(claimed, run.id, result));
+      return;
+    }
+    if (result.kind === "action_required") {
+      this.handleCheckActionRequired(claimed, run.id, result.reason, result);
+      return;
+    }
     if (result.kind === "infrastructure") {
       this.handleInfrastructureFailure(claimed, run.id, result.reason);
       return;
     }
 
     const { outcome: checkOutcome } = result;
-    const verdict = checkVerdict(checkOutcome, claimed.id);
+    const verdict = checkVerdict(checkOutcome, run.id, claimed.id);
     if (!verdict) {
       this.handleInfrastructureFailure(
         claimed,
@@ -1436,7 +1692,7 @@ export class WorkflowEngine {
       slot: node.slot,
       status: checkOutcome.status,
       exitCode: checkOutcome.exitCode,
-      headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+      headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
       outputBytes: Buffer.byteLength(checkOutcome.output),
       omittedBytes: checkOutcome.truncatedBytes,
     }, this.now());
@@ -1584,6 +1840,79 @@ export class WorkflowEngine {
     this.store.appendEvent(runId, "persona_infrastructure_exhausted", {
       nodeId: attempt.nodeId,
       attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+  }
+
+  /** A provider-confirmed disconnect is not a review verdict or permission to spend more. */
+  private handleCodeRabbitConnectionFailure(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    result: Extract<Awaited<ReturnType<typeof runCheck>>, { kind: "retryable_connection" }>,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: result.reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
+    const allowanceSpent = result.review.remainingRuns === 0;
+    if (exhausted || allowanceSpent) {
+      this.handleCheckActionRequired(attempt, runId,
+        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. ${allowanceSpent ? CODERABBIT_ALLOWANCE_REMEDY : "Inspect retained output and retry after connectivity recovers"}. No additional credits were authorized.`, result);
+      return;
+    }
+    const now = this.now();
+    // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
+    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
+    this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
+      output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
+    if (this.blockedByUnresolvedLease(attempt, runId, result.reason)) return;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, inputFingerprint: attempt.inputFingerprint,
+      retryAt, error: `Automatic retry scheduled: ${result.reason}`, now,
+    });
+    this.store.appendEvent(runId, "command_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt, error: result.reason,
+    }, now);
+    this.onRunChanged(runId);
+    this.wake();
+  }
+
+  /** Configuration or consent needs a human correction, never an automatic retry or code fix. */
+  private handleCheckActionRequired(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+    details?: { setup?: boolean; review?: import("@shared/workflow.ts").CodeRabbitReviewSummary; artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[] },
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason, output: details ? jsonValue({
+      ...(details.setup ? { setup: true } : {}),
+      ...(details.review ? { review: details.review } : {}),
+      ...(details.artifacts ? { artifacts: details.artifacts } : {}),
+    }) : undefined }, this.now());
+    this.store.setSubmissionState(submission.id, "failed", this.now());
+    this.store.setRunState(runId, "blocked", "command_action_required", {
+      nodeId: attempt.nodeId,
+      attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.store.appendEvent(runId, "command_action_required", {
+      nodeId: attempt.nodeId,
+      attemptId: attempt.id,
       error: reason,
     }, this.now());
     this.onRunChanged(runId);

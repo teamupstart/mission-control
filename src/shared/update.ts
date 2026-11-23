@@ -59,7 +59,17 @@ export type UpdateSnapshot =
       lastCheckedAt: number | null;
     })
   | (SnapshotBase & { phase: "checking"; currentVersion: string; manual: boolean })
-  | (SnapshotBase & { phase: "up-to-date"; currentVersion: string; checkedAt: number })
+  | (SnapshotBase & {
+      phase: "up-to-date";
+      currentVersion: string;
+      checkedAt: number;
+      /**
+       * A newer build whose signed binary is not ready to install yet, such as the alpha for a
+       * commit that just merged. Nothing newer than the running app is installable, so this is
+       * up to date rather than an error, and the next check offers it once it is published.
+       */
+      pendingVersion?: string;
+    })
   | (SnapshotBase & {
       phase: "available";
       currentVersion: string;

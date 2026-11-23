@@ -27,6 +27,8 @@ export const piHooks: HookSpec = {
   },
   promptText,
   submittedPromptText: (evt) => evt.event === "UserPromptSubmit" ? evt.prompt ?? null : null,
+  // Pi has no sub-agents its hooks report, so a Pi session never shows the indicator.
+  subagentSignals: () => [],
 };
 function promptText(evt: HookIngest): string | null {
   return evt.event === "UserPromptSubmit" ? evt.prompt?.trim() || null : null;

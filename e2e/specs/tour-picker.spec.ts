@@ -290,6 +290,11 @@ for (const entry of TOUR_ENTRIES) {
       // landing is timing-dependent here; what a fresh catalog can assert deterministically
       // is the handed-over route itself.
       await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/runs");
+    } else if (entry.id === "residents") {
+      // Meet your residents hands the fleet over, landing on the top bar's Residents button,
+      // which exists whether or not its drawer was ever opened.
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/fleet");
+      await expect(page.getByRole("button", { name: /^Residents - \d+ live$/ })).toBeFocused();
     } else {
       await expect(entry.exit ? page.locator("#settings-tab-trust") : page.locator(".gear-btn")).toBeFocused();
     }
@@ -321,6 +326,20 @@ test("keyboard selection, focus containment and manual dismissal preserve the in
   await browse(page);
   await page.keyboard.press("Escape");
   await expect(invoker).toBeFocused();
+});
+
+test("Cmd+Enter starts the selected tour from its preview", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expectContentClearsBorder(picker(page));
+  await picker(page).getByRole("radio", { name: "Author what runs" }).check();
+  await picker(page).getByRole("button", { name: "Dismiss" }).focus();
+  await page.keyboard.press("Meta+Enter");
+  await expect(picker(page)).toBeHidden();
+  await expect(page.locator(".driver-popover")).toContainText("The Library");
+  expect(await hash(page)).toBe("#/library");
+  expect(await (await fetch(`${daemon.baseURL}/api/tasks`)).json()).toEqual([]);
+  await screenshot(page, "cmd-enter-selected-tour-started");
+  await page.getByRole("button", { name: "Exit tour" }).click();
 });
 
 test("dirty draft Cancel and Leave keep the preview, requiring Start again", async ({ page, daemon }) => {

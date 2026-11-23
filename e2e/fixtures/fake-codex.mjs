@@ -27,7 +27,7 @@
  * WHAT THE DRIVER ACTUALLY READS
  *   - `initialize`            -> handshake, result ignored
  *   - `thread/start`          -> binds: thread.id becomes agentSessionId, thread.path the rollout
- *   - `turn/start`            -> the response's turn.id is recorded BEFORE any notification
+ *   - `turn/start`            -> the response's turn.id is recorded BEFORE its root-turn notifications
  *   - `turn/started`          -> card goes working
  *   - `turn/completed`        -> `turn_done`, card goes idle
  *   - `thread/status/changed` -> the idle backstop, redundant with turn/completed by design
@@ -55,6 +55,9 @@ const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only 
  * see three of them and still finish. Every other spec keeps the shipped value.
  */
 const HELD_TURN_MS = Number(process.env.MC_E2E_CODEX_HELD_TURN_MS ?? 5_000);
+/** A longer hold, for a spec that queues two messages behind a busy turn. */
+const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
+const REVIEW_HELD_TURN_MS = 15_000;
 /**
  * Hold only the native resume handshake, so a restart spec can observe the daemon while
  * the driver is genuinely not yet adoptable. The default is zero and leaves every other
@@ -142,7 +145,14 @@ if (recordDir) {
   mkdirSync(join(recordDir, "codex"), { recursive: true });
   writeFileSync(
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
-    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }, null, 2),
+    JSON.stringify({
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
+      // The variable a real `codex app-server` turns into the header of an MCP server whose
+      // config maps one to it (`env_http_headers`).
+      workUnitId: process.env.WORK_UNIT_ID ?? null,
+    }, null, 2),
   );
 }
 
@@ -164,6 +174,10 @@ function recordResumePhase(phase) {
  * proved the list came from here rather than from `MODEL_CATALOG`.
  */
 const CATALOG_ROWS = [
+  // Opt-in discovery row: profile tests must see an unpriced normal choice before selection.
+  ...(process.env.MC_E2E_CODEX_UNPRICED_CATALOG === "1"
+    ? [["gpt-e2e-unpriced-live", "Unpriced live model", "Discovered test model.", false]]
+    : []),
   ["gpt-6-astra", "GPT-6-Astra", "Our most capable model for complex, demanding work.", false],
   ["gpt-6-sol", "GPT-6-Sol", "Strong model for complex coding and agentic workflows.", false],
   ["gpt-6-luna", "GPT-6-Luna", "Efficient model for focused tasks.", false],
@@ -326,6 +340,11 @@ if (process.argv[2] === "exec") {
     process.stdin.resume();
   });
   process.exit(process.exitCode ?? 0);
+}
+
+if (process.env.MC_E2E_CODEX_OAUTH_MCP === "1" && process.argv.slice(2).join(" ") === "mcp list --json") {
+  process.stdout.write(JSON.stringify([{ name: "glean", auth_status: "o_auth" }]));
+  process.exit(0);
 }
 
 // `spawnAppServer` is the only caller and it always leads with this word. Failing loudly
@@ -605,6 +624,25 @@ function runTurn(turnId, input, effort, model) {
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
   };
 
+  if (prompt.includes("E2E_CODEX_BACKGROUND_AGENTS")) {
+    const children = ["e2e-scout", "e2e-reviewer"];
+    for (const [index, child] of children.entries()) {
+      notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+        type: "collabAgentToolCall", id: `spawn-${child}`, tool: "spawnAgent", status: "completed",
+        senderThreadId: THREAD_ID, receiverThreadIds: [child],
+        prompt: index === 0 ? "Map the ledger" : "Review ledger tests", agentsStates: {},
+      } });
+      notify("thread/started", { thread: { ...thread(), id: child, parentThreadId: THREAD_ID,
+        agentRole: index === 0 ? "explorer" : "reviewer", preview: "" } });
+    }
+    finish([prompt]);
+    setTimeout(() => notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+      type: "subAgentActivity", id: "review-done", kind: "completed",
+      agentThreadId: children[1], agentPath: "/reviewer",
+    } }), 1500);
+    return;
+  }
+
   if (prompt === FAILING_TURN) {
     appendRolloutEvent({
       type: "task_complete",
@@ -721,8 +759,87 @@ function runTurn(turnId, input, effort, model) {
     setTimeout(() => finish(turnState.prompts, true), HELD_TURN_MS);
     return;
   }
+  // The longer busy window `fake-claude.mjs` keeps for the same prompt: long enough to queue
+  // two messages under contention before the turn ends.
+  if (prompt === REVIEW_HELD_TURN) {
+    const turnState = { prompts: [prompt] };
+    turnState.timer = setTimeout(() => finish(turnState.prompts), REVIEW_HELD_TURN_MS);
+    turnState.interrupt = () => {
+      clearTimeout(turnState.timer);
+      finish([], false, true);
+    };
+    openTurn = turnState;
+    return;
+  }
+  // Codex's own question tool, blocking the turn on a human: the native driver form, which a
+  // dispatched Claude task no longer reaches (it asks through `request_input`), so this is
+  // the harness that keeps the form reachable in a browser spec.
+  if (prompt === ASK_TURN) {
+    const requestId = `ask-${turnId}`;
+    const turnState = { prompts: [prompt] };
+    turnState.interrupt = () => {
+      asked.delete(requestId);
+      finish([], false, true);
+    };
+    openTurn = turnState;
+    asked.set(requestId, () => {
+      asked.delete(requestId);
+      // No narration of the answer: the conversation's account of it must come from the
+      // review the daemon records, not from this fake's prose.
+      finish(turnState.prompts);
+    });
+    write({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: THREAD_ID,
+        turnId,
+        itemId: `ask-item-${turnId}`,
+        questions: ASK_QUESTIONS,
+        isBlocking: true,
+        autoResolutionMs: null,
+      },
+    });
+    return;
+  }
   finish([prompt]);
 }
+
+/**
+ * The prompt this app-server answers by asking the operator through `request_user_input` and
+ * blocking until they answer - the same prompt and the same two questions `fake-claude.mjs`
+ * raises with `AskUserQuestion`, so a spec reads the same form on either harness. Codex's tool
+ * has no multi-select, so both questions take one answer (or custom text).
+ */
+const ASK_TURN = "ask me which linter to use";
+const ASK_QUESTIONS = [
+  {
+    id: "linter",
+    header: "Linter",
+    question: "Which linter?",
+    isOther: true,
+    isSecret: false,
+    options: [
+      { label: "biome", description: "lint + format in one binary" },
+      { label: "eslint", description: "widest plugin ecosystem" },
+    ],
+  },
+  {
+    id: "checks",
+    header: "Checks",
+    question: "Which checks should run?",
+    isOther: true,
+    isSecret: false,
+    options: [
+      { label: "types", description: "tsc --noEmit" },
+      { label: "tests", description: "the node:test suite" },
+    ],
+  },
+];
+let configuredResidentMcp = null;
+/** Server requests this app-server sent and is waiting on, by request id: what to do on the answer. */
+const asked = new Map();
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   if (!line.trim()) return;
@@ -733,6 +850,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return; // the real server tolerates noise on this pipe; so do we
   }
   const { id, method, params } = frame ?? {};
+  // The client's response to a request this server sent (`request_user_input`): no method,
+  // an id we issued, and a result or an error. Either one resolves the ask.
+  if (method === undefined && id !== undefined && asked.has(id)) {
+    asked.get(id)();
+    return;
+  }
   if (typeof method !== "string" || id === undefined) return;
 
   switch (method) {
@@ -750,10 +873,83 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       respond(id, { data: CATALOG_ROWS, nextCursor: null });
       return;
     }
+    case "config/read": {
+      // The layered read a resident launch verifies its MCP set against. Answered the way the
+      // real server does: the launch flags' servers, and the user layer from `CODEX_HOME`'s
+      // `config.toml` - which for a resident is its generated overlay. Only the server NAMES are
+      // read, from the quoted table headers the overlay writes. A plain read answers the way a
+      // real app-server with no configured developer instructions does - a config carrying
+      // `developer_instructions: null` - so the launch's developer-instruction channel is
+      // usable. An empty `{}` reads as an UNUSABLE channel, which would push every launch's
+      // decision routing into turn one and change prompts the fake matches exactly.
+      if (!params?.includeLayers) {
+        respond(id, { config: { developer_instructions: null }, origins: {} });
+        return;
+      }
+      const file = join(process.env.CODEX_HOME || join(process.env.HOME, ".codex"), "config.toml");
+      let text = "";
+      try {
+        if (file) text = readFileSync(file, "utf8");
+      } catch {
+        // No configuration file: an empty user layer.
+      }
+      const user = {};
+      for (const match of text.matchAll(/^\[mcp_servers\.("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\]\s*$/gm)) {
+        user[match[1].startsWith('"') ? JSON.parse(match[1]) : match[1]] = {};
+      }
+      // The resident inheritance regression reads the raw operator table for its catalog.
+      // The generated overlay has launcher entries instead, with no env_vars reference.
+      if (user.node_repl && text.includes('env_vars = ["MC_E2E_NODE_REPL_TOKEN"]')) {
+        user.node_repl = { command: "native-repl", env_vars: ["MC_E2E_NODE_REPL_TOKEN"] };
+      }
+      if (Object.hasOwn(user, "glean") && process.env.MC_E2E_CODEX_OAUTH_MCP === "1") {
+        user.glean = { url: "https://glean.example.test/mcp" };
+      }
+      const flags = {};
+      for (const arg of process.argv) {
+        const flag = /^mcp_servers\.([A-Za-z0-9_-]+)\.command=/.exec(arg);
+        if (flag) flags[flag[1]] = {};
+        if (arg.startsWith("mcp_servers={")) {
+          for (const match of arg.matchAll(/("(?:[^"\\]|\\.)*")\s*=\s*\{/g)) flags[JSON.parse(match[1])] = { required: true };
+        }
+      }
+      // Native Codex searches ancestors unless project_root_markers=[] bounds discovery
+      // to cwd. The operator home is excluded only when it is the actual CODEX_HOME.
+      const homeProject = process.env.MC_E2E_CODEX_ACTIVE_HOME_LAYER === "1"
+        && file !== join(process.env.HOME, ".codex", "config.toml")
+        && !process.argv.includes("project_root_markers=[]")
+        ? { "mission-control": { command: "native-mission" }, node_repl: { command: "native-repl", env_vars: ["NATIVE_TOKEN"] } }
+        : null;
+      const configured = { ...user, ...homeProject, ...flags };
+      if (process.env.MC_E2E_CODEX_OAUTH_MCP === "1") {
+        configuredResidentMcp = { file, names: Object.keys(configured).sort() };
+      }
+      respond(id, {
+        config: { mcp_servers: configured },
+        origins: {},
+        layers: [
+          { name: { type: "sessionFlags" }, version: "flags", config: { mcp_servers: flags } },
+          { name: { type: "user", file, profile: null }, version: createHash("sha256").update(text).digest("hex"), config: { mcp_servers: user } },
+          ...(homeProject ? [{
+            name: { type: "project", dotCodexFolder: join(process.env.HOME, ".codex") },
+            version: "home-project",
+            config: { mcp_servers: homeProject },
+          }] : []),
+        ],
+      });
+      return;
+    }
     case "thread/start":
+      if (recordDir && configuredResidentMcp) {
+        writeFileSync(join(recordDir, "codex", `resident-mcp-${process.pid}.json`), JSON.stringify(configuredResidentMcp));
+      }
       respond(id, {
         thread: thread({ type: "idle" }),
-        model: MODEL,
+        // The model the thread was started on, as the real app-server answers: the requested
+        // one, or its own default. Answering the default regardless contradicted the rollout's
+        // `turn_context`, and whichever of the two reached the session last decided which
+        // model it showed - a race that read as the daemon dropping a dispatched model.
+        model: params?.model ?? MODEL,
         modelProvider: "openai",
         serviceTier: null,
         cwd: process.cwd(),
@@ -769,7 +965,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const finishResume = () => {
         respond(id, {
           thread: thread({ type: "idle" }),
-          model: MODEL,
+          model: params?.model ?? MODEL,
           modelProvider: "openai",
           serviceTier: null,
           cwd: process.cwd(),
@@ -787,7 +983,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     case "turn/start": {
       const turnId = `turn-${++turnSeq}`;
-      // Answered BEFORE a single notification is written, and the turn's own frames are
+      // Independent children can resume and finish before this send is acknowledged.
+      if (textOf(params?.input) === "restart the reviewer before acknowledging this send") {
+        for (const status of ["running", "completed"]) {
+          notify("item/completed", { threadId: THREAD_ID, turnId, item: {
+            type: "collabAgentToolCall", id: `review-${status}-${turnId}`, tool: "resumeAgent", status: "completed",
+            senderThreadId: THREAD_ID, receiverThreadIds: ["e2e-reviewer"],
+            agentsStates: { "e2e-reviewer": { status, message: status === "completed" ? "New review result" : null } },
+          } });
+        }
+      }
+      // Answered BEFORE this turn's own notifications are written, and those frames are
       // deferred a tick behind it. The driver records `activeTurnId` from this response as
       // well as from `turn/started`, so a `turn/completed` that overtook the response would
       // be matched against a turn the driver has not adopted yet - and the response would

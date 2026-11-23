@@ -10,6 +10,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 // Pure and browser-safe (no `node:` imports), so a static import cannot open the DB ahead
 // of the HARNESS_HOME preamble below.
 import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
+import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
 
 // The phase's merge criteria, end to end, against the real chain: the config route stores
 // the write-back consent, a completion through `TaskManager.complete` reaches the ledger,
@@ -365,6 +366,51 @@ test("a pull request becoming a swept task's is commented onto its issue", async
     false,
     "opening a pull request closed the issue",
   );
+});
+
+test("acli delivery uses OAuth only; its ledger retries refusals but never an uncertain comment", async () => {
+  const old = { ...process.env };
+  const agents = writeFakeAgents(join(bin, "acli-ledger"));
+  const stateFile = join(agents.recordDir, "fake-acli-state.json");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("acli must never fall back to REST"); };
+  try {
+    delete process.env.JIRA_API_TOKEN;
+    delete process.env.JIRA_EMAIL;
+    process.env.MISSION_ACLI_BIN = agents.bins.acli;
+    process.env.MISSION_JIRA_BIN = agents.bins.jira;
+    process.env.MC_E2E_RECORD_DIR = agents.recordDir;
+    setTaskSourcesConfig(TaskSourcesConfigSchema.parse({ sources: [{
+      id: "src-1", kind: "jira", label: "acli", repoRoot: repo,
+      writeback: { onPrOpened: true },
+      config: { queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", linkVia: "remote-link" },
+    }] }));
+    const { registry, enqueuer } = daemon();
+    registry.upsertTask({ ...swept(), source: { sourceId: "src-1", externalId: "MC-2", url: "https://example.atlassian.net/browse/MC-2" } });
+    const owe = (number: number) => enqueuer.prLinked({ taskId: "t1", repoRoot: repo,
+      prUrl: `https://github.com/acme/demo/pull/${number}`, observedAt: Date.now() });
+    writeFileSync(stateFile, JSON.stringify({ comment: "refused" }));
+    owe(91);
+    await drainWritebacks(registry);
+    assert.equal(ledger()[0]!.state, "pending");
+    writeFileSync(stateFile, "{}");
+    await drainWritebacks(registry, { now: () => Date.now() + SETTLE });
+    assert.equal(ledger()[0]!.state, "delivered");
+    assert.match(ledger()[0]!.last_detail!, /commented.*remote link is unavailable/);
+    writeFileSync(stateFile, JSON.stringify({ comment: "no-answer" }));
+    owe(92);
+    await drainWritebacks(registry);
+    assert.equal(ledger()[1]!.state, "unknown");
+    const attempts = () => openDb().prepare("SELECT attempts FROM task_source_writeback ORDER BY id").all();
+    const before = attempts();
+    writeFileSync(stateFile, "{}");
+    await drainWritebacks(registry, { now: () => Date.now() + SETTLE * 10 });
+    assert.deepEqual(attempts(), before, "an unknown comment must never retry automatically");
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
+    Object.assign(process.env, old);
+  }
 });
 
 // The consent that is separate from the trigger. With the completion trigger on and

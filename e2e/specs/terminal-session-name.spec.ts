@@ -143,6 +143,8 @@ test("a Ghostty dispatch keeps its task name through tab rewrites and daemon res
   }
 });
 
+test.describe("an outside Ghostty session", () => {
+  test.use({ outsideSessions: true });
 test("an external Ghostty session sharing a pane cwd has no writable destination", async ({ dashboard, daemon }) => {
   writeFileSync(join(daemon.home, "terminal-boundary.json"), JSON.stringify({
     cwd: daemon.repo, requestedTitle: "", tabTitle: "an unrelated shell at the same cwd",
@@ -159,6 +161,7 @@ test("an external Ghostty session sharing a pane cwd has no writable destination
     mkdirSync("e2e/.artifacts/terminal-session-name", { recursive: true });
     await dashboard.screenshot({ path: "e2e/.artifacts/terminal-session-name/ghostty-unverified.png" });
   }
+});
 });
 
 test.describe("managed terminal continuation", () => {
@@ -189,8 +192,10 @@ test("continuing an SDK task in Ghostty retains the returned launch target", asy
   const continued = await getTask();
   expect(continued.sessionId).not.toBe(embedded);
   expect(continued.terminalLaunch?.sessionId).toBe(continued.sessionId);
-  await expect(dashboard.getByRole("navigation", { name: "Sessions" })
-    .getByRole("button", { name: /^Continue in Ghostty .* idle / })).toHaveAttribute("aria-current", "true");
+  const continuedRow = dashboard.getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: "Continue in Ghostty", description: "Continue in Ghostty - idle", exact: true });
+  await expect(continuedRow).toHaveAttribute("aria-current", "true");
+  await expect(continuedRow).toHaveAccessibleDescription(/Continue in Ghostty - idle/);
   await expect(dashboard.getByPlaceholder("No pane to send to")).toHaveCount(0);
   const nonce = "handoff-to-exact-ghostty-uuid";
   // Exercise the exact terminal write target, as in the native UUID acknowledgement probe.

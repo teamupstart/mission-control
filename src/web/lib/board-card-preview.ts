@@ -1,6 +1,7 @@
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { ResidentSessionMark } from "../residents/marker.ts";
 
 /**
  * The session the Board card panel's preview draws, and the only session fixture in
@@ -64,6 +65,7 @@ export function previewSession(now: number): Session {
     lastSeen: 0,
     lastActivity: now - 42_000,
     pendingReviews: 0,
+    openQuestions: 0,
     // A task, so the Task type picker governs something the preview can draw. Named after
     // the session the way a dispatch names one, so the card's task pill stays silent and
     // the kind mark is the only thing the task adds.
@@ -121,6 +123,22 @@ export function previewSession(now: number): Session {
       updatedAt: 0,
     },
     queue: null,
+    // A blocker, so each of the five blocker card items governs something the preview draws.
+    blocker: {
+      id: "board-card-preview-blocker",
+      kind: "question",
+      reason: "Needs the audit-log retention window",
+      waitingOn: "Dana (platform)",
+      resumeWhen: "Platform answers with a retention window",
+      details: null,
+      referenceUrl: "https://example.com/threads/8812",
+      startedAt: now - 3 * 3_600_000,
+      updatedAt: now - 3 * 3_600_000,
+      checkedAt: null,
+      reply: { flaggedAt: now - 600_000, flaggedBy: "operator", note: null, referenceUrl: null },
+    },
+    // A session stands on a blocker OR a declared wait, never both, so the preview shows none.
+    awaiting: null,
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
@@ -135,6 +153,53 @@ export function previewSession(now: number): Session {
       step: "stories",
     },
     paneDialog: null,
+    // Background agents, so the Background sub-agents picker governs something the preview
+    // draws: sub-cards under the card, or a chip in its flags. The plan's own sample - two
+    // running, one finished a minute ago - so both treatments show every state they mark.
+    subagents: {
+      agents: [
+        {
+          id: "board-card-preview-agent-map",
+          type: "Explore",
+          description: "Map every offset-pagination call site",
+          state: "running",
+          startedAt: now - 134_000,
+          endedAt: null,
+          toolUses: 18,
+          tokens: 41_000,
+          lastTool: "Grep",
+          summary: null,
+          launchTurnId: null,
+        },
+        {
+          id: "board-card-preview-agent-billing",
+          type: "general-purpose",
+          description: "Convert billing report queries",
+          state: "running",
+          startedAt: now - 48_000,
+          endedAt: null,
+          toolUses: 6,
+          tokens: 12_000,
+          lastTool: "Edit",
+          summary: null,
+          launchTurnId: null,
+        },
+        {
+          id: "board-card-preview-agent-contracts",
+          type: "Explore",
+          description: "Find contract tests for /ledger",
+          state: "completed",
+          startedAt: now - 125_000,
+          endedAt: now - 60_000,
+          toolUses: 9,
+          tokens: 22_000,
+          lastTool: null,
+          summary: null,
+          launchTurnId: null,
+        },
+      ],
+      finishedFolded: 0,
+    },
   };
 }
 
@@ -227,4 +292,22 @@ export const PREVIEW_WORKFLOW_RUN: WorkflowRunSummary = {
   uncertainDeliveryCount: 0,
   refusedDeliveryCount: 0,
   updatedAt: 0,
+};
+
+/**
+ * The preview card as a resident, so the Resident marker checkbox visibly governs something.
+ * The name and label are the plan's own example; the preview has no run behind it.
+ */
+export const PREVIEW_RESIDENT: ResidentSessionMark = {
+  runId: "board-card-preview-resident-run",
+  taskId: "board-card-preview-resident-task",
+  profileId: "board-card-preview-resident",
+  name: "Triage Bot",
+  personaName: "Fleet Triage",
+  colorId: "cyan",
+  label: "TRI",
+  pin: true,
+  revision: 1,
+  changedTo: null,
+  controlOtherSessions: false,
 };

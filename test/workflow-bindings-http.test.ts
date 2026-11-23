@@ -573,7 +573,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: "w-dispatch-default",
+    kindWorkflowDefaults: { ship: "w-dispatch-default" },
   });
   const registry = new Registry();
   const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
@@ -624,7 +624,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   );
   assert.equal(registry.getTask(inheritedTask.id)?.status, "backlog");
 
-  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: null } });
   setForemanConfig({ enabled: false });
 });
 
@@ -812,7 +812,7 @@ test("the Ship it review route starts the built-in workflow and never replaces a
     ],
   };
   seedRuntimeVersion("manual-review-conflict", graph);
-  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: null } });
 
   const registry = new Registry();
   registry.applyDiscovery([
@@ -1120,6 +1120,151 @@ test("the first completed discovery orphans bindings whose sessions disappeared 
   assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.state, "orphaned");
   assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.sessionId, null);
   assert.equal(workflows.store.getRun("run-missing-at-startup")?.status, "blocked");
+  await workflows.stop();
+});
+
+test("a hibernated task's armed binding survives its session leaving and a restart's first discovery", async () => {
+  // Resume brings the SAME session id and conversation back (@shared/hibernation.ts), so the
+  // workflow armed on it must still be the one that judges the work - never orphaned.
+  const conversation = "conv-hib";
+  const onConversation = (registry: InstanceType<typeof Registry>, pane: string, agentSessionId = conversation) =>
+    registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: agentSessionId, cwd: "/repo", transcriptPath: null, env: { tmuxPane: pane } });
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "session-hib", tty: "ttys21", terminals: [mkMuxHandle({ paneId: "%hib" })] })]);
+  onConversation(registry, "%hib");
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    personas,
+    workflows,
+  });
+  // A binding the same session holds for ANOTHER conversation: Resume reopens only the
+  // hibernated one, so this one is neither held while the task sleeps nor carried by Resume. (The
+  // route arms one binding per conversation, so it is armed first and then moved to the other
+  // conversation's key.)
+  const second = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
+  assert.equal(second.status, 201);
+  const other = await second.json() as { id: string; sessionAgent: string; sessionName: string; sessionCwd: string | null; sessionRepoRoot: string | null };
+  workflows.store.reattachBinding(other.id, {
+    noteKey: "conv-other",
+    sessionId: "session-hib",
+    sessionAgent: other.sessionAgent,
+    sessionName: other.sessionName,
+    sessionCwd: other.sessionCwd,
+    sessionRepoRoot: other.sessionRepoRoot,
+  });
+  const created = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
+  assert.equal(created.status, 201);
+  const binding = await created.json() as { id: string; workflowVersionId: string; triggerMode: "manual"; deliveryMode: "preview"; maxRepairRounds: number };
+  const noteKey = noteKeyFor(registry.getSession("session-hib")!);
+  assert.equal(noteKey, conversation);
+  // The conversation's binding for a SECONDARY repository, which reviews that repository's own
+  // worktree rather than the session's (`ensureRepoBinding`).
+  const secondary = workflows.store.insertBinding({
+    id: "binding-secondary-repo",
+    workflowVersionId: binding.workflowVersionId,
+    noteKey,
+    sessionId: "session-hib",
+    sessionAgent: other.sessionAgent,
+    sessionName: other.sessionName,
+    sessionCwd: "/wt/repo-b",
+    sessionRepoRoot: "/repo-b",
+    repoRoot: "/repo-b",
+    triggerMode: binding.triggerMode,
+    deliveryMode: binding.deliveryMode,
+    maxRepairRounds: binding.maxRepairRounds,
+    now: Date.now(),
+  });
+  registry.upsertTask(mkTask({
+    id: "hibernated-binding-task",
+    status: "hibernated",
+    hibernation: { sessionId: "session-hib", runtime: "terminal" as const, permissionMode: null, checkout: null, agentSessionId: conversation, noteKey, hibernatedAt: 1, blocker: null, failure: null },
+  }));
+
+  // A woken driver reports a different conversation before Resume refuses it: the hibernated
+  // conversation's bindings are not paused for that, since they wait for their own conversation.
+  registry.emit("event", { type: "session_upsert", session: { ...registry.getSession("session-hib")!, agentSessionId: "conv-elsewhere" } });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "active", "not paused as conversation_changed");
+  assert.equal(workflows.store.getBinding(secondary.id)?.state, "active");
+
+  registry.emit("event", { type: "session_remove", id: "session-hib" });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "active");
+  assert.equal(workflows.store.getBinding(binding.id)?.sessionId, "session-hib");
+  assert.equal(workflows.store.getBinding(secondary.id)?.state, "active");
+  assert.equal(workflows.store.getBinding(other.id)?.state, "orphaned", "another conversation's binding is orphaned as usual");
+  await workflows.stop();
+
+  // A restart: the task reloads from SQLite and the first discovery finds no such session.
+  const restarted = new Registry();
+  const again = new WorkflowManager(restarted, new PersonaManager(restarted).store);
+  again.start();
+  restarted.applyDiscovery([]);
+  assert.equal(again.store.getBinding(binding.id)?.state, "active");
+  assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib");
+
+  // A terminal Resume reopens the conversation as a new process: the bindings follow it, into
+  // the same checkout, and keep the conversation's key.
+  restarted.applyDiscovery([
+    discovered({ syntheticId: "session-resumed", tty: "ttys22", terminals: [mkMuxHandle({ paneId: "%resumed" })] }),
+  ]);
+  onConversation(restarted, "%resumed");
+  assert.equal(restarted.getSession("session-resumed")?.agentSessionId, conversation);
+  const movedIds = again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-resumed")!);
+  assert.deepEqual([...movedIds].sort(), [binding.id, secondary.id].sort(), "it answers what it moved, for announcing after commit");
+  const moved = again.store.getBinding(binding.id);
+  assert.equal(moved?.state, "active");
+  assert.equal(moved?.sessionId, "session-resumed");
+  assert.equal(moved?.noteKey, conversation, "it keeps the conversation's key");
+  assert.equal(moved?.sessionCwd, "/repo");
+  const movedSecondary = again.store.getBinding(secondary.id);
+  assert.equal(movedSecondary?.sessionId, "session-resumed", "the secondary repository's binding follows the session");
+  assert.equal(movedSecondary?.noteKey, conversation);
+  assert.equal(movedSecondary?.sessionCwd, "/wt/repo-b", "and keeps reviewing its own worktree");
+  assert.equal(movedSecondary?.sessionRepoRoot, "/repo-b");
+  assert.equal(again.store.getBinding(other.id)?.state, "orphaned", "and Resume does not carry another conversation's");
+  assert.notEqual(again.store.getBinding(other.id)?.sessionId, "session-resumed");
+  await again.stop();
+});
+
+test("a Resume into another checkout than the workflow was armed in detaches the binding instead of leaving it active", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "session-armed", tty: "ttys31", terminals: [mkMuxHandle({ paneId: "%armed" })] })]);
+  registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: "conv-armed", cwd: "/repo", transcriptPath: null, env: { tmuxPane: "%armed" } });
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    personas,
+    workflows,
+  });
+  const created = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-armed" });
+  assert.equal(created.status, 201);
+  const binding = await created.json() as { id: string };
+  registry.upsertTask(mkTask({
+    id: "hibernated-moved-checkout",
+    status: "hibernated",
+    hibernation: { sessionId: "session-armed", runtime: "terminal" as const, permissionMode: null, checkout: null, agentSessionId: "conv-armed", noteKey: "conv-armed", hibernatedAt: 1, blocker: null, failure: null },
+  }));
+  registry.emit("event", { type: "session_remove", id: "session-armed" });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "active", "held while the task sleeps");
+
+  // The conversation reopens in /other: the session had changed directory after the workflow
+  // was armed in /repo.
+  registry.applyDiscovery([discovered({ syntheticId: "session-moved", tty: "ttys32", cwd: "/other", gitRoot: "/other", repoRoot: "/other", terminals: [mkMuxHandle({ paneId: "%moved" })] })]);
+  const changed = workflows.followResumedConversation("session-armed", "conv-armed", registry.getSession("session-moved")!);
+  assert.deepEqual(changed, [binding.id]);
+  const detached = workflows.store.getBinding(binding.id);
+  assert.equal(detached?.state, "orphaned", "detached, so the workflow reads as needing reattachment");
+  assert.equal(detached?.sessionId, null, "and no longer claims the stopped session");
   await workflows.stop();
 });
 

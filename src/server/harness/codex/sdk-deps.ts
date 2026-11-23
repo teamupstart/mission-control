@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
+import { withAgentTraceContext, type AgentTraceContext } from "../../agent-trace-context.ts";
+import { withWorkUnit } from "../../agent-work-unit.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -127,22 +129,54 @@ export async function* readFrames(child: {
 
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */
 export interface CodexSdkDeps {
-  /** Start one connection. `args` are the launch-scoped `-c` config overrides. */
-  connect(args: readonly string[], cwd: string, stateHome?: string): Promise<AppServerTransport>;
+  /**
+   * Start one connection. `args` are the launch-scoped `-c` config overrides. `codexHome` is a
+   * resident run's private overlay home (`resident-home.ts`), set as this one server's
+   * `CODEX_HOME`; every other launch keeps the operator's. `traceContext` is the session's W3C
+   * parent, carried in the environment because `codex app-server` reads `TRACEPARENT` once at
+   * startup and parents every request span that has no `trace` of its own under it. One server
+   * per session makes that process-wide value session-scoped.
+   */
+  connect(
+    args: readonly string[],
+    cwd: string,
+    stateHome?: string,
+    options?: {
+      residentStateDir?: string;
+      codexHome?: string;
+      traceContext?: AgentTraceContext | null;
+      /** This session's work unit, or null. One server per session, so it is session-scoped. */
+      workUnitId?: string | null;
+    },
+  ): Promise<AppServerTransport>;
+}
+
+/**
+ * The app-server's environment: the shared SDK subprocess environment, carrying this
+ * session's trace context and work unit and no other telemetry setting. `codex app-server`
+ * puts the work unit on every request to an MCP server whose config maps a header to it
+ * (`env_http_headers`), and hands it to a stdio server that lists it in `env_vars`.
+ */
+export function codexAppServerEnv(
+  base: NodeJS.ProcessEnv,
+  cwd: string,
+  stateHome?: string,
+  traceContext?: AgentTraceContext | null,
+  workUnitId?: string | null,
+): Record<string, string | undefined> {
+  return withWorkUnit(withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome), traceContext), workUnitId);
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
-  async connect(args, cwd, stateHome) {
+  async connect(args, cwd, stateHome, options) {
     // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
     // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    return spawnAppServer(
-      await codexExecutable(),
-      args,
-      cwd,
-      sdkSubprocessEnv(process.env, cwd, stateHome),
-    );
+    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext, options?.workUnitId);
+    if (options?.residentStateDir) env.RESIDENT_STATE_DIR = options.residentStateDir;
+    if (options?.codexHome) env.CODEX_HOME = options.codexHome;
+    return spawnAppServer(await codexExecutable(), args, cwd, env);
   },
 };

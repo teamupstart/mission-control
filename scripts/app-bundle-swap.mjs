@@ -97,6 +97,15 @@ export function bundleOwnerSpec(uid, gid) {
   return validId(uid) && validId(gid) ? `${uid}:${gid}` : null;
 }
 
+/**
+ * `cp` arguments for every app-bundle copy in the install, update and migration paths.
+ *
+ * `-p` is required: the installer runs under `umask 077` and `inspectBundle` hashes
+ * `stat.mode & 0o777`, so a copy that let the umask reach its entries could never match the
+ * bundle it came from. See the migration section of `docs/desktop-and-packaging.md`.
+ */
+export const BUNDLE_COPY_ARGUMENTS = Object.freeze(["-pR"]);
+
 export function stagingPaths({ appsDir, pid }) {
   return {
     staged: join(appsDir, `.${LEGACY_APP_BUNDLE_NAME}.incoming-${pid}`),
@@ -127,12 +136,12 @@ export function bundleSwapShellCommand({
   return [
     "set -eu",
     `/bin/rm -rf ${q(staged)} ${q(previous)}`,
-    `/bin/cp -R ${q(sourceBundle)} ${q(staged)}`,
-    // The `cp` above runs as root, so without this the installed bundle ends up root-owned -
-    // and a root-owned bundle is exactly the condition that sends the NEXT update down this
-    // privileged path too. One install needing authorization used to mean every install after
-    // it needed authorization. Handing the staged copy back to the signed-in account before it
-    // goes live is what makes elevation a one-off rather than a ratchet.
+    `/bin/cp ${BUNDLE_COPY_ARGUMENTS.join(" ")} ${q(sourceBundle)} ${q(staged)}`,
+    // The `cp` above runs as root, so the staged copy can end up owned by root or by whoever
+    // owns the source - and a root-owned bundle is exactly the condition that sends the NEXT
+    // update down this privileged path too. One install needing authorization used to mean every
+    // install after it needed authorization. Handing the staged copy back to the signed-in
+    // account before it goes live is what makes elevation a one-off rather than a ratchet.
     //
     // Inside `set -eu` deliberately: a chown that fails has produced a bundle this account
     // cannot maintain, and it fails here, before anything has been moved and while the
@@ -481,7 +490,7 @@ export function replaceAppBundle({
   owner = bundleOwnerSpec(process.getuid?.(), process.getgid?.()),
   sweep = () => sweepDisplacedBundles({ appsDir, keepPid: pid }),
   ops = {
-    copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit", timeout: 10 * 60 * 1000 }),
+    copy: (from, to) => execFileSync("/bin/cp", [...BUNDLE_COPY_ARGUMENTS, from, to], { stdio: "inherit", timeout: 10 * 60 * 1000 }),
     move: renameSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     exists: existsSync,

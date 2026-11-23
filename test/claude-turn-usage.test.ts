@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   claudeTurnUsage,
@@ -303,4 +305,41 @@ test("negative and non-numeric token counts are floored, never trusted into the 
       reportedCostUsd: 0.1,
     },
   ]);
+});
+
+test("an advisor's tokens are their own model row, from the captured advisor frame", () => {
+  // `test/fixtures/claude-advisor/result-frame.json` is a real `claude -p --output-format json`
+  // envelope from Claude Code 2.1.317: Sonnet as the executor, Opus as the advisor, one call.
+  // The advisor's tokens arrive in `modelUsage` under the advisor's own id, with its own
+  // `costUSD`, so the reader needs no advisor-specific code. They ALSO appear as a
+  // `usage.iterations` entry of type `advisor_message`, which the reader never consults - the
+  // flat `usage` block is the fallback only when `modelUsage` is absent - so they are counted
+  // once and not twice.
+  const frame = JSON.parse(
+    readFileSync(fileURLToPath(new URL("./fixtures/claude-advisor/result-frame.json", import.meta.url)), "utf8"),
+  ) as Record<string, unknown>;
+  const iterations = (frame.usage as { iterations: Array<Record<string, unknown>> }).iterations;
+  const advisorIteration = iterations.find((i) => i.type === "advisor_message")!;
+  assert.equal(advisorIteration.model, "claude-opus-5-5", "the capture really holds an advisor call");
+
+  const models = claudeEnvelopeModels(frame, "claude-sonnet-5-5");
+  const advisor = models.find((m) => m.modelId === "claude-opus-5-5");
+  assert.deepEqual(advisor, {
+    modelId: "claude-opus-5-5",
+    input: advisorIteration.input_tokens,
+    output: advisorIteration.output_tokens,
+    reasoningOutput: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reportedCostUsd: 0.199236,
+  });
+  assert.equal(models.filter((m) => m.modelId === "claude-opus-5-5").length, 1, "one row, not double-counted");
+  assert.ok(models.some((m) => m.modelId === "claude-sonnet-5-5"), "the executor keeps its own row");
+
+  // The turn's total is the envelope's, and the per-model rows add up to it.
+  const usage = claudeTurnUsage(frame as never, "claude-sonnet-5-5")!;
+  assert.equal(usage.costUsd, frame.total_cost_usd);
+  const summed = models.reduce((sum, m) => sum + (m.reportedCostUsd ?? 0), 0);
+  assert.ok(Math.abs(summed - (frame.total_cost_usd as number)) < 1e-9, "advisor spend is inside the total");
+  assert.equal(usage.input, models.reduce((sum, m) => sum + m.input, 0));
 });

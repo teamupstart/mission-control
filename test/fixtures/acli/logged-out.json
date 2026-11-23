@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "jira",
+    "auth",
+    "status"
+  ],
+  "code": 1,
+  "stdout": "",
+  "stderr": "✗ Error: unauthorized: use 'acli jira auth login' to authenticate\n"
+}

@@ -256,6 +256,7 @@ export function itermEmulator(
   return {
     id: "iterm",
     label: "iTerm2",
+    macBundleId: BUNDLE_ID,
     glyph: "▧",
     bin: ITERM_BIN,
 

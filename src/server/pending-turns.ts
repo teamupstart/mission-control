@@ -1,20 +1,27 @@
 import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
-import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
+import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
-  MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
+  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage, idleOnlyTurn,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import type { ReviewContinuationKind } from "./reviews.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
   createReviewContinuationPendingTurn,
+  createSnoozeInstructionPendingTurn,
+  SNOOZE_INSTRUCTION_TURN_PREFIX,
+  MESSAGE_ANSWER_TURN_PREFIX,
+  afterWorkTurnOwed,
   deleteClaimedPendingTurn,
+  retireDeliveredPendingTurn,
+  dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
   recallPendingTurn,
@@ -28,10 +35,45 @@ import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
 import { sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
-import { noteOtherSend, withdrawOtherSend } from "./delegated-turns.ts";
+import { noteOtherSend, withdrawOtherSend, type OtherSendHandle } from "./delegated-turns.ts";
+import {
+  confirmReviewDelivery,
+  followNativeConversationKey,
+  releaseReviewDelivery,
+  reserveReviewDelivery,
+  stampReviewDeliveryHandoff,
+} from "./review-deliveries.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { INBOX_MESSAGES, INBOX_MESSAGE_TURN_PREFIX, type InboxMessageKind } from "@shared/inbox.ts";
+import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
+import { isReviewMessageTurn } from "@shared/review-message-envelope.ts";
+import {
+  confirmHumanEcho,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  notePersonDelivery,
+  recordInjection,
+  releaseHumanEcho,
+  releaseInjection,
+  reserveInjection,
+  AutomatedAttributionError,
+  PersonAttributionError,
+  withdrawPersonDelivery,
+  type HumanEchoTicket,
+  type PersonDelivery,
+} from "./injections.ts";
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
+/** Why a queued after-work prompt was not delivered: task shaping was off when its turn came. */
+export const AFTER_WORK_FLAG_OFF = "Task shaping was turned off before the prompt was delivered.";
+/** Why an after-work turn was refused: a later launch of its task replaced the launch it was for. */
+export const AFTER_WORK_SUPERSEDED = "A later launch of the task replaced the launch this after-work prompt was for.";
+/**
+ * Why an after-work turn was held back, not refused: whether its launch still owns it could not be
+ * read. It stays queued, undelivered and unsettled, and is checked again (`afterWorkRecheckMs`).
+ */
+export const AFTER_WORK_UNVERIFIED = "Mission Control could not check that this after-work prompt's launch still owns it.";
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -42,10 +84,23 @@ export interface IdleSdkSender {
   ): Promise<"started" | null>;
   send(id: string, turn: SdkTurn, beforeSend?: () => string | null): Promise<SdkSendDisposition>;
   interruptForDelivery(id: string, beforeInterrupt: () => string | null): Promise<void>;
+  /**
+   * Whether this session's driver must not be handed a turn yet: a hibernated task's woken
+   * driver before Resume binds the task to it (`SdkSupervisor.wakeBound`). Rows stay queued,
+   * and the `session_upsert` the binding emits re-arms their delivery. Optional, because only
+   * the supervisor has woken drivers.
+   */
+  holdsDelivery?(id: string): boolean;
 }
 
 export interface PendingTurnSubmitResult {
   ok: boolean;
+  /**
+   * A refusal that can clear without anyone acting: the outbox was still starting, or a live
+   * session could not take messages at that moment. Absent on a refusal that cannot, such as a
+   * session that is gone or has exited.
+   */
+  retryable?: boolean;
   pasted: false;
   submitVerified: false;
   delivery?: MessageSendDisposition;
@@ -64,6 +119,17 @@ interface PendingTurnDeps {
   /** Where a session's transcript is read, for noticing that a steer has been read. */
   messagesFor: (session: Session) => SessionMessages | null;
   steerReceiptPollMs: number;
+  /**
+   * Whether task shaping is on, read when an after-work turn is about to be delivered. A turn
+   * queued while it was on is dropped rather than sent once it is off, including after a restart.
+   */
+  afterWorkEnabled: () => boolean;
+  /** Whether an after-work turn's launch still owns it (`afterWorkTurnOwed`). */
+  afterWorkTurnOwed: (turnId: string) => boolean;
+  /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
+  afterWorkRecheckMs: number;
+  /** Retire a delivered turn with its after-work prompt row (`retireDeliveredPendingTurn`). */
+  retireDelivered: (id: string, revision: number, deliveredAt: number) => boolean;
 }
 
 /**
@@ -72,6 +138,10 @@ interface PendingTurnDeps {
  * change hands within about a second of each other. Idle whenever nothing is waiting.
  */
 const DEFAULT_STEER_RECEIPT_POLL_MS = 500;
+const DEFAULT_AFTER_WORK_RECHECK_MS = 1_000;
+/** The first and the longest wait before a delivered turn's failed retire is tried again. */
+const RETIRE_RETRY_BASE_MS = 1_000;
+const RETIRE_RETRY_MAX_MS = 5 * 60_000;
 
 /** How far one conversation's receipt scan has read its transcript. */
 interface SteerReceiptScan {
@@ -124,9 +194,74 @@ interface ArmedDrain {
  * editable row on Mission Control's side of the line and makes every ambiguous terminal
  * outcome an explicit human decision instead of an automatic duplicate.
  */
+/**
+ * Who WROTE a queued row, when it was not the operator. Every row is the operator's words
+ * except three the daemon composes: a snoozed question's "carry on" instruction, the answer
+ * to a message-mode question (`async-input`), whoever gave it, and a Stuck row's fixed
+ * Nudge, Continue or push message (`inbox`). Those are reserved and recorded
+ * as `harness` authorship like any other daemon-typed text, so the agent's prompt hook does not
+ * take them for the human's Goal and the scout trail does not archive them as something the
+ * operator said. Authorship changes nothing about escalation: `nextDelivery` steers and
+ * interrupts these rows on the same clock as an operator message.
+ */
+function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
+  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX)
+    || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+    || turn.id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)
+    || turn.id.startsWith(INBOX_MESSAGE_TURN_PREFIX)
+    ? "harness"
+    : null;
+}
+
+/**
+ * How one outbox send was recorded before it was attempted, so a refusal can give it back.
+ *
+ * A row carrying a review marker (`async-input`) reserves a delivery of its own
+ * (`review-deliveries.ts`), which is what lets the conversation draw its turn as answer cards
+ * and what keeps its prompt-hook echo out of the Goal, across a restart too. It is deliberately
+ * NOT also noted as another send: that record would contest the very delivery it describes.
+ * Every other row is noted as a send that contests a recorded delivery of the same words.
+ */
+type OutboxSend =
+  | { kind: "review"; noteKey: string; id: string }
+  | { kind: "other"; handle: OtherSendHandle };
+
+function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
+  const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
+  // Only a row the daemon queued about a review: an operator's message that happens to begin
+  // with the marker line is the operator's, and is noted like any other send.
+  const id = isReviewMessageTurn(turn) ? reserveReviewDelivery(conversation, turn.text, session.workCycle) : null;
+  return id ? { kind: "review", noteKey: conversation.key, id } : { kind: "other", handle: noteOtherSend(conversation, turn.text) };
+}
+
+/** Positive evidence that nothing landed: give the record back. */
+function withdrawOutboxSend(send: OutboxSend): void {
+  if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
+  else withdrawOtherSend(send.handle);
+}
+
+/**
+ * Record that a review delivery was accepted. The acceptance itself is already a fact the runtime
+ * reported: a failed bookkeeping write must not turn it into a transport failure, which would make
+ * an accepted answer retryable (SDK) or strand a pasted one without its pickup timeout (terminal).
+ * The row stays reserved but unconfirmed, which binding already treats as a delivery that may
+ * have landed.
+ */
+function confirmReviewSend(noteKey: string, id: string, options: Parameters<typeof confirmReviewDelivery>[2]): void {
+  try {
+    confirmReviewDelivery(noteKey, id, options);
+  } catch (err) {
+    console.error(`[pending-turns] could not record review delivery ${id} as confirmed:`, errorMessage(err));
+  }
+}
+
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
+  /** After-work turns a delivery guard held back because their launch could not be checked. */
+  private readonly unverifiedAfterWork = new Set<string>();
+  /** Retires of delivered turns that failed and are tried again, by turn id. */
+  private readonly retireRetries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -157,6 +292,10 @@ export class PendingTurnManager {
       interruptPane: deps.interruptPane ?? interruptPaneSession,
       messagesFor: deps.messagesFor ?? sessionMessages,
       steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
+      afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
+      afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
+      afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
+      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurn,
     };
   }
 
@@ -183,6 +322,8 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
+    for (const timer of this.retireRetries.values()) clearTimeout(timer);
+    this.retireRetries.clear();
     this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
     if (this.steerTimer) clearTimeout(this.steerTimer);
@@ -264,7 +405,23 @@ export class PendingTurnManager {
     if (session) this.scheduleDrain(noteKeyFor(session));
   }
 
+  /** Queue one message in the operator's words. */
   submit(sessionId: string, text: string): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, text, "");
+  }
+
+  /**
+   * Queue a Stuck row's fixed Nudge, Continue or push message (`inbox`). The manager chooses
+   * both the words and the turn id, so the row is always recorded as daemon-written
+   * (`daemonAuthorOf`): a caller asks for a kind and cannot send other words under that
+   * authorship, or these words as the operator's.
+   */
+  submitInboxMessage(sessionId: string, kind: InboxMessageKind): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, INBOX_MESSAGES[kind], INBOX_MESSAGE_TURN_PREFIX);
+  }
+
+  /** The one queueing path both kinds of message share; `idPrefix` is the authorship mark. */
+  private queueMessage(sessionId: string, text: string, idPrefix: string): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -290,7 +447,7 @@ export class PendingTurnManager {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
     }
     const pendingTurn = createPendingTurn({
-      id: this.deps.id(),
+      id: `${idPrefix}${this.deps.id()}`,
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
@@ -312,11 +469,16 @@ export class PendingTurnManager {
    * Unlike an ordinary composer submit, the idempotency key is the review itself. The DB
    * inserts the pending turn and stamps the review in one transaction, so startup recovery
    * can call this again without duplicating the human's answer.
+   *
+   * `snooze-instruction` is the other review message this outbox carries: the "carry on"
+   * instruction of a question snoozed after its wait had already ended. It has its own turn id
+   * and its own stamp on the review, so it can never take the answer's place.
    */
   submitReviewContinuation(
     reviewId: string,
     sessionId: string,
     text: string,
+    kind: ReviewContinuationKind = "answer",
   ): PendingTurnSubmitResult {
     if (!this.started) {
       return {
@@ -338,11 +500,17 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
-    const pendingTurn = createReviewContinuationPendingTurn({
+    const queue = kind === "snooze-instruction"
+      ? createSnoozeInstructionPendingTurn
+      : createReviewContinuationPendingTurn;
+    const pendingTurn = queue({
       reviewId,
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
+      // A call-mode late answer or snooze instruction carries the review marker only while
+      // `async-input` is on; a message-mode question's always does (`queueReviewPendingTurn`).
+      markCallMode: featureEnabled(ASYNC_INPUT_FLAG),
     });
     if (!pendingTurn) {
       return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };
@@ -356,6 +524,33 @@ export class PendingTurnManager {
       delivery: "pending",
       pendingTurn,
     };
+  }
+
+  /**
+   * Queue a turn the daemon wrote. `create` inserts it, together with whatever records that it
+   * is owed, in one transaction, and answers null when it is no longer owed; nothing is queued
+   * then. Delivered like any other row, through the one drain.
+   */
+  submitDaemonTurn(
+    sessionId: string,
+    create: (noteKey: string, now: number) => PendingTurn | null,
+  ): PendingTurnSubmitResult {
+    if (!this.started) {
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "pending turns are still starting" };
+    }
+    const session = this.registry.getSession(sessionId);
+    if (!session) return { ok: false, pasted: false, submitVerified: false, error: "no such session" };
+    if (session.state === "exited") {
+      return { ok: false, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    if (!canMessage(session)) {
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    const pendingTurn = create(noteKeyFor(session), this.deps.now());
+    if (!pendingTurn) return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };
+    this.registry.refreshPendingTurns(pendingTurn.noteKey);
+    this.scheduleDrain(pendingTurn.noteKey);
+    return { ok: true, pasted: false, submitVerified: false, delivery: "pending", pendingTurn };
   }
 
   recall(sessionId: string, id: string, revision: number): PendingTurn | null {
@@ -449,7 +644,7 @@ export class PendingTurnManager {
     const key = noteKeyFor(session);
     const row = session.pendingTurns.find((turn) => turn.id === id);
     if (!row || row.noteKey !== key) return false;
-    const resolved = resolveUncertainPendingTurn(id, revision);
+    const resolved = resolveUncertainPendingTurn(id, revision, this.deps.now());
     if (resolved) {
       this.registry.refreshPendingTurns(key);
       this.scheduleDrain(key);
@@ -480,6 +675,8 @@ export class PendingTurnManager {
     this.knownKeys.set(session.id, key);
     if (previousKey && previousKey !== key) {
       this.registry.moveSteeredTurns(previousKey, key);
+      // Review deliveries follow a session id becoming its native key, never a `/clear`.
+      followNativeConversationKey(session.id, previousKey, key);
       const scan = this.steerScans.get(previousKey);
       if (scan) {
         this.steerScans.delete(previousKey);
@@ -625,13 +822,32 @@ export class PendingTurnManager {
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) &&
       !this.interruptHolds.has(session.id) &&
+      // Paused: hold every row where it is. Lifting the pause emits a `session_upsert`, and
+      // that is what re-arms the drain - so a message typed while paused is delivered on resume.
+      !session.pause &&
+      // Woken and not yet bound to its task: held the same way, and re-armed by the binding.
+      !this.sdk.holdsDelivery?.(session.id) &&
       canMessage(session)
     );
+  }
+
+  /**
+   * A row as its escalation clock should read it. Steer and interrupt deadlines count from
+   * `createdAt`, so a message queued during a long pause would otherwise be overdue the moment
+   * the pause lifts and interrupt the turn it resumed. Rows older than the last resume count
+   * from the resume instead, which gives them the same quiet minute any new message gets.
+   */
+  private rebased(session: Session, row: PendingTurn): PendingTurn {
+    // Read from the registry, where `PauseManager` keeps it - and restores it on start - so a
+    // daemon restart just after a resume does not make every held message overdue at once.
+    const resumedAt = this.registry.sessionResumedAt(session.id);
+    return resumedAt !== null && row.createdAt < resumedAt ? { ...row, createdAt: resumedAt } : row;
   }
 
   /** Shared safety gates; only steering is allowed to relax the idle requirement. */
   private canDeliver(session: Session): boolean {
     return !this.stopped && !this.interruptHolds.has(session.id) && session.stateConfirmed &&
+      !session.pause && !this.sdk.holdsDelivery?.(session.id) &&
       (session.state === "idle" || session.state === "working") &&
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) && canMessage(session) &&
@@ -649,7 +865,7 @@ export class PendingTurnManager {
   private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
     return session.pendingTurns.flatMap((row) => {
       if (row.interruptAttemptedAt != null) return [];
-      const stage = deliveryStage(session, row, this.deps.now());
+      const stage = deliveryStage(session, this.rebased(session, row), this.deps.now());
       return stage ? [{ turn: row, ...stage }] : [];
     });
   }
@@ -681,7 +897,7 @@ export class PendingTurnManager {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
     const ahead = session.pendingTurns
       .filter((row) => row.interruptAttemptedAt == null)
-      .flatMap((row) => deliverySchedule(session, row).map((stage) => stage.at))
+      .flatMap((row) => deliverySchedule(session, this.rebased(session, row)).map((stage) => stage.at))
       .filter((at) => at > this.deps.now());
     return ahead.length ? Math.min(...ahead) : null;
   }
@@ -761,6 +977,23 @@ export class PendingTurnManager {
       this.scheduleDrain(key);
       return;
     }
+    // An after-work prompt is task shaping's, and follows its flag at delivery as well as when it
+    // was written: queued while the flag was on, it is dropped, never sent, once it is off. One a
+    // later launch's shaping commit superseded is dropped the same way. Either may have happened
+    // while a delivery held it, which the delivery guards refused and released. One whose launch
+    // could not be checked is neither claimed nor dropped: it is checked again shortly.
+    const afterWorkRefusal = this.afterWorkRefusal(next.turn);
+    if (afterWorkRefusal === AFTER_WORK_UNVERIFIED) {
+      this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+      return;
+    }
+    if (afterWorkRefusal) {
+      if (dropQueuedAfterWorkTurn(next.turn.id, afterWorkRefusal)) {
+        this.registry.refreshPendingTurns(key);
+        this.scheduleDrain(key);
+      }
+      return;
+    }
     this.draining.add(key);
     let turn: PendingTurn | null = null;
     try {
@@ -787,15 +1020,23 @@ export class PendingTurnManager {
       const following = current ? this.nextDelivery(current) : null;
       const retiredId = turn?.id;
       const retired = !!retiredId && !!current && !current.pendingTurns.some((row) => row.id === retiredId);
+      // A guard's held-back mark is consumed by every delivery that ends, so none outlives its turn.
+      const recheckAfterWork = !!retiredId && this.unverifiedAfterWork.delete(retiredId);
       if (retired && following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
       } else if (!retired && current) {
         // The row is still queued: a refusal, or a stage that did not finish the message.
         // Arm the escalation that is still ahead of it rather than waiting for an event a
         // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
-        // that keeps refusing cannot become a loop.
-        const escalation = this.nextEscalationAt(current);
-        if (escalation != null) this.armDrain(key, escalation);
+        // that keeps refusing cannot become a loop. The one exception is an after-work turn
+        // held back because its launch could not be checked: nothing else would ever wake it,
+        // so it is checked again on the recheck interval until the read answers.
+        if (recheckAfterWork) {
+          this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+        } else {
+          const escalation = this.nextEscalationAt(current);
+          if (escalation != null) this.armDrain(key, escalation);
+        }
       }
     }
   }
@@ -878,10 +1119,50 @@ export class PendingTurnManager {
     if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
   }
 
+  /**
+   * Say whose words a row carries before anything else of its send: a daemon-written row is
+   * reserved as such (`reserveInjection`), and the operator's own words are announced as a
+   * person's (`notePersonDelivery`), which is always the session's wake. Either one refused
+   * because its attribution could not be stored (`AutomatedAttributionError`,
+   * `PersonAttributionError`) wrote nothing: the row goes back to the queue as undelivered, as a
+   * busy agent's does, and the send stops here (null).
+   */
+  private announceTurn(
+    session: Session,
+    turn: PendingTurn,
+    author: TurnOrigin | null,
+  ): { personSend: PersonDelivery | null } | null {
+    try {
+      if (author) {
+        reserveInjection(session.id, turn.text, author);
+        return { personSend: null };
+      }
+      return { personSend: notePersonDelivery(session.id, turn.text) };
+    } catch (error) {
+      if (!(error instanceof AutomatedAttributionError) && !(error instanceof PersonAttributionError)) throw error;
+      releasePendingTurn(turn.id, turn.revision, error.message, this.deps.now());
+      this.registry.refreshPendingTurns(turn.noteKey);
+      return null;
+    }
+  }
+
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+    // Whose words these are, said BEFORE the send, because the prompt hook can report them back
+    // while the send is still in flight (see `reserveInjection`). First of all, so one refused
+    // for its attribution leaves nothing else to undo. The operator's own words are always the
+    // session's wake, even when they repeat an automated delivery still on its way (see
+    // `notePersonDelivery`); that announcement is withdrawn wherever this row is released as
+    // positively undelivered, beside `withdrawOutboxSend`.
+    const author = daemonAuthorOf(turn);
+    const announced = this.announceTurn(session, turn, author);
+    if (!announced) return;
+    const personSend = announced.personSend;
     // The operator's queued words may race a delegated send of the same ones. Every path below
     // that releases the row is positive evidence nothing landed, so it withdraws this record.
-    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
+    const outboxSend = recordOutboxSend(session, turn);
+    // A recorded review message is the daemon's text whoever's answer it carries: no door
+    // captures it as a Goal revision, and its echo is owed on the delivery row instead.
+    const reviewMessage = outboxSend.kind === "review";
     // Where the transcript ends BEFORE the driver can take the steer, so the line the agent
     // writes when it reads it is always after this point, however soon that is.
     const receiptFrom = steer ? this.transcriptEnd(session) : null;
@@ -892,11 +1173,30 @@ export class PendingTurnManager {
       ownershipUncertain: false,
     };
     this.sdkHandoffs.set(turn.noteKey, handoff);
+    // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
+    // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
+    let humanEcho: HumanEchoTicket | null = null;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
-        if (!blocker) handoff.acceptanceBoundaryCrossed = true;
+        if (!blocker) {
+          handoff.acceptanceBoundaryCrossed = true;
+          // Registered at the acceptance guard, which runs inside the supervisor's serialized
+          // boundary immediately before the driver is handed the turn. Earlier, the row could
+          // wait behind another operation long enough for its turn stamp to be stale, and a
+          // guard that refuses leaves nothing to release.
+          // A review message's echo turn is decided here too, from the cycle as it is now: the
+          // row may have waited long enough for the one read at reservation to be stale.
+          if (outboxSend.kind === "review") {
+            stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, this.registry.getSession(session.id)?.workCycle);
+          }
+          if (!author && !reviewMessage) humanEcho ??= expectHumanEcho(session.id, turn.text, {
+            noteKey: turn.noteKey,
+            cycle: this.registry.getSession(session.id)?.workCycle,
+            now: this.deps.now(),
+          });
+        }
         return blocker;
       });
       if (
@@ -909,14 +1209,22 @@ export class PendingTurnManager {
           "SDK conversation ownership changed during delivery.",
           handoff.acceptanceBoundaryCrossed,
         );
+        // The row stays uncertain either way, but a guard that refused before the acceptance
+        // boundary handed the driver nothing: the person's words did not land, so they no longer
+        // contest a delivery of the same words. Past the boundary they may have, and stand.
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (accepted === null) {
-        withdrawOtherSend(otherSend);
+        if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
+        withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
           "The agent became busy before delivery.",
           this.deps.now(),
         );
+        this.dropIfRefused(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
           session.id,
@@ -927,8 +1235,20 @@ export class PendingTurnManager {
         // The driver accepted a human-authored row and the same native conversation still
         // owns it. Goal capture belongs after both facts, never when the row is merely queued
         // in Mission Control or when delivery became uncertain.
+        //
+        // The prompt hook may have been the first door. Capture only when it was not, and
+        // mark the entry only once this capture returned a goal: a refused prompt or a failed
+        // write leaves it confirmed, so the echo still records the turn.
+        const echo = humanEcho
+          ? confirmHumanEcho(humanEcho, { queued: accepted === "steered", now: this.deps.now() })
+          : { captured: false };
         try {
-          this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey);
+          // A daemon-written row is nobody's ask, so it never becomes a Goal revision.
+          if (!author && !reviewMessage && !echo.captured
+            && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
+            && humanEcho) {
+            markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
+          }
         } catch (err) {
           // The turn already crossed the driver's acknowledgement boundary. A Goal write
           // failure must not make it retryable and deliver the same human message twice.
@@ -937,7 +1257,13 @@ export class PendingTurnManager {
             errorMessage(err),
           );
         }
-        deleteClaimedPendingTurn(turn.id, turn.revision);
+        if (outboxSend.kind === "review") {
+          confirmReviewSend(outboxSend.noteKey, outboxSend.id, {
+            queued: accepted === "steered",
+            completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
+          });
+        }
+        this.retireDelivered(turn);
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -963,6 +1289,8 @@ export class PendingTurnManager {
           `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
           handoff.acceptanceBoundaryCrossed,
         );
+        // Withdrawn only when the refusal came before the acceptance boundary (see above).
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (handoff.acceptanceBoundaryCrossed) {
         // Once the supervisor crossed its serialized acceptance guard, a thrown
         // transport response is not proof of refusal: Codex may already have written
@@ -976,7 +1304,10 @@ export class PendingTurnManager {
           true,
         );
       } else {
-        withdrawOtherSend(otherSend);
+        if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
+        withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
     } finally {
@@ -992,7 +1323,12 @@ export class PendingTurnManager {
   }
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
-    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
+    // Whose words these are, said first and withdrawn as `deliverSdk` does.
+    const author = daemonAuthorOf(turn);
+    const announced = this.announceTurn(session, turn, author);
+    if (!announced) return;
+    const personSend = announced.personSend;
+    const outboxSend = recordOutboxSend(session, turn);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1005,10 +1341,16 @@ export class PendingTurnManager {
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
+      // Immediately before the paste: an after-work turn task shaping was turned off for, or a
+      // later launch superseded, while this delivery held it never reaches the agent.
+      const afterWorkRefusal = this.guardAfterWork(turn);
+      if (afterWorkRefusal) return afterWorkRefusal;
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
         boundaryCrossed = true;
+        // The write is next: a review message's echo belongs to the cycle as it stands now.
+        if (outboxSend.kind === "review") stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, current.workCycle);
         this.pickup.set(turn.noteKey, {
           sessionId: session.id,
           turn,
@@ -1049,13 +1391,16 @@ export class PendingTurnManager {
           boundaryCrossed || result.pasted || result.ok,
         );
       } else {
-        withdrawOtherSend(otherSend);
+        if (author) releaseInjection(session.id, turn.text);
+        withdrawOutboxSend(outboxSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
           result.error ?? "The terminal refused the message.",
           this.deps.now(),
         );
+        this.dropIfRefused(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
       return;
@@ -1082,6 +1427,11 @@ export class PendingTurnManager {
         return;
       }
       candidate.injectionSucceeded = true;
+      if (outboxSend.kind === "review") {
+        confirmReviewSend(outboxSend.noteKey, outboxSend.id, {
+          completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
+        });
+      }
       // A collapsed-paste placeholder observed before Enter and gone afterwards is direct
       // prompt-pickup evidence. Do not wait for a second hook/passive state signal that may
       // never exist on an otherwise readable terminal session.
@@ -1114,7 +1464,9 @@ export class PendingTurnManager {
         );
       }
     } else {
-      withdrawOtherSend(otherSend);
+      if (author) releaseInjection(session.id, turn.text);
+      withdrawOutboxSend(outboxSend);
+      withdrawPersonDelivery(personSend);
       releasePendingTurn(
         turn.id,
         turn.revision,
@@ -1140,7 +1492,60 @@ export class PendingTurnManager {
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
-    return this.registry.promptResourceBlockerForSession(current.id);
+    // At the instant the driver would take it: an after-work turn task shaping was turned off
+    // for, or a later launch superseded, while this delivery held it never reaches the agent.
+    return this.guardAfterWork(handoff.turn) ?? this.registry.promptResourceBlockerForSession(current.id);
+  }
+
+  /**
+   * Why an after-work turn must not be delivered now, or null: task shaping is off, a later
+   * launch of its task replaced the launch it was for, or whether one did could not be read
+   * (`AFTER_WORK_UNVERIFIED`, which holds the turn back rather than refusing it). Null for every
+   * other turn.
+   */
+  private afterWorkRefusal(turn: PendingTurn): string | null {
+    if (!idleOnlyTurn(turn)) return null;
+    if (!this.deps.afterWorkEnabled()) return AFTER_WORK_FLAG_OFF;
+    const owed = this.afterWorkTurnOwed(turn);
+    if (owed === null) return AFTER_WORK_UNVERIFIED;
+    return owed ? null : AFTER_WORK_SUPERSEDED;
+  }
+
+  /**
+   * `afterWorkRefusal` at a delivery guard. A turn the guard holds back because its launch could
+   * not be checked is marked here, from the guard's own answer, so the drain rechecks it however
+   * any later read turns out: nothing else would wake a quiet session's queued turn.
+   */
+  private guardAfterWork(turn: PendingTurn): string | null {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    return refusal;
+  }
+
+  /**
+   * A released after-work turn that must not be delivered leaves the outbox at once, settled with
+   * why. One whose launch still cannot be checked stays queued, marked for the drain to check
+   * again; one that is owed after all stays queued with the guard's mark, and the recheck
+   * delivers it.
+   */
+  private dropIfRefused(turn: PendingTurn): void {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    else if (refusal && dropQueuedAfterWorkTurn(turn.id, refusal)) this.unverifiedAfterWork.delete(turn.id);
+  }
+
+  /**
+   * Whether an after-work turn's launch still owns it, or null when that cannot be read. Fails
+   * closed: an unread answer is never taken as owed, because a later launch's turn would be the
+   * one to receive the earlier launch's prompt.
+   */
+  private afterWorkTurnOwed(turn: PendingTurn): boolean | null {
+    try {
+      return this.deps.afterWorkTurnOwed(turn.id);
+    } catch (error) {
+      console.warn("[pending-turns] could not check an after-work turn's launch:", error);
+      return null;
+    }
   }
 
   private async interruptAndWait(session: Session, turn: PendingTurn): Promise<void> {
@@ -1278,9 +1683,33 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    deleteClaimedPendingTurn(turn.id, turn.revision);
+    this.retireDelivered(turn);
     this.journalDelivered(sessionId, turn);
     this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  /**
+   * Retire a turn the agent took, with its after-work prompt row if it has one, in one
+   * transaction. The delivery has already happened, so a retire that throws is not the
+   * delivery's failure: it is tried again, backing off from 1 second to 5 minutes, until it
+   * commits or the row is gone. Meanwhile the row stays `sending`, which holds the
+   * conversation's next delivery behind it, and a restart turns it `uncertain` for the
+   * operator, never resending it. Marking that sent settles the prompt row too
+   * (`resolveUncertainPendingTurn`).
+   */
+  private retireDelivered(turn: PendingTurn, failures = 0): void {
+    this.retireRetries.delete(turn.id);
+    try {
+      this.deps.retireDelivered(turn.id, turn.revision, this.deps.now());
+    } catch (error) {
+      console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
+      if (this.stopped) return;
+      const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
+      this.retireRetries.set(turn.id, unref(setTimeout(() => {
+        this.retireDelivered(turn, failures + 1);
+        this.registry.refreshPendingTurns(turn.noteKey);
+      }, delay)));
+    }
   }
 
   /**
@@ -1312,7 +1741,11 @@ export class PendingTurnManager {
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
     // would read as though this site were special, and the two sites that turned out to
     // need one had not copied it.
-    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
+    // A daemon-written row settles its reservation instead, which journals it under its own
+    // origin through the injection observer; only the operator's words are journaled as human.
+    const author = daemonAuthorOf(turn);
+    if (author) recordInjection(sessionId, turn.text, author);
+    else journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
     this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
   }
 

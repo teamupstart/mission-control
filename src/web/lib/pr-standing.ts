@@ -51,6 +51,9 @@ export type MergeBucket = "merged" | "soaking" | "blocked" | "waiting" | "closed
 export function mergeBucket(row: InspectorInspection): MergeBucket {
   if (row.mergedAt !== null) return "merged";
   if (row.state === "closed") return "closed";
+  // A stacked child with something to say is held by its stack, whatever its gate value:
+  // `blocked`, except a restack under way, which clears itself and belongs with `waiting`.
+  if (row.stackStanding?.label) return row.stackStanding.inProgress ? "waiting" : "blocked";
   if (!row.mergeBlock) return "waiting";
   return row.mergeBlock === "soaking" ? "soaking" : "blocked";
 }
@@ -113,6 +116,15 @@ export function prStanding(row: InspectorInspection): PrStanding {
     case "waiting":
       return "open";
   }
+}
+
+/**
+ * How a closed pull request ended, or null while it is open. Folded from `prStanding` so the
+ * Inspector panel and the Ship log cannot disagree about a pull request a human merged.
+ */
+export function inspectorPrClosedAs(row: InspectorInspection): "merged" | "closed" | null {
+  if (row.state === "open") return null;
+  return prStanding(row) === "merged" ? "merged" : "closed";
 }
 
 /** The three-way tallies, over any set of rows - the whole week, or one repository's slice. */

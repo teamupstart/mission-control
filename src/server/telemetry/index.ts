@@ -44,6 +44,7 @@ export {
   recordTelemetryPrMerges,
   registerPrTelemetrySource,
   repoKeyFor,
+  attachPrObservationTelemetry,
   retainPrObservation,
   telemetryPrCohortInputs,
   telemetryPrPollTargets,
@@ -67,6 +68,7 @@ export {
   resetSessionTelemetryForTesting,
 } from "./sessions.ts";
 export type { SessionTelemetryHost } from "./sessions.ts";
+export { sessionTraceContext } from "./session-trace.ts";
 export {
   registerTelemetryProjection,
   registerTelemetrySource,

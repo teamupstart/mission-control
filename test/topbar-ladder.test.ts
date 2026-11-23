@@ -42,6 +42,11 @@ import { TOPBAR_RUNGS } from "../src/web/topbarLadder.ts";
 const CSS_PATH = fileURLToPath(new URL("../src/web/styles.css", import.meta.url));
 const css = readFileSync(CSS_PATH, "utf8");
 const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+// The bar's markup lives in `components/Topbar.tsx`; `App` keeps the ladder effect that fits it.
+const topbar = readFileSync(
+  fileURLToPath(new URL("../src/web/components/Topbar.tsx", import.meta.url)),
+  "utf8",
+);
 
 /** Comments discuss `display: none` and rung numbers in prose, so they go first. */
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, " ");
@@ -318,7 +323,7 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
 });
 
 test("Dispatch never degrades, and the labels that do are marked", () => {
-  const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
+  const bar = topbar.slice(topbar.indexOf('<div className="topbar-actions">'));
   const cluster = bar.slice(0, bar.indexOf("</header>"));
   const dispatch = cluster.slice(cluster.indexOf('className="dispatch-btn"'));
   assert.doesNotMatch(
@@ -336,7 +341,7 @@ test("Dispatch never degrades, and the labels that do are marked", () => {
   );
   // The page segment sheds too, and it lives at the LEFT of the bar rather than in the
   // action cluster - so it is read from the whole topbar.
-  const seg = app.slice(app.indexOf('<nav className="page-seg"'));
+  const seg = topbar.slice(topbar.indexOf('<nav className="page-seg"'));
   assert.match(
     seg.slice(0, seg.indexOf("</nav>")),
     /tb-label/,
@@ -368,7 +373,7 @@ test("the cost chip survives every rung; only its duplicated rate is shed", () =
 test("a control that keeps only a glyph still says what it is", () => {
   // Every button the ladder strips to an icon has to carry its own name - the visually
   // hidden label covers the ones that have one, an `aria-label` covers the rest.
-  const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
+  const bar = topbar.slice(topbar.indexOf('<div className="topbar-actions">'));
   const cluster = bar.slice(0, bar.indexOf("</header>"));
   const missions = cluster.indexOf("missions-btn");
   assert.match(
@@ -381,7 +386,7 @@ test("a control that keeps only a glyph still says what it is", () => {
   // collapse. That is checked by the `display: none` sweep above, which is what makes this
   // the safe option rather than the lazy one - an `aria-label` here would be a second name
   // beside the visible word, and the two would drift.
-  const seg = app.slice(app.indexOf('<nav className="page-seg"'));
+  const seg = topbar.slice(topbar.indexOf('<nav className="page-seg"'));
   const segMarkup = seg.slice(0, seg.indexOf("</nav>"));
   assert.match(segMarkup, /aria-label="Pages"/, "the segment is a landmark and must be named");
   assert.match(segMarkup, /aria-current/, "the segment must say which page you are on");

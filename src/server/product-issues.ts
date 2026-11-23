@@ -53,7 +53,14 @@ import {
 import { run, type RunResult } from "./util/exec.ts";
 
 const ISSUE_CREATE_TIMEOUT_MS = 20_000;
-const PREFLIGHT_TIMEOUT_MS = 5_000;
+/**
+ * Each read-only `gh` check's budget, the same 20s the Inspector and the GitHub task source
+ * give theirs. Two of the four checks are network round trips, and a killed check is not a
+ * "no": it leaves the dialog refusing to report until it is reopened. 5s was the outlier, and
+ * it expired on busy machines - an endpoint-security scan of a first launch alone can take
+ * that long - with a healthy, signed-in `gh`.
+ */
+const PREFLIGHT_TIMEOUT_MS = 20_000;
 const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_OPEN_REQUESTS = 512;
 const ATTACHMENTS_DISABLED_REASON =

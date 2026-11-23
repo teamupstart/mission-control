@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_SETTINGS_CATEGORY,
+  RETIRED_SETTINGS_CATEGORIES,
   isSettingsCategory,
+  settingsCategoryInBuild,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
 import {
@@ -253,7 +255,22 @@ export type MissionRoute =
       archiveKey?: string;
       filters?: ScoutFilters;
     }
-  | { page: "settings"; category: SettingsCategoryId };
+  | { page: "settings"; category: SettingsCategoryId }
+  | {
+      /**
+       * Resident profiles: the rail of profiles and the editor beside it. A route rather than
+       * a top-bar segment - it is reached from Dispatch's Resident mode, the ⌘K palette and its
+       * shortcut, so the title bar keeps its four pages.
+       */
+      page: "residents";
+      skillSources?: true;
+      /** The custom MCP servers panel. */
+      mcpServers?: true;
+      /** The profile the editor has open. Absent shows the rail with nothing selected. */
+      profileId?: string;
+      /** A new profile is being authored. Never set together with `profileId`. */
+      creating?: true;
+    };
 
 /**
  * The route a direct page shortcut navigates to, or `null` when it must stand down.
@@ -465,16 +482,33 @@ export function parseMissionRoute(hash: string): MissionRoute {
   // never had one - and the catch-all above has already sent that hash to the Library,
   // which is where every unrecognized legacy sub-path goes.
   if (path === "/shipped") return { page: "shipped" };
+  if (path === "/residents") return { page: "residents" };
+  if (path === "/residents/skill-sources") return { page: "residents", skillSources: true };
+  if (path === "/residents/mcp-servers") return { page: "residents", mcpServers: true };
+  if (path === `/residents/${LIBRARY_NEW_SEGMENT}`) return { page: "residents", creating: true };
+  const resident = /^\/residents\/([^/]+)$/.exec(path);
+  if (resident) {
+    const profileId = segment(resident[1]!);
+    return profileId ? { page: "residents", profileId } : { page: "residents" };
+  }
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {
     // A RUNTIME membership check, which is why the registry is imported for its values
     // rather than its type: these hashes are links people keep, and a category this build
-    // no longer has must land on the default panel rather than on a blank pane.
+    // no longer has must land on the default panel rather than on a blank pane. A category
+    // behind a feature flag is kept: the flags are not known until the first snapshot, and
+    // the page withholds it, live, while its flag is off (`settingsCategoryInBuild`).
     const id = segment(settings[1]!);
     return {
       page: "settings",
-      category: id !== null && isSettingsCategory(id) ? id : DEFAULT_SETTINGS_CATEGORY,
+      category: id === null
+        ? DEFAULT_SETTINGS_CATEGORY
+        : isSettingsCategory(id) && settingsCategoryInBuild(id)
+          ? id
+          : Object.hasOwn(RETIRED_SETTINGS_CATEGORIES, id)
+            ? RETIRED_SETTINGS_CATEGORIES[id]!
+            : DEFAULT_SETTINGS_CATEGORY,
     };
   }
   return { page: "fleet" };
@@ -503,6 +537,12 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
+  if (route.page === "residents") {
+    if (route.skillSources) return "#/residents/skill-sources";
+    if (route.mcpServers) return "#/residents/mcp-servers";
+    if (route.creating) return `#/residents/${LIBRARY_NEW_SEGMENT}`;
+    return route.profileId ? `#/residents/${encodeURIComponent(route.profileId)}` : "#/residents";
+  }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built
     // route carrying a malformed key would otherwise serialize to a hash that parses back

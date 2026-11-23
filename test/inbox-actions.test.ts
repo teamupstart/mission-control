@@ -198,7 +198,7 @@ test("a question card's spoken hints address the agent, and stay hidden until vo
 // ---- card files: every control is a declared action ----
 
 /** Cards whose controls are all drawn through `InboxActionButton`. */
-const CARD_FILES = ["src/web/components/ReportCard.tsx", "src/web/components/StuckCard.tsx"];
+const CARD_FILES = ["src/web/components/ReportCard.tsx", "src/web/components/ReportEntryCard.tsx", "src/web/components/StuckCard.tsx"];
 
 test("a card file draws no control except through InboxActionButton, and names only declared actions", () => {
   const declared = new Set(actions.map((action) => action.id));
@@ -223,15 +223,194 @@ test("the report card's two controls: toggle is click-only disclosure, Mark read
 
 test("the report card's Mark read shows its hint once voice turns hints on; the toggle never does", async () => {
   const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
-  const { mkReport } = await import("./helpers/report-fixture.ts");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
   const report = mkReport({ id: "r-1", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } });
   const draw = (on: boolean) => renderToStaticMarkup(voice(on, createElement(ReportCard, {
-    report, open: true, onToggle: () => undefined, onMarkRead: () => undefined, now: 1,
+    report, open: true, ...reportCardProps(), now: 1,
   })));
   assert.doesNotMatch(draw(false), /spoken-hint/);
   const on = draw(true);
   assert.match(on, /data-spoken-action="mark-read">&quot;Steve, mark read&quot;</);
   assert.doesNotMatch(on, /data-spoken-action="toggle"/);
+});
+
+// ---- replying, and following up a report whose agent is gone (Phase 3) ----
+
+test("reply and follow-up are declared with their spoken forms", () => {
+  assert.deepEqual(inboxAction("reply").spoken, { named: "{name}, ...", whileOpen: "reply, ..." });
+  assert.equal(inboxAction("reply").clickOnly, null);
+  assert.deepEqual(inboxAction("follow-up").spoken, { named: "{name}, follow up, ...", whileOpen: "reply, ..." });
+  assert.equal(inboxAction("follow-up").label, "Start a follow-up task");
+  assert.equal(inboxAction("follow-up").clickOnly, null);
+  // Retry is the follow-up action under another label, never an action of its own.
+  assert.equal(actions.some((action) => action.id === "retry" || action.label === "Retry"), false);
+});
+
+async function drawCard(
+  target: import("../src/shared/reports.ts").ReplyTarget,
+  over: Partial<import("../src/shared/reports.ts").ReportItem> = {},
+  hints = false,
+): Promise<string> {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-1", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" }, ...over });
+  return renderToStaticMarkup(voice(hints, createElement(ReportCard, { report, open: true, ...reportCardProps(target), now: 1 })));
+}
+
+test("a live agent's report card has a reply box that sends with the reply action", async () => {
+  const html = await drawCard({ kind: "live", sessionId: "s1" }, {}, true);
+  assert.match(html, /<textarea[^>]*aria-label="Reply to Steve"/);
+  assert.match(html, /data-inbox-action="reply"[^>]*>Send reply<\/button>/);
+  assert.match(html, /data-spoken-action="reply">&quot;Steve, \.\.\.&quot; or &quot;reply, \.\.\.&quot;</);
+  assert.doesNotMatch(html, /data-inbox-action="follow-up"/);
+});
+
+test("a resident that is not running gets a line and a relaunch hint, and no control", async () => {
+  const html = await drawCard({ kind: "resident-not-running" });
+  assert.match(html, /Steve isn&#x27;t running\./);
+  assert.match(html, /launch it again from the Residents drawer/);
+  assert.doesNotMatch(html, /<textarea/);
+  assert.doesNotMatch(html, /data-inbox-action="(reply|follow-up)"/);
+  // Mark read is still there: reading a report needs no running agent.
+  assert.match(html, /data-inbox-action="mark-read"/);
+});
+
+test("a gone standard session offers Start a follow-up task; with no repository, a line instead", async () => {
+  const gone = await drawCard({ kind: "gone" }, {}, true);
+  assert.match(gone, /<textarea[^>]*aria-label="Instructions for the follow-up task"/);
+  assert.match(gone, /data-inbox-action="follow-up"[^>]*>Start a follow-up task<\/button>/);
+  assert.match(gone, /data-spoken-action="follow-up">&quot;Steve, follow up, \.\.\.&quot;/);
+  assert.match(gone, /never resumed/);
+  assert.doesNotMatch(gone, /data-inbox-action="reply"/);
+  const none = await drawCard({ kind: "gone-no-repository" });
+  assert.match(none, /a follow-up task\s+cannot be started from here/);
+  assert.doesNotMatch(none, /data-inbox-action="(reply|follow-up)"/);
+});
+
+test("a running session that cannot take a message gets a line, and neither a reply nor a follow-up", async () => {
+  const html = await drawCard({ kind: "unreachable", sessionId: "s1" });
+  assert.match(html, /session is still running but cannot take a message from here/);
+  assert.doesNotMatch(html, /<textarea/);
+  assert.doesNotMatch(html, /data-inbox-action="(reply|follow-up)"/);
+  assert.match(html, /data-inbox-action="mark-read"/);
+});
+
+test("after a failed dispatch the card says so, and Retry carries the follow-up action id", async () => {
+  const html = await drawCard({ kind: "gone" }, { followUpTaskId: "t-follow" }, true);
+  assert.match(html, /Follow-up task created but not started\./);
+  assert.match(html, /data-inbox-action="follow-up"[^>]*>Retry<\/button>/);
+  // Its spoken form is the follow-up action's: Retry has none of its own.
+  assert.match(html, /data-spoken-action="follow-up">&quot;Steve, follow up, \.\.\.&quot;/);
+  // No box that would file a second task.
+  assert.doesNotMatch(html, /<textarea/);
+  assert.doesNotMatch(html, />Start a follow-up task</);
+});
+
+test("a conversation entry draws its toggle and Mark read as declared actions, and says how it stands", async () => {
+  const { ReportEntryCard } = await import("../src/web/components/ReportEntryCard.tsx");
+  const { mkReport } = await import("./helpers/report-fixture.ts");
+  const draw = (over: Partial<import("../src/shared/reports.ts").ReportItem>, open = false) =>
+    renderToStaticMarkup(voice(true, createElement(ReportEntryCard, {
+      report: mkReport({ id: "r-2", title: "Build failure diagnosed", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" }, ...over }),
+      open,
+      onToggle: () => undefined,
+      onMarkRead: async () => null,
+      onOpenDocument: () => undefined,
+    })));
+  const waiting = draw({}, true);
+  assert.match(waiting, /aria-label="Report: Build failure diagnosed"/);
+  assert.match(waiting, />Report<\/span>/);
+  assert.match(waiting, /data-inbox-action="toggle"[^>]*>Build failure diagnosed<\/button>/);
+  assert.match(waiting, /Waiting to be read/);
+  assert.match(waiting, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
+  assert.match(waiting, /data-spoken-action="mark-read">&quot;Steve, mark read&quot;</);
+  assert.match(waiting, /What I found\./, "open, it shows the body");
+  assert.doesNotMatch(draw({}), /What I found\./, "closed, it does not");
+
+  const replied = draw({ readAt: 5, readBy: "reply" });
+  assert.match(replied, /Replied to/);
+  assert.doesNotMatch(replied, /data-inbox-action="mark-read"/);
+  assert.match(draw({ readAt: 5, readBy: "follow-up" }), /Followed up in a new task/);
+  const replaced = draw({ supersededBy: "r-3" });
+  assert.match(replaced, /Replaced by a later version/);
+  assert.doesNotMatch(replaced, /data-inbox-action="mark-read"/);
+  assert.match(draw({ version: 2, rootId: "r-1" }), /Version 2, replacing an earlier report/);
+});
+
+// ---- a report's attached document: Open report and Publish as scout (Phase 4) ----
+
+test("open-report and publish-scout are declared with their spoken forms; open-archive is click-only navigation", () => {
+  assert.deepEqual(inboxAction("open-report").spoken, { named: "{name}, open report", whileOpen: null });
+  assert.equal(inboxAction("open-report").label, "Open report");
+  assert.equal(inboxAction("open-report").clickOnly, null);
+  assert.deepEqual(inboxAction("publish-scout").spoken, { named: "{name}, publish as scout", whileOpen: null });
+  assert.equal(inboxAction("publish-scout").label, "Publish as scout");
+  assert.equal(inboxAction("publish-scout").clickOnly, null);
+  assert.equal(inboxAction("open-archive").spoken, null);
+  assert.equal(inboxAction("open-archive").clickOnly, "navigation");
+  assert.equal(spokenHintText(inboxAction("open-archive"), "Steve"), null);
+});
+
+test("a report card offers Open report and Publish as scout only for a report with a document, then Published and Open archive", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const author = { key: "resident:steve", name: "Steve", residentProfileId: "steve" };
+  const draw = (over: Partial<import("../src/shared/reports.ts").ReportItem>) =>
+    renderToStaticMarkup(voice(true, createElement(ReportCard, {
+      report: mkReport({ id: "r-7", author, ...over }), open: true, ...reportCardProps(), now: 1,
+    })));
+  const bare = draw({});
+  assert.doesNotMatch(bare, /data-inbox-action="open-report"/);
+  assert.doesNotMatch(bare, /data-inbox-action="publish-scout"/);
+
+  const unpublished = draw({ document: { name: "findings.html", kind: "html" } });
+  assert.match(unpublished, /Attached: findings\.html/);
+  assert.match(unpublished, /data-inbox-action="open-report"[^>]*>Open report<\/button>/);
+  assert.match(unpublished, /data-inbox-action="publish-scout"[^>]*>Publish as scout<\/button>/);
+  assert.match(unpublished, /data-spoken-action="open-report">&quot;Steve, open report&quot;</);
+  assert.match(unpublished, /data-spoken-action="publish-scout">&quot;Steve, publish as scout&quot;</);
+  assert.doesNotMatch(unpublished, /data-inbox-action="open-archive"/);
+
+  const published = draw({ document: { name: "findings.html", kind: "html" }, publishedArchiveKey: "a~b" });
+  assert.match(published, />Published<\/span>/);
+  assert.match(published, /data-inbox-action="open-archive"[^>]*>Open archive<\/button>/);
+  assert.doesNotMatch(published, /data-inbox-action="publish-scout"/);
+  assert.doesNotMatch(published, /data-spoken-action="open-archive"/, "navigation is never spoken");
+});
+
+test("a conversation entry offers Open report for a report with a document, and never Publish as scout", async () => {
+  const { ReportEntryCard } = await import("../src/web/components/ReportEntryCard.tsx");
+  const { mkReport } = await import("./helpers/report-fixture.ts");
+  const draw = (over: Partial<import("../src/shared/reports.ts").ReportItem>) =>
+    renderToStaticMarkup(createElement(ReportEntryCard, {
+      report: mkReport({ id: "r-8", ...over }),
+      open: true,
+      onToggle: () => undefined,
+      onMarkRead: async () => null,
+      onOpenDocument: () => undefined,
+    }));
+  assert.doesNotMatch(draw({}), /data-inbox-action="open-report"/);
+  const withDocument = draw({ document: { name: "notes.md", kind: "markdown" } });
+  assert.match(withDocument, /data-inbox-action="open-report"[^>]*>Open report<\/button>/);
+  assert.doesNotMatch(withDocument, /data-inbox-action="publish-scout"/);
+});
+
+test("a report card draws Publish as scout's state from the dashboard, so a refusal or a request in flight survives a remount", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-9", document: { name: "live.html", kind: "html" } });
+  const draw = (publishState: import("../src/web/lib/sessionReports.ts").ReportPublishState) =>
+    renderToStaticMarkup(createElement(ReportCard, { report, open: true, ...reportCardProps(), publishState, now: 1 }));
+
+  // A fresh mount handed a stored refusal shows it: nothing about it lived in the card.
+  const refused = draw({ busy: false, refusal: { error: "a", problems: ["<script> is not allowed in an archived report", "the https: scheme is not allowed in an archived report"], failed: false } });
+  assert.match(refused, /Not published\. The archive refused this document:/);
+  assert.match(refused, /<li>&lt;script&gt; is not allowed in an archived report<\/li>/);
+  assert.match(refused, /<li>the https: scheme is not allowed in an archived report<\/li>/);
+
+  // A request still in flight keeps the button disabled on a fresh mount, so it cannot be sent twice.
+  assert.match(draw({ busy: true, refusal: null }), /<button[^>]*disabled=""[^>]*data-inbox-action="publish-scout"/);
+  assert.doesNotMatch(draw({ busy: false, refusal: null }), /role="alert"/);
 });
 
 test("the Stuck card's ten actions are declared with the spoken forms or reasons the plan gives", () => {

@@ -8130,6 +8130,104 @@ a.btn {
   gap: 8px;
   margin-top: 8px;
 }
+/* A report's attached document: Open report, and Publish as scout or its published state. */
+.agent-report-document {
+  margin-top: 8px;
+}
+.agent-report-document .agent-report-actions {
+  margin-top: 4px;
+}
+.agent-report-published {
+  font-size: 12px;
+  color: var(--idle);
+}
+.agent-report-document .inbox-error ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+/* The reader for that document. Its inset is the shell's; the body is the scrolling band. */
+.report-document-reader {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.report-document-reader .modal-head {
+  flex: 0 0 auto;
+  gap: 12px;
+}
+.report-document-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.report-document-reader .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+.report-document-frame {
+  display: block;
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+}
+.report-document-reader .markdown.report-document-markdown {
+  padding: 0;
+}
+/* How the operator answers a report: a reply box, a follow-up box, or a line saying why neither. */
+.agent-report-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.agent-report-answer .agent-report-actions {
+  margin-top: 0;
+}
+.agent-report-reply {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 60px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.agent-report-reply:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+
+/* An agent report in its session's conversation, where it was posted. Neutral like the inbox
+   row: a report is something to read, never something owed. */
+.report-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.report-entry.is-waiting {
+  border-left-color: var(--muted);
+}
+.report-entry .report-entry-tag {
+  color: var(--muted);
+}
+.report-entry .agent-report-body {
+  margin-top: 0;
+}
+.report-entry-status {
+  font-weight: 600;
+}
 
 /* ---- plan decisions ---- */
 .decisions {
@@ -30488,33 +30586,6 @@ span.line-run-prov {
 .detail-sub .branch {
   color: var(--idle);
 }
-/* The work unit row's copy control: a quiet chip on the band's baseline, sized to the 11.5px
-   cells beside it rather than to a toolbar button, so the band keeps its one-line height. */
-.detail-sub .work-unit {
-  align-items: center;
-}
-.detail-sub .work-unit-copy {
-  flex: none;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 10.5px;
-  line-height: 16px;
-  cursor: pointer;
-}
-.detail-sub .work-unit-copy:hover,
-.detail-sub .work-unit-copy:focus-visible {
-  color: var(--fg);
-  border-color: var(--muted);
-}
-.detail-sub .work-unit-copy-error {
-  color: var(--danger-text);
-  font-size: 10.5px;
-}
-
 /* The tab strip, which is also the conversation's toolbar - see the ladder further down and
    the call site in `ConsoleDetail.tsx`.
 

@@ -19,7 +19,16 @@ export async function parseBody<S extends ZodTypeAny>(
    * absent or empty body still reads as `{}`.
    */
   options: { strict?: boolean } = {},
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
+): Promise<
+  | { ok: true; data: TypeOf<S> }
+  | {
+    ok: false;
+    error: string;
+    /** The schema's issues, in order, when the body was read but failed it; absent otherwise. */
+    issues?: readonly { message: string }[];
+    res: Response;
+  }
+> {
   let raw: unknown = {};
   if (options.strict) {
     let text: string;
@@ -43,7 +52,12 @@ export async function parseBody<S extends ZodTypeAny>(
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
+    return {
+      ok: false,
+      error: parsed.error.message,
+      issues: parsed.error.issues,
+      res: c.json({ error: parsed.error.message }, 400),
+    };
   }
   return { ok: true, data: parsed.data };
 }

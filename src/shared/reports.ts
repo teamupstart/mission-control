@@ -7,6 +7,11 @@
 // holds a completion, never counts toward the open-question limit, and Foreman never reads it.
 // It lives in its own table (`reports`) and outlives the session that posted it.
 
+import { canMessage, type Messageable } from "./pane.ts";
+import { isShippingTaskKind } from "./task.ts";
+import type { ResidentRunSummary } from "./residents.ts";
+import type { Session, TaskKind } from "./types.ts";
+
 /** Bounds on what one report may carry. */
 export const REPORT_LIMITS = {
   /** One line: the inbox row's heading and, in a later phase, the notification text. */
@@ -145,4 +150,208 @@ export function reportReceipt(report: Pick<ReportItem, "id" | "version">): strin
     "carry on with your work, or end your turn if you are done. If you need to correct or update " +
     `it, post again with replaces: "${report.id}".`
   );
+}
+
+// ---- replying to a report, and following one up (Phase 3) ----
+//
+// The text builders below are a fixed contract: the voice plan calls `reportReplyText`,
+// `unseenReportsNote`, `POST_REPORT_LINE` and `resolveMarkReadTarget` with these signatures.
+// Nothing here appends anything to a typed message; only voice appends the note and the line,
+// and only to spoken ones.
+
+/** How long ago a report was posted, as the reply names it: "just now", "12 minutes ago". */
+export function reportAgeText(createdAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - createdAt) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * The message a reply delivers: a line naming the report it answers, the report restated, then
+ * the operator's words. Self-contained, as an async answer is, so the agent needs no memory of
+ * the report to act on the reply.
+ */
+export function reportReplyText(
+  report: Pick<ReportItem, "id" | "title" | "body" | "createdAt">,
+  words: string,
+  now: number,
+): string {
+  return [
+    `Reply to your report '${report.title}' (${report.id}), posted ${reportAgeText(report.createdAt, now)}.`,
+    "",
+    "Your report:",
+    report.title,
+    "",
+    report.body.trim(),
+    "",
+    "Your operator's reply:",
+    words.trim(),
+  ].join("\n");
+}
+
+/**
+ * A note naming an agent's reports its operator has not read yet, or null when there are none.
+ * Only reports still waiting to be read count: a read or replaced one has been dealt with.
+ */
+export function unseenReportsNote(
+  reports: readonly Pick<ReportItem, "id" | "title" | "readAt" | "supersededBy">[],
+): string | null {
+  const unseen = reports.filter(reportToRead);
+  if (unseen.length === 0) return null;
+  const listed = unseen.map((report) => `${report.id} '${report.title}'`).join(", ");
+  return unseen.length === 1
+    ? `Your operator has not read your report ${listed} yet.`
+    : `Your operator has not read ${unseen.length} of your reports yet: ${listed}.`;
+}
+
+/** The line voice adds to a spoken instruction. */
+export const POST_REPORT_LINE = "When you have finished this, post a report.";
+
+/**
+ * Which report "{name}, mark read" means: the report open on screen when it is that author's,
+ * else the author's only report waiting to be read, else none (two or more, and none open).
+ */
+export function resolveMarkReadTarget<R extends Pick<ReportItem, "id" | "author" | "readAt" | "supersededBy">>(
+  authorKey: string,
+  reports: readonly R[],
+  openReportId: string | null,
+): R | null {
+  const mine = reports.filter((report) => report.author.key === authorKey && reportToRead(report));
+  const open = openReportId === null ? undefined : mine.find((report) => report.id === openReportId);
+  if (open) return open;
+  return mine.length === 1 ? mine[0]! : null;
+}
+
+/**
+ * Where a reply to a report can go, which decides what its card offers:
+ *
+ * - `live`: a session that can take a message, the poster itself or, for a resident, the run
+ *   of that resident that is running now. The card draws a reply box.
+ * - `unreachable`: a standard session that has not ended but cannot take a message now (no pane
+ *   to write to, or driven by a pipeline engine). It is still running, so a follow-up would start a
+ *   second session beside it: the card says so and offers neither a reply nor a follow-up.
+ * - `resident-not-running`: a resident with no session that can take a message. The card says so
+ *   and says to launch it from the Residents drawer, as text: there is no control for it here.
+ * - `gone`: a standard session that has ended (exited, or no longer present). The card offers
+ *   Start a follow-up task, which
+ *   dispatches a new session in the report's repository. A completed session is never resumed.
+ * - `gone-no-repository`: the same, for a report that stored no repository, so no follow-up can
+ *   be started from the card.
+ */
+export type ReplyTarget =
+  | { kind: "live"; sessionId: string }
+  | { kind: "unreachable"; sessionId: string }
+  | { kind: "resident-not-running" }
+  | { kind: "gone" }
+  | { kind: "gone-no-repository" };
+
+/** The session fields `replyTarget` reads. */
+export type ReplyTargetSession = Messageable & Pick<Session, "id" | "state"> & { task?: { id: string } | null };
+
+/** Whether a session can take a reply now: present, not exited, and able to receive a message. */
+function takesReply(session: ReplyTargetSession): boolean {
+  return session.state !== "exited" && canMessage(session);
+}
+
+export function replyTarget(
+  report: Pick<ReportItem, "sessionId" | "repository" | "author">,
+  sessions: readonly ReplyTargetSession[],
+  residentRuns: readonly Pick<ResidentRunSummary, "profileId" | "taskId">[],
+): ReplyTarget {
+  const own = sessions.find((session) => session.id === report.sessionId);
+  if (own && takesReply(own)) return { kind: "live", sessionId: own.id };
+  const profileId = report.author.residentProfileId;
+  if (profileId !== null) {
+    // A resident is one author across its runs, so a reply reaches whichever run is up now.
+    for (const run of residentRuns) {
+      if (run.profileId !== profileId) continue;
+      const current = sessions.find((session) => session.task?.id === run.taskId);
+      if (current && takesReply(current)) return { kind: "live", sessionId: current.id };
+    }
+    return { kind: "resident-not-running" };
+  }
+  // Ended means exited or gone from the fleet, never merely unable to take a message: a session
+  // that is still running is not replaced by a follow-up.
+  if (own && own.state !== "exited") return { kind: "unreachable", sessionId: own.id };
+  return report.repository ? { kind: "gone" } : { kind: "gone-no-repository" };
+}
+
+/** Why a reply cannot be delivered, for a target that is not live. */
+export function replyRefusal(target: Exclude<ReplyTarget, { kind: "live" }>, name: string): string {
+  switch (target.kind) {
+    case "unreachable":
+      return `${name}'s session is still running but cannot take a message from here, so it can neither be replied to nor followed up.`;
+    case "resident-not-running":
+      return `${name} isn't running. Launch it again from the Residents drawer to reply.`;
+    case "gone":
+      return "That session has ended and is never resumed. Start a follow-up task instead.";
+    case "gone-no-repository":
+      return "That session has ended, and the report recorded no repository to start a follow-up task in.";
+  }
+}
+
+/**
+ * The kind a follow-up task is filed as: the report's own task's kind when it is a shipping kind
+ * (`isShippingTaskKind`), otherwise ship. A plan or pipeline task needs inputs a report does not
+ * carry, a chat cannot be filed to the backlog to be dispatched as a second step, and a resident
+ * is launched only from its profile.
+ */
+export function followUpKind(kind: TaskKind | undefined): TaskKind {
+  return kind && isShippingTaskKind(kind) ? kind : "ship";
+}
+
+/** The title of a follow-up task. */
+export function followUpTitle(report: Pick<ReportItem, "title">): string {
+  const title = `Follow up: ${report.title}`;
+  return title.length > REPORT_LIMITS.title ? `${title.slice(0, REPORT_LIMITS.title - 1)}…` : title;
+}
+
+/**
+ * A follow-up task's intent: the operator's words, then the report as context. The session that
+ * posted the report has ended, so the new session reads everything it needs here. The words are
+ * never empty: a follow-up task is only filed with the operator's instructions.
+ */
+export function followUpIntent(
+  report: Pick<ReportItem, "id" | "title" | "body" | "url" | "document" | "author">,
+  words: string,
+): string {
+  const lines = [
+    words.trim(),
+    "",
+    `This follows up a report (${report.id}) that ${report.author.name} posted before its session ended. ` +
+      "That session is not resumed; this is a new task, and the report below is its context.",
+    "",
+    `Report: ${report.title}`,
+    "",
+    report.body.trim(),
+  ];
+  if (report.url) lines.push("", `Link: ${report.url}`);
+  if (report.document) lines.push("", `Attached document: ${report.document.name}`);
+  return lines.join("\n");
+}
+
+/**
+ * Where a report stands, as its conversation entry says it: waiting to be read, replaced by a
+ * later version, or how the operator cleared it.
+ */
+export function reportEntryStatus(report: Pick<ReportItem, "readBy" | "readAt" | "supersededBy">): string {
+  if (report.readAt !== null) {
+    switch (report.readBy) {
+      case "reply":
+        return "Replied to";
+      case "follow-up":
+        return "Followed up in a new task";
+      case "mark-all":
+        return "Read, with Mark all read";
+      case "mark-read":
+      case null:
+        return "Read";
+    }
+  }
+  if (report.supersededBy !== null) return "Replaced by a later version";
+  return "Waiting to be read";
 }

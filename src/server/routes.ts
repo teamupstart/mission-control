@@ -31,7 +31,7 @@ import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@s
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { canMessage, paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
-import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
+import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, getTask as getDurableTaskRow, inTransaction, setStackAwaitReplacement } from "./db.ts";
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
@@ -42,6 +42,7 @@ import {
   registerSessionControlRoutes, sessionControlActor, sessionControlCaller, sessionControlCallerRefusal,
 } from "./session-control.ts";
 import { registerReportRoutes } from "./report-routes.ts";
+import { followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
 import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
@@ -2269,7 +2270,58 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Agent reports (`inbox` flag): the tool's post, the operator's opened and read, and a
   // session's history.
-  registerReportRoutes(app, registry, reports);
+  registerReportRoutes(app, registry, reports, {
+    // The composer's Send for a human, exactly: a reply is an ordinary operator turn.
+    submit: pendingTurns
+      ? (sessionId, text) => {
+        const result = pendingTurns.submit(sessionId, text);
+        if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, { kind: "human", origin: "dashboard", basis: "declared" });
+        return result;
+      }
+      : undefined,
+    followUpTasks: {
+      create: async (report, words, record) => {
+        // The agent and model the report's own task ran on, when that task is still known; the
+        // kind too when it is one a follow-up can be filed as. Everything else is the Dispatch
+        // form's default, so a follow-up is reviewed like any other dispatched work.
+        const original = report.taskId ? registry.getTask(report.taskId) ?? getDurableTaskRow(report.taskId) : undefined;
+        const input = DispatchSchema.safeParse({
+          repoRoot: report.repository,
+          intent: followUpIntent(report, words),
+          title: followUpTitle(report),
+          kind: followUpKind(original?.kind),
+          ...(original ? { agent: original.agent } : {}),
+          ...(original?.model ? { model: original.model } : {}),
+          // Filed to the backlog and dispatched as a second, recorded step, so a dispatch that
+          // fails leaves one task to retry rather than none or two.
+          backlog: true,
+        });
+        if (!input.success) return { ok: false, status: 400, error: input.error.issues[0]?.message ?? "invalid follow-up" };
+        const created = await createTaskFromDispatch(input.data, undefined, (task) => record(task.id));
+        if (!created.ok) return { ok: false, status: created.status, error: String(created.body.error ?? "could not create the follow-up task") };
+        return { ok: true, taskId: created.task.id };
+      },
+      exists: (taskId) => {
+        const task = tasks.get(taskId);
+        return task !== undefined && task.status !== "cancelled";
+      },
+      dispatch: async (taskId) => {
+        // A retry after a launch that failed with no session, as the launch-failure Retry does: a
+        // failure that kept its worktree is re-filed first, which reclaims that tree.
+        const task = tasks.get(taskId);
+        if (task && launchFailureOutcome(task) === "not-started" && task.worktreePath) {
+          const filed = await tasks.reschedule(taskId);
+          if (!filed.ok) return { ok: false, error: filed.error ?? "the follow-up task could not be filed again" };
+        }
+        const result = await tasks.dispatch(taskId, {});
+        return result.ok ? { ok: true } : { ok: false, error: result.error ?? "the follow-up task could not be dispatched" };
+      },
+    },
+    // Publish as scout: the archive's one operator-initiated capture.
+    publisher: archives
+      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.archivePresent(key) }
+      : undefined,
+  });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
@@ -4205,10 +4257,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const parsed = await parseBody(c, DeleteArchiveSchema);
     if (!parsed.ok) return parsed.res;
+    // A report published under this archive no longer has one once its bundle is gone: its card
+    // offers Publish as scout again rather than an Open archive that leads nowhere. Checked after
+    // every attempt, including one that failed after the bundle was already moved to the trash
+    // (a cleanup failure), and conditional and queued with that report's Publish: a bundle still
+    // present, or one a publish recreated meanwhile, keeps its key. A failure of this check is
+    // healed at the next startup and never replaces the delete's own answer.
+    const reconcileReport = () => reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
+      .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
     try {
       const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
+      await reconcileReport();
       return c.json(result);
     } catch (error) {
+      await reconcileReport();
       const failure = archiveErrorStatus(error);
       return c.json({ ok: false, error: failure.message }, failure.status);
     }
@@ -9402,10 +9464,45 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * refusals. The one path a route takes to file a task, so a report session or a retried chat
    * cannot become a task the form would have refused.
    */
+  /**
+   * `create` and `alongside` in one transaction. A rollback (a throw from `create` after it
+   * published the task, from `alongside`, or a failed COMMIT) leaves no registry entry: every
+   * task that appeared in the registry during the attempt and has no durable row is removed,
+   * which also tells every window it is gone. Found by comparison rather than from `create`'s
+   * return, so a throw inside `create` (a `task_upsert` listener, say) is cleaned up too. The
+   * attempt is synchronous, so nothing else can add a task meanwhile. The task is a backlog task,
+   * so nothing was launched.
+   */
+  function createWithin(create: () => Task, alongside: (task: Task) => void): Task {
+    const before = new Set(registry.listTasks().map((task) => task.id));
+    try {
+      return inTransaction(() => {
+        const created = create();
+        alongside(created);
+        return created;
+      });
+    } catch (error) {
+      for (const task of registry.listTasks()) {
+        if (!before.has(task.id) && !getDurableTaskRow(task.id)) registry.removeTask(task.id);
+      }
+      throw error;
+    }
+  }
+
   async function createTaskFromDispatch(
     data: TypeOf<typeof DispatchSchema>,
     workUnit?: TaskWorkUnitSource,
+    /**
+     * A write that must land with the task row or not at all: run inside the transaction that
+     * creates the task, and a throw from it rolls the task back. Only for a backlog task, so
+     * nothing is launched before the transaction commits; `tasks.create` does publish the task
+     * to the registry inside it, so a rolled-back creation removes that entry again.
+     */
+    alongside?: (task: Task) => void,
   ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    if (alongside && !data.backlog) {
+      throw new Error("createTaskFromDispatch: a write alongside the task row needs a backlog task, so nothing launches before it commits");
+    }
     const prepared = await prepareTaskRepositories({
       primary: data.repoRoot,
       extras: data.extraRepoRoots,
@@ -9448,15 +9545,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
     try {
+      const create = () => tasks.create(
+        { ...data, agent, repoRoot, extraRepoRoots, workflowId },
+        undefined,
+        MANUAL_DISPATCH_TASK_CREATE,
+        creationPolicy,
+        workUnit,
+      );
       return {
         ok: true,
-        task: tasks.create(
-          { ...data, agent, repoRoot, extraRepoRoots, workflowId },
-          undefined,
-          MANUAL_DISPATCH_TASK_CREATE,
-          creationPolicy,
-          workUnit,
-        ),
+        task: alongside ? createWithin(create, alongside) : create(),
       };
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {

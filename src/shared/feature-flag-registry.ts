@@ -103,11 +103,13 @@ export const FEATURE_FLAGS = [
   },
   {
     id: WORK_UNIT_ID_FLAG_ID,
-    label: "Work unit id",
+    // The label and description name no work unit: the id is tracked, never shown, and this
+    // switch is the one place the dashboard refers to it. Search still finds it by `keywords`.
+    label: "MCP call attribution",
     description:
-      "Tag a task's sessions with one id, so its traces and MCP calls can be found together. An agent " +
-      "started while this is on gets WORK_UNIT_ID in its environment, and the session detail shows the " +
-      "id. A switch takes effect at each agent's next start.",
+      "Tag each agent started for a task with one id that its MCP calls and traces carry, so a task's " +
+      "calls can be found together in your own tools. The id is tracked, never shown here. A switch " +
+      "takes effect at each agent's next start.",
     stage: "preview",
     keywords: ["work unit", "WORK_UNIT_ID", "x-work-unit-id", "mcp", "trace", "telemetry"],
   },

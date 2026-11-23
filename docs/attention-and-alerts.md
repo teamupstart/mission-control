@@ -109,14 +109,72 @@ nothing waits on it.
   body, the link and **Mark read**, and clicking it again closes it.
 - The top bar shows a separate, neutral **to read** figure, which opens the inbox. It never counts
   toward **need you** or **to answer**, and a report never turns a session amber.
-- A report stays in **to read** until you press **Mark read**. Opening it, or opening the inbox,
-  does not clear it; Mission Control records only when you first opened it, with no visible count.
-  A report row has no **Dismiss**: **Mark read** is how it leaves.
+- A report with an attached document offers **Open report**, which shows the copy stored when it
+  was posted, and **Publish as scout**, which saves that document to the scout archive only when
+  you press it and then reads **Published** with **Open archive**. See
+  [Agent reports](sessions.md#agent-reports).
+- A report stays in **to read** until you press **Mark read**, reply to it, or start a follow-up
+  task from it that is dispatched. Opening it, opening its document, publishing it, or opening
+  the inbox does not clear it; Mission
+  Control records only when you first opened it, with no visible count. A report row has no
+  **Dismiss**: one of those is how it leaves.
 - An agent that posts again with `replaces` set to its earlier report's id replaces it: the inbox
   shows only the latest, with a note such as **updated 2 times**, and it keeps the first report's
   place in the queue. Reports posted without `replaces` stack.
 - A report outlives its session. An exited session, or one whose pull request merged, leaves its
   reports in **to read**, named as the agent was named when it posted.
+
+#### Answering a report
+
+An open report offers the answer its agent can take now, read from the live sessions and resident
+runs:
+
+- **The agent is running.** A reply box with **Send reply**. The reply is delivered through the
+  session's outbox as your own message, exactly like one typed in the composer: queued behind a
+  busy turn, echoed and captured the same way, and it counts toward the agent's Goal. It names the
+  report it answers and restates it, then gives your words:
+  "Reply to your report 'Build failure diagnosed' (r-42), posted 12 minutes ago", the report's
+  title and body, then what you wrote. The outbox accepting it marks the report read. If the
+  agent replaces the report while you are writing, the new version takes its place on screen
+  and keeps your words; a reply to a version that was replaced or already read is refused. A
+  session that cannot take the message refuses it, and the report stays in **to read**. A
+  resident's reply goes to whichever run of that resident is up now.
+- **A resident that is not running.** The card says "Steve isn't running" and that you can launch
+  it again from the Residents drawer. That is text, not a control.
+- **A standard session that has ended.** A box with **Start a follow-up task**, which stays
+  disabled until you write what the follow-up should do: a follow-up task is never filed without
+  your instructions. It files a new task in the repository the report recorded, with your words
+  followed by the report as its
+  intent, and dispatches it. When the report's own task can still be found, the follow-up keeps
+  its harness and model, and its kind if that is a shipping kind (ship, bugfix or document;
+  anything else becomes ship). A report from a session with no task, or whose task can no longer
+  be found, gets the Dispatch defaults instead: a ship task on the default harness and model.
+  Either way it takes your Workflow default for its kind. The old
+  session is never resumed. The new task is recorded on the report as it is created, and the
+  report is marked read only once the task has been dispatched. If the dispatch fails (a launch
+  hold, say), the card reads "Follow-up task created but not started" with **Retry**, which
+  dispatches that same task: a report has at most one follow-up task however often you press it.
+  The report follows its task however the task is started or ended. A held follow-up you later
+  start from the Backlog leaves **to read** as soon as it starts, without pressing **Retry**. A
+  follow-up task you cancel answers nothing, so the report comes back to **to read** even if the
+  follow-up had cleared it, and its card offers the instructions box again for a new follow-up.
+  Deleting a follow-up task that was already dispatched leaves its report answered, since it may
+  have done its work; deleting one that never started frees the report the same way a cancel
+  does. **Retry** never files a task: a new follow-up never starts without your words.
+  The route refuses a follow-up while the session has not ended: a running agent is replied to,
+  never replaced by a second session. The dispatch runs its launch in the background, so if that
+  launch then fails with no session (the task fails or returns to the Backlog), the report comes
+  back to **to read** with **Retry**, which relaunches the same task.
+- **A session that is still running but cannot take a message** (no pane to write to, or driven
+  by a pipeline engine). A line says so. It has not ended, so no follow-up is offered either.
+- **A report that recorded no repository.** A line saying a follow-up task cannot be started from
+  here.
+
+**Send reply**, **Start a follow-up task**, **Retry**, **Open report**, **Publish as scout** and
+**Open archive** are declared inbox actions; **Retry** is the follow-up action under another
+label, and **Open archive** is click-only navigation. A report's entry in its session's conversation says
+whether it was read, replied to or followed up (see
+[Agent reports](sessions.md#agent-reports)).
 
 Reports never enter the review channel, so they raise no `pendingReviews`, hold no completion,
 count toward no question limit, close on no merge, and Foreman never reads, answers or marks them.

@@ -2,7 +2,6 @@ import { InboxReplyBoxesContext } from "../../lib/inbox-reply-boxes.ts";
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
-import { WorkUnitRow } from "../WorkUnitRow.tsx";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
@@ -73,6 +72,8 @@ import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
+import { useSessionReports } from "../../lib/sessionReports.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
   ensembleSummaryFor,
@@ -286,6 +287,9 @@ export function ConsoleDetail({
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
+  // Agent reports this session posted, every version, where each was posted (`inbox` flag).
+  const reportsOn = useFeatureFlag(INBOX_FLAG) && view.reportControls !== undefined;
+  const sessionReports = useSessionReports(session.id, view.reports ?? [], reportsOn);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
     note: session.note,
@@ -494,17 +498,13 @@ export function ConsoleDetail({
   // `silent` is already true for a session with no task, so this needs no separate guard.
   const showTaskChip = !pill.silent;
   const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
-  // The id this session emits. `task.workUnitId` is already that id - the agent's launch
-  // record while the task has the same one, never the task's own - so the row follows the
-  // agent, not the live preview: an agent started while it was on keeps the variable until its
-  // next start, and switching the preview off must not hide an id it is still sending. With
-  // the preview never on, no agent has a record and the detail is exactly as before.
-  const workUnitId = session.task?.workUnitId ?? null;
   // Guarded as an element rather than with CSS `:empty`. The band carries padding and a
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || workUnitId !== null;
+  // Dependency install warnings render inside the band, so they keep it mounted on their own.
+  const showClaimWarnings = (session.task?.claimWarnings?.length ?? 0) > 0;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || showClaimWarnings;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -773,7 +773,6 @@ export function ConsoleDetail({
             <dd className="mono branch">{workspaceBranch}</dd>
           </div>
         )}
-        {workUnitId !== null && <WorkUnitRow workUnitId={workUnitId} />}
         {session.task && (
           <>
           {/* The chip survives as long as it is hosting something - a kind, a title, the
@@ -971,6 +970,8 @@ export function ConsoleDetail({
               episodes={visibleEpisodes}
               reviews={timelineReviews.reviews}
               reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
+              reports={sessionReports}
+              reportControls={reportsOn ? view.reportControls : undefined}
               onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}

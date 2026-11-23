@@ -22,7 +22,8 @@ import { requestComposerFocus } from "../lib/composer-focus.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
-import type { ReportItem } from "@shared/reports.ts";
+import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls, ReportPublishState } from "../lib/sessionReports.ts";
 import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
@@ -82,12 +83,19 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
  * What the Reports section needs from the dashboard: which report is open on screen
  * (`openReportId` lives in App, so there is one answer to it), and the two things a card does.
  */
-export interface InboxReportControls {
-  openReportId: string | null;
-  /** Open this report, or close it when it is the open one. */
-  onToggle: (report: ReportItem) => void;
-  /** Mark it read. Resolves to why the daemon refused, or null. */
-  onMarkRead: (report: ReportItem) => Promise<string | null>;
+export interface InboxReportControls extends ReportEntryControls {
+  /** Where a reply to this report can go now (`replyTarget` over the live sessions and runs). */
+  targetFor: (report: ReportItem) => ReplyTarget;
+  /** Reply to it. Resolves to why the daemon refused, or null. */
+  onReply: (report: ReportItem, text: string) => Promise<string | null>;
+  /** Start, or retry, its follow-up task. Resolves to why it failed, or null. */
+  onFollowUp: (report: ReportItem, text: string) => Promise<string | null>;
+  /** Publish its attached document as a scout archive. The outcome lands in `publishStateFor`. */
+  onPublish: (report: ReportItem) => void;
+  /** Its Publish as scout state: in flight, and why the last attempt published nothing. */
+  publishStateFor: (report: ReportItem) => ReportPublishState;
+  /** Go to its published archive. */
+  onOpenArchive: (report: ReportItem) => void;
 }
 
 
@@ -621,8 +629,15 @@ function InboxItem({
               key={report.id}
               report={report}
               open={reports.openReportId === report.id}
+              target={reports.targetFor(report)}
               onToggle={() => reports.onToggle(report)}
               onMarkRead={() => onMarkRead(report)}
+              onReply={(text) => reports.onReply(report, text)}
+              onFollowUp={(text) => reports.onFollowUp(report, text)}
+              onOpenDocument={() => reports.onOpenDocument(report)}
+              onPublish={() => reports.onPublish(report)}
+              publishState={reports.publishStateFor(report)}
+              onOpenArchive={() => reports.onOpenArchive(report)}
               error={readRefused.get(report.id) ?? null}
             />
           ))}

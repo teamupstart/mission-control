@@ -78,6 +78,43 @@ export const INBOX_ACTIONS = [
     spoken: { named: "{name}, mark read", whileOpen: null },
     clickOnly: null,
   },
+  // The report card's reply box, while its agent can take a message.
+  {
+    id: "reply",
+    label: "Send reply",
+    spoken: { named: "{name}, ...", whileOpen: "reply, ..." },
+    clickOnly: null,
+  },
+  // The report card once its agent is gone. One action under two labels: Start a follow-up
+  // task, and Retry after a dispatch that failed, which dispatches the task already created.
+  {
+    id: "follow-up",
+    label: "Start a follow-up task",
+    spoken: { named: "{name}, follow up, ...", whileOpen: "reply, ..." },
+    clickOnly: null,
+  },
+  // A report's attached document, opened from the copy stored when it was posted. Drawn on the
+  // report card and its conversation entry, only when the report has a document.
+  {
+    id: "open-report",
+    label: "Open report",
+    spoken: { named: "{name}, open report", whileOpen: null },
+    clickOnly: null,
+  },
+  // Save that document to the scout archive. Only ever on the operator's press.
+  {
+    id: "publish-scout",
+    label: "Publish as scout",
+    spoken: { named: "{name}, publish as scout", whileOpen: null },
+    clickOnly: null,
+  },
+  // Once published, go to the archive. It only moves you to the Scouts page.
+  {
+    id: "open-archive",
+    label: "Open archive",
+    spoken: null,
+    clickOnly: "navigation",
+  },
   // The Stuck card's controls.
   { id: "nudge", label: "Nudge", spoken: { named: "{name}, nudge", whileOpen: null }, clickOnly: null },
   { id: "continue", label: "Continue", spoken: { named: "{name}, continue", whileOpen: null }, clickOnly: null },

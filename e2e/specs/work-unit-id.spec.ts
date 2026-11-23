@@ -16,9 +16,10 @@ import type { Session, Task } from "../../src/shared/types.ts";
  * in its environment as `WORK_UNIT_ID`, which MCP config that references it turns into the
  * `x-work-unit-id` header. The fakes record their own environment, so each launch's value is
  * read where the agent read it: the embedded Claude driver, the embedded Codex app-server and
- * a terminal wrapper's exports. The session detail shows the id the session emits and copies
- * it. With the preview off there is no variable and no row. And an idle agent started for one
- * work unit refuses a task of another, saying why on the board.
+ * a terminal wrapper's exports. The id is tracked but never displayed: the session detail names
+ * neither the term nor the id, preview on or off. With the preview off there is no variable. And
+ * an idle agent started for one work unit refuses a task of another, saying why on the board
+ * without naming the work unit.
  *
  * Real daemon, real routes, real SSE and the built dashboard; every agent binary is a fake, so
  * no model tokens are spent.
@@ -97,7 +98,7 @@ async function openSession(page: Page, title: string): Promise<Locator> {
   return detail;
 }
 
-test("with the preview on, each launch carries its own task's work unit, and the detail shows and copies it", async ({ dashboard: page, daemon }) => {
+test("with the preview on, each launch carries its own task's work unit, and the detail never shows it", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   await preview(daemon, true);
 
@@ -133,29 +134,42 @@ test("with the preview on, each launch carries its own task's work unit, and the
     .toBe(claude.workUnitId);
   expect((await sessionFor(daemon, claude.id))?.task?.workUnitId, "the id the session emits for its task").toBe(claude.workUnitId);
 
-  // The row: the id this session emits, and a copy control that confirms.
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  // Tracked, not shown: the session emits the id, and the detail names neither the term nor
+  // the id, nor offers a control to copy it.
   const detail = await openSession(page, claude.title);
-  const copy = detail.getByRole("button", { name: "Copy work unit id" });
-  await expect(detail.getByRole("term").filter({ hasText: /^work unit$/ })).toBeVisible();
-  await expect(detail.getByRole("definition").filter({ hasText: claude.workUnitId! })).toBeVisible();
-  await expect(copy).toHaveText("Copy");
-  await shoot(detail.locator("dl.detail-sub"), "01-work-unit-row", page);
-  await copy.click();
-  await expect(copy).toHaveText("Copied");
-  // The button keeps its accessible name, so the confirmation is announced from a status region.
-  await expect(detail.getByRole("status").filter({ hasText: /^Copied$/ })).toHaveCount(1);
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claude.workUnitId);
-  await shoot(detail.locator("dl.detail-sub"), "02-work-unit-copied", page);
+  await expect(detail.locator("dl.detail-sub")).toBeVisible();
+  await expect(detail.getByRole("term").filter({ hasText: /^work unit$/ })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Copy work unit id" })).toHaveCount(0);
+  await expect(detail).not.toContainText(claude.workUnitId!);
+  await expect(detail).not.toContainText(/work unit/i);
+  await shoot(detail.locator("dl.detail-sub"), "01-preview-on-no-row", page);
+
+  // The preview switch is the one place the dashboard refers to the id, and it does not name it.
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const flags = page.getByRole("region", { name: "Feature flags" });
+  const pill = flags.getByRole("button", { name: /^MCP call attribution: on$/ });
+  await expect(pill).toBeVisible();
+  const flagRow = flags.locator(".feature-flag-row").filter({ has: page.getByRole("button", { name: /^MCP call attribution: on$/ }) });
+  await expect(flagRow).toContainText("The id is tracked, never shown here.");
+  await expect(flagRow).not.toContainText(/work.?unit/i);
+  await expect(flags).not.toContainText(/work.?unit/i);
+  await shoot(flagRow, "06-settings-flag-row", page);
 
   // Switched off while this agent runs: it still carries the variable until its next start, so
-  // the row still shows the id it is sending.
+  // the id stays tracked on its launch record and its task - and the detail still shows none of it.
   await preview(daemon, false);
+  const running = await sessionFor(daemon, claude.id);
+  expect(running?.launchWorkUnitId, "the running agent's launch record keeps its id").toBe(claude.workUnitId);
+  expect(running?.task?.workUnitId, "the id the session still emits for its task").toBe(claude.workUnitId);
+  await page.goto(`${daemon.baseURL}/`);
   await page.reload();
   const after = await openSession(page, claude.title);
-  await expect(after.getByRole("definition").filter({ hasText: claude.workUnitId! })).toBeVisible();
-  await expect(after.getByRole("button", { name: "Copy work unit id" })).toBeVisible();
-  await shoot(after.locator("dl.detail-sub"), "05-preview-switched-off-row-stays", page);
+  await expect(after.locator("dl.detail-sub")).toBeVisible();
+  await expect(after.getByRole("term").filter({ hasText: /^work unit$/ })).toHaveCount(0);
+  await expect(after.getByRole("button", { name: "Copy work unit id" })).toHaveCount(0);
+  await expect(after).not.toContainText(claude.workUnitId!);
+  await expect(after).not.toContainText(/work unit/i);
+  await shoot(after.locator("dl.detail-sub"), "07-preview-switched-off-still-hidden", page);
 });
 
 test("with the preview off, a launch carries no variable and the detail shows no row", async ({ dashboard: page, daemon }) => {
@@ -172,6 +186,7 @@ test("with the preview off, a launch carries no variable and the detail shows no
   await expect(detail.locator("dl.detail-sub")).toBeVisible();
   await expect(detail.getByRole("button", { name: "Copy work unit id" })).toHaveCount(0);
   await expect(detail.locator("dl.detail-sub")).not.toContainText("work unit");
+  await expect(detail).not.toContainText(task.workUnitId!);
   await shoot(detail.locator("dl.detail-sub"), "03-preview-off-no-row", page);
 });
 
@@ -216,6 +231,7 @@ test("an idle agent started for another work unit refuses a dropped task, and th
   // The work unit is the reason given, ahead of the agent being busy: busy passes, this does not.
   const refusal = page.getByRole("status").filter({ hasText: WORK_UNIT_REUSE_REFUSAL });
   await expect(refusal).toBeVisible();
+  await expect(refusal).not.toContainText(/work unit/i);
   await shoot(page, "04-reuse-refused", page);
   // Nothing was handed over: the task waits in the backlog for a new agent.
   expect((await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === other.id)?.status).toBe("backlog");

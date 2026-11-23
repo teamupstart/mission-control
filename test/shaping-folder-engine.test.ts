@@ -13,6 +13,8 @@ const home = mkdtempSync(join(tmpdir(), "mission-shaping-folder-"));
 process.env.MISSION_HOME = home;
 const { closeDb, deleteAppConfig, getAppConfig } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+const { SHAPING_LIMIT_RANGES } = await import("../src/shared/shaping.ts");
+const { initializeExecutableEnvironment } = await import("../src/server/executables/locator.ts");
 const store = await import("../src/server/shaping/index.ts");
 const { discoverShapers, shapersFolder } = await import("../src/server/shaping/discovery.ts");
 const { dryRunShaper, shapeTask } = await import("../src/server/shaping/engine.ts");
@@ -54,7 +56,27 @@ function dropShaper(id: string, body: string, extra: Record<string, unknown> = {
   return createHash("sha256").update(text).digest("hex");
 }
 
-const shape = () => shapeTask(input, { enabled: true });
+// Nothing in this file is about timing, and it used to fail its first case with `timed_out` under
+// the full suite. The command transport locates its executable through the process-wide locator,
+// whose first use probes the operator's login shell (`$SHELL -ilc`, bounded at 5 s), and that wait
+// was spent from the first shaper call's own 5 s budget. A slow shell start under load used it up.
+// The probe is paid here, once, before any case, outside every call's budget.
+await initializeExecutableEnvironment();
+
+/**
+ * The stored config as it stands now, with the time limits at their ceilings, as headroom for a
+ * real `/bin/sh` spawn on a loaded machine. Read fresh on every call, so a stored choice still
+ * decides what runs, and passed as the run's snapshot, so nothing is written to settings.
+ */
+const roomyConfig = () => {
+  const config = store.getShapingConfig();
+  return {
+    ...config,
+    limits: { ...config.limits, timeoutMs: SHAPING_LIMIT_RANGES.timeoutMs.max, deadlineMs: SHAPING_LIMIT_RANGES.deadlineMs.max },
+  };
+};
+
+const shape = () => shapeTask(input, { enabled: true, config: roomyConfig() });
 
 test("a dropped-in folder runs at the next shaping run with no settings write, and records its origin and hash", async () => {
   const stored = getAppConfig(APP_CONFIG_ENTRIES.shaping);
@@ -149,7 +171,7 @@ test("an invalid or refused manifest never runs, even when stored on", async () 
 
 test("a dry run reads the folder too, and runs the discovered definition", async () => {
   const sha256 = dropShaper("acme-notes", "Dry run answer.", { enabled: false });
-  const result = await dryRunShaper("acme-notes", input);
+  const result = await dryRunShaper("acme-notes", input, { config: roomyConfig() });
   assert.equal(result.ok, true);
   assert.equal(result.ok && result.run.summary?.shapers[0]?.origin, "discovered");
   assert.equal(result.ok && result.run.summary?.shapers[0]?.sha256, sha256);

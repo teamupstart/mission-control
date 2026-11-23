@@ -40,6 +40,13 @@ export interface EmittedSpan {
    * declared ref silently reached no span at all.
    */
   refs?: Record<string, string>;
+  /**
+   * Refs on `UNSCOPED_REF_KEYS`, RAW, which the engine exports as they are under their own name
+   * - the one exception to the scoping above (`docs/observability.md`, "Work unit id"). Apart
+   * from `refs` so that no path can hash one by accident. The engine drops a key that is not on
+   * the list or a value not in its format; it never moves one into `refs`.
+   */
+  unscopedRefs?: Record<string, string>;
 }
 
 /**

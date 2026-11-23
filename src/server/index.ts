@@ -60,7 +60,7 @@ import {
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
-import { AfterWorkSkills } from "./shaping/after-work.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -337,16 +337,7 @@ const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
   // `workflows` is constructed below; this is read only when a prompt is written, long after.
   workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
 });
-// In the answer's own transaction: mark the held prompts it releases, so a daemon that stops
-// before the release below still releases them at its next start.
-queues.onWrapupAnswerRecorded((key) => {
-  const session = registry.sessionForNoteKey(key);
-  if (session) afterWorkSkills.recordAnswered(session.id);
-});
-queues.onWrapupAnswered((key) => {
-  const session = registry.sessionForNoteKey(key);
-  if (session) afterWorkSkills.release(session.id);
-});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.

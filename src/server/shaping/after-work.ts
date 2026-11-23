@@ -114,6 +114,30 @@ export function renderAfterWorkPrompt(sessionId: string, skills: readonly Resolv
   return rendered.ok ? rendered.payload : null;
 }
 
+/**
+ * Connect the prompter to Foreman's wrap-up answers, as the daemon does. In the answer's own
+ * transaction, the session's held prompts are marked answered; after it commits they are
+ * released. A daemon that stops between the two still releases them at its next start.
+ */
+export function wireAfterWorkSkills(
+  afterWork: Pick<AfterWorkSkills, "recordAnswered" | "release">,
+  queues: {
+    onWrapupAnswerRecorded(recorder: (key: string) => void): () => void;
+    onWrapupAnswered(listener: (key: string) => void): () => void;
+  },
+  sessionForKey: (key: string) => string | null,
+): () => void {
+  const offRecorded = queues.onWrapupAnswerRecorded((key) => {
+    const sessionId = sessionForKey(key);
+    if (sessionId) afterWork.recordAnswered(sessionId);
+  });
+  const offAnswered = queues.onWrapupAnswered((key) => {
+    const sessionId = sessionForKey(key);
+    if (sessionId) afterWork.release(sessionId);
+  });
+  return () => { offRecorded(); offAnswered(); };
+}
+
 export class AfterWorkSkills {
   private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">>
     & Pick<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">;

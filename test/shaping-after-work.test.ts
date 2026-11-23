@@ -17,7 +17,7 @@ process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const db = await import("../src/server/db.ts");
-const { AfterWorkSkills, afterWorkTurnId, renderAfterWorkPrompt } = await import("../src/server/shaping/after-work.ts");
+const { AfterWorkSkills, afterWorkTurnId, renderAfterWorkPrompt, wireAfterWorkSkills } = await import("../src/server/shaping/after-work.ts");
 const { deliverySchedule, deliveryStage, AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
@@ -599,4 +599,45 @@ test("a recorded wrap-up answer and the held prompts it marks commit together, o
   queues.setWrapupAnswer("note-q1", "/ship");
   assert.equal(answer(), "/ship");
   assert.equal(marked(), true);
+});
+
+test("a held prompt is released after a restart when Foreman's wrap-up is answered through the queue with the same text as before", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  // The session's queue still carries an earlier episode's answer, with its ask time.
+  const key = "note-repeat";
+  const skip = "foreman:automatic-wrapup-skipped";
+  db.openDb().prepare(`INSERT INTO foreman_queues (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
+    VALUES (?, '/repo', 'main', 5, ?, NULL, 1)`).run(key, skip);
+  const queueRow = () => db.openDb().prepare(`SELECT wrapup_asked_at, wrapup_answer FROM foreman_queues WHERE note_key = ?`)
+    .get(key) as { wrapup_asked_at: number | null; wrapup_answer: string | null };
+
+  // The daemon before the stop: the prompter wired to the real queue, exactly as `index.ts` wires it.
+  const before = setup();
+  const queues = new QueueManager(new Registry());
+  const taskId = nextTask();
+  before.registry.launch(taskId, "s-repeat");
+  assert.deepEqual(before.prompts.prompt("s-repeat", { hold: true }), { kind: "held" });
+  // The daemon stops after the answer commits and before any listener runs: the first listener
+  // to run after the commit is where the process ends.
+  queues.onWrapupAnswered(() => { throw new Error("the daemon stopped"); });
+  const unwire = wireAfterWorkSkills(before.prompts, queues, (k) => (k === key ? "s-repeat" : null));
+  // Foreman skips the wrap-up again: the same answer text, and no new ask.
+  assert.throws(() => queues.setWrapupAnswer(key, skip), /the daemon stopped/);
+  unwire();
+  before.prompts.stop();
+  assert.deepEqual({ ...queueRow() }, { wrapup_asked_at: 5, wrapup_answer: skip }, "the queue reads exactly as it did before the answer");
+  assert.equal(before.queued.length, 0, "the release never ran");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-repeat")?.state, "held");
+
+  // The restarted daemon releases it, though nothing on the queue changed.
+  const after = setup();
+  after.prompts.stop();
+  after.registry.tasks = before.registry.tasks;
+  after.registry.sessions = before.registry.sessions;
+  after.prompts.start();
+  assert.equal(after.queued.length, 1, "the held prompt is released at start");
+  assert.equal(after.queued[0]!.turn.text.split("\n")[0], "/retro");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-repeat")?.state, "queued");
+  after.prompts.stop();
 });

@@ -32,7 +32,7 @@ function world(on, { flag, minModApi = 1 }) {
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
-  on('state.set', (_, e) => { seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
+  on('state.set', async (_, e) => { if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
   on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold } if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
@@ -371,4 +371,26 @@ test('a stale pane open does not close the pane a replacement session opened, an
   await new Promise((resolve) => setTimeout(resolve, 200))
   expect(seen.closed.length).toBe(closedBefore)
   expect(seen.state.paneTab).toBe('needs-you')
+})
+
+test('a pane target write held across a session replacement leaves the replacement\'s target alone', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let release
+  seen.holdSet = new Promise((resolve) => { release = resolve })
+  seen.holdSetKey = 'paneTab'
+  // The task-row shortcut writes paneTab first; that write is held.
+  await $.command.run(COMMAND('mc-1'))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  // The session is replaced while it is held, and the replacement opens on Needs you.
+  seen.state.selectedTaskId = null
+  seen.state.paneView = 'list'
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.opened.length >= 2)
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  // The old command's remaining writes never reach the replacement.
+  expect(seen.state.selectedTaskId).toBe(null)
+  expect(seen.state.paneView).toBe('list')
 })

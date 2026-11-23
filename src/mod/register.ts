@@ -365,14 +365,17 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       // The target the command asked for is stored before the pane opens, so the pane draws it
       // (P12 reads these): a tab clears any selected task, a task id selects that task, and a
       // bare open leaves the pane as it was.
-      if (opts.taskId !== undefined) {
-        await stateSet($, "paneTab", "tasks").catch(() => undefined);
-        await stateSet($, "selectedTaskId", opts.taskId).catch(() => undefined);
-        await stateSet($, "paneView", "item").catch(() => undefined);
-      } else if (opts.tab !== undefined) {
-        await stateSet($, "paneTab", opts.tab).catch(() => undefined);
-        await stateSet($, "selectedTaskId", null).catch(() => undefined);
-        await stateSet($, "paneView", "list").catch(() => undefined);
+      // Each write is guarded on its own: the pane's state is shared, so once a replacement session
+      // starts, nothing this command has left to write may land in it. (A write already in flight
+      // when the session was replaced cannot be called back, so the ones after it are the ones kept.)
+      const target: Array<[FlowStateKey, unknown]> = opts.taskId !== undefined
+        ? [["paneTab", "tasks"], ["selectedTaskId", opts.taskId], ["paneView", "item"]]
+        : opts.tab !== undefined
+          ? [["paneTab", opts.tab], ["selectedTaskId", null], ["paneView", "list"]]
+          : [];
+      for (const [key, value] of target) {
+        if (stale()) return { isPlaced: false };
+        await stateSet($, key, value).catch(() => undefined);
       }
       if (stale()) return { isPlaced: false };
       const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });

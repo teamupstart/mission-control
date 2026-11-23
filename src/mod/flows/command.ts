@@ -57,6 +57,8 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
     if (waitingDraft) {
       const reminded = await remindOrDropWaitingDraft(host, session, waitingDraft);
       if (reminded) return reminded;
+      // The drop path ends with the session gone: nothing starts over in a session that is not there.
+      if (session.live && !session.live()) return { outcome: "cancelled", line: "cancelled" };
     }
     return runDispatchFlow(host, session, { entry: "first-message" });
   }

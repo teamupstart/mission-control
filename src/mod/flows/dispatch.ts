@@ -109,7 +109,7 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
   if (session.live && !session.live()) return stop(host);
   let filled = true;
   try {
-    filled = (await host.fillPrompt("/mission-dispatch ")) !== false;
+    filled = (await host.fillPrompt("/mission-dispatch ", session.live)) !== false;
   } catch {
     filled = false;
   }
@@ -345,18 +345,22 @@ const reminded = new Set<string>();
  * person who changed their mind is not stuck. Returns null when the flow should start over.
  */
 export async function remindOrDropWaitingDraft(host: FlowHost, session: FlowSession, draftId: string): Promise<FlowResult | null> {
+  // The waiting-draft read that led here may have outlasted the session.
+  if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
   if (!reminded.has(draftId)) {
     reminded.add(draftId);
     try {
-      await host.fillPrompt("/mission-dispatch ");
+      await host.fillPrompt("/mission-dispatch ", session.live);
     } catch {
       // The notice below says what to type.
     }
+    if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
     host.notice(`${DESCRIBE_NOTICE} ${DROP_HINT}`);
     return { outcome: "waiting", line: DESCRIBE_NOTICE };
   }
   reminded.delete(draftId);
   await confirmDraft(host, session, draftId, "cancel");
+  if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
   await host.paneState.set("draftId", null);
   host.notice(DROPPED_NOTICE);
   return null;

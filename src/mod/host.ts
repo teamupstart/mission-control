@@ -93,9 +93,11 @@ export interface ModHost {
   /** Puts text in the prompt box without sending it (`$.prompt.fill`, spike S12). */
   /**
    * Resolves `false` (or throws) when the prompt box could not be filled, so the flow asks for
-   * the description in a dialog instead (S12). `void` means it was filled.
+   * the description in a dialog instead (S12). `void` means it was filled. `guard` is checked as
+   * the fill is issued; when it answers false the prompt is left alone (the session that asked
+   * has ended).
    */
-  fillPrompt: (text: string) => void | boolean | Promise<void | boolean>;
+  fillPrompt: (text: string, guard?: () => boolean) => void | boolean | Promise<void | boolean>;
   fetch: (path: string, init?: ModFetchInit) => Promise<ModFetchResult>;
   env: (name: string) => string | undefined;
   modelWrite: (write: ModModelWrite) => void;

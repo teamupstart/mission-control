@@ -742,3 +742,43 @@ test("a draft answer that arrives after the session ended fills no prompt and op
   assert.ok(confirming.fake.notices.every((n) => !n.startsWith("Repo:")));
   assert.deepEqual(confirming.filed, []);
 });
+
+test("a blank command whose waiting-draft read or fill outlasts the session fills no prompt and says nothing", async () => {
+  // The read of the waiting draft outlasts the session.
+  let ended = false;
+  const reading = world();
+  await runDispatchCommand(reading.fake.host, SESSION, "");
+  const promptsBefore = reading.fake.prompts.length;
+  const noticesBefore = reading.fake.notices.length;
+  const realGet = reading.fake.host.paneState.get;
+  reading.fake.host.paneState.get = (async (key: "draftId") => {
+    const value = await realGet(key);
+    ended = true;
+    return value;
+  }) as typeof realGet;
+  const result = await runDispatchCommand(reading.fake.host, { ...SESSION, live: () => !ended }, "");
+  assert.equal(result.outcome, "cancelled");
+  assert.equal(reading.fake.prompts.length, promptsBefore);
+  assert.equal(reading.fake.notices.length, noticesBefore);
+
+  // The fill itself outlasts the session: no reminder is shown for a session that is gone.
+  let ended2 = false;
+  const filling = world();
+  await runDispatchCommand(filling.fake.host, SESSION, "");
+  const noticesBefore2 = filling.fake.notices.length;
+  filling.fake.host.fillPrompt = async () => { ended2 = true; };
+  const second = await runDispatchCommand(filling.fake.host, { ...SESSION, live: () => !ended2 }, "");
+  assert.equal(second.outcome, "cancelled");
+  assert.equal(filling.fake.notices.length, noticesBefore2);
+});
+
+test("the fill carries its session's guard to the host", async () => {
+  const live = () => true;
+  const { fake } = world();
+  const seen: Array<(() => boolean) | undefined> = [];
+  const real = fake.host.fillPrompt;
+  fake.host.fillPrompt = (text, guard) => { seen.push(guard); return real(text, guard); };
+  await runDispatchCommand(fake.host, { ...SESSION, live }, "");
+  await runDispatchCommand(fake.host, { ...SESSION, live }, "");
+  assert.deepEqual(seen, [live, live]);
+});

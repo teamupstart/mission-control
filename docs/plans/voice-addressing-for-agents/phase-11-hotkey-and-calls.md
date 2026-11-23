@@ -40,7 +40,9 @@ As of `2088bd522`:
    toggles mute. A longer hold sets `pushToTalk` in the shell report while held. `voiceMode`
    honours push-to-talk during auto-mute, as Phase 1 defines; elsewhere a hold does nothing.
 3. **Registration.** The shell registers the chord from the config and re-registers when it
-   changes. On failure it keeps the previous chord registered and reports `hotkeyError`.
+   changes. On failure it keeps the previous chord registered and reports `hotkeyError`. When
+   the first registration fails, of the default `ctrl+alt+m` for instance, there is no previous
+   chord: none is in force, and the row in step 5 says so. A null `hotkey` registers nothing.
 4. **Call addon.** `native/mic-activity/`: on macOS 14.2 or later, list the processes with running
    audio input, leave out the listener's own process and the app's, and return whether any
    remain. The shell polls at the spike's interval and reports `callActive`. On an older macOS the
@@ -60,7 +62,8 @@ keep-awake addon is.
 ## 7. Tests and verification
 
 - `test/voice-hotkey.test.ts`: the tap and hold rule with a fake clock; a failed registration
-  keeps the old chord.
+  keeps the old chord; a failed first registration leaves none in force; a null `hotkey`
+  registers nothing.
 - Additions to `test/voice-state.test.ts`: push-to-talk during a call, a tap during a call,
   auto-mute off.
 - `test/native-addon-publish.test.ts` covers the two new builders.

@@ -42,11 +42,21 @@ As of `2088bd522`:
 
 1. **Flag.** `src/shared/voice.ts` with contract A's constants; the registry entry, labelled
    "Voice addressing", stage `preview`.
-2. **Config.** The `voice` app-config entry with contract A's fields and defaults (`muted` false,
-   `autoMuteDuringCalls` true, `cancelWindow` on at 4 seconds, `whenUnsure` `show`,
-   `planFormsByVoice` true, `inputDevice` `built-in`, `decisionProvider` null, `backend` `auto`;
-   `decisionProvider` accepts null, which means automatic, `off`, `openai` or `jev`),
-   its routes, and `ui.voice` (`confirmation` `pill`, `indicators` holding `status-line`).
+2. **Config.** The `voice` app-config entry with each of contract A's fields and its default.
+   This list is the whole of contract A's config, so the schema built here is the one later
+   phases read and write:
+   - `muted`: false;
+   - `hotkey`: `ctrl+alt+m`, a chord string in the format `chordFromEvent` produces
+     (`src/web/lib/keybindings.ts:481`), or null for no hotkey. Nothing registers it before
+     Phase 11;
+   - `autoMuteDuringCalls`: true;
+   - `cancelWindow`: `{ enabled: true, seconds: 4 }`;
+   - `whenUnsure`: `show` (or `ask`);
+   - `planFormsByVoice`: true;
+   - `inputDevice`: `built-in`;
+   - `decisionProvider`: null, which means automatic (or `off`, `openai`, `jev`);
+   - `backend`: `auto`.
+   Also its routes, and `ui.voice` (`confirmation` `pill`, `indicators` holding `status-line`).
 3. **State.** `voiceMode(inputs)` in `src/shared/voice.ts`: off when the flag is off; unavailable
    when a reason holds; then muted; then, during a call with auto-mute on, push-to-talk while held
    and auto-muted otherwise; else listening. A server `VoiceStateStore` computes contract B's
@@ -97,4 +107,7 @@ new capability id adds it to the list in `src/shared/voice.ts`.
 
 - Written after Phase 0. The config holds the fields phases 4, 6, 7, 8, 11, 12, 14 and 16 read, so
   none of them changes the schema.
+- Pull request review, sixth round: step 2's list of fields left out `hotkey`, so a schema built
+  from it would have needed Phase 11 to change it. The list is now complete, one field a line,
+  with `hotkey` defaulting to `ctrl+alt+m` as the selected settings mock-up shows.
 - The hello route is here, not in Phase 9, so specs from Phase 3 on can reach `listening`.

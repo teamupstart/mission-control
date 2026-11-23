@@ -122,6 +122,13 @@ A fifth review raised two more, both accepted.
   form with words, and not the case of several questions with no card open. Both now open a
   question pick. Phase 6's two answer hints stay hidden until Phase 13 makes them work.
 
+A sixth review raised one more, accepted.
+
+- **`hotkey` missing from Phase 1's field list.** Step 2 listed the config fields with their
+  defaults and left out `hotkey`, which Phase 11 writes and Phase 7 prints. The list is now
+  complete and says so, with `hotkey` defaulting to the chord the selected settings mock-up
+  shows.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -220,7 +227,8 @@ phase file decides behaviour.
 
 **A. Flag and settings (Phase 1).** `VOICE_FLAG = "voice"` and `VOICE_REQUIRED_FLAGS` (the
 `async-input`, `inbox` and `filed-plan-decisions` ids) in `src/shared/voice.ts`. `VoiceConfig`, the
-`voice` app-config entry: `muted`, `hotkey`, `autoMuteDuringCalls`, `cancelWindow { enabled,
+`voice` app-config entry: `muted`, `hotkey` (a chord string, default `ctrl+alt+m`, or null),
+`autoMuteDuringCalls`, `cancelWindow { enabled,
 seconds }`, `whenUnsure` (`show` or `ask`), `planFormsByVoice`, `inputDevice`, `decisionProvider`
 (null for automatic, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
 (`pill`, `toast` or `popover`) and `indicators` (a list of indicator ids). Later phases read and

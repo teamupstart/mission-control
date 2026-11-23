@@ -726,7 +726,8 @@ snapshot outdated or its source archived and shows the exact instruction that ve
 #### Pull request actions
 
 The shipped **Pull Request** action invokes the [`pull-request`](skills-and-settings.md#skills-every-session-mixed-reload-behavior) skill and completes
-only after Mission Control has durable proof that a pull request was opened. Duplicating it keeps
+after Mission Control has durable proof that a pull request was opened, or verifies that the
+repository has no changes to publish. Duplicating it keeps
 that completion and that skill, so you can rewrite the instruction without losing the adoption
 proof.
 
@@ -745,6 +746,13 @@ What the daemon has to see before the stages below it run, and before End:
    [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews from, which only records pull requests it can prove are
    ours.
 
+When Mission Control verifies there are no changes to publish, the action completes and Runs
+explains **No changes to publish**. If required proof is unavailable and no PR was adopted,
+Runs names the problem and offers **Start repair round** after it is corrected. Both completion
+and blocking release any sibling repository's held feedback. See the
+[Pull Request adapter contract](agent-guides/change-contracts.md#the-pull_request-adapter)
+for the proof and continuation rules.
+
 None of that can be satisfied by the session saying so. A pull request URL on the session card
 is a lookup hint and nothing more. The durable adoption record is the proof that the creation
 command succeeded. The daemon still compares the observed repository, branch, pushed head, and
@@ -759,6 +767,15 @@ tree or pushed ref differs, the action completes with a durable **PR opened with
 notice, preserves both identities, and activates its `complete` route. Inspector and every other
 downstream stage can continue. When the run finishes, **Run this review again** captures the
 published state for a fresh full workflow run.
+
+**Downgrade compatibility:** the no-change result stores a `no_change` expectation that older
+builds cannot read. Keep a build that supports this result when inspecting or resuming those
+runs. There is no in-place downgrade migration for these records. A rollback to an older build
+requires a verified full-database recovery point from before the upgrade and the supported
+[offline recovery procedure](database-and-migrations.md#recovering-the-product-database);
+restoring that point discards database changes made since it was captured. A settings backup
+does not contain workflow state. The [single-daemon ownership and update lifecycle](agent-guides/architecture.md)
+prevents old and new daemon writers from sharing a state home during replacement.
 
 **Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
 applies when the daemon prepares a workflow action whose completion is **Pull request**,
@@ -3045,10 +3062,17 @@ error. Mission Control does not fetch inherited settings. Only a run whose pinne
 CodeRabbit check captures this snapshot. Submission capture freezes the decision; retries reuse it
 and new submissions refresh it.
 
-Optional repository-root tuning selects a base ref and severity
-(default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
-the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
-these defaults. The command previews its owned argv, never an editable shell recipe.
+The CodeRabbit Command starts with `coderabbit review --deep` by default. In **Library > Commands >
+CodeRabbit**, edit the machine-wide command or set a command for an individual repository under
+repository tuning. Use `coderabbit review` for a standard review. The editor also accepts `--fresh`
+and optional focus text after `--deep` on accounts where CodeRabbit supports it. Clear the field
+to inherit the machine-wide command for a repository or restore the built-in command globally.
+Mission Control adds the structured output, severity gate, and committed comparison flags shown
+in the preview. It freezes the effective command with the comparison for retries.
+
+Repository tuning also selects a base ref and severity (default `major`, including critical).
+The locally observed `origin/HEAD` supplies the default base. If it is unavailable, set an
+explicit base in Library.
 
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;

@@ -313,7 +313,11 @@ let db: DatabaseSync | undefined;
 // 47: revised plan forms (`reviews.revises_review_id`, `revision`) and the index that keeps one
 //     revision per form, nullable with no backfill: every existing row is a form that revises
 //     nothing.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 47;
+// 48: the delivery id a task's binding was last written with (`tasks.shaping_delivery`), which
+//     a current shaping record carries too (`TaskShaping.deliveryId`). Backfilled once: a record
+//     naming the task's bound session shares a fresh id with its row, so what readers showed
+//     still shows; every other record gains an id no binding carries, so it stays hidden.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 48;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -642,6 +646,10 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- JSON TaskShaping (@shared/shaping.ts): what task shaping added to the latest launch
       -- that reached a worker, naming its session. Written only by commitTaskShaping().
       shaping       TEXT,
+      -- The turn-one delivery this row's binding was last written with; a current record
+      -- carries the same id (see currentShaping). Written only by commitTaskShaping() and
+      -- by a turn-one binding (upsertTask with a delivery id), never by an ordinary upsert.
+      shaping_delivery TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -4249,6 +4257,30 @@ function migrate(d: DatabaseSync): void {
   // text has its own table so a task read never carries up to 64 KiB of prompt it did not ask
   // for; it is replaced or deleted in the same transaction as the summary.
   addColumn(d, "tasks", "shaping", "TEXT");
+  // The delivery id a current shaping record shares with its task's binding. Backfilled once,
+  // when the column is added: a record that names the task's bound session now is the one
+  // readers showed before delivery ids existed, so it and its row share a fresh id and keep
+  // showing; every other record gains an id no binding carries and stays hidden, as it was.
+  // The column and both updates commit together: the column's presence is what says the
+  // backfill ran, so an upgrade interrupted between them must leave no column behind, and the
+  // next start runs the whole step again.
+  if (!hasColumn(d, "tasks", "shaping_delivery")) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      addColumn(d, "tasks", "shaping_delivery", "TEXT");
+      d.exec(`
+        UPDATE tasks SET shaping_delivery = lower(hex(randomblob(16)))
+          WHERE shaping IS NOT NULL AND json_valid(shaping) AND session_id IS NOT NULL
+            AND json_extract(shaping, '$.sessionId') = session_id;
+        UPDATE tasks SET shaping = json_set(shaping, '$.deliveryId', COALESCE(shaping_delivery, lower(hex(randomblob(16)))))
+          WHERE shaping IS NOT NULL AND json_valid(shaping);
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
+  }
   d.exec(`
     CREATE TABLE IF NOT EXISTS task_shaping_text (
       task_id    TEXT PRIMARY KEY,
@@ -6924,6 +6956,7 @@ interface TaskRow {
   session_id: string | null;
   claim_warnings?: string | null;
   shaping?: string | null;
+  shaping_delivery?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -7118,13 +7151,14 @@ function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> 
  * so an unshaped task reads exactly as it did before the column. An unreadable blob is no
  * record, because one bad row must not take out `listTasks`.
  */
-function readTaskShaping(raw: string | null): Pick<Task, "shaping"> {
-  if (!raw) return {};
+function readTaskShaping(raw: string | null, delivery: string | null): Pick<Task, "shaping" | "shapingDelivery"> {
+  const binding = delivery ? { shapingDelivery: delivery } : {};
+  if (!raw) return binding;
   try {
     const parsed = TaskShapingSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? { shaping: parsed.data } : {};
+    return parsed.success ? { shaping: parsed.data, ...binding } : binding;
   } catch {
-    return {};
+    return binding;
   }
 }
 
@@ -7425,7 +7459,7 @@ function rowToTask(
     automaticCleanup,
     residentRestart,
     ...readTaskClaimWarnings(r.claim_warnings ?? null),
-    ...readTaskShaping(r.shaping ?? null),
+    ...readTaskShaping(r.shaping ?? null, r.shaping_delivery ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -7448,7 +7482,15 @@ function parseSourceParent(raw: string | null): TaskSourceRef | null {
   }
 }
 
-export function upsertTask(t: Task): string[] {
+export function upsertTask(
+  t: Task,
+  /**
+   * Set only by a turn-one binding: the delivery id written with the row in this same
+   * transaction (`Task.shapingDelivery`). Every other write leaves the column alone, whatever
+   * the copy of the task it was handed carries, so a stale copy never brings an earlier id back.
+   */
+  binding: { shapingDelivery: string } | null = null,
+): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -7593,6 +7635,9 @@ export function upsertTask(t: Task): string[] {
     d.prepare(`DELETE FROM task_worktree_returns WHERE task_id = ? AND
       (? <> 'done' OR completed_at IS NOT ? OR dispatched_at IS NOT ? OR ? = 0)`)
       .run(t.id, t.status, t.completedAt, t.dispatchedAt, taskHasWorktrees(t) ? 1 : 0);
+    // A turn-one binding carries its delivery id in the same transaction as the row naming the
+    // session, so the binding never lands without it (see `currentShaping`).
+    if (binding) d.prepare(`UPDATE tasks SET shaping_delivery = ? WHERE id = ?`).run(binding.shapingDelivery, t.id);
     if (ownsTransaction) d.exec("COMMIT");
     return displaced;
   } catch (error) {
@@ -8781,19 +8826,23 @@ export function deleteTask(id: string): void {
 // ---- task shaping record ----
 
 /**
- * Settle one launch's shaping record: the summary and the delivered text, in ONE transaction.
+ * Settle one launch's shaping record: the summary, its delivery id and the delivered text, in
+ * ONE transaction.
  *
  * The only writer of `tasks.shaping` besides `rekeyTaskShaping`; `upsertTask` never names
  * the column, so a task written from an older snapshot cannot bring a superseded record back.
  * Called once turn one has been handed to the worker, whether or not shaping ran:
  *
  * - `summary` replaces the record, or clears it when null (no shaper applied, or the flag
- *   was off).
+ *   was off). A record is stamped with this delivery's id.
+ * - The delivery id is written to the task's binding (`shaping_delivery`) either way, so a
+ *   record shows only while it is this delivery's (`currentShaping`), and a delivery that
+ *   recorded nothing still binds under its own id.
  * - `text` replaces the delivered section, or deletes it when empty. A launch whose only
  *   shaper failed keeps its degraded summary and has no text.
  *
- * A task with no record and no text, settled with neither, is not written to at all, so an
- * unshaped launch never touches either table. Returns whether anything changed.
+ * Returns whether the record, the text or an after-work prompt row changed: a task with no
+ * record and no text, settled with neither, gains only its delivery id.
  */
 export function commitTaskShaping(
   taskId: string,
@@ -8807,6 +8856,8 @@ export function commitTaskShaping(
    * delivery has claimed it, so the new launch writes its own. Defaults to the summary's session.
    */
   deliveredTo: string | null = summary?.sessionId ?? null,
+  /** This delivery's id. Defaults to the summary's own, or a fresh one. */
+  deliveryId: string = summary?.deliveryId ?? randomUUID(),
 ): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
@@ -8820,11 +8871,12 @@ export function commitTaskShaping(
     }
     let changes = 0;
     if (summary) {
-      const record = TaskShapingSchema.parse(summary);
+      const record = TaskShapingSchema.parse({ ...summary, deliveryId });
       changes += Number(d.prepare(`UPDATE tasks SET shaping = ? WHERE id = ?`).run(JSON.stringify(record), taskId).changes);
     } else {
       changes += Number(d.prepare(`UPDATE tasks SET shaping = NULL WHERE id = ? AND shaping IS NOT NULL`).run(taskId).changes);
     }
+    d.prepare(`UPDATE tasks SET shaping_delivery = ? WHERE id = ?`).run(deliveryId, taskId);
     if (text) {
       changes += Number(d.prepare(
         `INSERT INTO task_shaping_text (task_id, text, created_at) VALUES (?, ?, ?)
@@ -8856,30 +8908,6 @@ export function rekeyTaskShaping(taskId: string, fromSessionId: string, toSessio
     )
     .run(toSessionId, taskId, fromSessionId);
   return Number(r.changes) > 0;
-}
-
-/**
- * Clear a task's record and delivered text only while the record still names `sessionId`, in
- * one transaction. A failed commit's clean-up: it removes the earlier delivery's record that a
- * handover back to the same session would otherwise show as its own, and never a record a later
- * commit wrote for that session or another. True when something was cleared.
- */
-export function clearTaskShapingFor(taskId: string, sessionId: string): boolean {
-  const d = openDb();
-  const ownsTransaction = !d.isTransaction;
-  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
-  try {
-    const cleared = Number(d.prepare(
-      `UPDATE tasks SET shaping = NULL
-         WHERE id = ? AND shaping IS NOT NULL AND json_extract(shaping, '$.sessionId') = ?`,
-    ).run(taskId, sessionId).changes) > 0;
-    if (cleared) d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(taskId);
-    if (ownsTransaction) d.exec("COMMIT");
-    return cleared;
-  } catch (error) {
-    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
-    throw error;
-  }
 }
 
 // ---- task shaping: after-work skills prompts ----
@@ -9157,10 +9185,16 @@ export function rekeyTaskLaunch(taskId: string, fromSessionId: string, toSession
   }
 }
 
+/** The stored record and the delivery id its binding carries, for a task that is not in memory. */
+export function taskShapingState(taskId: string): Pick<Task, "shaping" | "shapingDelivery"> {
+  const row = openDb().prepare(`SELECT shaping, shaping_delivery FROM tasks WHERE id = ?`).get(taskId) as
+    { shaping: string | null; shaping_delivery: string | null } | undefined;
+  return readTaskShaping(row?.shaping ?? null, row?.shaping_delivery ?? null);
+}
+
 /** The stored record alone, for a task that is not in memory. */
 export function taskShapingRecord(taskId: string): TaskShaping | null {
-  const row = openDb().prepare(`SELECT shaping FROM tasks WHERE id = ?`).get(taskId) as { shaping: string | null } | undefined;
-  return readTaskShaping(row?.shaping ?? null).shaping ?? null;
+  return taskShapingState(taskId).shaping ?? null;
 }
 
 /** The section the task's latest shaped launch delivered, when it delivered one. */

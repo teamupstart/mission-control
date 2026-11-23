@@ -388,7 +388,7 @@ before the body limit, so such a request is refused as forbidden whatever its si
   scrubbed: a value resolved into one of its headers, a `{caller.*}` value included, or, for a
   local shaper, a variable named in its `env` list or an inherited URL that carries a user name
   and password. It does not by itself mean a credential was involved. The summary's optional
-  `sessionId` stays unset here; dispatch stamps it when it delivers a record (see
+  `sessionId` and `deliveryId` stay unset here; dispatch stamps them when it delivers a record (see
   [The record](#the-record)). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
@@ -529,8 +529,23 @@ with the flag off, clears an earlier record. A launch whose only shaper failed k
 degraded summary and has no text.
 
 Each record names the session it was delivered to, and follows that conversation when it is
-resumed or moves runtimes. Every reader shows a record only while it names the task's current
-session, so a redispatch never shows the previous launch's context or `degraded`.
+resumed or moves runtimes. Each turn-one delivery also gets an id of its own. The commit stamps
+it on the record and writes it, with the row naming the receiving session (a launch's or a
+handover's), in the same transaction, so a stop between the two leaves neither. A delivery that
+recorded nothing still binds under its own id. Every reader applies one rule, `currentShaping(task)` in `src/shared/shaping.ts`: a
+record shows only while it names the task's current session and carries the delivery id that
+binding was written with. A redispatch never shows the previous launch's context or
+`degraded`, and neither does a handover back to the session the task already ran on.
+
+When the shaping transaction fails, the binding row is written again on its own, without the
+record, carrying the new delivery id. If that write succeeds, the task binds under the new id.
+The earlier record stays on disk, but it carries an earlier delivery id, so nothing shows it.
+Nothing has to clear it, and nothing in memory has to survive a restart for readers to keep
+rejecting it. The next delivery that commits replaces it. If that binding write fails too, the
+handover or launch fails with it. The task then keeps its previous binding and delivery id,
+in memory and on disk alike, so live and durable readers still agree. A database upgraded from before delivery ids gives
+each record an id. A record that names the task's bound session shares its id with that row,
+so it still shows; every other record gets an id no binding carries and stays hidden.
 
 | Reader | What it returns |
 | --- | --- |

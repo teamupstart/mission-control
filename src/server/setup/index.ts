@@ -22,6 +22,8 @@ import {
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   setupFamilyFlagOn,
+  SETUP_FLAG_INPUTS,
+  setupReadingFlags,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
   type SetupDependencyId,
@@ -500,8 +502,6 @@ function listSentence(parts: readonly string[]): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
-const NUMBER_WORDS = ["none", "one", "two", "three", "four", "five"] as const;
-
 /**
  * Whether the flags voice depends on are on. Unsatisfied, the row names which are on and which
  * are off, and its Fix turns on exactly the ones that are off.
@@ -517,11 +517,12 @@ export function voicePreviewsStatus(flagEnabled: (id: FeatureFlagId) => boolean)
   const why = on.length > 0
     ? `${names(on)} ${verb(on)} on. ${names(off)} ${verb(off)} off.`
     : `${names(off)} ${verb(off)} off.`;
+  // Voice needs three flags, so one, two or all three can be off here.
   const label = off.length === 1
     ? `Turn on ${flagLabel(off[0]!)}`
     : off.length === VOICE_REQUIRED_FLAGS.length
-      ? `Turn on all ${NUMBER_WORDS[off.length] ?? off.length}`
-      : `Turn on the ${NUMBER_WORDS[off.length] ?? off.length} that are off`;
+      ? "Turn on all three"
+      : "Turn on the two that are off";
   return {
     status: { state: "needs-setup", why, evidence: null },
     remedy: {
@@ -715,14 +716,24 @@ export function defaultSetupDeps(): SetupDeps {
   };
 }
 
+/** Every flag Setup reads (`SETUP_FLAG_INPUTS`), resolved now, as a reader that does not change. */
+function flagsAsOfNow(flagOn: (id: FeatureFlagId) => boolean): (id: FeatureFlagId) => boolean {
+  const resolved = new Map(SETUP_FLAG_INPUTS.map((id) => [id, flagOn(id)] as const));
+  return (id) => resolved.get(id) ?? flagOn(id);
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
-  const scoped: SetupDeps = { ...deps };
+  // The flags are read once, before anything is probed, and that one reading decides which
+  // families are listed, what the `voice-previews` probe reports and the stamp the reading
+  // carries. Read live at each of those, a switch made while the probes run could list no Voice
+  // rows under a stamp that says Voice is on, and the dashboard would never read it again.
+  const flagEnabled = flagsAsOfNow(deps.flagEnabled ?? featureEnabled);
+  const scoped: SetupDeps = { ...deps, flagEnabled };
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
   // A family that follows a preview flag (Voice) is neither probed nor listed while it is off.
-  const flagEnabled = deps.flagEnabled ?? featureEnabled;
   const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
     .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled));
   const [probed, targets, environment, repositories] = await Promise.all([
@@ -765,6 +776,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
     if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
+  const readingFlags = setupReadingFlags(flagEnabled);
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
@@ -776,5 +788,6 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
+    ...(readingFlags !== undefined ? { flagsKey: readingFlags } : {}),
   };
 }

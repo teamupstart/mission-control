@@ -1,14 +1,11 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { execPath } from "node:process";
-import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { hasTmux, PANE_AGENT_DAEMON, type PaneAgent, startPaneAgent } from "../fixtures/pane-agent.ts";
 
 /**
  * The backlog has ONE order and it is the operator's, proven the only way it can be: a
@@ -540,7 +537,7 @@ test("dropping a card where it already is sends nothing", async ({ dashboard, da
  */
 test.describe("dropped on an idle agent", () => {
   /** Discovery, on and brisk - this block's daemon only. See the header for why that is safe. */
-  test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
+  test.use(PANE_AGENT_DAEMON);
 
   /**
    * Skipped rather than failed when tmux is absent, so a contributor without it is not
@@ -548,73 +545,13 @@ test.describe("dropped on an idle agent", () => {
    * turning this into decoration - see `session-interrupt-terminal.spec.ts`, which makes the
    * same trade for the same reason.
    */
-  test.skip(
-    spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
-    "tmux is not installed on this machine",
-  );
+  test.skip(!hasTmux(), "tmux is not installed on this machine");
 
-  let pane: { name: string; id: string; screen: () => string; cleanup: () => void } | undefined;
+  let pane: PaneAgent | undefined;
   test.afterEach(() => {
     pane?.cleanup();
     pane = undefined;
   });
-
-  /**
-   * A real tmux pane running something the daemon discovers as an idle Claude session.
-   *
-   * Two spawns, not one, and the second is the point: the pane agent has to be told its own
-   * pane id so its hooks bind to this card, and tmux only issues that id once the pane
-   * exists. `respawn-pane -k` replaces the placeholder in place, which keeps the pane id
-   * stable - re-creating the session would mint a new one and the hooks would address a
-   * pane that no longer exists.
-   *
-   * The session name is unique per run so a parallel worker's pane, or a stray one from an
-   * earlier run, can never be the card this test drives.
-   */
-  function startPane(daemon: DaemonHandle): NonNullable<typeof pane> {
-    const dir = mkdtempSync(join(tmpdir(), "mc-e2e-handover-"));
-    const bin = join(dir, "fake-bin");
-    mkdirSync(bin);
-    // argv0's basename is what `harnessOf` matches, so the LINK's name is the whole disguise.
-    symlinkSync(execPath, join(bin, "claude"));
-    const agent = fileURLToPath(new URL("../fixtures/pane-agent.mjs", import.meta.url));
-    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
-    const name = `mc-e2e-handover-${process.pid}-${Date.now()}`;
-    const run = (paneId: string): string =>
-      `${join(bin, "claude")} ${agent} ${daemon.baseURL} ${token} ${paneId} ${daemon.repo} ${dir}`;
-
-    const tmux = (args: string[]): string =>
-      execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
-    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
-    const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
-    tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
-
-    return {
-      name,
-      id,
-      screen: () => {
-        try {
-          return tmux(["capture-pane", "-p", "-t", id]);
-        } catch {
-          return "";
-        }
-      },
-      /**
-       * Killed by PANE ID, never by the session name.
-       *
-       * A handover renames the agent's terminal after the task it just took, so by the time
-       * this runs the name above no longer addresses anything - `kill-session -t <name>`
-       * exits non-zero and the pane is left running on the developer's machine forever,
-       * where the next run with discovery on cards it as a stray idle agent. A pane id is
-       * stable across renames, and killing the session's last pane takes the session with
-       * it.
-       */
-      cleanup: () => {
-        spawnSync("tmux", ["kill-pane", "-t", id], { stdio: "ignore" });
-        rmSync(dir, { recursive: true, force: true });
-      },
-    };
-  }
 
   for (const confirmReset of [false, true]) test(confirmReset
     ? "Cmd+Enter confirms Assign Reset once and hands the backlog task to the agent"
@@ -628,7 +565,7 @@ test.describe("dropped on an idle agent", () => {
     // drop target added to the column ate the drop meant for the agent - or that the tile's
     // drop quietly started reordering instead of handing the task over.
     if (confirmReset) execFileSync("git", ["-C", daemon.repo, "switch", "-c", "shortcut-handover"]);
-    const agent = startPane(daemon);
+    const agent = startPaneAgent(daemon, { prefix: "mc-e2e-handover" });
     pane = agent;
     const task = await seedTask(daemon, "Hand me over");
     await useBoardLayout(dashboard, daemon);

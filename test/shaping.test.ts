@@ -1055,15 +1055,15 @@ test("the summary line names announced skills, and reads as before when none was
 
 test("a task read carries the record's skills, and its after-work prompt only while it names the record's session", () => {
   const record: TaskShaping = {
-    state: "ok", at: 1, durationMs: 5, entries: 0, bytes: 300, truncated: false, sessionId: "s1",
+    state: "ok", at: 1, durationMs: 5, entries: 0, bytes: 300, truncated: false, sessionId: "s1", deliveryId: "d1",
     shapers: [summaryRow("router")], skills: [skillRow("retro", "announced", "after-work")],
   };
   const prompt = { sessionId: "s1", state: "delivered" as const, reason: null, skills: ["retro"], createdAt: 5, deliveredAt: 9 };
-  assert.deepEqual(taskShapingRead({ shaping: record, sessionId: "s1" }, prompt), {
+  assert.deepEqual(taskShapingRead({ shaping: record, sessionId: "s1", shapingDelivery: "d1" }, prompt), {
     state: "ok", sessionId: "s1", summary: "ok: 0 entries from 1 shaper, 1 skill (retro)", skills: record.skills, afterWork: prompt,
   });
-  assert.equal("afterWork" in taskShapingRead({ shaping: record, sessionId: "s1" }, { ...prompt, sessionId: "s0" })!, false);
-  const unrouted = taskShapingRead({ shaping: { ...record, skills: undefined }, sessionId: "s1" });
+  assert.equal("afterWork" in taskShapingRead({ shaping: record, sessionId: "s1", shapingDelivery: "d1" }, { ...prompt, sessionId: "s0" })!, false);
+  const unrouted = taskShapingRead({ shaping: { ...record, skills: undefined }, sessionId: "s1", shapingDelivery: "d1" });
   assert.equal(unrouted && "skills" in unrouted, false, "a launch no router applied to reads as before");
   assert.equal(TaskShapingSchema.safeParse(record).success, true);
 });

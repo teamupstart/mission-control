@@ -2,6 +2,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { displayItemsHiding } from "../fixtures/display-items.ts";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -130,7 +131,7 @@ test("the task card shows Installing dependencies with Stop, and Stop lets the d
   const hidden = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ hiddenDisplayItems: ["detailPath", "detailBranch"] }),
+    body: JSON.stringify({ hiddenDisplayItems: displayItemsHiding("detailPath", "detailBranch") }),
   });
   expect(hidden.ok).toBe(true);
   await dashboard.reload();

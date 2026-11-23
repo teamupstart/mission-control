@@ -21,6 +21,7 @@ import type {
 } from "@shared/pipeline.ts";
 import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
 import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
@@ -587,7 +588,9 @@ function FeatureFlagsRemedy({
       for (const id of flags) {
         const result = await api.setFeatureFlags({ kind: "flag", id, enabled: true });
         if (!result.ok) {
-          setError(`${id} could not be turned on${result.error ? `: ${result.error}` : "."}`);
+          // Named by its label, the name Settings > Feature flags shows, so the hint below leads there.
+          const label = FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+          setError(`${label} could not be turned on${result.error ? `: ${result.error}` : "."}`);
           return;
         }
       }

@@ -300,6 +300,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     const asVisitor = visitor(s, "tile");
     if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
+    const resident = props.residentBySession?.get(s.id);
     return <SessionTile
       key={s.id}
       session={s}
@@ -341,7 +342,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // a position counted at the call site would restart inside every frame - which is the
       // one thing the numbering must not do.
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
-      resident={props.residentBySession?.get(s.id) ?? null}
+      resident={resident}
+      residentLoopFeedback={resident && props.residentLoopFeedbackFor?.(resident.runId)}
     />
   };
   /**
@@ -661,10 +663,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{c.label}</h2>
-                {/* The review chord's keycap, on Needs you while pressing it would open a queue:
-                    `e` goes to the first session asking without a card being picked first. The
-                    same rule the chord itself follows, so the keycap is never on a column the
-                    key would leave alone. */}
+                {/* Remind the operator of the attention shortcut when this column has a review. */}
                 {c.id === "attention" && g !== null && reviewShortcutTarget(g.sessions, null) && (
                   <span className="board-col-key"><Keycap action="review" /></span>
                 )}

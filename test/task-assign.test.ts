@@ -1640,6 +1640,86 @@ test("a handover is shaped like a launch: the section follows the contract and t
   }
 });
 
+/** Hand `t1` to the session, back to the backlog, and over to the same session again with `second`. */
+async function handBackToSameSession(prefix: string, second: (r: InstanceType<typeof Registry>) => Promise<unknown>) {
+  const { r, tasks, sessionId, clone } = setupInRepo(prefix);
+  r.upsertTask(mkTask({ repoRoot: clone, intent: "THE-HANDED-OVER-TASK" }));
+  const verified = async () => ({ ok: true, pasted: true, submitVerified: true });
+  const first = await tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask, inject: verified,
+  });
+  assert.equal(first.ok, true);
+  const earlier = currentShaping(r.getTask("t1")!)!;
+  assert.equal(earlier.sessionId, sessionId, "the first handover's record shows");
+  r.upsertTask({ ...r.getTask("t1")!, status: "backlog", sessionId: null });
+  await second(r);
+  const handBack = () => tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask, inject: verified,
+  });
+  return { r, sessionId, earlier, handBack };
+}
+
+test("a handover back to the same session whose record cannot be written never shows the earlier record, even after a restart", async () => {
+  setShaping(true);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    let assigned: unknown;
+    const { r, sessionId, earlier, handBack } = await handBackToSameSession("mission-assign-shaping-failed-commit-", async (registry) => {
+      // SQLite refuses the record's write every time; nothing tries, or needs, to clear the earlier one.
+      registry.shapingCommitter = () => { throw new Error("disk full"); };
+    });
+    assigned = await handBack();
+    r.shapingCommitter = null;
+    assert.deepEqual(assigned, { ok: true }, "the handover itself goes ahead");
+    const stored = getStoredTask("t1")!;
+    assert.equal(stored.status, "running");
+    assert.equal(stored.sessionId, sessionId, "bound to the receiving session on disk");
+    assert.deepEqual(stored.shaping, earlier, "the earlier delivery's record is still on disk, naming that session");
+    assert.equal(currentShaping(r.getTask("t1")!), null, "no live reader shows it");
+    assert.equal(currentShaping(stored), null, "no durable reader shows it");
+    const restarted = new Registry();
+    assert.equal(restarted.getTask("t1")?.sessionId, sessionId);
+    assert.equal(currentShaping(restarted.getTask("t1")!), null, "and a restarted daemon shows nothing either");
+  } finally {
+    console.warn = warn;
+    setShaping(false);
+  }
+});
+
+test("a handover stopped between its record and its binding leaves neither written", async () => {
+  setShaping(true);
+  const warn = console.warn;
+  console.warn = () => {};
+  const d = openDb();
+  try {
+    const { r, sessionId, earlier, handBack } = await handBackToSameSession("mission-assign-shaping-torn-", async () => {
+      // The process stops at the second write: the row naming the receiving session.
+      d.exec(`CREATE TRIGGER stop_at_handover_binding BEFORE UPDATE OF status ON tasks WHEN NEW.id = 't1' AND NEW.status = 'running'
+              BEGIN SELECT RAISE(ABORT, 'process stopped'); END;`);
+    });
+    await assert.rejects(handBack(), /process stopped/);
+    d.exec("DROP TRIGGER stop_at_handover_binding");
+    const stored = getStoredTask("t1")!;
+    assert.equal(stored.status, "backlog", "the binding was not written");
+    assert.deepEqual(stored.shaping, earlier, "and neither was this handover's record");
+    assert.equal(getTaskShapingText("t1")?.text, HANDOVER_SECTION);
+    // The live registry did not move ahead of the row either.
+    const live = r.getTask("t1")!;
+    assert.equal(live.status, "backlog");
+    assert.equal(live.shapingDelivery, stored.shapingDelivery, "live and durable carry the same delivery id");
+    assert.deepEqual(live.shaping, stored.shaping);
+    const restarted = new Registry();
+    assert.equal(currentShaping(restarted.getTask("t1")!), null, "a restart reads no record for a handover that did not bind");
+    assert.equal(restarted.getTask("t1")?.shaping?.deliveryId, earlier.deliveryId, "the only record on disk is the first handover's");
+    assert.notEqual(restarted.getTask("t1")?.sessionId, sessionId);
+  } finally {
+    d.exec("DROP TRIGGER IF EXISTS stop_at_handover_binding");
+    console.warn = warn;
+    setShaping(false);
+  }
+});
+
 test("with the flag off a handover calls nothing and types no task context", async () => {
   setShaping(false);
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-off-");

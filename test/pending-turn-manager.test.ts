@@ -3337,3 +3337,53 @@ test("an after-work turn task shaping is turned off for while its delivery holds
     manager.stop();
   }
 });
+
+test("an after-work turn whose launch cannot be checked is held back, never delivered and never dropped, until it can", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-unverified";
+  registry.registerSdkSession({ id, agent: "claude", name: "unverified", cwd: "/repo/unverified", agentSessionId: "conversation:unverified" });
+  const taskId = "task-unverified";
+  let readable = true;
+  let checksWhileUnreadable = 0;
+  let handoffs = 0;
+  const sent: string[] = [];
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The ownership read starts failing while the driver holds the claimed turn.
+      if (handoffs === 1) readable = false;
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5,
+    afterWorkTurnOwed: () => {
+      if (readable) return true;
+      checksWhileUnreadable += 1;
+      throw new Error("database is locked");
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  // Refused at the acceptance guard, then checked again on the drain's recheck timer, never claimed.
+  await until(() => checksWhileUnreadable >= 3, "the drain to recheck the unreadable launch");
+  assert.deepEqual(sent, [], "an unreadable ownership check never delivers the turn");
+  assert.equal(handoffs, 1, "and the turn is not claimed again while it cannot be checked");
+  assert.equal(registry.getSession(id)?.pendingTurns.length, 1, "it stays queued: nothing was dropped");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "queued", "and its prompt row is not settled");
+  // The read recovers: the turn is delivered, once.
+  readable = true;
+  await until(() => sent.length === 1, "the held-back turn to be delivered");
+  await tick(20);
+  assert.equal(sent.length, 1);
+  manager.stop();
+});

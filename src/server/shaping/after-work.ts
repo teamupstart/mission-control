@@ -60,6 +60,11 @@ export interface AfterWorkSkillsDeps {
   /** Told when the feature flags change, so prompts owed while task shaping was off are recovered when it is on again. */
   onFlagsChanged?: (listener: () => void) => () => void;
   now?: () => number;
+  /**
+   * Run `fn` after `ms`, returning a cancel. A held prompt whose release failed is tried again
+   * this way, so a daemon that keeps running never leaves it held. Defaults to an unref'd timer.
+   */
+  schedule?: (fn: () => void, ms: number) => () => void;
   /** A catalog skill's checked invocation for a live session. */
   catalogCommand?: (session: Session, id: string) => RequiredSkillCommand;
   /** The catalog id behind a routed name, or null for a name Mission Control does not ship. */
@@ -140,6 +145,10 @@ export function wireAfterWorkSkills(
   return () => { offRecorded(); offAnswered(); };
 }
 
+/** The first and the longest wait before a failed held release is tried again. */
+const HELD_RETRY_BASE_MS = 1_000;
+const HELD_RETRY_MAX_MS = 5 * 60_000;
+
 export class AfterWorkSkills {
   private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">>
     & Pick<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">;
@@ -150,6 +159,8 @@ export class AfterWorkSkills {
   private readonly heldCheck = new Set<string>();
   /** The session each task's shaping record last named, so a resume's move is seen once. */
   private readonly shapingSessions = new Map<string, string>();
+  /** Sessions whose held release failed: the next try's cancel and how many tries have failed. */
+  private readonly heldRetries = new Map<string, { cancel: () => void; failures: number }>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -157,6 +168,11 @@ export class AfterWorkSkills {
       enabled: () => featureEnabled("task-shaping"),
       onFlagsChanged: (listener) => onFeatureFlagsChanged(() => listener()),
       now: Date.now,
+      schedule: (fn, ms) => {
+        const timer = setTimeout(fn, ms);
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      },
       ...deps,
     };
   }
@@ -243,6 +259,8 @@ export class AfterWorkSkills {
 
   stop(): void {
     for (const off of this.unsubscribe.splice(0)) off();
+    for (const retry of this.heldRetries.values()) retry.cancel();
+    this.heldRetries.clear();
   }
 
   /**
@@ -265,9 +283,32 @@ export class AfterWorkSkills {
   release(sessionId: string): void {
     try {
       this.resume(sessionId, "held");
+      this.heldRetries.get(sessionId)?.cancel();
+      this.heldRetries.delete(sessionId);
     } catch (error) {
       console.warn(`[shaping] could not release session ${sessionId}'s after-work skills:`, error);
+      this.retryHeldLater(sessionId);
     }
+  }
+
+  /**
+   * A release that failed stays owed: the answer's marker is durable, so the session is kept for
+   * the held check - its next update, or a flag turned on again - and tried again on a timer that
+   * backs off from 1 second to 5 minutes, so a session that stays quiet is still released.
+   */
+  private retryHeldLater(sessionId: string): void {
+    if (!this.unsubscribe.length) return;
+    this.heldCheck.add(sessionId);
+    const prior = this.heldRetries.get(sessionId);
+    prior?.cancel();
+    const failures = (prior?.failures ?? 0) + 1;
+    const delay = Math.min(HELD_RETRY_MAX_MS, HELD_RETRY_BASE_MS * 2 ** (failures - 1));
+    const cancel = this.deps.schedule(() => {
+      const current = this.heldRetries.get(sessionId);
+      if (current?.cancel !== cancel) return;
+      if (this.heldCheck.has(sessionId)) this.checkHeld(sessionId);
+    }, delay);
+    this.heldRetries.set(sessionId, { cancel, failures });
   }
 
   /**
@@ -293,6 +334,7 @@ export class AfterWorkSkills {
       this.release(sessionId);
     } catch (error) {
       console.warn(`[shaping] could not check session ${sessionId}'s held after-work skills:`, error);
+      this.retryHeldLater(sessionId);
     }
   }
 
@@ -433,6 +475,9 @@ export class AfterWorkSkills {
   }
 
   private sessionEnded(sessionId: string): void {
+    this.heldRetries.get(sessionId)?.cancel();
+    this.heldRetries.delete(sessionId);
+    this.heldCheck.delete(sessionId);
     try {
       for (const row of listOpenTaskSkillPrompts(sessionId)) {
         this.settle(row.taskId, sessionId, [row.state], "not_delivered", SESSION_ENDED);

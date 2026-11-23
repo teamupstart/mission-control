@@ -8773,8 +8773,8 @@ export function getTaskSkillPrompt(taskId: string, sessionId: string): (TaskSkil
  * Inside the shaping commit: drop the prompt row an earlier launch of `taskId` into `sessionId`
  * left, and its outbox turn while it is still queued and unclaimed. A turn a delivery already
  * claimed cannot be deleted under it; with its row gone it is no longer owed, and the outbox's
- * delivery guard refuses it before the agent takes it (`afterWorkTurnOwed`). Returns the rows
- * changed.
+ * delivery guard refuses it before the agent takes it (`afterWorkTurnOwed`). A guard that cannot
+ * read the row holds the turn back rather than deliver it. Returns the rows changed.
  */
 function clearSupersededSkillPrompt(d: DatabaseSync, taskId: string, sessionId: string): number {
   const row = d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ? AND session_id = ? RETURNING turn_id`)

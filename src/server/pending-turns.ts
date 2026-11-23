@@ -62,6 +62,11 @@ const DEFAULT_IDLE_SETTLE_MS = 1_500;
 export const AFTER_WORK_FLAG_OFF = "Task shaping was turned off before the prompt was delivered.";
 /** Why an after-work turn was refused: a later launch of its task replaced the launch it was for. */
 export const AFTER_WORK_SUPERSEDED = "A later launch of the task replaced the launch this after-work prompt was for.";
+/**
+ * Why an after-work turn was held back, not refused: whether its launch still owns it could not be
+ * read. It stays queued, undelivered and unsettled, and is checked again (`afterWorkRecheckMs`).
+ */
+export const AFTER_WORK_UNVERIFIED = "Mission Control could not check that this after-work prompt's launch still owns it.";
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -114,6 +119,8 @@ interface PendingTurnDeps {
   afterWorkEnabled: () => boolean;
   /** Whether an after-work turn's launch still owns it (`afterWorkTurnOwed`). */
   afterWorkTurnOwed: (turnId: string) => boolean;
+  /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
+  afterWorkRecheckMs: number;
 }
 
 /**
@@ -122,6 +129,7 @@ interface PendingTurnDeps {
  * change hands within about a second of each other. Idle whenever nothing is waiting.
  */
 const DEFAULT_STEER_RECEIPT_POLL_MS = 500;
+const DEFAULT_AFTER_WORK_RECHECK_MS = 1_000;
 
 /** How far one conversation's receipt scan has read its transcript. */
 interface SteerReceiptScan {
@@ -235,6 +243,8 @@ function confirmReviewSend(noteKey: string, id: string, options: Parameters<type
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
+  /** After-work turns a delivery guard held back because their launch could not be checked. */
+  private readonly unverifiedAfterWork = new Set<string>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -267,6 +277,7 @@ export class PendingTurnManager {
       steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
       afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
       afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
+      afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
     };
   }
 
@@ -933,8 +944,13 @@ export class PendingTurnManager {
     // An after-work prompt is task shaping's, and follows its flag at delivery as well as when it
     // was written: queued while the flag was on, it is dropped, never sent, once it is off. One a
     // later launch's shaping commit superseded is dropped the same way. Either may have happened
-    // while a delivery held it, which the delivery guards refused and released.
+    // while a delivery held it, which the delivery guards refused and released. One whose launch
+    // could not be checked is neither claimed nor dropped: it is checked again shortly.
     const afterWorkRefusal = this.afterWorkRefusal(next.turn);
+    if (afterWorkRefusal === AFTER_WORK_UNVERIFIED) {
+      this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+      return;
+    }
     if (afterWorkRefusal) {
       if (dropQueuedAfterWorkTurn(next.turn.id, afterWorkRefusal)) {
         this.registry.refreshPendingTurns(key);
@@ -974,9 +990,15 @@ export class PendingTurnManager {
         // The row is still queued: a refusal, or a stage that did not finish the message.
         // Arm the escalation that is still ahead of it rather than waiting for an event a
         // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
-        // that keeps refusing cannot become a loop.
-        const escalation = this.nextEscalationAt(current);
-        if (escalation != null) this.armDrain(key, escalation);
+        // that keeps refusing cannot become a loop. The one exception is an after-work turn
+        // held back because its launch could not be checked: nothing else would ever wake it,
+        // so it is checked again on the recheck interval until the read answers.
+        if (turn && this.unverifiedAfterWork.delete(turn.id)) {
+          this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+        } else {
+          const escalation = this.nextEscalationAt(current);
+          if (escalation != null) this.armDrain(key, escalation);
+        }
       }
     }
   }
@@ -1392,28 +1414,40 @@ export class PendingTurnManager {
   }
 
   /**
-   * Why an after-work turn must not be delivered now, or null: task shaping is off, or a later
-   * launch of its task replaced the launch it was for. Null for every other turn.
+   * Why an after-work turn must not be delivered now, or null: task shaping is off, a later
+   * launch of its task replaced the launch it was for, or whether one did could not be read
+   * (`AFTER_WORK_UNVERIFIED`, which holds the turn back rather than refusing it). Null for every
+   * other turn.
    */
   private afterWorkRefusal(turn: PendingTurn): string | null {
     if (!idleOnlyTurn(turn)) return null;
     if (!this.deps.afterWorkEnabled()) return AFTER_WORK_FLAG_OFF;
-    return this.afterWorkTurnOwed(turn) ? null : AFTER_WORK_SUPERSEDED;
+    const owed = this.afterWorkTurnOwed(turn);
+    if (owed === null) return AFTER_WORK_UNVERIFIED;
+    return owed ? null : AFTER_WORK_SUPERSEDED;
   }
 
-  /** A released after-work turn that must not be delivered leaves the outbox at once, settled with why. */
+  /**
+   * A released after-work turn that must not be delivered leaves the outbox at once, settled with
+   * why. One whose launch could not be checked stays queued for the drain to check again.
+   */
   private dropIfRefused(turn: PendingTurn): void {
     const refusal = this.afterWorkRefusal(turn);
-    if (refusal) dropQueuedAfterWorkTurn(turn.id, refusal);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    else if (refusal) dropQueuedAfterWorkTurn(turn.id, refusal);
   }
 
-  /** Whether an after-work turn's launch still owns it. A read that fails counts as owed. */
-  private afterWorkTurnOwed(turn: PendingTurn): boolean {
+  /**
+   * Whether an after-work turn's launch still owns it, or null when that cannot be read. Fails
+   * closed: an unread answer is never taken as owed, because a later launch's turn would be the
+   * one to receive the earlier launch's prompt.
+   */
+  private afterWorkTurnOwed(turn: PendingTurn): boolean | null {
     try {
       return this.deps.afterWorkTurnOwed(turn.id);
     } catch (error) {
       console.warn("[pending-turns] could not check an after-work turn's launch:", error);
-      return true;
+      return null;
     }
   }
 

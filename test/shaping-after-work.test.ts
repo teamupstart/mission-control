@@ -71,6 +71,8 @@ function setup(options: {
   outboxRefusal?: () => { error: string; retryable: boolean } | null;
   /** A task-shaping flag the test turns on and off, and tells the prompter about, as the flag store does. */
   flag?: { on: boolean; listeners: Set<() => void> };
+  /** Collects what the prompter schedules, with its delay, so a test runs it when it chooses. */
+  scheduled?: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -92,6 +94,13 @@ function setup(options: {
       ? { onFlagsChanged: (listener: () => void) => { options.flag!.listeners.add(listener); return () => { options.flag!.listeners.delete(listener); }; } }
       : {}),
     now: () => ++now,
+    ...(options.scheduled
+      ? { schedule: (fn: () => void, ms: number) => {
+          const entry = { fn, ms, cancelled: false };
+          options.scheduled!.push(entry);
+          return () => { entry.cancelled = true; };
+        } }
+      : {}),
     catalogId: (name) => options.catalog?.[name] ?? null,
     catalogCommand: (_session, id) => options.refused?.[id]
       ? { ok: false, message: options.refused[id]! }
@@ -712,4 +721,65 @@ test("a waiting prompt follows an ordinary resume to its successor session and i
   assert.equal(queued[0]!.sessionId, "s-new");
   assert.equal(db.getTaskSkillPrompt(taskId, "s-new")?.state, "queued");
   prompts.stop();
+});
+
+test("a held prompt whose release fails is tried again on a timer while the daemon keeps running", () => {
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const { registry, queued, prompts } = setup({ scheduled });
+  const taskId = nextTask();
+  registry.launch(taskId, "s-held-retry");
+  assert.deepEqual(prompts.prompt("s-held-retry", { hold: true }), { kind: "held" });
+  prompts.recordAnswered("s-held-retry");
+  // The release meets a transient failure: nothing is queued, and the prompt stays held.
+  const getSession = registry.getSession.bind(registry);
+  let failures = 2;
+  registry.getSession = (id: string) => {
+    if (failures > 0) { failures -= 1; throw new Error("transient read failure"); }
+    return getSession(id);
+  };
+  prompts.release("s-held-retry");
+  assert.equal(queued.length, 0);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-held-retry")?.state, "held");
+  assert.equal(scheduled.length, 1, "a retry is scheduled, with no session update or restart needed");
+  assert.equal(scheduled[0]!.ms, 1_000);
+  // The first retry fails too, and the next one waits longer.
+  scheduled[0]!.fn();
+  assert.equal(queued.length, 0);
+  assert.equal(scheduled.length, 2);
+  assert.equal(scheduled[1]!.ms, 2_000);
+  // Once the failure clears, the retry releases it, and nothing further is scheduled.
+  scheduled[1]!.fn();
+  assert.equal(queued.length, 1);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-held-retry")?.state, "queued");
+  assert.equal(scheduled.length, 2);
+  // A stale timer, or one that fires after the release, sends nothing more.
+  scheduled[0]!.fn();
+  scheduled[1]!.fn();
+  assert.equal(queued.length, 1);
+  prompts.stop();
+});
+
+test("a pending held retry is cancelled when its session ends or the prompter stops", () => {
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const { registry, prompts } = setup({ scheduled });
+  for (const id of ["s-ends", "s-stops"]) {
+    registry.launch(nextTask(), id);
+    assert.deepEqual(prompts.prompt(id, { hold: true }), { kind: "held" });
+    prompts.recordAnswered(id);
+  }
+  const getSession = registry.getSession.bind(registry);
+  let failing = true;
+  registry.getSession = (id: string) => {
+    if (failing) throw new Error("transient read failure");
+    return getSession(id);
+  };
+  prompts.release("s-ends");
+  prompts.release("s-stops");
+  failing = false;
+  assert.equal(scheduled.length, 2);
+  registry.emit("event", { type: "session_remove", id: "s-ends" });
+  assert.equal(scheduled[0]!.cancelled, true, "the ended session's retry is cancelled");
+  assert.equal(scheduled[1]!.cancelled, false);
+  prompts.stop();
+  assert.equal(scheduled[1]!.cancelled, true, "and stopping cancels the rest");
 });

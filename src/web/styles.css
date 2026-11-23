@@ -8508,6 +8508,65 @@ a.btn {
   color: var(--working);
   background: color-mix(in oklab, var(--working) 15%, transparent);
 }
+/* A revised plan form (`ReviewItem.revision`): its "Revision N" tag and, beside it, the control
+   that opens the form it replaced. */
+.review-revision {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.kind-revision {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 15%, transparent);
+}
+.review-revision-earlier {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.review-earlier-modal {
+  width: min(760px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.review-earlier-modal .modal-head {
+  flex: 0 0 auto;
+}
+.review-earlier-modal .modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.review-earlier-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding-top: 16px;
+}
+.review-earlier-meta,
+.review-earlier-reason {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.review-earlier-reason {
+  color: var(--fg);
+}
+.review-earlier-decisions {
+  margin: 0;
+  padding-left: 20px;
+}
+.review-earlier-decisions > li + li {
+  margin-top: 10px;
+}
+.review-earlier-question {
+  font-weight: 600;
+}
+.review-earlier-decisions ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
 .reminder-banner {
   display: flex;
   align-items: flex-start;

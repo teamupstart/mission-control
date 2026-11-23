@@ -5,7 +5,10 @@
 // daemon, the dashboard and a later voice layer read one declaration rather than three copies.
 
 /**
- * The preview flag that turns on agent reports, Stuck rows and the one naming rule together.
+ * The preview flag for reports and inbox upgrades. Today it turns on agent reports (the Reports
+ * section and the to read figure) and the one naming rule (`agentDisplayName`) on alert titles,
+ * inbox rows, the review modal and question cards. Stuck rows are planned to join it in a later
+ * phase, behind this same flag.
  * "inbox" also names headless mode's dispatch inbox, which is why the flag's label spells out
  * what it turns on.
  */

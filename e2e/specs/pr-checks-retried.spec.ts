@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import type { PrCheckDetails } from "../../src/shared/pr-check-details.ts";
@@ -498,25 +498,25 @@ test("publication wait reason remains visible separately from the cancelled CI w
   const binding = await post<{ id: string }>("/api/workflow-bindings", {
     workflowVersionId: published.version.id, sessionId: session.id, deliveryMode: "preview",
   });
+  // Real unpublished work, captured as it is. This used to be written into the submission's
+  // evidence by hand over a clean checkout, and the resumption sweep, which compares a parked
+  // round's evidence with the checkout every fifteen seconds, then read the mismatch as new
+  // work and opened round 2 under the assertions below, removing the wait reason.
+  const git = (...args: string[]) => execFileSync("git", ["-C", worktree, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", ...args]);
+  writeFileSync(join(worktree, "unpublished.txt"), "published\n");
+  git("add", "unpublished.txt");
+  git("commit", "-q", "-m", "e2e: a published file");
+  writeFileSync(join(worktree, "unpublished.txt"), "published\nnot pushed\n");
   const submitted = await post<{ run: { id: string } }>(`/api/workflow-bindings/${binding.id}/submit`, { requestId: "ci-publication-wait" });
   const runPath = `/api/workflow-runs/${submitted.run.id}`;
   await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status,
     { timeout: 40_000 }).toBe("completed");
 
-  // Seed the recorded gate and its matching unpublished evidence. Inspector re-observes
-  // historical publication holds, so a clean snapshot would correctly leave this state.
+  // Seed the recorded gate over that captured evidence. Inspector re-observes historical
+  // publication holds, so a clean snapshot would correctly leave this state; this one is not
+  // clean, so Inspector and the resumption sweep both leave it where it is.
   const now = Date.now();
   withDaemonDb(daemon, db => {
-    const submission = db.prepare(`SELECT id, context_json FROM workflow_submissions
-      WHERE run_id = ? ORDER BY round DESC, segment DESC LIMIT 1`).get(submitted.run.id) as {
-        id: string; context_json: string;
-      };
-    const context = JSON.parse(submission.context_json);
-    context.evidence.workingTreeDirty = true;
-    context.evidence.workingTreeStatus = [" M unpublished.txt"];
-    context.evidence.publication.unpublishedPaths = ["unpublished.txt"];
-    db.prepare("UPDATE workflow_submissions SET context_json = ?, evidence_json = ? WHERE id = ?")
-      .run(JSON.stringify(context), JSON.stringify(context.evidence), submission.id);
     db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
       JSON.stringify({ kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" }), published.version.id);
     db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_session',
@@ -536,7 +536,11 @@ test("publication wait reason remains visible separately from the cancelled CI w
   await dashboard.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Workflows$/ }).click();
   const ladder = dashboard.getByRole("region", { name: `${name} workflow stages` });
   const wait = ladder.getByText("Required publication content is missing, differs from the PR, or lacks retained artifact evidence. Check the evidence snapshot, then commit and push the required changes and resubmit.", { exact: true });
-  await wait.scrollIntoViewIfNeeded();
+  // Only retrying assertions on this sentence, never a one-shot element action such as
+  // `scrollIntoViewIfNeeded`. The seeded gate's content is stable, but the Inspector still
+  // re-evaluates it on session events and republishes the run unchanged; every run update
+  // refetches the detail and remounts the ladder, so a held element handle can detach
+  // mid-action. The viewport above fits the ladder without scrolling.
   await expect(wait).toBeVisible();
   await expect(wait).toBeInViewport();
   const warning = dashboard.locator("header.detail-head").getByRole("button", { name: /CI includes 2 cancelled checks; no failures in the reported results/ });

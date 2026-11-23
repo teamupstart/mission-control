@@ -177,3 +177,20 @@ test("with the inbox flag off the reply route refuses", async () => {
   }
   assert.equal(f.reports.get(report.id)!.readAt, null);
 });
+
+test("parseBody hands a route the schema's issues, so a refusal sentence never depends on the error string's format", async () => {
+  const { Hono } = await import("hono");
+  const { parseBody } = await import("../src/server/http-body.ts");
+  const { ReportReplySchema } = await import("../src/shared/protocol.ts");
+  const app = new Hono();
+  app.post("/probe", async (c) => {
+    const parsed = await parseBody(c, ReportReplySchema);
+    return parsed.ok ? c.json({ ok: true }) : c.json({ issues: parsed.issues ?? null });
+  });
+  const probe = async (body: string) =>
+    (await (await app.request("/probe", { method: "POST", headers: { "content-type": "application/json" }, body })).json()) as {
+      issues: Array<{ message: string }> | null;
+    };
+  assert.equal((await probe(JSON.stringify({ text: "   " }))).issues?.[0]?.message, "a reply needs words");
+  assert.equal((await probe(JSON.stringify({ text: "x".repeat(4_001) }))).issues?.[0]?.message, "a reply can be at most 4000 characters");
+});

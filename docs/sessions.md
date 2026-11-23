@@ -2763,7 +2763,7 @@ What is stored, and what agents and Foreman read back, keeps the agent's own wor
 
 The MCP tools are:
 
-- `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
+- `request_plan_decisions(title, plan, decisions, revises?)` - show a plan with selectable
   options (radios / checkboxes) as a **gate** until the human submits their choices or
   dismisses that decision set without an answer. The call waits for that answer, or, with
   [filed plan decisions](#filed-plan-decisions) on, returns a receipt at once and the answer
@@ -2771,7 +2771,9 @@ The MCP tools are:
   box, so the human can pick an option and send instructions with it; a note returns to the
   agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
   an empty `decisions` list to show a plan for approval with no open choices. Any decision
-  can be [moved to chat](#chat-about-it) instead of answered
+  can be [moved to chat](#chat-about-it) instead of answered. Pass `revises` with the review id
+  of the agent's earlier filed plan form to file this plan as its
+  [revision](#revising-a-filed-plan)
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -3303,9 +3305,10 @@ The form is still a gate:
   it as `orphaned` with the reason `merged`, shown as **Closed unanswered: pull request merged**.
 - `list_open_questions` lists the caller's filed forms with its questions, each with its kind,
   and `withdraw_question(id, reason)` takes one back with a reason, for example when you message
-  the agent that the scope changed; the agent then files the revised plan. A withdrawal sends no
-  answer and never approves. Only the asking session can withdraw its own form, and a form that
-  waits inside a call cannot be withdrawn.
+  the agent that the scope changed; the agent then files the revised plan, linked with
+  `revises` (see [Revising a filed plan](#revising-a-filed-plan)). A withdrawal sends no answer
+  and never approves. Only the asking session can withdraw its own form, and a form that waits
+  inside a call cannot be withdrawn.
 - Plan forms take no slot in the ten-question limit, and are never refused by it. There is no
   limit across sessions.
 
@@ -3327,6 +3330,44 @@ blocks completion, and its answer becomes that call's result. It is no longer li
 withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
 being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
 as a message.
+
+##### Revising a filed plan
+
+When scope changes after a plan is filed, the agent files the revised plan with
+`request_plan_decisions` and `revises` set to the earlier form's review id. The receipt of every
+filed form says so. You then see one card, tagged **Revision 2** (then 3, and so on), never two
+cards for one plan.
+
+- The earlier form may be still open or already withdrawn by its agent with `withdraw_question`.
+  An open one is withdrawn in the same step as the revision is filed, with the reason "Revised:
+  replaced by revision N of this plan.", through the same write path `withdraw_question` uses. If
+  filing fails, neither happens.
+- The new form's number is the earlier form's number plus one, and a form that revised nothing
+  is revision 1. A form can be revised once, so the agent always revises the latest form.
+- **Earlier version**, beside the tag on the card, in the review modal, the inbox and the
+  conversation entry, shows the form it replaced read-only: its title, when it was filed, how it
+  ended and why, its plan and its decisions, with no Submit. The conversation keeps that form as
+  a withdrawn **Plan filed** entry.
+- A revision never carries an approval or an answer forward. A revised managed bundle is a new
+  plan revision with its own binding; the withdrawn earlier form stays an unapproved record. If a
+  standing approval covers the revised bundle outright, the recorded approval carries the link
+  and an open earlier form is still withdrawn.
+- The new form waits however this ask is decided now: filed with both flags on, or inside the
+  call otherwise. Only the earlier form must be a filed form.
+
+`revises` is refused with its reason, and nothing is filed or withdrawn, when the review it names:
+
+- is unknown, or belongs to another session, including a form that session's agent withdrew;
+- is not a plan form, such as a `request_input` question;
+- waits inside a call, whether it was asked that way or an older MCP child re-asked a filed form
+  and so turned it into one. Its call returns the answer;
+- was answered, dismissed, closed by a merge, closed when its session went away (an eviction or a
+  runtime-transfer settle), or replaced as a reworded retry;
+- is withdrawn but not by its own agent;
+- was already revised, including a form a revision replaced. The refusal names the latest form.
+
+An agent on an older MCP bundle cannot send `revises` and keeps the earlier flow: withdraw, then
+file a new, unlinked form.
 
 ### The ask channel
 

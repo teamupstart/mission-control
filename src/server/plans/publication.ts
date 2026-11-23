@@ -53,14 +53,16 @@ export function hasStandingBundleApproval(taskId: string | null): boolean {
 /**
  * The auto-approval to reuse when the agent asks again for the same exact bundle - a client
  * timeout retries the identical request. Reused only while it is still the latest settled
- * answer for that bundle identity, so a later human decision is never papered over.
+ * answer for that bundle identity, so a later human decision is never papered over. A withdrawn
+ * form is nobody's decision and is skipped: a revision that withdraws an earlier bound form in the
+ * same step as its approval is recorded must still find that approval on a retry.
  */
 export function reusableStandingApproval(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): string | null {
   const context = workflows.planPublicationContext(authority.sessionId);
   if (context.owner === "unavailable") return null;
   const latest = openDb().prepare(`SELECT r.id, r.resolved_by FROM managed_plan_reviews m JOIN reviews r ON r.id = m.review_id
     WHERE m.plan_id = ? AND m.revision = ? AND m.session_id = ? AND m.task_id IS ? AND m.episode_id IS ?
-      AND m.binding_id IS ? AND m.workflow_version_id IS ? AND m.manifest_hash = ? AND r.status != 'pending'
+      AND m.binding_id IS ? AND m.workflow_version_id IS ? AND m.manifest_hash = ? AND r.status NOT IN ('pending', 'withdrawn')
     ORDER BY r.resolved_at DESC, r.created_at DESC LIMIT 1`)
     .get(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
       context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null,
@@ -196,6 +198,15 @@ export function bindPlanReview(authority: PlanAuthority, input: PlanIdentity, re
   openDb().prepare("INSERT OR IGNORE INTO managed_plan_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(reviewId, input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId, saved.manifest_hash,
       context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null);
+}
+
+/**
+ * Undo `bindPlanReview` for a review that was never written: the route binds the id before the
+ * review itself is recorded, and the two cannot share a transaction, so a failed record must not
+ * leave a binding that names no review.
+ */
+export function unbindPlanReview(reviewId: string): void {
+  openDb().prepare("DELETE FROM managed_plan_reviews WHERE review_id = ?").run(reviewId);
 }
 
 function approval(authority: PlanAuthority, input: PlanIdentity, context: ReturnType<typeof compatibleContext>): ApprovalRow {

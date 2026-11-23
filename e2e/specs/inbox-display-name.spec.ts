@@ -256,6 +256,25 @@ test("with the inbox flag on, an alert's title names the agent the way its inbox
 
 const RESIDENT = "Linter watcher";
 
+/**
+ * Whether an element's text is drawn in a resident board colour, as the skin resolves it.
+ *
+ * `color` is inherited, so a `--resident-<id>` the skin does not define leaves the probe in its
+ * parent's colour, and so does a name drawn without the colour at all. Both would then match. The
+ * board colour must therefore also differ from the parent's, or the check proves nothing.
+ */
+async function inBoardColour(name: Locator, colorId: string): Promise<boolean> {
+  return name.evaluate((el, id) => {
+    const parent = el.parentElement!;
+    const probe = document.createElement("span");
+    probe.style.color = `var(--resident-${id})`;
+    parent.appendChild(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    return expected !== getComputedStyle(parent).color && getComputedStyle(el).color === expected;
+  }, colorId);
+}
+
 function waitingResidents(daemon: DaemonHandle): number {
   return withDaemonDb(daemon, (db) => (db.prepare(
     "SELECT COUNT(*) AS n FROM resident_runs WHERE ended_at IS NULL AND launch_state = 'launched' AND loop_state = 'waiting'",
@@ -287,22 +306,35 @@ test("with the inbox flag on, a resident's question is named by its profile name
   await expect(cardName(inbox)).toHaveText(RESIDENT);
   await expect(cardName(inbox)).toHaveClass(/agent-name-resident/);
   // Drawn in the board colour the profile chose, as the skin resolves it.
-  const colours = await header.evaluate((el) => {
-    const probe = document.createElement("span");
-    probe.style.color = "var(--resident-violet)";
-    el.parentElement!.appendChild(probe);
-    const expected = getComputedStyle(probe).color;
-    probe.remove();
-    return { actual: getComputedStyle(el).color, card: getComputedStyle(el.closest("section")!.querySelector(".review-agent")!).color, expected };
-  });
-  expect(colours.actual).toBe(colours.expected);
-  expect(colours.card).toBe(colours.expected);
+  expect(await inBoardColour(header, "violet")).toBe(true);
+  expect(await inBoardColour(cardName(inbox), "violet")).toBe(true);
   await capture(inbox, "04-inbox-resident-board-colour", page);
   await closeOverlay(page, inbox);
+
+  // The review modal names the resident the same way, in the same colour.
+  let modal = await openReview(page);
+  await expect(modalHeader(modal)).toHaveText(RESIDENT);
+  await expect(modalHeader(modal)).toHaveClass(/agent-name-resident/);
+  expect(await inBoardColour(modalHeader(modal), "violet")).toBe(true);
+  await expect(cardName(modal)).toHaveText(RESIDENT);
+  await capture(modal, "06-modal-resident-board-colour", page);
+  await closeOverlay(page, modal);
 
   await setInbox(daemon, false);
   const off = await openInbox(page);
   await expect(rowHeader(off)).toHaveText(resident.name);
   await expect(rowHeader(off)).not.toHaveClass(/agent-name-resident/);
+  // An uncoloured name is not read as the board colour, including against a colour the skin does
+  // not define: there the probe and the name both inherit the parent's colour, which is exactly the
+  // false match the helper's parent-colour guard refuses.
+  expect(await inBoardColour(rowHeader(off), "violet")).toBe(false);
+  expect(await inBoardColour(rowHeader(off), "no-such-colour")).toBe(false);
   await expect(cardName(off)).toHaveCount(0);
+  await closeOverlay(page, off);
+
+  // Off, the modal header is the session name again, uncoloured, and the card has no name line.
+  modal = await openReview(page);
+  await expect(modalHeader(modal)).toHaveText(resident.name);
+  await expect(modalHeader(modal)).not.toHaveClass(/agent-name-resident/);
+  await expect(cardName(modal)).toHaveCount(0);
 });

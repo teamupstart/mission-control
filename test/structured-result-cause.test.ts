@@ -108,8 +108,13 @@ test("a schema miss reports at most three clipped issues", () => {
 
 test("null reads as absent through nullAsAbsent, as it reads an omitted key", () => {
   const Optional = z.object({ path: nullAsAbsent(z.string().optional()) });
-  for (const raw of ['{"path":null}', "{}"]) {
-    assert.equal((parseModelReply(raw, Optional) as { path?: string }).path, undefined);
-  }
+  const omitted = parseModelReply("{}", Optional);
+  const nulled = parseModelReply('{"path":null}', Optional);
+  assert.ok(!(omitted instanceof ModelReplyMiss));
+  assert.ok(!(nulled instanceof ModelReplyMiss));
+  assert.deepEqual(omitted, {});
+  assert.equal(nulled.path, undefined);
+  // z.preprocess leaves an own `path: undefined` key, so the shapes match once serialized.
+  assert.equal(JSON.stringify(nulled), JSON.stringify(omitted));
   assert.deepEqual(parseModelReply('{"path":"a"}', Optional), { path: "a" });
 });

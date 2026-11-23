@@ -209,9 +209,12 @@ helper synthesizes, and the listener plays.
    "<name> or <name>?" (three candidates: "<a>, <b> or <c>?").
 2. For a Mission Control voice the daemon asks the synthesizer helper for the audio and receives
    the samples and their exact length. For a system voice there is nothing to prepare.
-3. The daemon's directive to the listener changes: `capture` is false and `speak` names the job.
-4. The listener stops capture, plays the audio (or speaks the text with the system voice),
-   and posts `started` and then `ended` with how it ended: finished, stopped or failed.
+3. The daemon gives the job to one listener, the one whose hello made speech available, and
+   records that listener as the job's holder. In the directive the holder polls, `speak` names
+   the job. `capture` is false in every listener's directive.
+4. The holder stops capture, plays the audio (or speaks the text with the system voice), and
+   posts `started` and then `ended` with how it ended: finished, stopped or failed. Each report
+   names the listener that sends it, and the daemon accepts it only from the holder.
 5. On `ended`, and only then, the daemon clears `speak`, and `capture` returns to what the mode
    says. The listener restarts capture with a fresh segment and replays nothing it buffered, as
    S9 chose.
@@ -240,6 +243,13 @@ helper synthesizes, and the listener plays.
   at once, so a hello from a different listener does not end the job, does not return capture,
   and is not given a job of its own. Capture is off for every listener while any job is
   unresolved.
+- **A job belongs to one listener, and only that listener can receive or end it.** Every
+  listener names its instance when it polls the directive, fetches audio or posts a report. The
+  daemon builds each directive for the listener that asked: only the holder's directive names
+  the job or its stop request, and any other listener sees no job and `capture` false. A start
+  or end report, or an audio fetch, from any listener but the holder is refused and changes
+  nothing. An instance id is a long random value known only to the supervisor, the process it
+  started and the daemon, so one listener cannot present another's.
 - **What counts as proof of exit.** Every listener is started by a supervisor: the shell on a
   Mac, the development launcher, and on Linux the daemon's own supervisor. The supervisor gives
   the process an instance id, tells the daemon the id before starting it, and tells the daemon
@@ -293,6 +303,8 @@ none to disk. It is not started for a system voice. It touches no database.
 - The listener never opens the microphone while it is playing or holds a job it has not ended,
   whatever the directive's `capture` says. This is a second guard, in the process that owns
   both the microphone and the playback.
+- The listener names its instance on every directive poll, audio fetch and report, so the
+  daemon can tell which listener it is talking to.
 - The macOS helper plays audio with `AVAudioPlayerNode` and speaks system voices with
   `AVSpeechSynthesizer`. Both are in the operating system, so the helper gains no dependency.
 - The sherpa-onnx listener (Phase 16) gains nothing in this plan. The Linux follow-on adds its

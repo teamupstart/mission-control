@@ -101,7 +101,7 @@ catalog is empty and nothing changes for a system voice.
   the 5 second failure, the cache, and shutdown.
 - `test/voice-speech-http.test.ts` gains a case: with the model `ready`, a fake helper and a
   fake listener that plays, a sample job for a neural voice becomes `ready` with its length and
-  Speech 1's audio route returns the helper's WAV.
+  Speech 1's audio route returns the helper's WAV to that listener, the job's holder.
 - `test/voice-speech-synth.test.ts`, the Linux proof, as step 8 describes.
 - Manual check on a Mac, recorded in the pull request: download through the route; then, with
   Speech 1's fake listener standing in for a listener that plays, open a sample job for F4,

@@ -147,7 +147,9 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   to use or the reason there is none.
 - `VOICE_SPEECH_DEFAULT_NEURAL`: `supertonic-3/F4`.
 - `askSentence(names)`: "A or B?" for two names, "A, B or C?" for three, null otherwise.
-- `VoiceSpeechJob { id, purpose, text, voice, cardId, state, durationMs }`. `purpose` is `ask`
+- `VoiceSpeechJob { id, purpose, text, voice, cardId, state, durationMs, holder }`. `holder` is
+  the listener instance the job was given to, set when the job becomes `ready` and never
+  changed; it stays in the daemon and is not part of the published voice state. `purpose` is `ask`
   or `audition`. States: `preparing`, `ready`, `speaking`, `stopping`, `finished`, `stopped`,
   `failed`, `timed-out`. The last four are final. `stopping` means the daemon has asked the
   listener to stop the job and is waiting for its `ended`.
@@ -166,7 +168,7 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
 - The stop handshake. A job the directive has named ends only when the listener instance that
   was given it posts `ended` for it, or when that instance's supervisor reports that its process
   has exited. A stop (a click, the hotkey, muting, a settled
-  card) or an expired limit moves the job to `stopping`: the directive's `speak` becomes
+  card) or an expired limit moves the job to `stopping`: the holder's directive's `speak` becomes
   `{ id, stop: true }` and `capture` stays false. The listener stops playback or does not start
   it, and posts `ended` as `stopped`, also for an id it never received. On that `ended` the job
   becomes `stopped` or, when a limit caused it, `timed-out`; `speak` clears and `capture`
@@ -176,7 +178,7 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   stopped", and capture stays false, whatever other listener says hello meanwhile. A late `ended` from that instance, or an exit report for
   that instance, ends the job (`failed` in the second case) and lifts the condition. A hello
   from a different instance does neither: it proves nothing about the instance that holds the
-  job, so the job stays as it is, `capture` stays false for every listener that polls, and the
+  job, so the job stays as it is, `capture` stays false in every listener's directive, and the
   newcomer is given no job. A job still `preparing` has not been named by the directive and
   ends at once.
 - Supervised instances. Token route `POST /voice/listener/supervised { instance, state }`,
@@ -197,12 +199,24 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
 - The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`,
   `{ id, kind: "system", voiceId, text }`, or `{ id, stop: true }`. While `speak` is set,
   `capture` is false.
+- Job ownership. A listener names its instance on every request about speech: the directive
+  poll takes `instance` as a query parameter, and so does the audio route; an events report
+  carries it in its body. The daemon computes the directive per request. When a job becomes
+  `ready`, its holder is the instance of the hello that makes `speech-output` available at that
+  moment. Only a poll that names the holder gets a `speak` that names the job or its stop
+  request. A poll that names another instance, or none, gets `speak` null, and `capture` false
+  while any job is unresolved. The events route accepts `started` and `ended` for a job only
+  when the report's `instance` is the job's holder; any other report answers 409 and changes
+  nothing. The audio route serves the job's audio only to its holder and answers 404 to anyone
+  else. An instance id is at least 128 random bits, chosen by the supervisor, known to the
+  supervisor, the process it started and the daemon, and never written to the published voice
+  state, an event or a log, so one listener cannot present another's.
 - The listener's own rule: it does not open the microphone while it is playing or holds a job
   it has not ended, whatever `capture` says.
-- Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio`, which serves the
-  WAV the daemon holds for a `ready` or `speaking` job, and `POST
-  /voice/speech/jobs/:id/events { type, outcome }`, where `type` is `started` or `ended` and
-  `outcome` is `finished`, `stopped` or `failed`.
+- Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio?instance=`, which
+  serves the WAV the daemon holds for a `ready` or `speaking` job to its holder, and `POST
+  /voice/speech/jobs/:id/events { instance, type, outcome }`, where `type` is `started` or
+  `ended` and `outcome` is `finished`, `stopped` or `failed`.
 - Dashboard routes, both built by Speech 1: `POST /api/voice/speech/stop` and `POST
   /api/voice/speech/audition`.
 - `VoiceSynthesizer { synthesize(text, voice), warm(), stop() }` in the daemon. `synthesize`
@@ -272,6 +286,9 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After plan validation round 3: every sentence about a directive, an audio fetch or a start
+  or end report says whose it is. `plan.md`, contract L, Speech 1 and Speech 3 agree that only
+  the holder is told about a job and only the holder's reports count.
 - After plan validation round 2: the only endings of a job a listener holds are that
   listener's `ended` and its supervisor's exit report, in `plan.md`, contract L, Speech 1 and
   Speech 3. No sentence in the bundle lets a hello, a timer or a restart return capture.
@@ -282,6 +299,23 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
+
+## Plan validation round 3
+
+One finding was accepted and applied across the bundle.
+
+- **Nothing said which listener a job belonged to.** Contract L let only "the instance that was
+  given the job" end it, but an end report carried no instance, and Speech 1 said every
+  listener read the same directive while the plan said a newcomer got no job. Both are now
+  defined. A job has a holder, fixed when it becomes `ready`. Every listener names its instance
+  on the directive poll, the audio fetch and each report. The daemon builds the directive per
+  listener, so only the holder is told about the job or its stop request, and every other
+  listener reads no job and `capture` false. A start or end report from anyone but the holder
+  is refused and changes nothing, and so is an audio fetch. Instance ids are long random values
+  kept out of the published state, so a second listener cannot present the first one's.
+  Contract L gained the job's `holder`, the `instance` on the three requests and the ownership
+  rule. `plan.md`, Speech 1 and Speech 3 say the same, and Speech 1 tests that a second
+  listener can neither receive nor end the first listener's job.
 
 ## Plan validation round 2
 

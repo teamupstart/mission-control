@@ -54,7 +54,9 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    unavailable: no listener, a listener no supervisor has announced, a listener that cannot
    speak the voice, no voice ready.
 3. **Speech manager.** `src/server/voice/speech.ts`: one live job at a time and a queue in
-   opening order; `open(purpose, text, cardId)`; `stop(id)`; the events route's `started` and
+   opening order; `open(purpose, text, cardId)`; `stop(id)`; when a job becomes `ready` it
+   records the job's holder, the instance of the hello that makes `speech-output` available at
+   that moment, and never changes it; the events route's `started` and
    `ended`; a timer per job that expires at the start limit after it became `ready`, or, after
    `started`, at the audio length plus the end margin, or at the system limit when the length
    is unknown. An expired timer and a stop both move the job to `stopping`, as contract L's
@@ -74,8 +76,11 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
 5. **Directive.** Extend Phase 9's directive: `speak` carries the ready job, or
    `{ id, stop: true }` while the job is `stopping`. `capture` is false while a job is `ready`,
    `speaking` or `stopping`, so it cannot return before the listener's `ended` or its exit
-   report. The directive is the same for every listener that polls, so a second listener cannot
-   capture while the first still holds a job. A change to either field ends the long poll.
+   report. The directive is computed for the listener that asks: the poll takes the listener's
+   `instance`, only a poll naming the job's holder gets a `speak` that names the job or its
+   stop request, and a poll naming another instance, or none, gets `speak` null. `capture` is
+   false in every listener's directive while any job is unresolved, so a second listener can
+   neither capture nor learn of the job. A change to either field ends the long poll.
 6. **Utterance guard.** The utterance route ignores an utterance whose `capturedAt` falls
    between a job becoming `ready` and its becoming final, with the Recently heard reason
    `while-speaking`.
@@ -89,9 +94,12 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    the capability's reason when nothing can speak. `POST /voice/listener/supervised` (token)
    records an announced instance on `started` and, on `exited`, ends every job that instance
    holds as `failed`; an `exited` for an instance that holds nothing changes nothing. A speech
-   job is given only to an announced instance. The two token routes of contract L: the
-   events route, and the audio route, which serves the WAV the manager holds for a `ready` or
-   `speaking` job and answers 404 for any other job.
+   job is given only to an announced instance. The two token routes of contract L. The events
+   route accepts `started` and `ended` only when the report's `instance` is the job's holder,
+   and answers 409 without changing anything otherwise. The audio route serves the WAV the
+   manager holds for a `ready` or `speaking` job to a request whose `instance` is the holder,
+   and answers 404 for any other job or any other instance. Instance ids are not written to the
+   published voice state, to events or to logs.
 9. **Card.** `VoiceCardView` marks an `unsure` card whose id is the `cardId` of a job that is
    `ready` or `speaking` with "Asking aloud" and a Stop button. The mark goes as soon as the job
    is `stopping`. A candidate row and Cancel work as before and also stop the
@@ -101,7 +109,8 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
     is kept and behaves as `show` until speech is available.
 11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`. Its hello says it can play, lists one
     system voice, so a voice resolves in this phase, where no neural voice exists, and carries
-    an instance id. It also plays the supervisor: it announces its instance before its first
+    an instance id, which it names on every directive poll, audio fetch and report. It also
+    plays the supervisor: it announces its instance before its first
     hello and can report that instance's exit. It answers a stop request with `ended`, as a
     listener must. It has options to delay `started`, to keep playing past the limit until told
     to end, to ignore a stop request altogether, and to start a second instance while the first
@@ -133,8 +142,15 @@ runs.
   a listener that ignores the stop: at the confirm limit the mode is `unavailable` with the
   `listener` reason and its sentence, and `capture` is still false;
   a second instance says hello while the first is still playing: the job is still `stopping`,
-  the directive both of them read has `capture` false, the second is given no job, and an
-  utterance from the second is refused with `while-speaking`. This holds whether or not the
+  both directives have `capture` false, the first one's directive names the job's stop request
+  and the second one's has `speak` null, and an utterance from the second is refused with
+  `while-speaking`;
+  the second instance cannot receive the job: with a job `ready` or `speaking`, a poll naming
+  the second instance, and a poll naming no instance, both get `speak` null, and the audio
+  route answers 404 to the second instance;
+  the second instance cannot end the job: its `started` and its `ended` for the job's id answer
+  409, the job's state and `capture` do not change, and the holder's own `ended` then ends it;
+  the published voice state and the event stream never contain an instance id. This holds whether or not the
   second instance was announced, and it still holds after muting and after voice is switched
   off and on;
   only the exit report for the first instance, or its own late `ended`, ends the job (`failed`
@@ -183,6 +199,9 @@ and fetches audio from this phase's audio route. Speech 4 writes
 - After Speech 3: the hotkey tap calls this phase's stop route.
 - Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
   audio without waiting for Speech 2.
+- Plan validation round 3: a job now has a holder, the directive is built per listener, and
+  the events and audio routes check the holder. Steps 3, 5 and 8, the fixture and the tests
+  changed. The earlier wording, "the directive is the same for every listener", is gone.
 - Plan validation round 2: a hello from a new instance used to end an unconfirmed job. It ends
   nothing now. The supervised-instances route in step 8 carries the only other ending, the
   exit report, and steps 3 and 5, the fixture and the tests changed.

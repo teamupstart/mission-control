@@ -118,7 +118,10 @@ export async function hydrateUiConfig(): Promise<void> {
       // Retain the old one-time flag's upgrade behavior for compatible clients.
       // The independent startup-picker preference keeps its default-on value, and an
       // adopted profile predates every announced tour, so it is owed each of them once.
-      if (!await updateUiConfig({ ...legacy, guidedTour: false, announcedTours: [] })) {
+      // Legacy storage never held `voice`: `coerce` filled its default, and a patch naming it is
+      // refused while the voice flag is off, which would fail the whole adoption.
+      const { voice: _filledDefault, ...adopted } = legacy;
+      if (!await updateUiConfig({ ...adopted, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }

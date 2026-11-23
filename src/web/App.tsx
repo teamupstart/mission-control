@@ -3139,7 +3139,9 @@ export function App(): React.JSX.Element {
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined, mutedReportAuthors)
+        // Held, but under the same rule as the full fold: "Agent reports are listed in the inbox"
+        // off lists and counts no report here either.
+        ? foldWhileDismissalsUnknown(inboxNames && alertSettings.reportsInInbox ? reports : undefined, mutedReportAuthors)
         : foldAttention({
             sessions,
             reviews: answerableReviews,

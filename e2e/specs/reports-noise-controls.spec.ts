@@ -613,3 +613,35 @@ test("a Mark all read refusal goes with the reports it was for: cleared another 
   await expect(inbox.getByRole("alert")).toHaveCount(0);
   await expect(inbox.getByText(refusal)).toHaveCount(0);
 });
+
+test("while the inbox's dismissals cannot be read, 'Agent reports are listed in the inbox' off still lists and counts no report", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const name = "Check the nightly backup";
+  const checker = await agent(daemon, name);
+  await ready(page, daemon);
+  await post(daemon, checker, { title: "Backup verified", body: "All restores succeeded." });
+  // The dismissals read fails on every load, so the dashboard keeps the inbox held: only reports
+  // are folded until the dismissals can be read (`foldWhileDismissalsUnknown`).
+  let dismissalReads = 0;
+  await page.route("**/api/attention/dismissals", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    dismissalReads++;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unreadable" }) });
+  });
+
+  // Listed in the inbox (the default): the held inbox counts the report.
+  await page.reload();
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
+  expect(dismissalReads).toBeGreaterThan(0);
+
+  // Not listed: the held inbox must follow the switch exactly as the full one does.
+  await api(daemon, "/api/ui/config", { alerts: { reportsInInbox: false } }, "PUT");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => dismissalReads).toBeGreaterThan(1);
+  // Give the snapshot time to land and fold, then assert the figure never appeared.
+  // The snapshot has landed, and the inbox is held, once the top bar says so.
+  await expect(page.getByText("inbox unavailable")).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  await expect(toRead(page)).toHaveCount(0);
+});

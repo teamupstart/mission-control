@@ -256,8 +256,13 @@ unfinished"), and offers the fix in place. Only controls whose target exists are
 | Silent while working | the last activity line | **Nudge**, **Interrupt** |
 | Idle with work open, a task open | the open task, and any open queue items | **Continue**, **Mark done** |
 | Idle with work open, only a queue open | how many queue items are open, and that a queue's items are handled in the session | **Continue** |
-| Workflow run parked | the missing step | **Resubmit** when a resubmission can move the run (a manual or Preview run waiting for the session), **Tell it to push** when the run waits for a pushed head and the branch holds commits the remote has not seen, **Continue** when neither applies and the step is the session's own next turn (a round that resumes itself, or new work to commit), and **Open run**. A run an ensemble started that is waiting for the session can only move when that ensemble submits again, so its row says so and offers Open run without Resubmit, Continue or a push |
+| Workflow run parked | the missing step | **Resubmit** when a resubmission can move the run (a manual or Preview run waiting for the session), **Tell it to push** when the run waits for a pushed head and the branch holds commits the remote has not seen, **Continue** when the session's next turn reopens the round, and **Open run**. A run an ensemble started that is waiting for the session can only move when that ensemble submits again, so its row says so and offers Open run without Resubmit, Continue or a push |
 | Foreman escalation unanswered | what Foreman escalated | a reply box, when the session can receive messages |
+
+With **Stalled section in Idle** switched off, the inbox applies the same pushed-head rule.
+When no unpushed commits are reported, the row offers **Open run** and explains that a new
+commit must reach the remote branch. Earlier versions offered **Continue** in this case.
+The message box remains available to ask the agent to prepare the change.
 
 Every row also has **Open session** and **Dismiss**, and a message box to the agent when the
 session can receive messages. A session that cannot, such as one driven by a pipeline engine or

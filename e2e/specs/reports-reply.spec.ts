@@ -268,6 +268,47 @@ test("a refused reply stays on its card with the draft, and a follow-up whose di
   }
 });
 
+test("a conversation whose report history read fails retries it, and the entry appears without a reload", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const title = "Audit the cache keys";
+  const { session } = await startSession(daemon, title);
+  await setInbox(daemon, true);
+  // Read before the conversation opens, so the live stream (which keeps only reports waiting to
+  // be read) never carries it: the history route is the entry's only source.
+  const posted = await report(daemon, session.cwd!, { title: "Cache keys audited", body: "Two keys ignore the lockfile." });
+  await api(daemon, `/api/reports/${posted.id}/read`, {});
+  await expect(toRead(page)).toHaveCount(0, { timeout: 30_000 });
+  await setInbox(daemon, false);
+
+  // The first history read fails as a transient server error; every later one goes through.
+  let reads = 0;
+  await page.route(`**/api/sessions/${encodeURIComponent(session.id)}/reports`, async (route) => {
+    reads += 1;
+    if (reads === 1) {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "history unavailable" }) });
+      return;
+    }
+    await route.continue();
+  });
+  let navigations = 0;
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations++; });
+
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = page.locator(".console-detail");
+  await expect(detail).toBeVisible();
+  const entry = detail.getByRole("note", { name: "Report: Cache keys audited" });
+  await setInbox(daemon, true);
+
+  // The failed read leaves no entry; the retry brings it in.
+  await expect.poll(() => reads, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+  await expect(entry).toHaveCount(0);
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  await expect(entry).toContainText("Read");
+  expect(reads, "the history was read again after the failure").toBeGreaterThanOrEqual(2);
+  expect(navigations, "no reload").toBe(0);
+  await page.unroute(`**/api/sessions/${encodeURIComponent(session.id)}/reports`);
+});
+
 const RESIDENT = "Report watcher";
 
 test("a resident that is not running gets a line and a relaunch hint instead of a reply box", async ({ dashboard: page, daemon }) => {

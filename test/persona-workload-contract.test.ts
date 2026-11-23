@@ -227,6 +227,49 @@ test("cancellation generations reject stale commands and late verdicts", async (
     });
   assert.equal(f.released, 1);
 });
+
+test("abandoning or aborting a replay detaches only that observer; the owner receives its verdict", async (t) => {
+  let signalStart!: () => void, resume!: () => void;
+  const started = new Promise<void>((resolve) => { signalStart = resolve; });
+  const held = new Promise<void>((resolve) => { resume = resolve; });
+  const req = request();
+  const f = executor(async (launch) => {
+    launch.signal.addEventListener("abort", resume, { once: true });
+    signalStart();
+    await held;
+    const prefix = "REPOSITORY_MCP_DESCRIPTOR=";
+    const descriptor = launch.mcp.args.find((arg) => arg.startsWith(prefix))!;
+    const { auditPath } = JSON.parse(await readFile(descriptor.slice(prefix.length), "utf8"));
+    await writeFile(auditPath + ".seal", JSON.stringify({
+      workloadId: req.workloadId, attemptId: req.attemptId,
+      count: 0, sha256: createHash("sha256").digest("hex"),
+    }));
+    return { verdict: pass, usage: {} };
+  });
+  const owner = collect(f.instance.dispatch(req, new AbortController().signal));
+  t.after(async () => { resume(); await owner; });
+  await started;
+  for await (const event of f.instance.dispatch(req, new AbortController().signal)) {
+    assert.equal(event.type, "accepted");
+    break;
+  }
+  assert.equal((await f.instance.reconcile(req.workloadId, 0)).state, "running");
+
+  const observer = new AbortController();
+  const replay = f.instance.dispatch(req, observer.signal)[Symbol.asyncIterator]();
+  for (const expected of ["accepted", "repository_verified", "persona_started"])
+    assert.equal((await replay.next()).value?.type, expected);
+  const pending = replay.next();
+  observer.abort();
+  assert.equal((await pending).done, true);
+  assert.equal(f.released, 0);
+  resume();
+  const terminal = (await owner).at(-1)!;
+  assert.equal(terminal.type, "terminal");
+  assert.equal(terminal.result.status, "completed");
+  assert.equal(f.materializations, 1);
+  assert.equal(f.released, 1);
+});
 test("invalid request capability, artifact identity mismatch and malformed verdict cannot degrade to prompt-only", async () => {
   let launches = 0;
   const provider: RepositoryProvider = async (launch) => {

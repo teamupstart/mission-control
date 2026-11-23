@@ -80,6 +80,8 @@ at 1 MiB, so an oversized individual object produces `budget_exhausted`, even fo
 requested window. A result that cannot fit one item fails explicitly. Partial pages carry a
 limit and HMAC cursor bound to the snapshot, operation, normalized request and policy. Cursors
 cannot cross attempts. Failed, denied, cancelled and omitted items never mint handles.
+Each admitted call uses one audit slot, including a call cancelled before it reads anything.
+Once the call budget is full, queued requests return `budget_exhausted` before admission.
 
 The reader assigns an unpredictable `evidenceHandleId` to each returned item that has both
 an approved repository path and a line, raw-byte, or diff range. For example, a verdict can
@@ -89,10 +91,11 @@ as a repository evidence reference. The same rule applies to metadata-only
 items such as `glob` and `git_status` entries, even when they include a path.
 
 Only safe identity, path, range, hashes and counts cross the audit channel. Repository bodies
-stay between MCP and provider. The supervisor streams validated audit records and requires a matching shutdown
-count/hash seal before accepting success. Audit write failure fails closed. Verdict repository
-references must match that attempt's audited operation and handle. Reconciliation replays
-cloned, ordered in-memory events; it is not durable Workflow ownership. Cancellation generations
+stay between MCP and provider. At shutdown the MCP publishes its complete audit seal by atomic rename.
+The supervisor checks its count and hash before accepting success. Audit write failure fails closed.
+Verdict repository references must match that attempt's audited operation and handle. The first
+dispatch owns the local run. A replay observer can stop or abort its own stream while the owner
+continues. Reconciliation returns cloned, ordered in-memory events. Cancellation generations
 prevent older commands from reviving work, and late verdicts cannot become successful results.
 
 ## Provider isolation and the executable gate

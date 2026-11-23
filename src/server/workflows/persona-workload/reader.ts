@@ -566,14 +566,21 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       historyTruncated: view.frontier.length > 0,
       items: [],
     };
+    // Queued callers may outlive the final admitted call. They get no repository
+    // result and no journal slot. Every admitted call, even a cancellation, uses one.
+    if (auditBroken || calls >= budgets.attemptCalls)
+      return {
+        ...result,
+        status: "failed",
+        code: auditBroken ? "audit_unavailable" : "budget_exhausted",
+      };
+    calls++;
     let inputHash = hash(null);
     const handles: RepositoryEvidenceHandle[] = [];
     try {
-      if (auditBroken) throw new Refusal("audit_unavailable");
       if (options.signal.aborted || callSignal?.aborted)
         throw new Refusal("cancelled");
       if (
-        ++calls > budgets.attemptCalls ||
         Date.now() - started >= budgets.attemptMs ||
         bytesServed + 2048 > budgets.attemptBytes
       )

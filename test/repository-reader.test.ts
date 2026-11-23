@@ -287,6 +287,25 @@ test("audit failure, cancellation and attempt limits never return evidence", asy
   assert.deepEqual(f.audit.at(-1)!.handles, []);
 });
 
+test("queued requests beyond the call budget leave only the admitted audit records", async (t) => {
+  const f = await fixture(t);
+  const reader = f.make({ budgets: { ...REPOSITORY_DEFAULT_BUDGETS, attemptCalls: 2 } });
+  const [cancelled, admitted, refused, lateCancel] = await Promise.all([
+    reader.query("read", { path: "src/a.txt" }, AbortSignal.abort()),
+    reader.query("read", { path: "src/a.txt" }),
+    reader.query("read", { path: "src/a.txt" }),
+    reader.query("read", { path: "src/a.txt" }, AbortSignal.abort()),
+  ]);
+  await reader.drain();
+  assert.equal(cancelled.code, "cancelled");
+  assert.equal(admitted.status, "ok");
+  assert.equal(refused.code, "budget_exhausted");
+  assert.deepEqual(refused.items, []);
+  assert.equal(lateCancel.code, "budget_exhausted");
+  assert.deepEqual(lateCancel.items, []);
+  assert.deepEqual(f.audit.map((row) => row.operationId), [cancelled.operationId, admitted.operationId]);
+});
+
 test("retained history handles root, retained parent and omitted first-parent frontiers", async (t) => {
   const f = await fixture(t);
   const parent = f.view.head!;

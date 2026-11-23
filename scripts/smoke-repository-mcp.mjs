@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -103,6 +104,18 @@ export async function smokeRepositoryMcp(
     assert.equal(rows.length, 2);
     assert.equal(rows[1].code, "invalid_request");
     assert.deepEqual(rows[1].handles, []);
+    // A pre-existing inode makes atomic publication observable without racing the writer.
+    const sealPath = auditPath + ".seal";
+    await writeFile(sealPath, "previous seal");
+    const before = await stat(sealPath, { bigint: true });
+    await client.close();
+    assert.notEqual((await stat(sealPath, { bigint: true })).ino, before.ino);
+    assert.deepEqual(JSON.parse(await readFile(sealPath, "utf8")), {
+      workloadId: "smoke",
+      attemptId: "smoke",
+      count: 2,
+      sha256: createHash("sha256").update(await readFile(auditPath)).digest("hex"),
+    });
     console.log(
       "[smoke] repository MCP: exact eight tools, fixture query, safe audit, clean close",
     );

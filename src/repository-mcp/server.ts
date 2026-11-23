@@ -1,4 +1,4 @@
-import { readFile, appendFile, writeFile } from "node:fs/promises";
+import { readFile, appendFile, writeFile, rename } from "node:fs/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -99,17 +99,21 @@ async function close() {
   clearTimeout(timer);
   await reader.drain();
   await server.close();
-  if (auditHealthy)
+  if (auditHealthy) {
+    const seal = launch.auditPath + ".seal";
+    // The supervisor may already be polling. Only publish the complete seal.
     await writeFile(
-      launch.auditPath + ".seal",
+      seal + ".tmp",
       JSON.stringify({
         workloadId: launch.workloadId,
         attemptId: launch.attemptId,
         count: auditCount,
         sha256: auditHash.digest("hex"),
       }),
-      { mode: 0o600 },
+      { mode: 0o600, flag: "wx" },
     );
+    await rename(seal + ".tmp", seal);
+  }
 }
 const shutdown = () => {
   void close().catch(() => {

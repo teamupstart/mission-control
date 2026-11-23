@@ -71,7 +71,7 @@ export async function openRepositoryAuditJournal(
     drain,
     handles,
     async finish(signal: AbortSignal) {
-      // Provider shutdown closes MCP stdin. Its final fsync/seal may finish just after the SDK exits.
+      // Provider shutdown closes MCP stdin. The seal rename may finish just after the SDK exits.
       let seal:
         | {
             workloadId: string;

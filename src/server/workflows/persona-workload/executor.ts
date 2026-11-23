@@ -52,6 +52,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   ): AsyncIterable<PersonaWorkloadEvent> {
     const request = PersonaWorkloadRequestSchema.parse(raw);
     let job = this.jobs.get(request.workloadId);
+    const ownsJob = job === undefined;
     if (job && JSON.stringify(job.request) !== JSON.stringify(request))
       throw Error("Conflicting workload replay");
     if (!job) {
@@ -76,18 +77,17 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         signal.removeEventListener("abort", abort),
       );
     }
-    // The bounded in-memory journal is replayable. Do not infer durable ownership from this iterator.
+    // Only the creator owns cancellation. An observer can leave a live or completed replay.
     let position = 0;
     try {
-      while (!job.terminal) {
-        while (position < job.events.length)
+      while (ownsJob || !signal.aborted) {
+        if (position < job.events.length)
           yield structuredClone(job.events[position++]!);
-        await Promise.race([job.done, new Promise((r) => setTimeout(r, 10))]);
+        else if (job.terminal) return;
+        else await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      while (position < job.events.length)
-        yield structuredClone(job.events[position++]!);
     } finally {
-      if (!job.terminal) {
+      if (ownsJob && !job.terminal) {
         job.controller.abort();
         await job.done;
       }

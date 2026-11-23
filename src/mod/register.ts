@@ -359,6 +359,9 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     paneOpen: async (opts: ModPaneOpen) => {
       // A close from the session before must finish first, or it could remove this open's pane.
       await session.pane.closing;
+      // A command that outlived its session neither retargets nor opens the pane.
+      const stale = (): boolean => session.mine !== session.current() || (opts.guard !== undefined && !opts.guard());
+      if (stale()) return { isPlaced: false };
       // The target the command asked for is stored before the pane opens, so the pane draws it
       // (P12 reads these): a tab clears any selected task, a task id selects that task, and a
       // bare open leaves the pane as it was.
@@ -371,10 +374,19 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
         await stateSet($, "selectedTaskId", null).catch(() => undefined);
         await stateSet($, "paneView", "list").catch(() => undefined);
       }
+      if (stale()) return { isPlaced: false };
       const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
-      // Only the current session takes the pane; a stopped one's late open leaves it unowned.
-      if (session.mine === session.current()) session.pane.owner = session.mine;
-      return { isPlaced: opened.isPlaced };
+      if (!stale()) {
+        session.pane.owner = session.mine;
+        return { isPlaced: opened.isPlaced };
+      }
+      // The session ended while the open was pending. Take the pane back unless a replacement
+      // session owns it now (the pane has one id, and its close would take the replacement's).
+      if (session.pane.owner === null) {
+        const done = $.ui.close({ id: PANE_REQUEST_ID }).catch(() => undefined);
+        session.pane.closing = Promise.all([session.pane.closing, done]).then(() => undefined);
+      }
+      return { isPlaced: false };
     },
     paneClose: () => {
       // A replacement session owns the pane now: a stale close must not take it away.

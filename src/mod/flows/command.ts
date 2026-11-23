@@ -37,8 +37,10 @@ async function listedTask(host: CommandHost, word: string): Promise<boolean> {
   return inbox?.items.some((item) => item.taskId === word) ?? false;
 }
 
-async function openPane(host: CommandHost, open: ModPaneOpen): Promise<FlowResult> {
-  const placed = await host.paneOpen({ ...open, focus: true });
+async function openPane(host: CommandHost, session: FlowSession, open: ModPaneOpen): Promise<FlowResult> {
+  // A command whose session ended while it waited opens nothing.
+  if (session.live && !session.live()) return { outcome: "cancelled", line: "cancelled" };
+  const placed = await host.paneOpen({ ...open, focus: true, ...(session.live ? { guard: session.live } : {}) });
   // Opening the pane returns no text, or one line when it cannot be placed (7.11).
   if (!placed.isPlaced) host.notice(PANE_WIDER_NOTICE);
   return { outcome: "pane", line: "" };
@@ -61,12 +63,12 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
   const first = words[0]!;
   const lowered = first.toLowerCase();
   if (words.length === 1) {
-    if (lowered === "inbox") return openPane(host, { tab: "needs-you" });
-    if (lowered === "check") return openPane(host, { tab: "tasks" });
-    if (lowered === "pane") return openPane(host, {});
-    if (await listedTask(host, first)) return openPane(host, { taskId: first });
+    if (lowered === "inbox") return openPane(host, session, { tab: "needs-you" });
+    if (lowered === "check") return openPane(host, session, { tab: "tasks" });
+    if (lowered === "pane") return openPane(host, session, {});
+    if (await listedTask(host, first)) return openPane(host, session, { taskId: first });
   } else if (words.length === 2 && lowered === "check" && (await listedTask(host, words[1]!))) {
-    return openPane(host, { taskId: words[1]! });
+    return openPane(host, session, { taskId: words[1]! });
   }
 
   // The fast path: a kind and the description, so the dialogs start at After work.

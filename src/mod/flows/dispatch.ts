@@ -280,7 +280,8 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
     const pick = await askPages(host, start);
     if (pick.kind !== "pick") return stop(host);
     if (pick.value === "check-in") {
-      await host.paneOpen({ tab: "needs-you", focus: true });
+      if (session.live && !session.live()) return stop(host);
+      await host.paneOpen({ tab: "needs-you", focus: true, ...(session.live ? { guard: session.live } : {}) });
       return { outcome: "pane", line: "" };
     }
     // Work in this session: the person goes on with their own work.

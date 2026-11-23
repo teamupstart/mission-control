@@ -572,3 +572,10 @@ test("a 404 that is not the flag-off answer is an error, not the flag being off"
   await core.tick();
   assert.equal(core.phase(), "connecting");
 });
+
+test("registration tells the daemon the launcher is off while its gate is closed, so no banner promises it", async () => {
+  const { daemon, core } = setup();
+  await core.start();
+  const registration = daemon.requests.find((r) => r.pattern === "/dispatch/sessions")!;
+  assert.equal((registration.body as { launcherDisabled: boolean }).launcherDisabled, true);
+});

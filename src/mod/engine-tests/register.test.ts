@@ -33,7 +33,7 @@ function world(on, { flag, minModApi = 1 }) {
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
   on('state.set', (_, e) => { seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
-  on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
+  on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold } if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
@@ -334,4 +334,41 @@ test('a request held by the token read is not sent when the session ends meanwhi
   release()
   await new Promise((resolve) => setTimeout(resolve, 200))
   expect(seen.urls.slice(before).some((u) => u.includes('/dispatch/dispatch-options'))).toBe(false)
+})
+
+test('a pane open that finishes after its session ended is taken back, and writes no target', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let release
+  seen.holdOpen = new Promise((resolve) => { release = resolve })
+  const openedBefore = seen.opened.length
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => seen.opened.length > openedBefore)
+  await $.session.end({ reason: 'other', sessionId: 's1' })
+  const closedBefore = seen.closed.length
+  release()
+  await settle(() => seen.closed.length > closedBefore)
+  // The late open is closed again: no pane stays visible for an ended session.
+  expect(seen.closed.length).toBe(closedBefore + 1)
+  expect(seen.order.at(-1)).toBe('close:end')
+})
+
+test('a stale pane open does not close the pane a replacement session opened, and does not retarget it', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let release
+  seen.holdOpen = new Promise((resolve) => { release = resolve })
+  const openedBefore = seen.opened.length
+  await $.command.run(COMMAND('check'))
+  await settle(() => seen.opened.length > openedBefore)
+  // The session is replaced while the open is pending; the replacement opens its own pane on Needs you.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.opened.length >= openedBefore + 2)
+  const closedBefore = seen.closed.length
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.closed.length).toBe(closedBefore)
+  expect(seen.state.paneTab).toBe('needs-you')
 })

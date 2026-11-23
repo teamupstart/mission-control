@@ -606,3 +606,21 @@ test("an exception from a flow is logged with its message and stack before the p
   reportFlowFailure(fake.host, (text) => logged.push(text), "plain string");
   assert.match(logged[1]!, /plain string/);
 });
+
+test("a pane command carries its session's guard to the host, and opens nothing once the session has ended", async () => {
+  const live = () => true;
+  const { fake } = world();
+  await runDispatchCommand(fake.host, { ...SESSION, live }, "inbox");
+  assert.equal(fake.paneOpens.length, 1);
+  assert.equal(fake.paneOpens[0]!.guard, live);
+
+  const ended = world();
+  const result = await runDispatchCommand(ended.fake.host, { ...SESSION, live: () => false }, "inbox");
+  assert.equal(result.outcome, "cancelled");
+  assert.deepEqual(ended.fake.paneOpens, []);
+
+  // The Start dialog's check-in path is guarded the same way.
+  const checkin = world({ host: { answers: (q) => ({ kind: "pick", label: q.options.find((o) => o.label === "Check in on my tasks")?.label ?? q.options[0]!.label }) } });
+  await runDispatchCommand(checkin.fake.host, { ...SESSION, live }, "");
+  assert.equal(checkin.fake.paneOpens[0]!.guard, live);
+});

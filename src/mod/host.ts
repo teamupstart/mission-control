@@ -60,6 +60,12 @@ export type ModPaneTab = ModState["paneTab"];
 export type ModPanePlacement = "dock" | "inline" | "widget";
 
 export interface ModPaneOpen {
+  /**
+   * Whether the session that asked is still current. The host checks it before it writes the
+   * pane's target and again as it opens, and takes back an open that finished after the session
+   * ended, so a stale command cannot open or retarget a replacement session's pane.
+   */
+  guard?: () => boolean;
   tab?: ModPaneTab;
   /** Open on this task's item view when the inbox lists it. */
   taskId?: string;

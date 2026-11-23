@@ -791,7 +791,7 @@ turn the daemon writes, led by the first skill's invocation, with the rest liste
 waits in the session's outbox until the session settles idle, is never steered into a running
 turn, and survives a restart. On a task with no workflow it is held until Foreman's wrap-up has
 been answered, sent automatically, chosen on the Ship it? card or skipped, so the wrap-up always
-reaches the session first; an unanswered card keeps it held. It is sent at most once per launch:
+reaches the session first; an unanswered card keeps it held. A held prompt records the wrap-up as it stood, so an answer persisted just before the daemon stopped still releases it at the next start, and one an earlier episode left does not. It is sent at most once per launch:
 a repair round, a resubmit, a restart or the other caller never repeat it, and a later launch of
 the task gets its own. Each launch's prompt is recorded in `task_skill_prompts`, keyed by task
 and session, as `held`, `queued`, `waiting`, `delivered`, `skipped` or `not_delivered` with a

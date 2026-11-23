@@ -69,6 +69,8 @@ function setup(options: {
   refused?: Record<string, string>;
   /** The outbox refuses while this returns a refusal, as a starting outbox or a busy pane does. */
   outboxRefusal?: () => { error: string; retryable: boolean } | null;
+  /** Each session's Foreman wrap-up as its queue stores it. */
+  wrapups?: Map<string, { askedAt: number | null; answer: string | null }>;
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -88,6 +90,9 @@ function setup(options: {
     enabled: () => options.enabled ?? true,
     now: () => ++now,
     catalogId: (name) => options.catalog?.[name] ?? null,
+    ...(options.wrapups
+      ? { wrapupState: (sessionId: string) => (registry.getSession(sessionId) ? options.wrapups!.get(sessionId) ?? { askedAt: null, answer: null } : null) }
+      : {}),
     catalogCommand: (_session, id) => options.refused?.[id]
       ? { ok: false, message: options.refused[id]! }
       : { ok: true, command: `/${id}` },
@@ -532,4 +537,48 @@ test("a refusal that cannot clear still ends the prompt not delivered, and a wai
   waiting.registry.emit("event", { type: "session_remove", id: "s2" });
   assert.equal(db.getTaskSkillPrompt(other, "s2")?.state, "not_delivered");
   waiting.prompts.stop();
+});
+
+test("a held prompt whose wrap-up was answered just before the daemon stopped is released when it starts again", () => {
+  // An earlier episode's answer is still on the queue when this launch's prompt is held.
+  const wrapups = new Map([["s1", { askedAt: 5, answer: "foreman:automatic-wrapup-skipped" }]]);
+  const before = setup({ wrapups });
+  const taskId = nextTask();
+  before.registry.launch(taskId, "s1");
+  assert.deepEqual(before.prompts.prompt("s1", { hold: true }), { kind: "held" });
+  // The daemon stops after Foreman's answer is persisted, before the listener could release it.
+  before.prompts.stop();
+  wrapups.set("s1", { askedAt: 5, answer: "/ship" });
+
+  // The restarted daemon: same database and queue, its sessions not restored yet at start.
+  const after = setup({ wrapups });
+  after.prompts.stop();
+  after.prompts.start();
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "held", "kept while the session is not restored");
+  after.registry.tasks = before.registry.tasks;
+  after.registry.sessions = before.registry.sessions;
+  after.registry.emit("event", { type: "session_upsert", session: after.registry.getSession("s1") });
+  assert.equal(after.queued.length, 1, "the persisted answer releases it once the session is back");
+  assert.equal(after.queued[0]!.turn.text.split("\n")[0], "/retro");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "queued");
+  after.prompts.stop();
+
+  // An answer an earlier episode left, unchanged since the hold, keeps it held across a restart,
+  // as an unanswered card does; and a session already there at start is checked at once.
+  const stale = setup({ wrapups });
+  const held = nextTask();
+  stale.registry.launch(held, "s4");
+  wrapups.set("s4", { askedAt: 9, answer: "an earlier episode's answer" });
+  assert.deepEqual(stale.prompts.prompt("s4", { hold: true }), { kind: "held" });
+  stale.prompts.stop();
+  stale.prompts.start();
+  assert.equal(stale.queued.length, 0);
+  assert.equal(db.getTaskSkillPrompt(held, "s4")?.state, "held");
+  // Answered while the daemon was down: the next start releases it.
+  stale.prompts.stop();
+  wrapups.set("s4", { askedAt: 9, answer: "/ship" });
+  stale.prompts.start();
+  assert.equal(stale.queued.length, 1);
+  assert.equal(db.getTaskSkillPrompt(held, "s4")?.state, "queued");
+  stale.prompts.stop();
 });

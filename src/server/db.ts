@@ -4238,6 +4238,11 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (task_id, session_id)
     );
   `);
+  // The session's wrap-up as it stood when a prompt was held behind it, so a restart can tell an
+  // answer given since (release) from one an earlier episode left (keep holding). Nullable: only
+  // a held row has them.
+  addColumn(d, "task_skill_prompts", "hold_asked_at", "INTEGER");
+  addColumn(d, "task_skill_prompts", "hold_answer", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -8838,13 +8843,23 @@ export function insertTaskSkillPrompt(input: {
   reason: string | null;
   skills: readonly string[];
   now: number;
+  /** For a held row: the session's wrap-up when it was held, which a restart compares against. */
+  hold?: { askedAt: number | null; answer: string | null } | null;
 }): boolean {
   const r = openDb().prepare(
-    `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
-       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)
+    `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at, hold_asked_at, hold_answer)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
      ON CONFLICT(task_id, session_id) DO NOTHING`,
-  ).run(input.taskId, input.sessionId, input.state, input.reason, JSON.stringify(input.skills), input.now);
+  ).run(input.taskId, input.sessionId, input.state, input.reason, JSON.stringify(input.skills), input.now,
+    input.hold?.askedAt ?? null, input.hold?.answer ?? null);
   return Number(r.changes) > 0;
+}
+
+/** Every held prompt, with the wrap-up it was held behind as it stood then. For startup. */
+export function listHeldTaskSkillPrompts(): Array<{ taskId: string; sessionId: string; holdAskedAt: number | null; holdAnswer: string | null }> {
+  const rows = openDb().prepare(`SELECT task_id, session_id, hold_asked_at, hold_answer FROM task_skill_prompts WHERE state = 'held'`)
+    .all() as unknown as Array<{ task_id: string; session_id: string; hold_asked_at: number | null; hold_answer: string | null }>;
+  return rows.map((row) => ({ taskId: row.task_id, sessionId: row.session_id, holdAskedAt: row.hold_asked_at, holdAnswer: row.hold_answer }));
 }
 
 /**

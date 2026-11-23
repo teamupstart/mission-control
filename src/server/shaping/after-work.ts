@@ -5,6 +5,7 @@ import type { PendingTurn, ServerEvent, Session, Task } from "@shared/types.ts";
 import {
   getTaskSkillPrompt,
   insertTaskSkillPrompt,
+  listHeldTaskSkillPrompts,
   listOpenTaskSkillPrompts,
   listWaitingTaskSkillPromptSessions,
   markTaskSkillPromptWaiting,
@@ -60,6 +61,12 @@ export interface AfterWorkSkillsDeps {
   catalogCommand?: (session: Session, id: string) => RequiredSkillCommand;
   /** The catalog id behind a routed name, or null for a name Mission Control does not ship. */
   catalogId?: (name: string) => string | null;
+  /**
+   * The session's Foreman wrap-up as its queue stores it, or null while the session is not
+   * registered. Read when a prompt is held and again at startup, so an answer persisted just
+   * before the daemon stopped still releases the prompt held behind it.
+   */
+  wrapupState?: (sessionId: string) => { askedAt: number | null; answer: string | null } | null;
 }
 
 /** What one call came to, for a caller's log and for tests. */
@@ -113,11 +120,13 @@ export function renderAfterWorkPrompt(sessionId: string, skills: readonly Resolv
 }
 
 export class AfterWorkSkills {
-  private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">>
-    & Pick<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">;
+  private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId" | "wrapupState">>
+    & Pick<AfterWorkSkillsDeps, "catalogCommand" | "catalogId" | "wrapupState">;
   private unsubscribe: Array<() => void> = [];
   /** Sessions with a prompt the outbox refused for a reason that can clear, tried again as they change. */
   private readonly waiting = new Set<string>();
+  /** Sessions with a held prompt whose wrap-up a restart has to check once the session is back. */
+  private readonly heldCheck = new Set<string>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -137,9 +146,20 @@ export class AfterWorkSkills {
         if (event.type === "session_remove") this.sessionEnded(event.id);
         // A session that changes may be able to take its waiting prompt now: the outbox has
         // started, or it can receive messages again.
-        else if (event.type === "session_upsert" && this.waiting.has(event.session.id)) this.retry(event.session.id);
+        else if (event.type === "session_upsert") {
+          if (this.heldCheck.has(event.session.id)) this.checkHeld(event.session.id);
+          if (this.waiting.has(event.session.id)) this.retry(event.session.id);
+        }
       }),
     ];
+    // A wrap-up answered just before the daemon stopped released nothing: the listener that
+    // would have was gone. Every held prompt is checked against its session's stored answer.
+    try {
+      for (const row of listHeldTaskSkillPrompts()) this.heldCheck.add(row.sessionId);
+    } catch (error) {
+      console.warn("[shaping] could not read the after-work prompts that are held:", error);
+    }
+    for (const sessionId of [...this.heldCheck]) this.checkHeld(sessionId);
     // Waiting rows a restart left behind are tried again once the outbox is up.
     try {
       for (const sessionId of listWaitingTaskSkillPromptSessions()) this.waiting.add(sessionId);
@@ -175,6 +195,26 @@ export class AfterWorkSkills {
       this.resume(sessionId, "held");
     } catch (error) {
       console.warn(`[shaping] could not release session ${sessionId}'s after-work skills:`, error);
+    }
+  }
+
+  /**
+   * Release a session's held prompts if its wrap-up was answered since they were held: an answer
+   * is set and differs from the one the row saw, or was asked again since. An answer that only
+   * an earlier episode left keeps it held, as does a session not registered yet, which is
+   * checked again when it is. Never throws.
+   */
+  private checkHeld(sessionId: string): void {
+    try {
+      if (!this.deps.wrapupState) { this.heldCheck.delete(sessionId); return; }
+      const state = this.deps.wrapupState(sessionId);
+      if (!state) return;
+      this.heldCheck.delete(sessionId);
+      const answered = state.answer !== null && listHeldTaskSkillPrompts()
+        .some((row) => row.sessionId === sessionId && (row.holdAnswer !== state.answer || row.holdAskedAt !== state.askedAt));
+      if (answered) this.release(sessionId);
+    } catch (error) {
+      console.warn(`[shaping] could not check session ${sessionId}'s held after-work skills:`, error);
     }
   }
 
@@ -240,7 +280,9 @@ export class AfterWorkSkills {
       return { kind: "skipped", reason: NO_SKILL_LEFT };
     }
     if (hold) {
-      return insertTaskSkillPrompt({ taskId: task.id, sessionId, state: "held", reason: null, skills: names, now })
+      return insertTaskSkillPrompt({
+        taskId: task.id, sessionId, state: "held", reason: null, skills: names, now, hold: this.deps.wrapupState?.(sessionId) ?? null,
+      })
         ? { kind: "held" }
         : { kind: "none", why: "already" };
     }

@@ -391,6 +391,50 @@ submitted it is gone. A plan's session can exit while the task is still running,
 can never be rewritten - so publishing then would freeze a draft as the permanent record of a
 plan still being written. Teardown is the only moment a plan is captured.
 
+## How a report produces one
+
+An [agent report](sessions.md#agent-reports) can carry an `.html` or `.md` document, which
+Mission Control copies into `<state home>/reports/<id>/` when the report is posted. **Publish as
+scout** on the report's inbox card turns that stored copy into an ordinary `scout` bundle. It is
+the archive's one operator-initiated capture: nothing else publishes a report, and no capture
+job, exit, cleanup or restart path reaches it.
+
+| From the report | Captured as |
+|---|---|
+| the stored `.html` document | `report/report.html`, byte for byte |
+| the stored `.md` document | `report/report.html`, a static page the daemon renders with the dashboard's Markdown dialect (GitHub-flavoured; raw HTML and unsafe link schemes are dropped) |
+
+The bundle's title is the report's title. It has no prompt trail, no summary or tags, no
+companions and no `artifacts/` half; its source session is the session that posted the report,
+and its `source` is `report`. The bundle format is unchanged, so any reader opens it as a scout
+archive.
+
+- **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
+  its path. A body that names a page, a path or anything else is refused, and no checkout is
+  read, so what is archived is always the document as it was posted.
+- **The same checker.** The page must pass the static checker every bundle passes. A report
+  bundle has no companions, so a relative link is refused along with anything that runs or
+  fetches. A refused page is answered with every problem named, shown on the card, and nothing
+  is written.
+- **One archive per report.** The archive id is derived from this machine's producer id, the
+  report's id and when it was posted. Pressing again, or after a lost response or a restart,
+  re-verifies and returns the archive already there, and the report records its key once.
+  A report's recorded key is checked against the library at four moments, and cleared when its
+  archive is gone so the report can be published again under the same key:
+
+  - **Publish as scout.** A press on a report that already records a key verifies that archive
+    in full. If it no longer verifies, the report is published again rather than answered with
+    the stale key.
+  - **Deleting the archive.** `DELETE /api/archives/:archiveKey` re-checks the reports recorded
+    under that one key. The check waits behind any Publish of the same report, so a publish
+    that recreated the archive meanwhile keeps its key.
+  - **Startup.** Every recorded archive is verified in full once, which heals a delete
+    interrupted between removing the bundle and clearing the key.
+  - **In the background.** When a reconciliation pass prunes bundles that left the library, it
+    hands over exactly those keys, and only the reports recorded under them are re-checked. A
+    bundle removed by hand heals this way, and publishing or deleting other archives costs
+    nothing.
+
 ## Cleanup asks first
 
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
@@ -506,6 +550,7 @@ GET    /api/archives/:archiveKey/artifacts/:artifactId
 POST   /api/archives/:archiveKey/artifacts/:artifactId/open
 DELETE /api/archives/:archiveKey
 POST   /mcp/scouts/submit
+POST   /api/reports/:id/publish
 ```
 
 `kind` filters to one kind. An unreadable bundle has no readable kind, so a kind filter

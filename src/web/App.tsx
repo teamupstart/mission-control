@@ -7,7 +7,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { replyTarget } from "@shared/reports.ts";
+import { replyTarget, type ReportItem as AgentReport } from "@shared/reports.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -46,6 +46,7 @@ import type {
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
+import { ReportDocumentReader } from "./components/ReportDocumentReader.tsx";
 import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
@@ -475,17 +476,40 @@ export function App(): React.JSX.Element {
   // read" to. Opening a report records that it was opened (once) and never marks it read.
   const [openReportId, setOpenReportId] = useState<string | null>(null);
   const reportOpenPosted = useRef(new Set<string>());
-  const reportControls = useMemo<InboxReportControls>(() => ({
+  // The report whose attached document the reader is showing, if any.
+  const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
+  const reportControls = useMemo<InboxReportControls>(() => {
+    // Record the first time the operator opened a report, whichever way they opened it.
+    const postOpened = (report: AgentReport) => {
+      if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
+      reportOpenPosted.current.add(report.id);
+      void api.openReport(report.id).then((result) => {
+        if (!result.ok) reportOpenPosted.current.delete(report.id);
+      });
+    };
+    return {
     openReportId,
     onToggle: (report) => {
       const opening = openReportId !== report.id;
       setOpenReportId(opening ? report.id : null);
-      if (opening && report.openedAt === null && !reportOpenPosted.current.has(report.id)) {
-        reportOpenPosted.current.add(report.id);
-        void api.openReport(report.id).then((result) => {
-          if (!result.ok) reportOpenPosted.current.delete(report.id);
-        });
-      }
+      if (opening) postOpened(report);
+    },
+    // Open report: the stored copy of its document. Posts opened, and never marks it read.
+    onOpenDocument: (report) => {
+      setDocumentReport(report);
+      postOpened(report);
+    },
+    // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
+    onPublish: async (report) => {
+      const result = await api.publishReport(report.id);
+      if (result.ok) return null;
+      const error = result.error ?? "Could not publish the report";
+      return { error, problems: result.problems?.length ? result.problems : [error] };
+    },
+    onOpenArchive: (report) => {
+      if (!report.publishedArchiveKey) return;
+      setInboxOpen(false);
+      navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
     onMarkRead: async (report) => {
       const result = await api.markReportRead(report.id);
@@ -508,7 +532,8 @@ export function App(): React.JSX.Element {
       setOpenReportId((current) => (current === report.id ? null : current));
       return null;
     },
-  }), [openReportId, sessions, residentRuns]);
+    };
+  }, [openReportId, sessions, residentRuns, navigate]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -5355,6 +5380,11 @@ export function App(): React.JSX.Element {
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
                 />
+              )}
+              {/* Open report: an agent report's attached document, from its stored copy. Opened from
+                  an inbox card or a conversation entry, so it sits over either. */}
+              {documentReport && (
+                <ReportDocumentReader report={documentReport} onClose={() => setDocumentReport(null)} />
               )}
 
               {modalSession && (modalReviews.length > 0 || modalDialog) && (

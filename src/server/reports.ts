@@ -28,7 +28,9 @@ import type { PendingTurn, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
 import { inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
+import { buildReportPage, reportDocumentDir } from "./report-document.ts";
 import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./session-files.ts";
 
 /**
@@ -89,6 +91,21 @@ export interface FollowUpTaskPort {
 export type FollowUpOutcome =
   | { ok: true; report: ReportItem; taskId: string }
   | { ok: false; status: 400 | 404 | 409 | 503; error: string; report: ReportItem | null; taskId: string | null };
+
+/**
+ * How Publish as scout reaches the archive, so this owner of the `reports` table never writes the
+ * archive library itself. The routes build it over `ArchiveManager.publishReportPage`.
+ */
+export interface ReportPublisherPort {
+  publish(input: ReportPagePublication): Promise<ReportPagePublicationResult>;
+  /** Whether the archive a report recorded is still in the library and verifies. */
+  exists(key: string): Promise<boolean>;
+}
+
+/** What Publish as scout came to. A refused page names every problem the checker found. */
+export type PublishOutcome =
+  | { ok: true; report: ReportItem; archiveKey: string; replayed: boolean }
+  | { ok: false; status: 404 | 409 | 422 | 500 | 503; error: string; problems: string[]; report: ReportItem | null };
 
 interface Row {
   seq: number;
@@ -153,10 +170,9 @@ function getRow(id: string): ReportItem | null {
   return row ? fromRow(row) : null;
 }
 
-/** Where a report's attached document is stored. Later phases read it from here. */
-export function reportDocumentDir(id: string, stateDir: string = STATE_DIR): string {
-  return join(stateDir, "reports", id);
-}
+// Where a report's attached document is stored, beside the reader and the page builder that read
+// it back.
+export { reportDocumentDir };
 
 /** A document read from the session's checkout, ready to be stored with its report. */
 interface StagedDocument {
@@ -185,6 +201,8 @@ export class ReportManager {
   private readonly staleFailures = new Map<string, number>();
   /** The follow-up in flight for each report, so two calls for one report run one after the other. */
   private readonly followUps = new Map<string, Promise<FollowUpOutcome>>();
+  /** The publication in flight for each report, chained the same way. */
+  private readonly publications = new Map<string, Promise<unknown>>();
 
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
@@ -213,6 +231,11 @@ export class ReportManager {
       const task = this.registry.getTask(row.follow_up_task_id);
       if (task) this.reconcileFollowUp(task);
     }
+  }
+
+  /** The state home this manager stores documents under, which the document route reads from. */
+  get documentStateDir(): string {
+    return this.stateDir;
   }
 
   stop(): void {
@@ -562,6 +585,121 @@ export class ReportManager {
     const task = this.registry.getTask(taskId);
     if (task) this.reconcileFollowUp(task);
     return { ok: true, report: getRow(id) ?? report, taskId };
+  }
+
+  /**
+   * Clear `key` from every report published under it, unconditionally, and tell every window.
+   * Only for a caller already inside that report's publication queue that has just found the
+   * archive gone (`runPublish`); anything else uses `reconcilePublishedArchives`, which re-checks
+   * inside the queue so it cannot undo a publish that landed meanwhile.
+   */
+  private forgetArchive(key: string): void {
+    const rows = openDb().prepare("SELECT id FROM reports WHERE published_archive_key = ?").all(key) as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    openDb().prepare("UPDATE reports SET published_archive_key = NULL WHERE published_archive_key = ?").run(key);
+    for (const { id } of rows) {
+      const report = getRow(id);
+      if (report) this.registry.upsertReport(report);
+    }
+  }
+
+  /**
+   * Publish as scout: archive the report's stored document as a scout archive, because the
+   * operator pressed the control. The page is built from the stored copy alone (`buildReportPage`),
+   * never from a checkout and never from the request. Idempotent: a report already published
+   * answers with its archive and publishes nothing, and two presses run one after the other.
+   * Publishing never marks a report read and never records that it was opened.
+   */
+  publish(id: string, port: ReportPublisherPort): Promise<PublishOutcome> {
+    return this.inPublicationQueue(id, () => this.runPublish(id, port));
+  }
+
+  /**
+   * One report's publication work, one step at a time: a publish and a reconciliation of the same
+   * report never interleave, so a reconciliation cannot clear a key a publish has just written.
+   */
+  private inPublicationQueue<T>(id: string, step: () => Promise<T>): Promise<T> {
+    const previous = this.publications.get(id) ?? Promise.resolve(null);
+    const run = previous.catch(() => null).then(step);
+    this.publications.set(id, run);
+    void run.finally(() => {
+      if (this.publications.get(id) === run) this.publications.delete(id);
+    }).catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Clear recorded archive keys whose archive is gone, so those cards offer Publish as scout
+   * again. Resolves to the ids whose key was cleared.
+   *
+   * With no `keys`, every published report is checked: the daemon does this once at startup, with
+   * full bundle verification, which heals a delete interrupted between removing the bundle and
+   * clearing the key. With `keys`, only reports recorded under those keys are checked: the daemon
+   * passes exactly the keys an archive reconciliation pass pruned, so the work after a library
+   * change follows the archives that disappeared, never the number of published reports.
+   *
+   * Each report is re-checked inside its publication queue, so a publish that lands meanwhile wins.
+   */
+  async reconcilePublishedArchives(
+    exists: (key: string) => Promise<boolean>,
+    keys?: readonly string[],
+  ): Promise<string[]> {
+    if (keys && keys.length === 0) return [];
+    const rows = (keys
+      ? openDb()
+        .prepare(`SELECT id, published_archive_key AS archiveKey FROM reports WHERE published_archive_key IN (${keys.map(() => "?").join(", ")})`)
+        .all(...keys)
+      : openDb()
+        .prepare("SELECT id, published_archive_key AS archiveKey FROM reports WHERE published_archive_key IS NOT NULL")
+        .all()) as Array<{ id: string; archiveKey: string }>;
+    const cleared: string[] = [];
+    for (const { id, archiveKey } of rows) {
+      const gone = await this.inPublicationQueue(id, async () => {
+        if (getRow(id)?.publishedArchiveKey !== archiveKey) return false;
+        if (await exists(archiveKey)) return false;
+        const changed = openDb()
+          .prepare("UPDATE reports SET published_archive_key = NULL WHERE id = ? AND published_archive_key = ?")
+          .run(id, archiveKey).changes > 0;
+        const report = changed ? getRow(id) : null;
+        if (report) this.registry.upsertReport(report);
+        return changed;
+      });
+      if (gone) cleared.push(id);
+    }
+    return cleared;
+  }
+
+  private async runPublish(id: string, port: ReportPublisherPort): Promise<PublishOutcome> {
+    const refuse = (status: Exclude<PublishOutcome, { ok: true }>["status"], problems: string[], report: ReportItem | null): PublishOutcome =>
+      ({ ok: false, status, error: problems[0] ?? "the report could not be published", problems, report });
+    const report = getRow(id);
+    if (!report) return refuse(404, ["no such report"], null);
+    if (!report.document) return refuse(409, ["This report has no attached document, so there is nothing to publish."], report);
+    if (report.publishedArchiveKey) {
+      if (await port.exists(report.publishedArchiveKey)) {
+        return { ok: true, report, archiveKey: report.publishedArchiveKey, replayed: true };
+      }
+      // The archive it recorded is gone (deleted from disk, or by a route this manager did not
+      // hear about). The operator pressed Publish, so publish it again rather than answering
+      // with a key that leads nowhere.
+      this.forgetArchive(report.publishedArchiveKey);
+    }
+    const built = await buildReportPage(report, this.stateDir);
+    if (!built.ok) return refuse(built.status, built.problems, report);
+    const published = await port.publish({
+      reportId: report.id,
+      reportCreatedAt: report.createdAt,
+      title: report.title,
+      page: built.page,
+      session: { id: report.sessionId, name: report.author.name, taskId: report.taskId },
+      repositoryLabel: report.repository ? basename(report.repository) : null,
+    });
+    if (!published.ok) return refuse(published.status, published.problems, getRow(id));
+    openDb().prepare("UPDATE reports SET published_archive_key = ? WHERE id = ? AND published_archive_key IS NULL")
+      .run(published.key, id);
+    const stamped = getRow(id)!;
+    this.registry.upsertReport(stamped);
+    return { ok: true, report: stamped, archiveKey: stamped.publishedArchiveKey ?? published.key, replayed: published.replayed };
   }
 }
 

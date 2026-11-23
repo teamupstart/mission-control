@@ -1205,6 +1205,13 @@ export const ReportFollowUpSchema = z.object({
     .optional().default(""),
 });
 
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),

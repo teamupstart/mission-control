@@ -99,6 +99,8 @@ export const OVERLAY_IDS = {
   // Settings > Task shaping's manifest import, and its dry run of one shaper.
   shapingImport: "shaping-import",
   shapingTest: "shaping-test",
+  // An agent report's attached document, opened from its inbox card or conversation entry.
+  reportDocument: "report-document",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -311,8 +311,12 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The watcher is a latency hint; the recurring scan is the authority. Both live inside the
 // manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
 // per batch, no history in the snapshot, no browser polling.
+// Bound once the report manager exists below: a pass that prunes vanished bundles hands their
+// keys over, so only reports published under exactly those archives are re-checked.
+let onArchivesPruned: (keys: readonly string[]) => void = () => undefined;
 const archives = new ArchiveManager({
   onChanged: () => registry.emitArchiveChanged(),
+  onPruned: (keys) => onArchivesPruned(keys),
   watch: true,
   tasks: new RegistryArchiveTaskGateway(registry),
 });
@@ -849,6 +853,11 @@ fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId))
 // read to the registry now, so the first snapshot after a restart carries them. It subscribes to
 // no session event: a report outlives the session that posted it.
 const reports = new ReportManager(registry);
+onArchivesPruned = (keys) => {
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key), keys).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile reports for pruned archives:", error);
+  });
+};
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -986,6 +995,12 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
+  // Every published report's archive, verified in full once at startup: a report whose archive is
+  // gone (a delete interrupted between removing the bundle and clearing the key) goes back to
+  // unpublished. Later removals reach a report only through `onArchivesPruned`, above.
+  void reports.reconcilePublishedArchives((key) => archives.hasArchive(key)).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile published reports:", error);
+  });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips

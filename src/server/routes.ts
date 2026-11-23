@@ -2312,6 +2312,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? { ok: true } : { ok: false, error: result.error ?? "the follow-up task could not be dispatched" };
       },
     },
+    // Publish as scout: the archive's one operator-initiated capture.
+    publisher: archives
+      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.hasArchive(key) }
+      : undefined,
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
@@ -4250,6 +4254,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
+      // A report published under this archive no longer has one: its card offers Publish as
+      // scout again rather than an Open archive that leads nowhere. Conditional and queued with
+      // that report's Publish, so a publish that recreated the archive meanwhile keeps its key.
+      // A failure here is healed at the next startup and must not turn a completed delete into
+      // an error.
+      await reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
+        .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
       return c.json(result);
     } catch (error) {
       const failure = archiveErrorStatus(error);

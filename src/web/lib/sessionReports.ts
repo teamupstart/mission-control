@@ -14,6 +14,14 @@ export interface ReportEntryControls {
   onToggle: (report: ReportItem) => void;
   /** Mark it read. Resolves to why the daemon refused, or null. */
   onMarkRead: (report: ReportItem) => Promise<string | null>;
+  /** Open Report: show its attached document's stored copy. Records the first open; never reads it. */
+  onOpenDocument: (report: ReportItem) => void;
+}
+
+/** Why Publish as scout published nothing: the first reason, and every problem the archive named. */
+export interface ReportPublishRefusal {
+  error: string;
+  problems: string[];
 }
 
 /**

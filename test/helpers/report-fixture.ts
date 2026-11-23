@@ -33,8 +33,10 @@ export function mkReport(over: Partial<ReportItem> & { id: string }): ReportItem
  * controls, so a render test passes these rather than an inert default.
  */
 export function mkReportControls(openReportId: string | null = null, target: ReplyTarget = { kind: "live", sessionId: "s1" }) {
-  const calls: { toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[] } =
-    { toggled: [], markedRead: [], replied: [], followedUp: [] };
+  const calls: {
+    toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[];
+    openedDocument: string[]; published: string[]; openedArchive: string[];
+  } = { toggled: [], markedRead: [], replied: [], followedUp: [], openedDocument: [], published: [], openedArchive: [] };
   return {
     calls,
     controls: {
@@ -44,6 +46,9 @@ export function mkReportControls(openReportId: string | null = null, target: Rep
       targetFor: (_report: ReportItem): ReplyTarget => target,
       onReply: async (report: ReportItem) => { calls.replied.push(report.id); return null; },
       onFollowUp: async (report: ReportItem) => { calls.followedUp.push(report.id); return null; },
+      onOpenDocument: (report: ReportItem) => { calls.openedDocument.push(report.id); },
+      onPublish: async (report: ReportItem) => { calls.published.push(report.id); return null; },
+      onOpenArchive: (report: ReportItem) => { calls.openedArchive.push(report.id); },
     },
   };
 }
@@ -56,5 +61,8 @@ export function reportCardProps(target: ReplyTarget = { kind: "live", sessionId:
     onMarkRead: () => undefined,
     onReply: async () => null,
     onFollowUp: async () => null,
+    onOpenDocument: () => undefined,
+    onPublish: async () => null,
+    onOpenArchive: () => undefined,
   };
 }

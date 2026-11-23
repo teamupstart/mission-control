@@ -80,9 +80,9 @@ test("a filed plan form's session needs you from filing, and raises the needs-re
   assert.deepEqual(detectAlerts(scope(filed), scope({ ...filed, state: "idle" })).filter((a) => a.kind === "review"), []);
 });
 
-test("the filed plan receipt says filed not answered, it is a gate, how to take it back, and to end the turn", () => {
+test("the filed plan receipt says filed not answered, it is a gate, how to take it back, how to revise it, and to end the turn", () => {
   const points = filedPlanReceipt({ id: "rev-9" }).split("\n\n");
-  assert.equal(points.length, 4);
+  assert.equal(points.length, 5);
   assert.match(points[0]!, /^Filed, not answered/);
   assert.match(points[0]!, /rev-9/);
   assert.match(points[1]!, /still a gate/);
@@ -90,10 +90,13 @@ test("the filed plan receipt says filed not answered, it is a gate, how to take 
   assert.match(points[1]!, /Read-only preparation/);
   assert.match(points[2]!, /Do not file this plan again and do not poll/);
   assert.match(points[2]!, /withdraw_question with id rev-9/);
-  assert.match(points[3]!, /end your turn/);
-  assert.doesNotMatch(points.join(" "), /revises/, "Phase 2 adds the revises sentence");
+  // The one sentence Phase 2 adds: file the revised plan with `revises` naming this form.
+  assert.match(points[3]!, /request_plan_decisions with revises set to rev-9/);
+  assert.match(points[3]!, /after withdrawing this form or instead of withdrawing it/);
+  assert.equal(points.filter((point) => /revises/.test(point)).length, 1, "only the added sentence names revises");
+  assert.match(points[4]!, /end your turn/);
   const approved = filedPlanReceipt({ id: "rev-9" }, { bundleApproved: true }).split("\n\n");
-  assert.equal(approved.length, 5);
+  assert.equal(approved.length, 6);
   assert.match(approved[0]!, /approved automatically by the operator's standing approval/);
 });
 

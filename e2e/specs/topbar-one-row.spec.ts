@@ -127,7 +127,12 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  // The launch turn moves this row from the Working group to the Idle one, which remounts it.
+  // A click that lands during that move reaches neither copy and selects nothing, so select it
+  // only once it has regrouped.
+  const row = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click();
   const card = page.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card.locator(".badge-idle")).toBeVisible({ timeout: 15_000 });

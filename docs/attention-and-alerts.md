@@ -69,6 +69,10 @@ card reads **Waiting on your decisions**, its row is listed with the stopped ses
 "needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
 request closes it unanswered with the reason `merged`.
 
+A plan the agent [revised](sessions.md#revising-a-filed-plan) replaces its earlier card rather
+than joining it: the inbox holds one card, tagged **Revision 2** (then 3, and so on), and
+**Earlier version** beside the tag shows the form it replaced, read-only.
+
 ### One name for an agent
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, one rule names an agent

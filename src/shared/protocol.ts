@@ -705,6 +705,17 @@ export const CreateReviewSchema = z
       .transform((line) => oneLine(line))
       .pipe(z.string().max(MEANWHILE_MAX_CHARS))
       .optional(),
+    /**
+     * The review id of the filed plan form this one revises, `plan-decisions` only. The daemon
+     * accepts it for the same session's filed plan form that is still open, which it withdraws
+     * in the same step, or that its own agent withdrew; it refuses anything else and files
+     * nothing.
+     */
+    revises: z.string().trim().min(1).optional(),
+  })
+  .refine((r) => r.kind === "plan-decisions" || r.revises === undefined, {
+    message: "only kind 'plan-decisions' can revise an earlier form",
+    path: ["revises"],
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",

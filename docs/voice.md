@@ -58,7 +58,8 @@ session takes over its roster entry, the card and Recently heard show `not-runni
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest action that
 is still pending and was opened by the time the cancel was spoken. The daemon uses capture
 timestamps when listener requests arrive out of order. For equal timestamps, the last action
-opened wins. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
+opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
+An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
 Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 

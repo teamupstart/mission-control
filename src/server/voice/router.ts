@@ -269,18 +269,20 @@ export class VoiceRouter {
 
   private async openCard(item: OpenCard, openedAt: number): Promise<void> {
     const { card, entry } = item;
-    if (card.state === "unsure") {
-      const unsure = this.activeCards().filter((open) => open.state === "unsure");
-      if (unsure.length >= MAX_UNSURE_CARDS) {
-        this.cancel(unsure[0]!.id, "Replaced by a newer unsure card.");
-      }
-    }
     // A resolving card already has its place in capture order, including ties.
     if (!this.open.has(card.id)) {
       this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt, cancel: () => this.cancel(card.id) });
     }
     this.open.set(card.id, item);
     entry.outcome = card.state;
+    if (card.state === "unsure") {
+      const unsure = Array.from(this.open.values()).filter((item) => item.card.state === "unsure");
+      if (unsure.length > MAX_UNSURE_CARDS) {
+        const oldest = unsure.reduce((first, next) => next.entry.time < first.entry.time ? next : first);
+        this.cancel(oldest.card.id, "Replaced by a newer unsure card.");
+        if (oldest === item) return;
+      }
+    }
     if (card.state === "pending") {
       const window = this.window();
       if (!window.enabled) { await this.sendNow(card.id); return; }

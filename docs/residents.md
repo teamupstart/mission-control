@@ -430,6 +430,15 @@ returned, so a wait the session declared again since is refused with 409. Leave 
 its deadline alone: the session resumes on its own, and an overdue one is already back under the
 normal stuck-session rules.
 
+### Completing other sessions
+
+A resident with session control can finish another session the way **Complete** does from its
+card: `control_session` with `{"action":"complete","outcome":"..."}` records the target's task as
+done and closes the session. It takes the dialog's two confirmations, `satisfyDependents` and
+`confirmIncompleteScout`, only when set explicitly. See
+[Let a session steer other sessions](sessions.md#let-a-session-steer-other-sessions). Without
+session control the action is refused like every other `control_session` action.
+
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it

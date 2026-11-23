@@ -173,6 +173,9 @@ routes retain their human/Foreman grammar. Delegated single-option selections re
 request id returned by the target read, so an identical option on a replacement prompt does
 not accept a stale answer. Message routes likewise reject a caller-supplied `origin: "session"`;
 only the verified internal request receives the delegated message label.
+The delegated `complete` action resolves the task from the target's live session, never from a
+caller-supplied id, and calls the dashboard's task completion and session stop routes in that
+order. It carries the completion confirmations only when the controller sets them explicitly.
 Changing the grant requires a trusted click on the desktop dashboard's session-control menu. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process

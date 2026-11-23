@@ -230,6 +230,22 @@ test("idle past the threshold with a RUNNING task is stuck", () => {
   assert.match(stall!.reason, /idle 20m with work unfinished/);
 });
 
+test("a resident's standing task is not unfinished work between turns", () => {
+  const s = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ kind: "resident" }) });
+  assert.equal(one(s, TH.unfinishedMs), null);
+  assert.equal(one(s, 999 * MIN), null);
+});
+
+test("resident tasks do not hide explicit outstanding work or active-turn stalls", () => {
+  const resident = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ kind: "resident" }) });
+  const queued = one({ ...resident, queue: mkQueue({ openCount: 1 }) }, TH.unfinishedMs);
+  assert.equal(queued?.kind, "unfinished-work");
+  assert.deepEqual(queued?.facts, { kind: "unfinished-work", task: null, queueOpen: 1 });
+  assert.equal(one(resident, TH.unfinishedMs, TH, [mkRun()])?.kind, "workflow-parked");
+  assert.equal(one({ ...resident, state: "working" }, TH.workingMs)?.kind, "silent-working");
+  assert.equal(one({ ...resident, note: mkNote() }, TH.escalationMs)?.kind, "escalated");
+});
+
 test("idle past the threshold with an un-drained queue is stuck", () => {
   const s = mkSession({
     state: "idle",

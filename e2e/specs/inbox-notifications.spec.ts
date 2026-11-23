@@ -544,6 +544,39 @@ test("a report stamped after Away mode ended elsewhere, while this window still 
   await expect.poll(() => toastTitles(page), { timeout: 15_000 }).toContain(`${name}'s back: Moment.js is the bulk`);
 });
 
+test("a report held while away and counted by the digest stays quiet on return, even before the window hears the mark", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const name = "Tune the slow query";
+  const session = await setup(page, daemon, name);
+  await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+  await page.getByRole("switch", { name: "Away mode" }).click();
+  await expect(page.getByRole("switch", { name: "Away mode" })).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+
+  // Stamped while away, live in this window: its notification is held, and the report stays unread.
+  const report = await postAndStop(daemon, session, { title: "Missing index on runs.task_id", body: "Add it." });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  await page.waitForTimeout(2000);
+  expect((await toasts(page)).some((t) => t.tag === `report:${report.id}`)).toBe(false);
+
+  // The event stream drops, so the digest's mark on this report cannot reach the window before it
+  // releases what it held: only the daemon knows the digest counted it.
+  await page.evaluate(() => {
+    const w = window as unknown as ToastWindow;
+    w.__stream.close();
+    w.__stream.dispatchEvent(new Event("error"));
+  });
+  await expect(page.locator(".pulse")).toHaveClass(/is-down/);
+  await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+  await page.getByRole("switch", { name: "Away mode" }).click();
+  await expect(page.getByRole("switch", { name: "Away mode" })).toHaveAttribute("aria-checked", "false");
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await api<{ report: ReportItem }>(daemon, `/api/reports/${report.id}`)).report.countedInDigestAt)
+    .not.toBeNull();
+  await page.waitForTimeout(3000);
+  expect((await toasts(page)).some((t) => t.tag === `report:${report.id}`), "the digest counted it: no second announcement").toBe(false);
+});
+
 test("a report stamped while away and this window was disconnected stays quiet when it reconnects after the digest", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   const name = "Trace the memory leak";

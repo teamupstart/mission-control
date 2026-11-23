@@ -5,11 +5,13 @@ import {
   detectAlerts,
   heldForAway,
   heldReportStillDue,
+  reportStillOwed,
   shouldDeliver,
   summarizeAlerts,
   withKnownStalls,
 } from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
+import { fetchReport } from "./lib/api.ts";
 import { playChime, recordFallbackSound, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
@@ -153,21 +155,37 @@ export function useNotifier(
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
 
-  // Known not to be away: deliver each held report alert the return digest did not cover, read
-  // against the reports as they are now (`heldReportStillDue`). One read or counted meanwhile is
-  // dropped; the digest, or the operator, already has it.
+  // Known not to be away: deliver each held report alert the return digest did not cover. One
+  // read or counted meanwhile is dropped; the digest, or the operator, already has it.
+  //
+  // Read from the daemon rather than this window's state. The daemon marks the reports a digest
+  // counted while it closes the window, before it answers the request that ends Away mode, but
+  // the mark reaches this window over the event stream, which is not ordered against that
+  // answer. So by the time this window knows it is back the daemon's copy already says whether
+  // the digest counted the report, and this window's copy may not yet. A report the daemon
+  // cannot be asked about is judged by this window's copy instead.
   const awayOff = delivery.away === false;
   useEffect(() => {
     if (!awayOff || heldRef.current.length === 0) return;
     const held = heldRef.current;
     heldRef.current = [];
-    const { notify: switches, onOpenReport } = deliveryRef.current;
-    const reports = scopeRef.current.reports;
-    raiseBatch(
-      held.filter((a) => heldReportStillDue(a, reports) && shouldDeliver(a, switches, false)),
-      settingsRef.current,
-      onOpenReport,
-    );
+    void Promise.all(held.map(async (a) => {
+      const answer = a.reportId ? await fetchReport(a.reportId) : null;
+      const owed = answer ? reportStillOwed(answer.report) : heldReportStillDue(a, scopeRef.current.reports);
+      return owed ? a : null;
+    })).then((owed) => {
+      const { notify: switches, away, onOpenReport } = deliveryRef.current;
+      // Away again by the time the reads land: hold them once more.
+      if (away !== false) {
+        heldRef.current.push(...owed.filter((a): a is Alert => a !== null));
+        return;
+      }
+      raiseBatch(
+        owed.filter((a): a is Alert => a !== null && shouldDeliver(a, switches, false)),
+        settingsRef.current,
+        onOpenReport,
+      );
+    });
   }, [awayOff]);
 
   useEffect(() => {

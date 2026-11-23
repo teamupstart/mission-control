@@ -234,12 +234,18 @@ export function heldForAway(a: Alert, notify: NotifySwitches | null, away: boole
 }
 
 /**
- * Whether a held report alert is still owed once this window knows it is not away: its report is
- * still waiting to be read and no return digest counted it (that digest already told you).
+ * Whether a held report's notification is still owed once this window knows it is not away: the
+ * report is still waiting to be read and no return digest counted it (that digest already told
+ * you). Read it from the daemon's own copy where possible (see `useNotifier`).
  */
+export function reportStillOwed(report: ReportItem): boolean {
+  return reportToRead(report) && report.countedInDigestAt === null;
+}
+
+/** `reportStillOwed` against the reports this window holds, for when the daemon cannot be read. */
 export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | undefined): boolean {
   const report = reports?.find((r) => r.id === a.reportId);
-  return report !== undefined && reportToRead(report) && report.countedInDigestAt === null;
+  return report !== undefined && reportStillOwed(report);
 }
 
 /**

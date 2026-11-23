@@ -9,6 +9,7 @@ import {
   digestLine,
   heldForAway,
   heldReportStillDue,
+  reportStillOwed,
   hasReportable,
   shouldDeliver,
   summarizeAlerts,
@@ -1037,6 +1038,14 @@ test("heldForAway: a report alert is held while this window is away or does not 
   assert.equal(heldForAway(report, { ...ALL_ON, reports: false }, true), false);
   // Every alert that existed before is decided at once, Away mode known or not; stuck still breaks through.
   for (const a of others) for (const away of [null, true]) assert.equal(heldForAway(a, ALL_ON, away), false, `${a.kind} away=${away}`);
+});
+
+test("reportStillOwed: the daemon's copy decides whether a held report still notifies", () => {
+  const waiting = stamped("working");
+  assert.equal(reportStillOwed(waiting), true);
+  assert.equal(reportStillOwed({ ...waiting, countedInDigestAt: 9 }), false, "the return digest counted it");
+  assert.equal(reportStillOwed({ ...waiting, readAt: 9, readBy: "reply" }), false, "answered meanwhile");
+  assert.equal(reportStillOwed({ ...waiting, supersededBy: "r-2" }), false, "replaced; its replacement notifies itself");
 });
 
 test("heldReportStillDue: a held report alert is owed only while its report waits and no digest counted it", () => {

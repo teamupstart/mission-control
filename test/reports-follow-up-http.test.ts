@@ -545,6 +545,50 @@ test("a follow-up task deleted while the daemon was down is forgotten at the nex
   assert.equal(waiting.followUpTaskId, null);
 });
 
+test("no window sees a successful follow-up as created but not started", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  const seen: Array<Pick<ReportItem, "followUpTaskId" | "readAt">> = [];
+  const stop = f.registry.subscribe((event) => {
+    if (event.type === "report_upsert" && event.report.id === report.id) seen.push(event.report);
+  });
+  try {
+    const started = await f.followUp(report.id, "Fix it");
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+  } finally {
+    stop();
+  }
+  // A report naming its task while still unread is what the card draws as a failed dispatch.
+  assert.deepEqual(seen.filter((r) => r.followUpTaskId !== null && r.readAt === null), [], "never published mid-dispatch");
+  assert.ok(seen.some((r) => r.followUpTaskId !== null && r.readAt !== null), "the read outcome was published");
+});
+
+test("a refused or failed dispatch is published once it has an outcome, so the card shows Retry", async () => {
+  const f = setup();
+  const repo = f.inRepo(mkRepo());
+  for (const failure of ["refused", "thrown"] as const) {
+    const report = await postFromGoneSession(f, { repoRoot: repo }, `Dispatch ${failure}`);
+    const seen: Array<Pick<ReportItem, "followUpTaskId" | "readAt">> = [];
+    const stop = f.registry.subscribe((event) => {
+      if (event.type === "report_upsert" && event.report.id === report.id) seen.push(event.report);
+    });
+    const dispatching = f.tasks.dispatch.bind(f.tasks);
+    if (failure === "refused") f.failDispatches("not now");
+    else f.tasks.dispatch = (async () => { throw new Error("fell over"); }) as typeof f.tasks.dispatch;
+    try {
+      const outcome = await f.followUp(report.id, "Fix it");
+      assert.equal(outcome.status, failure === "refused" ? 409 : 500);
+    } finally {
+      stop();
+      f.failDispatches(null);
+      f.tasks.dispatch = dispatching;
+    }
+    const last = seen.at(-1);
+    assert.ok(last?.followUpTaskId, `${failure}: the window learns the task it can retry`);
+    assert.equal(last?.readAt, null);
+  }
+});
+
 test("only the operator starts a follow-up", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });

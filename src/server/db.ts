@@ -5132,9 +5132,9 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
     CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
   `);
-  // Schema 48: when a return digest counted a report, so it notifies no window afterwards. Stored
-  // rather than held in memory, so the stamp stays quiet for a window that reconnects or a daemon
-  // that restarts before it lands (`ReportManager.countedInDigest`).
+  // Schema 48: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
   addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
 
   rebuildInFlightIndexIfStale(d);

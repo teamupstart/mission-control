@@ -720,6 +720,7 @@ const away = startAwayWatcher(registry, undefined, {
   // Reports a return digest counted before they were announced stay quiet when they are.
   // `reports` is constructed further down; this runs only when an away window closes.
   reportsCountedInDigest: (ids) => reports.countedInDigest(ids),
+  reportsDigestClaimed: () => reports.digestClaimed(),
 });
 const stopHeadlessPruner = startHeadlessPruner();
 // Check-domain crash recovery rides the native manager's cadence. It still runs when no

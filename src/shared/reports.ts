@@ -95,7 +95,8 @@ export interface ReportItem {
    * When a return digest counted this report, or null. The digest already told the operator about
    * it, so it raises no notification in any window afterwards: not when a stamp still pending
    * lands, and not when a window that missed its stamp reconnects, reloads, or outlives a daemon
-   * restart.
+   * restart. Held by the daemon in memory until a dashboard claims the digest, and stored from
+   * then on: a restart before the claim loses the digest, so it loses the mark too.
    */
   countedInDigestAt: number | null;
   /** The scout archive key it was published under (a later phase writes it). */

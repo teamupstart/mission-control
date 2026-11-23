@@ -85,6 +85,11 @@ export interface AwayDeps {
    * raises a notification afterwards in any window (see `ReportItem.countedInDigestAt`).
    */
   reportsCountedInDigest?: (ids: string[]) => void;
+  /**
+   * Told when a dashboard claims the digest, so the marks `reportsCountedInDigest` set are kept
+   * from then on. Until then they live and die with the digest, which is only in memory.
+   */
+  reportsDigestClaimed?: () => void;
 }
 
 export interface AwayWatcher {
@@ -297,6 +302,15 @@ export function startAwayWatcher(
     takePending: () => {
       const p = pending;
       pending = null;
+      // A failed write loses only the marks, so a counted report may notify once more after a
+      // restart; the digest is still handed over.
+      if (p) {
+        try {
+          deps.reportsDigestClaimed?.();
+        } catch (err) {
+          console.error("[away] keeping the digest's report marks failed:", err);
+        }
+      }
       return p;
     },
     flush: closeWindow,

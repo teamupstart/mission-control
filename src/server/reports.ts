@@ -150,6 +150,17 @@ const PUBLISHED_REPORT_PAGE = 200;
 
 const nullableNumber = (value: number | null): number | null => (value === null ? null : Number(value));
 
+/**
+ * Digest marks not written to the table yet: report id to when a closed Away window's digest
+ * counted it. The digest waits in the Away watcher's memory until a dashboard claims it, so its
+ * marks wait here beside it and reach the table only once it is claimed
+ * (`ReportManager.digestClaimed`). Every row read carries them, so each window is told at once.
+ * A daemon restart before the claim loses the digest, and the marks go with it: a report no
+ * digest will ever show is not kept quiet as if one had. One daemon, one ReportManager: its
+ * constructor empties this.
+ */
+const unclaimedDigestMarks = new Map<string, number>();
+
 function fromRow(row: Row): ReportItem {
   return {
     id: row.id,
@@ -175,7 +186,7 @@ function fromRow(row: Row): ReportItem {
     announcedAs: row.announced_as as ReportItem["announcedAs"],
     announcedAt: nullableNumber(row.announced_at),
     publishedArchiveKey: row.published_archive_key,
-    countedInDigestAt: nullableNumber(row.counted_in_digest_at),
+    countedInDigestAt: nullableNumber(row.counted_in_digest_at) ?? unclaimedDigestMarks.get(row.id) ?? null,
   };
 }
 
@@ -270,6 +281,7 @@ export class ReportManager {
     this.stateDir = options.stateDir ?? STATE_DIR;
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
+    unclaimedDigestMarks.clear();
     this.stopEvents = registry.subscribe((event) => this.observe(event));
     // Every report still waiting to be read is handed to the registry once, so the snapshot
     // carries it from the first connect after a restart. One the daemon stopped before stamping
@@ -329,22 +341,39 @@ export class ReportManager {
   }
 
   /**
-   * A return digest has counted these reports. Each is marked in the table and every window is
+   * A closed window's return digest has counted these reports. Each is marked and every window is
    * told, so no window raises a notification for it afterwards, whenever and however its stamp
    * reaches that window. That includes a report stamped while you were away: a window that missed
    * the stamp's event, because its stream was down, first sees it stamped in a reconnect snapshot,
    * and the mark is what keeps that snapshot quiet. The first count's time is kept.
+   *
+   * Held in memory until the digest is claimed (`digestClaimed`), because the digest itself is:
+   * written now, a restart before the claim would lose the digest and keep the mark, so the report
+   * would be announced by neither.
    */
   countedInDigest(ids: readonly string[]): void {
+    const at = this.now();
+    for (const id of ids) {
+      if (unclaimedDigestMarks.has(id)) continue;
+      const before = getRow(id);
+      if (!before || before.countedInDigestAt !== null) continue;
+      unclaimedDigestMarks.set(id, at);
+      this.registry.upsertReport({ ...before, countedInDigestAt: at });
+    }
+  }
+
+  /**
+   * A dashboard has claimed the digest: its marks are written to the table, with the time each was
+   * counted, so they now outlive a daemon restart (a window that reloads, reconnects or outlives
+   * the restart stays quiet when a stamp still pending lands). Nothing a window sees changes.
+   */
+  digestClaimed(): void {
+    if (unclaimedDigestMarks.size === 0) return;
     const mark = openDb().prepare(
       "UPDATE reports SET counted_in_digest_at = ? WHERE id = ? AND counted_in_digest_at IS NULL",
     );
-    const at = this.now();
-    for (const id of ids) {
-      if (mark.run(at, id).changes === 0) continue;
-      const report = getRow(id);
-      if (report) this.registry.upsertReport(report);
-    }
+    for (const [id, at] of unclaimedDigestMarks) mark.run(at, id);
+    unclaimedDigestMarks.clear();
   }
 
   /** Wait for a report's session to stop, or for the grace period to end, then stamp it. */

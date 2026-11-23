@@ -768,7 +768,7 @@ test("every report a return digest counted is marked in the table, stamped or no
   assert.equal(a.reports.get(countedReport.id)?.countedInDigestAt, 4_000);
 });
 
-test("the digest mark survives a daemon restart before the stamp lands", async () => {
+test("a claimed digest's mark survives a daemon restart before the stamp lands", async () => {
   const clock = { now: 1_000 };
   const before = announcer(clock);
   const session = working("s-digest-restart");
@@ -776,6 +776,8 @@ test("the digest mark survives a daemon restart before the stamp lands", async (
   const report = await before.reports.post(session, { title: "Counted, then restarted", body: "b" });
   clock.now = 3_000;
   before.reports.countedInDigest([report.id]);
+  clock.now = 5_000;
+  before.reports.digestClaimed(); // a dashboard read the digest
   before.reports.stop(); // the daemon stops before the stamp
 
   clock.now = 10_000;
@@ -787,6 +789,30 @@ test("the digest mark survives a daemon restart before the stamp lands", async (
   const { detectAlerts } = await import("../src/shared/alerts.ts");
   const scope = (reports: ReportItem[]) => ({ sessions: [], tasks: [], reports, takenAt: clock.now });
   assert.deepEqual(detectAlerts(scope([{ ...stamped[0]!, announcedAs: null, announcedAt: null }]), scope(stamped)), []);
+});
+
+test("a digest lost to a restart before any dashboard claimed it takes its marks with it", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-digest-unclaimed");
+  before.set(session);
+  const report = await before.reports.post(session, { title: "Counted, never shown", body: "b" });
+  clock.now = 3_000;
+  before.reports.countedInDigest([report.id]);
+  // Every window is told at once, from memory: the closed window's digest is waiting to be read.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
+  before.reports.stop(); // the daemon stops before any dashboard claims the digest
+
+  clock.now = 10_000;
+  const after = announcer(clock);
+  // The digest is gone, so nothing keeps the report quiet as if one had shown it.
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
+  after.set({ ...session, state: "idle" });
+  const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
+  assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", null]]);
+  // A claim in the new run has no marks of the old one to keep.
+  after.reports.digestClaimed();
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
 });
 
 function mkDiscovered(id: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession {

@@ -313,7 +313,11 @@ test("a report stamped while away is reported as counted too, so a window that m
   let reports: ReportItem[] = [];
   const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
   const counted: string[][] = [];
-  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  let claimed = 0;
+  const w = startAwayWatcher(src, () => clock, {
+    reportsCountedInDigest: (ids) => { counted.push(ids); },
+    reportsDigestClaimed: () => { claimed++; },
+  });
   setAwayConfig({ away: true }, 500);
   w.tick();
   reports = [mkReport({ id: "r-7", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: { key: "session:x", name: "Xan", residentProfileId: null } })];
@@ -321,8 +325,14 @@ test("a report stamped while away is reported as counted too, so a window that m
   w.tick();
   setAwayConfig({ away: false }, 2500);
   w.flush();
+  // Counted as the window closes, but kept only once a dashboard claims the digest: until then
+  // the mark lives and dies with the digest, which is only in memory.
+  assert.deepEqual([counted, claimed], [[["r-7"]], 0]);
   assert.equal(rollupLine(w.takePending()!), "1 report waiting: Xan");
-  assert.deepEqual(counted, [["r-7"]]);
+  assert.equal(claimed, 1);
+  // Nothing left to claim: no second claim.
+  assert.equal(w.takePending(), null);
+  assert.equal(claimed, 1);
   w.stop();
 });
 

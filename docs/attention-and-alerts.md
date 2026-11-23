@@ -596,8 +596,10 @@ waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). It count
 waiting as you return: one posted just before you came back is included before its notification
 wording is settled, and one you read or that was replaced while you were away is not. A report
 the digest counted raises no notification afterwards, even when its wording settles after you are
-back, after a page reload, a reconnect or another away window, or after a daemon restart: the
-daemon stores on the report that a digest counted it. A report announced while a dashboard is still
+back, after a page reload, a reconnect or another away window, or after a daemon restart: once a
+dashboard claims the digest, the daemon stores on the report that a digest counted it. Until then
+the mark is held in memory beside the digest, so a restart before any dashboard claims it loses
+both, and those reports are treated as never counted. A report announced while a dashboard is still
 loading, before it knows whether you are away, waits for that answer: it notifies only if you are
 not. Turning the flag off while you are away takes reports out of the digest; everything else in it
 stays. Stuck sessions still break

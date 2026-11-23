@@ -117,7 +117,9 @@ identifies the binary producing the calculation. These have different meanings. 
 source events, resources, times and trace context stay immutable; cohort gauges contain no
 run/task/session/PR IDs. Use source traces and their audience-scoped `mission.ref.*` attributes
 for drill-down, filtered by time, environment and installation. Sampled/missing traces never
-change the metric denominator.
+change the metric denominator. The one unhashed join id is a session's `work_unit_id` span
+attribute, identical in every lane, which finds every source trace of one piece of work; no
+cohort carries it ([Work unit id](observability.md#work-unit-id)).
 
 ## Receiver names and coherent queries
 

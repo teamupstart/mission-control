@@ -109,6 +109,8 @@ test("a bare cancel and a bare candidate name take precedence over addressing", 
 
 test("punctuation around the address stays separate from the quoted message", () => {
   for (const [text, body] of [
+    ["Will,,,ship it", ",,ship it"],
+    ['"Will,"",ship it"', '",ship it"'],
     ['Will,"ship it"', '"ship it"'],
     ["Will,‘ship it’", "‘ship it’"],
     ["Will,' ship it '", "' ship it '"],

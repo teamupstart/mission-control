@@ -46,7 +46,8 @@ During the cancel window, the message stays in memory. At the deadline, or immed
 the window off, the daemon submits the remaining text verbatim to the running target’s operator
 queue. The card and Recently heard show `queued` when the queue accepts the message.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
-`Will, ???` queues `???`.
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest action that

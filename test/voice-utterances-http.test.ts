@@ -263,6 +263,9 @@ test("punctuation-only messages reach the named agent and leave an unsure card o
     ["adjacent", "Will,!!!", "!!!"],
     ["plain", "Will ...", "..."],
     ["commas", "Will, ,,,", ",,,"],
+    ["adjacent-commas", "Will,,,", ",,"],
+    ["quoted-name", '"Will",,,', ",,"],
+    ["inner-and-outer-separator", "“Will,”,,,", ",,"],
   ] as const) {
     await say(text, id);
     const card = cards.at(-1);

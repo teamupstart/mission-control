@@ -290,6 +290,34 @@ napi_value OpenPlanEntry(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Node exposes readlink(path), but not readlinkat. Hold the checked parent open while
+// reading the literal target so a concurrent parent-to-symlink swap cannot redirect it.
+napi_value ReadRepositoryLink(napi_env env, napi_callback_info info) {
+  size_t argc = 2, length = 0;
+  napi_value argv[2], result;
+  int32_t parent;
+  void* bytes = nullptr;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      napi_get_buffer_info(env, argv[1], &bytes, &length) != napi_ok || !length || length > 255) {
+    return ThrowTypeError(env, "readRepositoryLink requires a directory descriptor and one name");
+  }
+  const std::string name(static_cast<char*>(bytes), length);
+  if (name == "." || name == ".." || name.find('/') != std::string::npos ||
+      name.find('\0') != std::string::npos) return ThrowTypeError(env, "invalid link name");
+  std::vector<char> target(256);
+  for (;;) {
+    ssize_t n = readlinkat(parent, name.c_str(), target.data(), target.size());
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return ThrowSystemError(env, "EREADLINK", "could not read repository symlink");
+    if (static_cast<size_t>(n) < target.size()) {
+      if (napi_create_buffer_copy(env, n, target.data(), nullptr, &result) != napi_ok) return nullptr;
+      return result;
+    }
+    target.resize(target.size() * 2);
+  }
+}
+
 napi_value MakePlanDirectory(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -660,6 +688,7 @@ NAPI_MODULE_INIT() {
       {"linkSymlinkNoReplace", nullptr, LinkSymlinkNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"exchangePaths", nullptr, ExchangePaths, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renameNoReplace", nullptr, RenameNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"readRepositoryLink", nullptr, ReadRepositoryLink, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"openPlanEntry", nullptr, OpenPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"makePlanDirectory", nullptr, MakePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renamePlanEntry", nullptr, RenamePlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},

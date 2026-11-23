@@ -236,6 +236,7 @@ import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
+import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
 import { workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import { stackPrInstruction } from "../stacking/lineage.ts";
@@ -697,12 +698,14 @@ export class WorkflowManager {
   private lastRetentionCompacted = 0;
   private lastRetentionDeleted = 0;
   private orphanedEvidenceImages = 0;
+  readonly repositoryArtifacts: WorkflowRepositoryArtifactService;
 
   constructor(
     private readonly registry: Registry,
     readonly store = new WorkflowStore(),
     private readonly options: WorkflowManagerOptions = {},
   ) {
+    this.repositoryArtifacts = new WorkflowRepositoryArtifactService(store);
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
     // `recordInjection` is still accepted as the sink's older name. A caller that wired it -
@@ -8323,6 +8326,7 @@ export class WorkflowManager {
         deleted: result.deletedRunIds.length,
         failed: result.failedRunCount,
       });
+      await this.repositoryArtifacts.reconcile();
     } catch (error) {
       this.lastRetentionAt = Date.now();
       this.lastRetentionError = "retention_failed";

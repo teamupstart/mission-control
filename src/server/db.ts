@@ -321,7 +321,9 @@ let db: DatabaseSync | undefined;
 //     phase 6). Nullable, no backfill: no digest counted a report before it existed.
 // 50: muted report authors (`report_mutes`, agent reports phase 7), a new empty table: no
 //     author was muted before it existed, so every report notifies and is listed as before.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 50;
+// 51: content-addressed repository artifacts and per-submission claims. Historical
+//     submissions acquire no claim. Cleanup intent is durable on the digest row.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 51;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1485,6 +1487,46 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
+
+    CREATE TABLE IF NOT EXISTS workflow_repository_artifacts (
+      digest TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('creating','ready','failed','cleanup_pending')),
+      created_at INTEGER NOT NULL, verified_at INTEGER, verification_error TEXT, cleanup_requested_at INTEGER,
+      cleanup_attempted_at INTEGER, cleanup_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_snapshot_claims (
+      submission_id TEXT PRIMARY KEY REFERENCES workflow_submissions(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL REFERENCES workflow_repository_artifacts(digest) ON DELETE RESTRICT,
+      state TEXT NOT NULL CHECK(state IN ('provisional','active','release_pending','released')),
+      created_at INTEGER NOT NULL, activated_at INTEGER, released_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_repository_claim_digest
+      ON workflow_repository_snapshot_claims(digest,state);
+    -- Cascaded submission deletion and explicit release share the same durable cleanup intent.
+    CREATE TRIGGER IF NOT EXISTS repository_claim_removed AFTER DELETE ON workflow_repository_snapshot_claims
+    WHEN NOT EXISTS (SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=OLD.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE digest=OLD.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_claim_released AFTER UPDATE OF state ON workflow_repository_snapshot_claims
+    WHEN NEW.state='released' AND NOT EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=NEW.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=NEW.released_at WHERE digest=NEW.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
+    WHEN OLD.status='capturing' AND NEW.status IN ('cancelled','failed')
+    BEGIN
+      UPDATE workflow_repository_snapshot_claims SET state='released', released_at=NEW.updated_at
+        WHERE submission_id=NEW.id AND state='provisional';
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_activation_required BEFORE UPDATE OF status ON workflow_submissions
+    WHEN NEW.status='running' AND EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
+       WHERE c.submission_id=NEW.id AND (c.state!='active' OR a.state!='ready'))
+    BEGIN SELECT RAISE(ABORT,'repository claim is not active'); END;
 
     -- Mutable, conversation-owned evidence remains separate from immutable submissions.
     -- Source roots and inline bodies are server-only. Child-supplied locators may enter the

@@ -155,7 +155,7 @@ const entry = z.strictObject({
     )
     .max(6),
 });
-export const RepositoryViewDescriptorSchema = z
+export const RepositoryViewFieldsSchema = z
   .strictObject({
     version: z.literal(1),
     snapshotDigest: sha,
@@ -184,8 +184,8 @@ export const RepositoryViewDescriptorSchema = z
     retainedBlobBytes: count.max(536870912),
     worktree: z.array(entry).max(200000),
     index: z.array(entry).max(200000),
-  })
-  .superRefine((v, ctx) => {
+  });
+export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.superRefine((v, ctx) => {
     const ids = new Set(v.retainedRevisions.map((r) => r.id));
     if (
       ids.size !== v.retainedRevisions.length ||

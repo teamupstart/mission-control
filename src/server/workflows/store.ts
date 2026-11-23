@@ -435,6 +435,8 @@ export const WORKFLOW_TABLES = [
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
+  "workflow_repository_artifacts",
+  "workflow_repository_snapshot_claims",
   "workflow_node_attempts",
   "workflow_command_artifact_reservations",
   "workflow_command_artifacts",
@@ -8065,6 +8067,20 @@ export class WorkflowStore {
     });
   }
 
+  commitRepositoryCaptureActivation(input: { submissionId: string; digest: string }, now = Date.now()): void {
+    transaction(this.db, () => {
+      const activated = this.db.prepare(`
+        UPDATE workflow_repository_snapshot_claims SET state='active', activated_at=?
+        WHERE submission_id=? AND digest=? AND state='provisional'
+          AND EXISTS (SELECT 1 FROM workflow_repository_artifacts WHERE digest=? AND state='ready')
+      `).run(now, input.submissionId, input.digest, input.digest);
+      if (activated.changes !== 1) throw new Error("Repository claim activation conflict");
+      const submission = this.db.prepare(`UPDATE workflow_submissions SET status='running', updated_at=?
+        WHERE id=? AND status='capturing'`).run(now, input.submissionId);
+      if (submission.changes !== 1) throw new Error("Repository submission activation conflict");
+    });
+  }
+
   setSubmissionState(
     id: string,
     status: WorkflowSubmission["status"],
@@ -10665,6 +10681,9 @@ export class WorkflowStore {
             updates.push({ id: row.id, context: parsed });
           }
 
+          this.db.prepare(`UPDATE workflow_repository_snapshot_claims SET state='released', released_at=?
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id=?) AND state!='released'`)
+            .run(input.now, runId);
           this.appendEvent(runId, "evidence_pruned", {
             submissions: updates.length,
             diffBytes,

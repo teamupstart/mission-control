@@ -1,3 +1,4 @@
+import { RepositoryCaptureChanged } from "./repository-artifact/format.ts";
 import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
@@ -168,6 +169,8 @@ export interface WorkflowCaptureRead {
 }
 
 export interface WorkflowRawCaptureRead {
+  /** Transient selection from this diff read. Never part of prompt evidence or fingerprints. */
+  repositoryCapture?: { checkout: string; sourceBase: string | null };
   raw: RawWorkflowContext;
   context: WorkflowContextSnapshot;
   boundary: WorkflowCaptureRead["boundary"];
@@ -902,13 +905,45 @@ export async function compactWorkflowContext(
     : await reconcileWorkflowCoverage(compacted, raw.coverage ?? [], deps));
 }
 
-export async function captureStableWorkflowContext<T>(
+interface RepositoryCaptureSeam<T, C extends { readonly boundary: string }> {
+  sampleBoundary(): Promise<string>;
+  prepare(captured: T): Promise<C>;
+  stillCurrent(candidate: C): Promise<boolean>;
+  discard(candidate: C): Promise<void>;
+}
+export function captureStableWorkflowContext<T>(read: () => Promise<T>,
+  boundaryChanged: (captured: T) => Promise<boolean>): Promise<T | null>;
+export function captureStableWorkflowContext<T, C extends { readonly boundary: string }>(read: () => Promise<T>,
+  boundaryChanged: (captured: T) => Promise<boolean>, seam: RepositoryCaptureSeam<T, C>):
+  Promise<{ captured: T; candidate: C } | null>;
+export async function captureStableWorkflowContext<T, C extends { readonly boundary: string }>(
   read: () => Promise<T>,
   boundaryChanged: (captured: T) => Promise<boolean>,
-): Promise<T | null> {
+  seam?: RepositoryCaptureSeam<T, C>,
+) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const captured = await read();
-    if (!(await boundaryChanged(captured))) return captured;
+    if (!seam) {
+      const captured = await read();
+      if (!(await boundaryChanged(captured))) return captured;
+      continue;
+    }
+
+    try {
+      const before = await seam.sampleBoundary();
+      const captured = await read();
+      const candidate = await seam.prepare(captured);
+      let accepted = false;
+      try {
+        accepted = candidate.boundary === before
+          && !(await boundaryChanged(captured))
+          && await seam.stillCurrent(candidate);
+        if (accepted) return { captured, candidate };
+      } finally {
+        if (!accepted) await seam.discard(candidate);
+      }
+    } catch (error) {
+      if (!(error instanceof RepositoryCaptureChanged)) throw error;
+    }
   }
   return null;
 }
@@ -1443,6 +1478,7 @@ export async function readWorkflowContextRaw(
   return {
     raw,
     context,
+    ...(checkout ? { repositoryCapture: { checkout, sourceBase: diff.baseSha ?? diff.headSha } } : {}),
     boundary: {
       noteKey: noteKeyFor(session),
       sessionId: session.id,

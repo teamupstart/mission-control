@@ -1,0 +1,137 @@
+import { spawn, execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { oid, unavailable } from "./format.ts";
+
+const env = {
+  PATH: "/usr/bin:/bin",
+  LC_ALL: "C",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_ATTR_NOSYSTEM: "1",
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+};
+const flags = [
+  "--no-replace-objects",
+  "--no-optional-locks",
+  "-c",
+  "protocol.allow=never",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.untrackedCache=false",
+  "-c",
+  "submodule.recurse=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+];
+export async function checkoutGit(
+  executable: string,
+  cwd: string,
+  args: string[],
+  signal: AbortSignal,
+  missing = false,
+): Promise<Buffer> {
+  // Query the effective excludes file through Git's config reader only. All commands that
+  // inspect the index and object database run with system and global configuration disabled.
+  const configRead = args[0] === "config";
+  const childEnv = {
+    ...env,
+    HOME: process.env.HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    ...(configRead
+      ? {
+          GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+          GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
+        }
+      : {}),
+  };
+  return new Promise((resolve, reject) => {
+    execFile(
+      executable,
+      [...flags, ...args],
+      { cwd, env: childEnv, signal, timeout: 30_000, maxBuffer: 128 << 20, encoding: "buffer" },
+      (error, stdout) => {
+        if (missing && Number(error?.code) === 1) resolve(Buffer.alloc(0));
+        else if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+/** One persistent batch process reads only literal object ids. No source config or refs
+ * are accessible to the process, so a partial clone cannot invoke its remote helper. */
+export async function openObjectReader(
+  executable: string,
+  wrapper: string,
+  objects: string,
+  sha256: boolean,
+  signal: AbortSignal,
+) {
+  await mkdir(join(wrapper, "refs"), { recursive: true });
+  await mkdir(join(wrapper, "objects"));
+  await writeFile(join(wrapper, "HEAD"), "ref: refs/heads/unborn\n");
+  if (sha256)
+    await writeFile(
+      join(wrapper, "config"),
+      "[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectFormat = sha256\n",
+    );
+  const child = spawn(executable, [...flags, "--git-dir", wrapper, "cat-file", "--batch-command"], {
+    cwd: wrapper,
+    env: { ...env, GIT_OBJECT_DIRECTORY: objects },
+    signal,
+    timeout: 10 * 60_000,
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  child.on("error", () => child.stdout.destroy());
+  child.stdin.on("error", () => child.stdout.destroy());
+  const iterator = child.stdout[Symbol.asyncIterator]();
+  let rest = Buffer.alloc(0);
+  async function fill() {
+    if (!rest.length) {
+      const chunk = await iterator.next();
+      if (chunk.done) unavailable();
+      rest = chunk.value;
+    }
+  }
+  return {
+    async get(id: string, type: string, info = false) {
+      signal.throwIfAborted();
+      oid.parse(id);
+      child.stdin.write(`${info ? "info" : "contents"} ${id}\n`);
+      let header = "";
+      for (;;) {
+        await fill();
+        const nl = rest.indexOf(10);
+        const end = nl < 0 ? rest.length : nl;
+        header += rest.subarray(0, end).toString("ascii");
+        rest = rest.subarray(end + 1);
+        if (header.length > 150) unavailable();
+        if (nl >= 0) break;
+      }
+      const [got, kind, length] = header.split(" ");
+      const size = Number(length);
+      if (got !== id || kind !== type || !Number.isSafeInteger(size) || size < 0) unavailable();
+      const data = Buffer.allocUnsafe(info ? 0 : size);
+      if (!info) {
+        for (let offset = 0; offset < size;) {
+          await fill();
+          const n = rest.copy(data, offset);
+          offset += n;
+          rest = rest.subarray(n);
+        }
+        await fill();
+        if (rest[0] !== 10) unavailable();
+        rest = rest.subarray(1);
+      }
+      return { size, data };
+    },
+    close() {
+      child.stdin.end();
+      child.kill();
+    },
+  };
+}

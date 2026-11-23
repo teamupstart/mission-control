@@ -1,0 +1,5 @@
+{
+  "_comment": "Every daemon path the mod may call (spec 7.10). The mod-calls smoke check and test/home-dispatch-mod-core.test.ts fail on any other path literal under src/mod/.",
+  "exact": ["/api/health"],
+  "prefixes": ["/dispatch/"]
+}

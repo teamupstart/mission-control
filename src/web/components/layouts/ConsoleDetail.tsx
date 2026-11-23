@@ -1,3 +1,4 @@
+import { InboxReplyBoxesContext } from "../../lib/inbox-reply-boxes.ts";
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
@@ -5,7 +6,7 @@ import { WorkUnitRow } from "../WorkUnitRow.tsx";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -30,6 +31,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
+import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -257,6 +259,8 @@ export function ConsoleDetail({
     requestNonce: undefined,
   });
   const [hasReply, setHasReply] = useState(false);
+  // A Stuck row's message box in the attention inbox is this session's reply box too.
+  const inboxReplyBox = useContext(InboxReplyBoxesContext).has(session.id);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -936,6 +940,9 @@ export function ConsoleDetail({
                 and scrolls past that (`.detail-conv > .blocker-band`), so long details
                 cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
+            {/* A declared wait on a background process. Never beside the blocker band: a
+                blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
+            <SessionAwaitingBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {/* The session's own ask for Control other sessions: answered before reading on,
                 like the menu above. Capped and scrolled like the blocker band below its
@@ -1095,7 +1102,7 @@ export function ConsoleDetail({
         {live && (
           <ActionBar
             session={session}
-            hasReply={hasReply}
+            hasReply={hasReply || inboxReplyBox}
             onToggleQueue={() => setTab((t) => (t === "queue" ? "conversation" : "queue"))}
             onFocusReply={focusReply}
             registerActions={view.registerActions}

@@ -128,7 +128,8 @@ test("a CI warning has its own results button beside the PR link", () => {
   const anchor = html.match(/<a [^>]*class="tile-flag tile-flag-link[^"]*"[^>]*>([^<]*)<\/a>/)?.[1];
   assert.ok(anchor != null, "expected the PR anchor");
   assert.doesNotMatch(anchor, /⚠/);
-  assert.match(html, /<button[^>]*class="pr-checks-alert"/);
+  assert.match(html, /<button[^>]*class="pr-checks-alert"[^>]*><svg class="pr-icon"/);
+  assert.doesNotMatch(html, /⚠/, "the warning is a sized SVG, not a font glyph");
 });
 
 // The flag's tooltip is delivered by the shared `Tooltip` component rather than a native

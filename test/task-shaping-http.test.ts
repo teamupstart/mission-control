@@ -57,7 +57,7 @@ test("a record that names the current session is in every read, and the route re
   assert.equal(listed?.shaping?.sessionId, "s1");
   const route = await app.request("/api/tasks/current/shaping", { headers });
   assert.equal(route.status, 200);
-  assert.deepEqual(await route.json(), { summary: record("s1"), text: "## Task context\n\nbody" });
+  assert.deepEqual(await route.json(), { summary: record("s1"), text: "## Task context\n\nbody", afterWork: null });
   const mcp = (await (await mcpGet("current")).json()) as { shaping?: TaskShaping };
   assert.equal(mcp.shaping?.sessionId, "s1");
 });
@@ -115,4 +115,31 @@ test("the shaping route serves no superseded record from a durable row while its
   } finally {
     reads.forgetSupersededShaping("durable-only");
   }
+});
+
+test("task reads carry the routed skills, and the after-work prompt while it names the record's session", async () => {
+  const { insertTaskSkillPrompt, settleTaskSkillPrompt } = await import("../src/server/db.ts");
+  registry.upsertTask(mkTask({ id: "routed", status: "running", sessionId: "s5" }));
+  const skills = [{
+    name: "wrap-notes", lifecyclePoint: "after-work", reasonId: "r/wrap", shaper: "router", repositories: ["repo"],
+    state: "announced" as const, verified: false, reason: null,
+  }];
+  assert.equal(registry.commitTaskShaping("routed", "s5", { ...record("s5"), state: "ok", skills }, "## Skills for this task\n\n- `/wrap-notes`"), true);
+  const before = await (await app.request("/api/tasks/routed/shaping", { headers })).json() as { afterWork: unknown; summary: TaskShaping };
+  assert.equal(before.afterWork, null, "no prompt yet");
+  assert.deepEqual(before.summary.skills, skills);
+  assert.equal(insertTaskSkillPrompt({ taskId: "routed", sessionId: "s5", state: "held", reason: null, skills: ["wrap-notes"], now: 10 }), true);
+  assert.equal(settleTaskSkillPrompt({ taskId: "routed", sessionId: "s5", from: ["held"], state: "delivered", reason: null, at: 20 }), true);
+  const prompt = { sessionId: "s5", state: "delivered", reason: null, skills: ["wrap-notes"], createdAt: 10, deliveredAt: 20 };
+  const route = await (await app.request("/api/tasks/routed/shaping", { headers })).json() as { afterWork: unknown };
+  assert.deepEqual(route.afterWork, prompt);
+  const mcp = (await (await mcpGet("routed")).json()) as { shaping?: TaskShaping; shapingAfterWork?: unknown };
+  assert.deepEqual(mcp.shapingAfterWork, prompt, "the MCP task read carries it beside the record");
+  // A row for another launch of the task is not this record's.
+  insertTaskSkillPrompt({ taskId: "routed", sessionId: "s4", state: "skipped", reason: "x", skills: [], now: 1 });
+  assert.deepEqual(((await (await app.request("/api/tasks/routed/shaping", { headers })).json()) as { afterWork: unknown }).afterWork, prompt);
+  // The flag off hides both, as it hides the record.
+  setFlag(false);
+  const hidden = (await (await mcpGet("routed")).json()) as Record<string, unknown>;
+  assert.equal("shaping" in hidden || "shapingAfterWork" in hidden, false);
 });

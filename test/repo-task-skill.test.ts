@@ -23,6 +23,7 @@ test("no skill leaves the prompt byte-identical, for every kind", () => {
   const r = repo("app");
   for (const kind of TASK_KINDS) {
     const resolved = resolveRepoTaskSkills(kind, [r]);
+    assert.deepEqual(resolved.contributingWorktreePaths, []);
     assert.deepEqual(resolved.record, { included: [], skipped: [] });
     assert.equal(appendRepoTaskSkills("PROMPT", resolved), "PROMPT");
   }
@@ -58,6 +59,29 @@ test("several repositories: manifest order, repo-name headings, full root on a s
   for (const x of [a, b, c]) rmSync(x.dir, { recursive: true, force: true });
 });
 
+test("contributing worktree paths describe the resolved blocks even when skill files change", (t) => {
+  const first = repo("app", "First body");
+  const missing = repo("app");
+  const empty = repo("empty", "---\nname: ship\n---\n");
+  const last = repo("app", "Last body");
+  t.after(() => {
+    for (const r of [first, missing, empty, last]) rmSync(r.dir, { recursive: true, force: true });
+  });
+  const resolved = resolveRepoTaskSkills("ship", [first, missing, empty, last]);
+  const prompt = appendRepoTaskSkills("PROMPT", resolved);
+  // Same repository names cannot identify which worktrees actually contributed.
+  assert.deepEqual(resolved.contributingWorktreePaths, [first.worktreePath, last.worktreePath]);
+  assert.deepEqual(resolved.blocks.map((block) => block.body), ["First body", "Last body"]);
+
+  writeFileSync(join(missing.worktreePath, ".claude/skills/ship/SKILL.md"), "Late body");
+  writeFileSync(join(empty.worktreePath, ".claude/skills/ship/SKILL.md"), "Now nonempty");
+  rmSync(join(first.worktreePath, ".claude/skills/ship/SKILL.md"));
+  assert.deepEqual(resolved.contributingWorktreePaths, [first.worktreePath, last.worktreePath]);
+  assert.equal(appendRepoTaskSkills("PROMPT", resolved), prompt);
+  assert.deepEqual(resolveRepoTaskSkills("ship", [first, missing, empty, last]).contributingWorktreePaths,
+    [missing.worktreePath, empty.worktreePath, last.worktreePath]);
+});
+
 test("a symlink leaving the worktree is skipped as outside-worktree", () => {
   const r = repo("app");
   const outside = join(r.dir, "secret.md");
@@ -65,6 +89,7 @@ test("a symlink leaving the worktree is skipped as outside-worktree", () => {
   symlinkSync(outside, join(r.worktreePath, ".claude", "skills", "ship", "SKILL.md"));
   const resolved = resolveRepoTaskSkills("ship", [r]);
   assert.equal(resolved.record.skipped[0]?.reason, "outside-worktree");
+  assert.deepEqual(resolved.contributingWorktreePaths, []);
   assert.equal(appendRepoTaskSkills("P", resolved), "P");
   rmSync(r.dir, { recursive: true, force: true });
 });
@@ -76,6 +101,7 @@ test("a symlink to a contained file whose name starts with two dots is included"
   const resolved = resolveRepoTaskSkills("ship", [r]);
   assert.deepEqual(resolved.record.skipped, []);
   assert.equal(resolved.blocks[0]?.body, "Contained guidance.");
+  assert.deepEqual(resolved.contributingWorktreePaths, [r.worktreePath]);
   rmSync(r.dir, { recursive: true, force: true });
 });
 
@@ -106,6 +132,7 @@ test("a body over 32 KiB is cut at the last newline in the window, with the exac
     `${expectedKept}\n[truncated: 67300 bytes omitted from .claude/skills/ship/SKILL.md]`,
   );
   assert.equal(resolved.record.included[0]?.truncated, true);
+  assert.deepEqual(resolved.contributingWorktreePaths, [r.worktreePath]);
   assert.equal(resolved.record.included[0]?.bytes, Buffer.byteLength(block.body));
   rmSync(r.dir, { recursive: true, force: true });
 });
@@ -146,6 +173,7 @@ test("a file that exists but cannot be read is recorded as unreadable and the ot
       { repo: "locked", kind: "ship", path: ".claude/skills/ship/SKILL.md", reason: "unreadable" },
     ]);
     assert.deepEqual(resolved.blocks.map((b) => b.repo), ["good"]);
+    assert.deepEqual(resolved.contributingWorktreePaths, [good.worktreePath]);
   } finally {
     chmodSync(file, 0o644);
     for (const x of [locked, good]) rmSync(x.dir, { recursive: true, force: true });

@@ -50,7 +50,10 @@ One call per round, carrying the whole frontier:
   - `allowOther: true` on **every** decision, so the human is never boxed into your options.
   - `multiSelect: true` only when several answers can genuinely hold at once.
 
-The tool blocks until the human submits or dismisses the round, then returns their answers.
+The round is a gate until the human submits or dismisses it. The tool either returns their
+answers, or a receipt saying the round is filed and not answered. On a receipt, end your turn
+without starting the next round: the answer arrives later as a message restating the round and
+each answer, and that message starts the next round exactly as a returned answer would.
 
 Do not count on the form opening on your recommendation. It may open with nothing selected,
 so the human picks every answer, and `recommended: true` only marks your advice. An answer is

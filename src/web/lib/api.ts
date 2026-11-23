@@ -1,3 +1,4 @@
+import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
@@ -8,6 +9,7 @@ import {
   type ShapingRun,
   type ShapingTestRequest,
   type TaskShaping,
+  type TaskSkillPrompt,
 } from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
@@ -636,6 +638,8 @@ export interface TaskShapingView {
   summary: TaskShaping;
   /** The section delivered in turn one, or null when nothing was kept. */
   text: string | null;
+  /** The launch's after-work prompt, null until one was written. Absent from an older daemon. */
+  afterWork?: TaskSkillPrompt | null;
 }
 
 /** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
@@ -1959,6 +1963,18 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  /** Queue a Stuck row's fixed Nudge, Continue or push message (`inbox` flag). */
+  sendInboxMessage: (id: string, kind: InboxMessageKind) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inbox-message`, { kind }),
+  /**
+   * Open a parked run's next repair round, as the Runs page's Resubmit does with a fresh
+   * request id.
+   */
+  resubmitWorkflowRun: (runId: string) =>
+    post(`/api/workflow-runs/${encodeURIComponent(runId)}/resubmit`, {
+      requestId: crypto.randomUUID(),
+      resubmitUnchanged: false,
+    }),
   deliverPendingTurn: (id: string, turnId: string, revision: number, action: "steer" | "interrupt") =>
     post(`/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/deliver`, { revision, action }),
   reportComposerActivity: (
@@ -2022,6 +2038,9 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
+  /** End a session's declared wait. `awaitingId` refuses a wait the session re-declared since. */
+  clearAwaiting: (id: string, awaitingId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/awaiting/clear`, { awaitingId }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /** Pause one session: freeze it now, or once its current turn ends. */
   pauseSession: (id: string, mode: SessionPauseMode = "now") =>
@@ -2142,6 +2161,10 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
    * conversation replays afterwards - `response` is the flattened string the agent reads,
@@ -2164,6 +2187,8 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
   /** Answer now: bring a snoozed question back before its time. */
   wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
+  /** One review by id, settled or not: the earlier version a revised plan form links to. */
+  review: (id: string) => readJson<ReviewItem>(`/api/reviews/${encodeURIComponent(id)}`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**

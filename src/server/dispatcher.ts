@@ -784,14 +784,15 @@ export class Dispatcher {
       // Repository task skills (spec 7.15): resolved ONCE per launch, from each attached
       // worktree in manifest order, and only with the headless-mode flag on. Null leaves
       // turn one byte-identical to what it was before this existed.
+      const repoSkillWorktrees = [
+        { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
+        ...extras
+          .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
+          .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
+      ];
       const repoSkills =
         taskHasRepository(provisioned) && (this.deps.headlessModeEnabled ?? (() => featureEnabled(HEADLESS_MODE_FLAG_ID)))()
-          ? resolveRepoTaskSkills(provisioned.kind, [
-              { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
-              ...extras
-                .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
-                .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
-            ])
+          ? resolveRepoTaskSkills(provisioned.kind, repoSkillWorktrees)
           : null;
       // Turn one up to and including the kind contract. The task context section, when this
       // launch is shaped, follows it through `withTaskContext` below, and the repository task
@@ -952,6 +953,8 @@ export class Dispatcher {
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
         agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
         currentAttempt, workUnitId,
+        // D14 must use the same resolution as turn one, even if skill files change afterward.
+        repositoryTaskSkillWorktrees: repoSkills?.contributingWorktreePaths ?? [],
       });
       // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
       // a later attempt that owns it now: this one launches nothing and tears nothing down.
@@ -2540,6 +2543,8 @@ export class Dispatcher {
        * it, and the agent is launched with it, so neither can see the preview differently.
        */
       workUnitId: string | null;
+      /** Worktrees whose own task skill for the kind is in this turn one (D14). */
+      repositoryTaskSkillWorktrees: readonly string[];
     },
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
@@ -2552,6 +2557,7 @@ export class Dispatcher {
     return shapeLaunch({
       task: provisioned,
       runtime,
+      repositoryTaskSkillWorktrees: launch.repositoryTaskSkillWorktrees,
       workflowName: () => (provisioned.workflowId ? this.deps.workflowName?.(provisioned.workflowId) ?? null : null),
       // Exactly what the agent is launched under: an embedded session's derived context, and
       // none for a terminal launch, which carries none.

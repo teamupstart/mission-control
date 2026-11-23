@@ -1,7 +1,9 @@
+import { isFiledGate } from "@shared/async-input.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { questionOutcome, questionStatusLine, useQuestionAgent } from "../lib/async-questions.ts";
 import { inputBody } from "../lib/reviews.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
+import { RevisionTag } from "./ReviewRevision.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -13,6 +15,9 @@ import { Tooltip } from "./Tooltip.tsx";
  * how the question stands: open, with whether its agent is still working past it or has stopped on
  * it (the card's own status line, `questionStatusLine`) and an Answer button that opens the card;
  * or how it ended. The operator's answer is still its own gold entry, at the moment they gave it.
+ *
+ * A filed plan form (`isFiledGate`) gets the same entry, read as a plan: "Plan filed", the gate's
+ * status line, and an Open button. The plan's body is not repeated here; the form shows it.
  */
 export function AskedQuestionCard({
   review,
@@ -28,11 +33,14 @@ export function AskedQuestionCard({
   const outcome = questionOutcome(review);
   const agent = useQuestionAgent(session);
   const status = outcome.state === "open" ? questionStatusLine(review, agent) : null;
+  const plan = isFiledGate(review);
+  const who = plan ? "Plan filed" : "Asked";
   return (
-    <div className={`review-asked is-${outcome.state}`} role="note" aria-label={`Asked: ${review.title}`}>
+    <div className={`review-asked is-${outcome.state}`} role="note" aria-label={`${who}: ${review.title}`}>
       <div className="review-answer-head">
-        <span className="review-answer-who review-asked-who">Asked</span>
+        <span className="review-answer-who review-asked-who">{who}</span>
         <span className="review-answer-title">{review.title}</span>
+        <RevisionTag review={review} />
         <ConversationTimestamp at={review.createdAt} className="turn-time" />
       </div>
       <QuestionText review={review} />
@@ -54,9 +62,9 @@ export function AskedQuestionCard({
         {outcome.state === "open" && onAnswer && (
           <>
             <span className="inbox-spacer" />
-            <Tooltip label="Open this question to answer it">
+            <Tooltip label={plan ? "Open this plan to make its decisions" : "Open this question to answer it"}>
               <button type="button" className="btn" onClick={onAnswer}>
-                Answer
+                {plan ? "Open" : "Answer"}
               </button>
             </Tooltip>
           </>

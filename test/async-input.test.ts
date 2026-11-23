@@ -1,8 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentKeepsWorking,
   asyncInputReceipt,
   decideWaitMode,
+  filedPlanAnswer,
+  filedPlanExcerpt,
+  filedPlanReceipt,
+  isAgentAsk,
+  isFiledGate,
   questionHoldsCompletion,
   questionsAwaitingOperator,
   waitingOnOpenQuestion,
@@ -30,6 +36,99 @@ test("the wait mode is message only when every condition holds, and call otherwi
   for (const kind of ["plan", "diff", "plan-decisions"] as const) {
     assert.equal(decideWaitMode({ ...base, kind }), "call", `${kind} stays blocking`);
   }
+});
+
+test("a plan form is filed only with both flags on, a capable child and a messageable session", () => {
+  const base = { flagOn: true, gateFlagOn: true, kind: "plan-decisions" as const, snoozable: false, asyncCapable: true, messageable: true };
+  assert.equal(decideWaitMode(base), "message");
+  assert.equal(decideWaitMode({ ...base, gateFlagOn: false }), "call", "filed-plan-decisions off");
+  assert.equal(decideWaitMode({ ...base, flagOn: false }), "call", "the plan flag takes effect only while async-input is on");
+  assert.equal(decideWaitMode({ ...base, asyncCapable: false }), "call");
+  assert.equal(decideWaitMode({ ...base, messageable: false }), "call");
+  for (const kind of ["plan", "diff"] as const) assert.equal(decideWaitMode({ ...base, kind }), "call", `${kind} stays blocking`);
+  // The plan flag files nothing else: a confirmation another tool raised stays a gate.
+  assert.equal(decideWaitMode({ ...base, kind: "input" }), "call");
+  assert.equal(decideWaitMode({ ...base, kind: "input", snoozable: true, gateFlagOn: false }), "message");
+});
+
+test("one rule for what a filed form is: a gate, never a question its agent works past", () => {
+  const filedPlan = review({ kind: "plan-decisions", snoozable: undefined, waitMode: "message" });
+  const callPlan = review({ kind: "plan-decisions", snoozable: undefined });
+  const filedQuestion = review({ waitMode: "message" });
+  assert.deepEqual([isFiledGate(filedPlan), agentKeepsWorking(filedPlan), isAgentAsk(filedPlan)], [true, false, true]);
+  assert.deepEqual([isFiledGate(callPlan), agentKeepsWorking(callPlan), isAgentAsk(callPlan)], [false, false, false]);
+  assert.deepEqual([isFiledGate(filedQuestion), agentKeepsWorking(filedQuestion), isAgentAsk(filedQuestion)], [false, true, true]);
+  // Every outstanding filed gate holds completion, with no flag condition; a call-mode form never does.
+  for (const status of ["pending", "snoozed"] as const) {
+    assert.equal(questionHoldsCompletion({ ...filedPlan, status }, false), true);
+    assert.equal(questionHoldsCompletion({ ...callPlan, status }, true), false);
+  }
+  for (const status of ["answered", "dismissed", "withdrawn", "orphaned"] as const) {
+    assert.equal(questionHoldsCompletion({ ...filedPlan, status }, true), false, status);
+  }
+});
+
+test("a filed plan form's session needs you from filing, and raises the needs-review alert once", () => {
+  const form = review({ kind: "plan-decisions", snoozable: undefined, waitMode: "message", title: "Linter plan" });
+  const working = mkSession({ state: "working", stateConfirmed: true, pendingReviews: 0, openQuestions: 0 });
+  const filed = { ...working, pendingReviews: 1 };
+  assert.equal(reportBucket(filed), "needs-you", "amber while the agent is still in its turn");
+  assert.equal(stateDisplay(filed).tone, "attention");
+  const scope = (session: Session) => ({ sessions: [session], tasks: [], reviews: [form] });
+  const raised = detectAlerts(scope(working), scope(filed));
+  assert.deepEqual(raised.map((a) => [a.id, a.title, a.body]), [["review:s1", "App Bugfixes needs review", "Linter plan"]]);
+  assert.deepEqual(detectAlerts(scope(filed), scope({ ...filed, state: "idle" })).filter((a) => a.kind === "review"), []);
+});
+
+test("the filed plan receipt says filed not answered, it is a gate, how to take it back, how to revise it, and to end the turn", () => {
+  const points = filedPlanReceipt({ id: "rev-9" }).split("\n\n");
+  assert.equal(points.length, 5);
+  assert.match(points[0]!, /^Filed, not answered/);
+  assert.match(points[0]!, /rev-9/);
+  assert.match(points[1]!, /still a gate/);
+  assert.match(points[1]!, /no edits, commits, pushes, task creation or other outward action/);
+  assert.match(points[1]!, /Read-only preparation/);
+  assert.match(points[2]!, /Do not file this plan again and do not poll/);
+  assert.match(points[2]!, /withdraw_question with id rev-9/);
+  // The one sentence Phase 2 adds: file the revised plan with `revises` naming this form.
+  assert.match(points[3]!, /request_plan_decisions with revises set to rev-9/);
+  assert.match(points[3]!, /after withdrawing this form or instead of withdrawing it/);
+  assert.equal(points.filter((point) => /revises/.test(point)).length, 1, "only the added sentence names revises");
+  assert.match(points[4]!, /end your turn/);
+  const approved = filedPlanReceipt({ id: "rev-9" }, { bundleApproved: true }).split("\n\n");
+  assert.equal(approved.length, 6);
+  assert.match(approved[0]!, /approved automatically by the operator's standing approval/);
+});
+
+test("the filed plan answer restates the plan and each decision, cut at a line, and a dismissal approves nothing", () => {
+  const long = Array.from({ length: 200 }, (_, n) => `Line ${n} of the plan.`).join("\n");
+  const excerpt = filedPlanExcerpt(long);
+  assert.ok(excerpt.length < long.length);
+  const [kept, marker] = [excerpt.slice(0, excerpt.lastIndexOf("\n")), excerpt.slice(excerpt.lastIndexOf("\n") + 1)];
+  assert.ok(kept.length <= 2000);
+  assert.match(kept, /Line \d+ of the plan\.$/, "cut at a line boundary");
+  assert.match(marker, new RegExp(`\\[\\.\\.\\. ${long.length - kept.length} more characters`));
+  assert.equal(filedPlanExcerpt("Short plan."), "Short plan.");
+
+  const base = { kind: "plan-decisions" as const, snoozable: undefined, waitMode: "message" as const, title: "Linter plan", body: long, createdAt: 0 };
+  const answered = filedPlanAnswer(review({ ...base, status: "answered", response: "Which linter?\n→ eslint\nNote: keep it fast", resolvedBy: "human" }), 5 * 60_000);
+  assert.match(answered, /^Mission Control answer to your filed plan r1 \(filed 5 minutes ago\):/);
+  assert.match(answered, /Plan: Linter plan/);
+  assert.match(answered, /Line 0 of the plan\./);
+  assert.doesNotMatch(answered, /Line 199 of the plan\./);
+  assert.match(answered, /→ eslint\nNote: keep it fast/);
+  assert.match(answered, /The gate is lifted for what was decided/);
+  const dismissed = filedPlanAnswer(review({ ...base, status: "dismissed", resolvedBy: "human" }), 30_000);
+  assert.match(dismissed, /filed 30 seconds ago/);
+  assert.match(dismissed, /Decision request dismissed without a response\./);
+  assert.match(dismissed, /nothing was selected and nothing was approved\. Do not proceed as if it were/);
+});
+
+test("a plan form never offers Remind me later or a meanwhile line", () => {
+  const ask = { env: {}, kind: "plan-decisions", title: "Plan", body: "Plan", decisions: [{ id: "q", question: "Q?", options: [{ id: "a", label: "A" }] }] };
+  assert.equal(CreateReviewSchema.safeParse({ ...ask, asyncCapable: true }).success, true);
+  assert.equal(CreateReviewSchema.safeParse({ ...ask, snoozable: true }).success, false);
+  assert.equal(CreateReviewSchema.safeParse({ ...ask, meanwhile: "carry on" }).success, false);
 });
 
 test("the receipt says filed not answered, keep working reversibly, do not re-ask, and end the turn when out of work", () => {

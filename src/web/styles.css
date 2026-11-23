@@ -81,6 +81,12 @@
      every hibernated surface prints the moon and the word. */
   --hibernated: #8f9be0;
 
+  /* A session idle on purpose while a background process it started finishes
+     (`Session.awaiting`). Deliberately NOT a hue of its own: the wait asks nobody for anything,
+     so it reads as quiet information in the neutral grey every skin already defines, and only an
+     overdue wait borrows `--attention`. Never `--danger`, which is the blocker's. */
+  --awaiting: var(--neutral);
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -7845,6 +7851,27 @@ a.btn {
   font-size: 14.5px;
   font-weight: 600;
 }
+/* Who asked, by the one naming rule (the inbox flag): a quiet label ahead of the title. */
+.review-agent {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* A resident's name, wherever an agent is named, is drawn in its board colour. */
+.agent-name-resident,
+.review-agent.agent-name-resident {
+  color: var(--resident);
+}
+/* A control's spoken form, beside it in lighter text. Drawn only once voice turns hints on. */
+.spoken-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
 .kind-tag {
   font-size: 10.5px;
   text-transform: uppercase;
@@ -8036,6 +8063,72 @@ a.btn {
 }
 .inbox-reviews .review-head h3 {
   font-size: 13px;
+}
+
+/* Agent reports (`inbox` flag). A neutral rule, like the rows answered elsewhere: a report is
+   something to read, never something owed, so it never borrows the "needs you" accent. */
+.inbox-reports {
+  border-left: 3px solid var(--border);
+}
+.agent-report-card {
+  padding: 8px 0 2px;
+}
+.agent-report-card + .agent-report-card {
+  border-top: 1px solid var(--border-soft);
+}
+.agent-report-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+/* The title IS the show-and-hide control, so a collapsed list reads as a list of headings. */
+.agent-report-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-report-toggle:hover {
+  text-decoration: underline;
+}
+.agent-report-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.agent-report-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-report-body {
+  margin-top: 6px;
+  font-size: 13px;
+}
+/* The body sits inside the row's own inset, so the plan reader's side padding would indent it
+   a second time past the title above it. */
+.agent-report-body .markdown {
+  padding: 0;
+  font-size: 13px;
+}
+.agent-report-body .markdown > :first-child {
+  margin-top: 0;
+}
+.agent-report-link {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-report-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 /* ---- plan decisions ---- */
@@ -8316,6 +8409,65 @@ a.btn {
 .kind-reminder {
   color: var(--working);
   background: color-mix(in oklab, var(--working) 15%, transparent);
+}
+/* A revised plan form (`ReviewItem.revision`): its "Revision N" tag and, beside it, the control
+   that opens the form it replaced. */
+.review-revision {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.kind-revision {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 15%, transparent);
+}
+.review-revision-earlier {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.review-earlier-modal {
+  width: min(760px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.review-earlier-modal .modal-head {
+  flex: 0 0 auto;
+}
+.review-earlier-modal .modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.review-earlier-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding-top: 16px;
+}
+.review-earlier-meta,
+.review-earlier-reason {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.review-earlier-reason {
+  color: var(--fg);
+}
+.review-earlier-decisions {
+  margin: 0;
+  padding-left: 20px;
+}
+.review-earlier-decisions > li + li {
+  margin-top: 10px;
+}
+.review-earlier-question {
+  font-weight: 600;
+}
+.review-earlier-decisions ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
 }
 .reminder-banner {
   display: flex;
@@ -11791,13 +11943,15 @@ span.task-outcome:hover {
   border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
-/* CI warning opens individual conclusions and job links. */
+/* CI warning opens individual conclusions and job links. Sized to the pill beside it: a 12px
+   triangle in a 2px inset is the 18px `.pr-chip`, and on the board a 10px triangle is the
+   16px `.tile-flag`. The inset keeps the triangle's corners clear of the round border. */
 .pr-checks-alert {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px;
+  padding: 2px;
   border-radius: 999px;
   color: color-mix(in oklab, var(--danger) 84%, var(--fg));
   background: color-mix(in oklab, var(--danger) 15%, var(--panel-2));
@@ -11805,6 +11959,10 @@ span.task-outcome:hover {
   transition:
     background-color 0.14s ease,
     border-color 0.14s ease;
+}
+.tile-marks .pr-checks-alert .pr-icon {
+  width: 10px;
+  height: 10px;
 }
 .pr-checks-alert:hover {
   background: color-mix(in oklab, var(--danger) 24%, var(--panel-2));
@@ -29693,6 +29851,9 @@ span.line-run-prov {
 .rail-group-split .n-held {
   color: var(--held);
 }
+.rail-group-split .n-awaiting {
+  color: var(--muted);
+}
 /* An ensemble's siblings, gathered under one header inside their tone section. The frame
    is a left hairline rather than a box: the rail is a dense vertical list and a bordered
    card per run would turn five rows into five cards. Shared by the console rail and the
@@ -30524,6 +30685,7 @@ span.line-run-prov {
    details can be four thousand characters and an uncapped band would push the transcript and
    the reply box out of `.detail-body`; past the cap it scrolls on its own, and its row is
    sticky so the controls never scroll away with the details. */
+.detail-conv > .awaiting-band,
 .detail-conv > .blocker-band {
   flex: none;
   max-height: 40%;
@@ -31715,6 +31877,15 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--held) 42%, var(--border));
   background: color-mix(in oklab, var(--held) 12%, var(--panel));
 }
+.board-col-n.n-awaiting {
+  margin-left: auto;
+  color: var(--muted);
+  border-color: color-mix(in oklab, var(--awaiting) 42%, var(--border));
+  background: color-mix(in oklab, var(--awaiting) 12%, var(--panel));
+}
+.board-col-n.n-awaiting + .board-col-n {
+  margin-left: 6px;
+}
 /* ---- free / held section rule ----
    Drawn by `FleetSectionHead` in a board column AND in the console rail, so it is styled
    once here rather than twice under each surface's prefix. It is a rule with a label, not a
@@ -31760,6 +31931,13 @@ span.line-run-prov {
 }
 .fleet-section-held .fleet-section-line::after {
   background: color-mix(in oklab, var(--held) 30%, var(--border-soft));
+}
+.fleet-section-awaiting .fleet-section-line b,
+.fleet-section-awaiting .fleet-section-n {
+  color: var(--muted);
+}
+.fleet-section-awaiting .fleet-section-line::after {
+  background: color-mix(in oklab, var(--awaiting) 35%, var(--border-soft));
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
@@ -42246,6 +42424,14 @@ body.foreman-sidecar-open .modal-backdrop {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.task-context-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.task-context-skill code {
+  font: 12px/1.5 var(--mono);
+}
 .task-context-delivered-text {
   margin: 0;
   max-height: 360px;
@@ -42362,6 +42548,221 @@ body.foreman-sidecar-open .modal-backdrop {
 .pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
 .pr-check-results li { margin-block: 8px; }
 
+/* ---- session awaiting a background process (SessionAwaiting.tsx) ----
+   A deadline track: the bar fills from when the session declared the wait to when it said the
+   process would be done. Grey while it waits; amber once overdue, with the time past the
+   deadline drawn as a hatched overrun after the tick. Never red: nobody is asked for anything. */
+.awaiting-glyph {
+  flex: none;
+  display: inline-block;
+  vertical-align: -1.5px;
+}
+.awaiting-track {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--awaiting) 18%, var(--bg-2));
+}
+.awaiting-track-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--awaiting);
+}
+.awaiting-track-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: color-mix(in oklab, var(--fg) 55%, transparent);
+}
+.awaiting-track.is-late .awaiting-track-fill {
+  border-radius: 999px 0 0 999px;
+  background: color-mix(in oklab, var(--attention) 70%, var(--awaiting));
+}
+.awaiting-track-over {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  border-radius: 0 999px 999px 0;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--attention) 0 3px,
+    color-mix(in oklab, var(--attention) 25%, transparent) 3px 6px
+  );
+}
+.awaiting-track-now {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--fg);
+}
+
+/* The card's wait: one line of what and when, the track, and its two ends labelled. */
+.tile-awaiting {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.tile-awaiting-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tile-awaiting-what {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-awaiting-what b {
+  font-weight: 600;
+  color: var(--fg);
+}
+.tile-awaiting-due {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.tile-awaiting-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.tile-awaiting.is-late,
+.tile-awaiting.is-late .tile-awaiting-what b {
+  color: var(--attention);
+}
+
+/* The rail row's wait: a short track beside the state word, and the minutes left. */
+.rail-awaiting {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  cursor: help;
+}
+.rail-awaiting .awaiting-track {
+  width: 30px;
+  height: 3px;
+}
+.rail-awaiting .awaiting-track-tick {
+  top: -2px;
+  bottom: -2px;
+}
+.rail-awaiting.is-late {
+  color: var(--attention);
+}
+
+/* The Conversation band: where the blocker band sits, in grey rather than red. */
+.awaiting-band {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px 8px;
+  border: 1px solid color-mix(in oklab, var(--awaiting) 38%, var(--border));
+  border-left: 3px solid var(--awaiting);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--awaiting) 6%, var(--panel));
+  font-size: 12.5px;
+}
+.awaiting-band-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  min-width: 0;
+  color: var(--muted);
+}
+.awaiting-band-flag {
+  flex: none;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.awaiting-band-what {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.awaiting-band-wake {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.awaiting-band-spacer {
+  flex: 1;
+}
+.awaiting-band-age {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.awaiting-band-link {
+  color: var(--muted);
+  text-decoration: none;
+}
+.awaiting-band-link:hover {
+  color: var(--fg);
+}
+.awaiting-band .awaiting-track {
+  height: 6px;
+  margin: 2px 0;
+}
+.awaiting-band-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.awaiting-band-note,
+.awaiting-band-error {
+  margin: 0;
+  font-size: 11.5px;
+}
+.awaiting-band-note {
+  color: var(--muted);
+}
+.awaiting-band-error {
+  color: var(--danger);
+}
+.awaiting-band-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.awaiting-band.is-late {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-left-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 7%, var(--panel));
+}
+.awaiting-band.is-late .awaiting-band-top,
+.awaiting-band.is-late .awaiting-band-scale span:last-child {
+  color: var(--attention);
+}
+
 /* Exact pin changes sit inside the backlog field, using the editor's existing controls. */
 .pinned-plan-change {
   min-inline-size: 0;
@@ -42375,3 +42776,35 @@ body.foreman-sidecar-open .modal-backdrop {
 .pinned-plan-change .field { margin: 10px 0; }
 .pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .pinned-plan-change p { margin: 10px 0; }
+
+/* A Stuck row (`inbox` flag): the stall rules fired, and the fix is on the row. The accent the
+   fleet uses for "needs you", because every control here settles it from this list. */
+.inbox-stuck {
+  border-left: 3px solid var(--attention);
+}
+.inbox-stuck-reason {
+  color: var(--fg);
+}
+.inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.inbox-actions:empty {
+  display: none;
+}
+.inbox-message {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.inbox-message-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+}

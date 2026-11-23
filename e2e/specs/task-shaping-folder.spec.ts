@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Request } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -243,6 +243,16 @@ test("switching a folder shaper on sends the manifest Settings showed, and a cli
   const overrides = async () => (await api<{ config: { overrides: Record<string, boolean> } }>(daemon, "/api/shaping")).config.overrides;
   const isShaping = (url: string) => new URL(url).pathname === "/api/shaping";
   const shown = await hashOf();
+  // Every folder read the page has started and not yet finished. The panel reads the folder
+  // once when a write's answer settles and once when the stream confirms the config, so one
+  // click can start two reads, and either may still be in flight after the other answers.
+  const readsInFlight = new Set<Request>();
+  dashboard.on("request", (request) => {
+    if (request.method() === "GET" && isShaping(request.url())) readsInFlight.add(request);
+  });
+  const readDone = (request: Request): void => { readsInFlight.delete(request); };
+  dashboard.on("requestfinished", readDone);
+  dashboard.on("requestfailed", readDone);
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   const panel = dashboard.getByRole("region", { name: "Task shaping" });
@@ -257,12 +267,20 @@ test("switching a folder shaper on sends the manifest Settings showed, and a cli
   await expect(row.getByRole("button", { name: "Quiet notes: on" })).toBeVisible();
   await expect.poll(async () => (await overrides())["quiet-notes"]).toBe(true);
 
-  // Switched off, and the folder read again once that choice is stored.
-  const reread = dashboard.waitForResponse((response) => response.request().method() === "GET" && isShaping(response.url()));
+  // Switched off, and the folder read again once that choice is stored. Matched on the stored
+  // choice, not on being the next read: the switch-on above can still have a read in flight.
+  const reread = dashboard.waitForResponse(async (response) => response.request().method() === "GET"
+    && isShaping(response.url())
+    && (await response.json() as { config?: { overrides?: Record<string, boolean> } }).config?.overrides?.["quiet-notes"] === false);
   await row.getByRole("button", { name: "Quiet notes: on" }).click();
   await reread;
-  await expect(row.getByRole("button", { name: "Quiet notes: off" })).toBeVisible();
   await expect.poll(async () => (await overrides())["quiet-notes"]).toBe(false);
+  // Settled, before the manifest is replaced: the switch is offered again only once the write
+  // is answered and the stream has confirmed it, which are the two things that start a folder
+  // read, and every read started is finished. A read still in flight here would be answered
+  // from the replaced manifest, and the row would then honestly show the new one.
+  await expect(row.getByRole("button", { name: "Quiet notes: off" })).toBeEnabled();
+  await expect.poll(() => readsInFlight.size, { message: "the page's folder reads have finished" }).toBe(0);
 
   // The manifest is replaced on disk while this window still shows the one it read.
   dropShaperFolder(daemon, "quiet-notes", "Quiet notes", { enabled: false, timeoutMs: 20_000 });

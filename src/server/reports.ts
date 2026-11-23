@@ -504,7 +504,14 @@ export class ReportManager {
    */
   followUp(id: string, words: string, port: FollowUpTaskPort): Promise<FollowUpOutcome> {
     const previous = this.followUps.get(id) ?? Promise.resolve(null);
-    const run = previous.catch(() => null).then(() => this.runFollowUp(id, words, port));
+    const run = previous.catch(() => null).then(() => this.runFollowUp(id, words, port)).finally(() => {
+      // Every window learns the outcome once, when the run settles: read on a dispatched
+      // follow-up, or naming its task (the card's Retry) after a refused or failed dispatch. Not
+      // before: a report naming a task and still unread reads as "created but not started", so
+      // publishing it while the dispatch is still in flight would flash that on success.
+      const settled = getRow(id);
+      if (settled) this.registry.upsertReport(settled);
+    });
     this.followUps.set(id, run);
     void run.finally(() => {
       if (this.followUps.get(id) === run) this.followUps.delete(id);
@@ -565,8 +572,8 @@ export class ReportManager {
       }
       if (!created.ok) return { ok: false, status: created.status, error: created.error, report: getRow(id), taskId: null };
       taskId = created.taskId;
+      // Not published yet: `followUp` publishes the report once the dispatch has an outcome.
       report = getRow(id)!;
-      this.registry.upsertReport(report);
     }
     // A follow-up whose dispatch succeeded marked the report read with "follow-up" in the same
     // step, so that stamp, not the task row (which the launch updates later), says it was sent.

@@ -3223,3 +3223,38 @@ test("a queued after-work prompt is dropped, never sent, when task shaping is of
   assert.equal(on.sent[0]!.split("\n")[0], "/wrap-notes");
   on.manager.stop();
 });
+
+test("an after-work turn a later launch supersedes while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, upsertTask, commitTaskShaping } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-superseded";
+  registry.registerSdkSession({ id, agent: "claude", name: "superseded", cwd: "/repo/superseded", agentSessionId: "conversation:superseded" });
+  const taskId = "task-superseded";
+  upsertTask(mkTask({ id: taskId, status: "running", sessionId: id }));
+  const sent: string[] = [];
+  let handoffs = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The task is handed back to this session while the delivery holds the turn: the new
+      // launch's shaping commit removes the earlier launch's prompt row, but not the claimed turn.
+      commitTaskShaping(taskId, null, "", Date.now(), id);
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(sent, [], "the superseded launch's prompt is refused at the acceptance guard");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+  manager.stop();
+});

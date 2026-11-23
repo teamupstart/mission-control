@@ -8747,7 +8747,9 @@ export function getTaskSkillPrompt(taskId: string, sessionId: string): (TaskSkil
 /**
  * Inside the shaping commit: drop the prompt row an earlier launch of `taskId` into `sessionId`
  * left, and its outbox turn while it is still queued and unclaimed. A turn a delivery already
- * claimed is left to finish; with its row gone it settles nothing. Returns the rows changed.
+ * claimed cannot be deleted under it; with its row gone it is no longer owed, and the outbox's
+ * delivery guard refuses it before the agent takes it (`afterWorkTurnOwed`). Returns the rows
+ * changed.
  */
 function clearSupersededSkillPrompt(d: DatabaseSync, taskId: string, sessionId: string): number {
   const row = d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ? AND session_id = ? RETURNING turn_id`)
@@ -8757,6 +8759,15 @@ function clearSupersededSkillPrompt(d: DatabaseSync, taskId: string, sessionId: 
     ? Number(d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND claimed_at IS NULL`).run(row.turn_id).changes)
     : 0;
   return 1 + turn;
+}
+
+/**
+ * Whether an after-work outbox turn is still owed: its prompt row exists and is `queued` under
+ * this turn id. A later launch's shaping commit removes the row, so a turn it left in flight
+ * answers false, and the outbox refuses to deliver it.
+ */
+export function afterWorkTurnOwed(turnId: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM task_skill_prompts WHERE turn_id = ? AND state = 'queued'`).get(turnId));
 }
 
 /**
@@ -8940,15 +8951,15 @@ export function settleTaskSkillPrompt(input: {
 /**
  * Carry a launch's prompt row to its successor session, where the shaping record is re-keyed
  * (`rekeyTaskShaping`): the same conversation continuing is the same launch, so it is not
- * prompted again. A successor that already has a row of its own keeps it.
+ * prompted again. A row the successor already holds is from an earlier launch into it, which
+ * the record now replaces, so it goes first, with its unclaimed outbox turn.
  */
 export function rekeyTaskSkillPrompt(taskId: string, fromSessionId: string, toSessionId: string): boolean {
   if (fromSessionId === toSessionId) return false;
-  const r = openDb().prepare(
-    `UPDATE task_skill_prompts SET session_id = ?
-       WHERE task_id = ? AND session_id = ?
-         AND NOT EXISTS (SELECT 1 FROM task_skill_prompts WHERE task_id = ? AND session_id = ?)`,
-  ).run(toSessionId, taskId, fromSessionId, taskId, toSessionId);
+  const d = openDb();
+  clearSupersededSkillPrompt(d, taskId, toSessionId);
+  const r = d.prepare(`UPDATE task_skill_prompts SET session_id = ? WHERE task_id = ? AND session_id = ?`)
+    .run(toSessionId, taskId, fromSessionId);
   return Number(r.changes) > 0;
 }
 

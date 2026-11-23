@@ -18,6 +18,7 @@ import {
   createSnoozeInstructionPendingTurn,
   SNOOZE_INSTRUCTION_TURN_PREFIX,
   MESSAGE_ANSWER_TURN_PREFIX,
+  afterWorkTurnOwed,
   deleteClaimedPendingTurn,
   dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
@@ -59,6 +60,8 @@ import { unref } from "./util/timers.ts";
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
 /** Why a queued after-work prompt was not delivered: task shaping was off when its turn came. */
 export const AFTER_WORK_FLAG_OFF = "Task shaping was turned off before the prompt was delivered.";
+/** Why an after-work turn was refused: a later launch of its task replaced the launch it was for. */
+export const AFTER_WORK_SUPERSEDED = "A later launch of the task replaced the launch this after-work prompt was for.";
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -109,6 +112,8 @@ interface PendingTurnDeps {
    * queued while it was on is dropped rather than sent once it is off, including after a restart.
    */
   afterWorkEnabled: () => boolean;
+  /** Whether an after-work turn's launch still owns it (`afterWorkTurnOwed`). */
+  afterWorkTurnOwed: (turnId: string) => boolean;
 }
 
 /**
@@ -261,6 +266,7 @@ export class PendingTurnManager {
       messagesFor: deps.messagesFor ?? sessionMessages,
       steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
       afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
+      afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
     };
   }
 
@@ -933,6 +939,15 @@ export class PendingTurnManager {
       }
       return;
     }
+    // One a later launch's shaping commit superseded - possibly while a delivery held it, which
+    // the guard below refused and released - is dropped, never claimed again.
+    if (idleOnlyTurn(next.turn) && !this.afterWorkTurnOwed(next.turn)) {
+      if (dropQueuedAfterWorkTurn(next.turn.id, AFTER_WORK_SUPERSEDED)) {
+        this.registry.refreshPendingTurns(key);
+        this.scheduleDrain(key);
+      }
+      return;
+    }
     this.draining.add(key);
     let turn: PendingTurn | null = null;
     try {
@@ -1117,6 +1132,7 @@ export class PendingTurnManager {
           "The agent became busy before delivery.",
           this.deps.now(),
         );
+        this.dropIfSuperseded(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
           session.id,
@@ -1227,6 +1243,9 @@ export class PendingTurnManager {
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
+      // Immediately before the paste: an after-work turn a later launch superseded while this
+      // delivery held it never reaches the new launch.
+      if (idleOnlyTurn(turn) && !this.afterWorkTurnOwed(turn)) return AFTER_WORK_SUPERSEDED;
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
@@ -1281,6 +1300,7 @@ export class PendingTurnManager {
           result.error ?? "The terminal refused the message.",
           this.deps.now(),
         );
+        this.dropIfSuperseded(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
       return;
@@ -1371,7 +1391,25 @@ export class PendingTurnManager {
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
+    // At the instant the driver would take it: an after-work turn a later launch superseded
+    // while this delivery held it never reaches the new launch.
+    if (idleOnlyTurn(handoff.turn) && !this.afterWorkTurnOwed(handoff.turn)) return AFTER_WORK_SUPERSEDED;
     return this.registry.promptResourceBlockerForSession(current.id);
+  }
+
+  /** A released after-work turn whose launch was superseded leaves the outbox at once. */
+  private dropIfSuperseded(turn: PendingTurn): void {
+    if (idleOnlyTurn(turn) && !this.afterWorkTurnOwed(turn)) dropQueuedAfterWorkTurn(turn.id, AFTER_WORK_SUPERSEDED);
+  }
+
+  /** Whether an after-work turn's launch still owns it. A read that fails counts as owed. */
+  private afterWorkTurnOwed(turn: PendingTurn): boolean {
+    try {
+      return this.deps.afterWorkTurnOwed(turn.id);
+    } catch (error) {
+      console.warn("[pending-turns] could not check an after-work turn's launch:", error);
+      return true;
+    }
   }
 
   private async interruptAndWait(session: Session, turn: PendingTurn): Promise<void> {

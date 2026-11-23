@@ -498,7 +498,10 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
   // A route reply is checked against its own schema as well: `skills` is not a key of the result
   // schema, which would let an invalid list through as unknown and then rewrite it.
   if (!ShapingResultSchema.safeParse(data).success) return { data, redacted: false, notes: [] };
-  if ("skills" in data && !ShapingRouteResultSchema.safeParse(data).success) return { data, redacted: false, notes: [] };
+  // Skills are rewritten only when they are a valid route reply. An invalid list is left as sent,
+  // so a router's invalid reply is refused as sent, and everything else in the reply - a
+  // selector's guidance beside a stray `skills` key included - is still scrubbed below.
+  const skillsValid = "skills" in data && ShapingRouteResultSchema.safeParse(data).success;
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;
@@ -555,13 +558,15 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
   }
   // A routed skill's name and reason id are identities, like an entry id: one that holds a value
   // is dropped, never renamed, so redaction can never turn it into another skill's name.
-  if (Array.isArray(root.skills)) {
+  if (skillsValid && Array.isArray(root.skills)) {
     root.skills = root.skills.filter((skill) => {
       if (!isRecord(skill)) return true;
-      const hit = [skill.name, skill.reason_id].map((value) => (typeof value === "string" ? holdsResolved(value, values) : undefined))
+      // Every string a routed skill carries is recorded: its name, reason id and lifecycle point.
+      const hit = [skill.name, skill.reason_id, skill.lifecycle_point]
+        .map((value) => (typeof value === "string" ? holdsResolved(value, values) : undefined))
         .find((found) => found !== undefined);
       if (!hit) return true;
-      notes.push(`A skill was dropped because its name or reason id contained the value of ${marker.name(hit)}.`);
+      notes.push(`A skill was dropped because its name, reason id or lifecycle point contained the value of ${marker.name(hit)}.`);
       redacted = true;
       return false;
     });

@@ -171,3 +171,12 @@ test("an announced after-work skill says whether, and when, it was prompted", ()
   const dryRun = renderToStaticMarkup(createElement(RoutedSkills, { skills: [skill("retro", "announced", "after-work")], shapers: [], afterWork: undefined }));
   assert.equal(dryRun.includes("role=\"note\""), false, "a dry run prompts nothing, so it says nothing about prompting");
 });
+
+test("a lifecycle point named after an object property renders as text", () => {
+  const html = renderToStaticMarkup(createElement(RoutedSkills, {
+    skills: [skill("odd", "unsupported", "__proto__"), skill("odd2", "unsupported", "toString")],
+    shapers: [], afterWork: null,
+  }));
+  assert.match(html, /__proto__ · routed by router/);
+  assert.match(html, /toString · routed by router/);
+});

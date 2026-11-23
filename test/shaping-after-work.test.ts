@@ -121,11 +121,14 @@ test("schema 43 adds the prompt table to an upgraded database, keyed by task and
   assert.equal(write("s1"), true);
   assert.equal(write("s1"), false, "one row per task and session");
   assert.equal(write("s2"), true, "a second launch into another session has its own row");
-  // A resume carries the row to its successor, and never over a row the successor already has.
+  // A resume carries the row to its successor, replacing a row the successor held from an earlier launch.
   assert.equal(db.rekeyTaskSkillPrompt("keyed", "s1", "s3"), true);
   assert.equal(db.getTaskSkillPrompt("keyed", "s1"), null);
   assert.equal(db.getTaskSkillPrompt("keyed", "s3")?.state, "held");
-  assert.equal(db.rekeyTaskSkillPrompt("keyed", "s3", "s2"), false);
+  db.settleTaskSkillPrompt({ taskId: "keyed", sessionId: "s2", from: ["held"], state: "skipped", reason: "earlier launch", at: 2 });
+  assert.equal(db.rekeyTaskSkillPrompt("keyed", "s3", "s2"), true);
+  assert.equal(db.getTaskSkillPrompt("keyed", "s2")?.state, "held", "the carried launch's row, not the obsolete one");
+  assert.equal(db.getTaskSkillPrompt("keyed", "s3"), null);
 });
 
 test("an after-work row is idle-only on the outbox: it never steers or interrupts, unless expedited", () => {
@@ -685,4 +688,24 @@ test("an answered held prompt found while task shaping is off is released when t
   toggle(true);
   assert.equal(db.getTaskSkillPrompt(live, "s-live")?.state, "queued");
   after.prompts.stop();
+});
+
+test("a waiting prompt follows an ordinary resume to its successor session and is sent there", () => {
+  let refusal: { error: string; retryable: boolean } | null = { error: "this session cannot receive messages", retryable: true };
+  const { registry, queued, prompts } = setup({ outboxRefusal: () => refusal });
+  const taskId = nextTask();
+  registry.launch(taskId, "s-old");
+  db.commitTaskShaping(taskId, record("s-old"), "", 1);
+  assert.equal(prompts.prompt("s-old").kind, "waiting");
+  // The conversation resumes in a successor session: the durable row moves with the record.
+  assert.equal(db.rekeyTaskLaunch(taskId, "s-old", "s-new"), true);
+  registry.launch(taskId, "s-new");
+  registry.sessions.delete("s-old");
+  // No restart and no flag change: the successor's own update retries it once it can take it.
+  refusal = null;
+  registry.emit("event", { type: "session_upsert", session: registry.getSession("s-new") });
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.sessionId, "s-new");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-new")?.state, "queued");
+  prompts.stop();
 });

@@ -340,10 +340,23 @@ test("a routed skill whose name or reason id holds a value is dropped with a not
     notes: ["routed for [ROUTER_TOKEN redacted]"],
   });
   assert.deepEqual(scrubbed.notes, [
-    "A skill was dropped because its name or reason id contained the value of ROUTER_TOKEN.",
-    "A skill was dropped because its name or reason id contained the value of ROUTER_TOKEN.",
+    "A skill was dropped because its name, reason id or lifecycle point contained the value of ROUTER_TOKEN.",
+    "A skill was dropped because its name, reason id or lifecycle point contained the value of ROUTER_TOKEN.",
   ]);
   // An invalid route reply is left exactly as sent, for the engine to refuse.
   const invalid = { skills: [{ name: "Not Valid tok-9f8e7d", lifecycle_point: "during", reason_id: "r" }] };
   assert.deepEqual(scrubResolved(structuredClone(invalid), routerValues), { data: invalid, redacted: false, notes: [] });
+});
+
+test("a selector reply with a stray skills key still has its guidance scrubbed, and a credential in a lifecycle point drops the skill", () => {
+  const routerValues = [{ name: "ROUTER_TOKEN", value: "tok-9f8e7d" }];
+  const selector = scrubResolved({ guidance: [{ id: "one", body: "use tok-9f8e7d here" }], skills: null }, routerValues);
+  assert.equal(selector.redacted, true);
+  assert.deepEqual((selector.data as { guidance: unknown }).guidance, [{ id: "one", body: "use [ROUTER_TOKEN redacted] here" }]);
+  const router = scrubResolved({ skills: [
+    { name: "lint-fix", lifecycle_point: "tok-9f8e7d", reason_id: "r/1" },
+    { name: "ship", lifecycle_point: "task-start", reason_id: "r/2" },
+  ] }, routerValues);
+  assert.deepEqual(router.data, { skills: [{ name: "ship", lifecycle_point: "task-start", reason_id: "r/2" }] });
+  assert.deepEqual(router.notes, ["A skill was dropped because its name, reason id or lifecycle point contained the value of ROUTER_TOKEN."]);
 });

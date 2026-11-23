@@ -207,7 +207,10 @@ function startPaneAgent(daemon: DaemonHandle): { id: string; turns: () => string
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const log = join(dir, "turns.jsonl");
   const name = `mc-e2e-route-${process.pid}-${Date.now()}`;
-  const run = (paneId: string) => `env PANE_AGENT_TURNS=${log} ${join(bin, "claude")} ${agent} ${daemon.baseURL} ${token} ${paneId} ${daemon.repo} ${dir}`;
+  // tmux runs this through a shell: every argument is quoted, so a path with spaces stays one.
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const run = (paneId: string) => ["env", `PANE_AGENT_TURNS=${log}`, join(bin, "claude"), agent, daemon.baseURL, token, paneId, daemon.repo, dir]
+    .map(quote).join(" ");
   const tmux = (args: string[]) => execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
   tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
   const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();

@@ -316,7 +316,7 @@ export function RoutedSkills({
               <span className="task-context-outcome">{SKILL_STATE_WORDS[skill.state]}</span>
             </span>
             <span className="task-context-shaper-facts">
-              {SKILL_WHEN_WORDS[skill.lifecyclePoint] ?? skill.lifecyclePoint} · routed by {routerLabel(skill.shaper)} ·{" "}
+              {Object.hasOwn(SKILL_WHEN_WORDS, skill.lifecyclePoint) ? SKILL_WHEN_WORDS[skill.lifecyclePoint] : skill.lifecyclePoint} · routed by {routerLabel(skill.shaper)} ·{" "}
               {skill.verified ? "verified in the skill catalog" : "not verified"}
               {skill.repositories.length > 0 ? ` · ${skill.repositories.join(", ")}` : ""}
             </span>

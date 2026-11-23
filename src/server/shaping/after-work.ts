@@ -169,6 +169,9 @@ export class AfterWorkSkills {
         // A session that changes may be able to take its waiting prompt now: the outbox has
         // started, or it can receive messages again.
         else if (event.type === "session_upsert") {
+          // A resume moves a durable row to its successor session, which these sets have never
+          // seen: while any row is pending, an unknown session re-reads them from the database.
+          this.follow(event.session.id);
           if (this.heldCheck.has(event.session.id)) this.checkHeld(event.session.id);
           if (this.waiting.has(event.session.id)) this.retry(event.session.id);
         }
@@ -178,6 +181,22 @@ export class AfterWorkSkills {
       this.deps.onFlagsChanged(() => { if (this.deps.enabled()) this.recover(); }),
     ];
     this.recover();
+  }
+
+  /** Re-read the pending sets when a session they do not name updates while either is non-empty. */
+  private follow(sessionId: string): void {
+    try {
+      if (this.waiting.size > 0 && !this.waiting.has(sessionId)) {
+        this.waiting.clear();
+        for (const id of listWaitingTaskSkillPromptSessions()) this.waiting.add(id);
+      }
+      if (this.heldCheck.size > 0 && !this.heldCheck.has(sessionId)) {
+        this.heldCheck.clear();
+        for (const id of listAnsweredHeldTaskSkillPromptSessions()) this.heldCheck.add(id);
+      }
+    } catch (error) {
+      console.warn("[shaping] could not re-read the after-work prompts still owed:", error);
+    }
   }
 
   /**

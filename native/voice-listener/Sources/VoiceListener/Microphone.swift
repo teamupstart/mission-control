@@ -120,16 +120,25 @@ final class Microphone {
     private let continuation: AsyncStream<Segment>.Continuation
     let segments: AsyncStream<Segment>
 
-    init(selection: String) throws {
-        (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(2))
-        let input = engine.inputNode
-        let devices = Device.inputs()
+    // The system default is selected by leaving the audio unit's current device alone.
+    static func selectInput(_ selection: String, from devices: [Device], setCurrentDevice: (AudioDeviceID) throws -> Void) throws {
         let device = selection == "built-in" ? devices.first(where: { $0.builtIn }) : devices.first(where: { $0.id == selection })
-        if var object = device?.object {
-            guard let unit = input.audioUnit,
+        if let device {
+            try setCurrentDevice(device.object)
+        } else if selection != "built-in" && selection != "system-default" {
+            throw CaptureError.device
+        }
+    }
+
+    init(selection: String, devices: [Device] = Device.inputs()) throws {
+        (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(2))
+        try Self.selectInput(selection, from: devices) { device in
+            var object = device
+            guard let unit = engine.inputNode.audioUnit,
                   AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
                                        0, &object, UInt32(MemoryLayout.size(ofValue: object))) == noErr else { throw CaptureError.device }
-        } else if selection != "built-in" && selection != "system-default" { throw CaptureError.device }
+        }
+        let input = engine.inputNode
         let source = input.outputFormat(forBus: 0)
         guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
         let segmenter = try InputSegmenter(source: source)

@@ -10,6 +10,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <uv.h>
 
 #if defined(__APPLE__)
 #include <signal.h>
@@ -309,7 +310,10 @@ napi_value ReadRepositoryLink(napi_env env, napi_callback_info info) {
   for (;;) {
     ssize_t n = readlinkat(parent, name.c_str(), target.data(), target.size());
     if (n < 0 && errno == EINTR) continue;
-    if (n < 0) return ThrowSystemError(env, "EREADLINK", "could not read repository symlink");
+    if (n < 0) {
+      const int error = errno;
+      return ThrowSystemError(env, uv_err_name(uv_translate_sys_error(error)), "could not read repository symlink");
+    }
     if (static_cast<size_t>(n) < target.size()) {
       if (napi_create_buffer_copy(env, n, target.data(), nullptr, &result) != napi_ok) return nullptr;
       return result;

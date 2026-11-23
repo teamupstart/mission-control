@@ -218,3 +218,24 @@ test("artifact reconciliation leaves unused storage absent and reports failures 
     rmSync(root);
   }
 });
+
+test("artifact reconciliation logs the SQLite error code without its message or retention failure", async (t) => {
+  clearWorkflowTables(db);
+  const registry = new Registry();
+  const manager = new WorkflowManager(registry, new WorkflowStore(db));
+  t.mock.method(manager.repositoryArtifacts, "reconcile", async () => {
+    db.prepare("SELECT * FROM private_missing_table").get();
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  registry.applyDiscovery([]);
+  try {
+    manager.start();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const messages = errors.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(messages.includes("[workflow] event=repository_reconcile_failed error=ERR_SQLITE_ERROR"));
+    assert.doesNotMatch(messages.join("\n"), /private_missing_table/);
+    assert.equal(manager.status().lastRetentionError, null);
+  } finally {
+    await manager.stop();
+  }
+});

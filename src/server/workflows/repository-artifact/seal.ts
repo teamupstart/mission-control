@@ -37,7 +37,7 @@ export interface RepositoryCaptureInput {
 
 type CheckoutState = Awaited<ReturnType<typeof sample>>;
 function metadataBoundary(state: CheckoutState) {
-  return JSON.stringify({ ...state, index: [...state.index] });
+  return JSON.stringify({ ...state, index: [...state.index], skipWorktree: [...state.skipWorktree] });
 }
 function checkoutBoundary(state: CheckoutState, working: Layer) {
   return sha256(JSON.stringify([metadataBoundary(state), [...working]]));

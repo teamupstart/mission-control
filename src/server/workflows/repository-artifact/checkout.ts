@@ -5,7 +5,7 @@ import { constants } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit } from "./git.ts";
-import { oid, ordinaryFile, unavailable } from "./format.ts";
+import { oid, ordinaryFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
 export type Entry = { mode: string; id: string };
@@ -61,6 +61,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     if ((await git(["rev-parse", "--verify", "-q", ref], true)).length) unavailable();
   }
   const index: Layer = new Map();
+  const skipWorktree = new Set<string>();
   const excludes = await git(["config", "--includes", "--path", "-z", "--get", "core.excludesFile"], true);
   if (!Buffer.from(excludes.toString()).equals(excludes)) unavailable();
   const override = excludes.length ? ["-c", "core.excludesFile=" + excludes.subarray(0, -1).toString()] : [];
@@ -68,11 +69,13 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     checkoutGit(executable, root, [...override, "ls-files", "-z", ...args], signal);
   // Neither command inspects file content. In particular no status/diff command
   // gets a chance to run an attribute-selected clean or textconv driver.
-  for (const row of (await list(["--stage"])).toString("latin1").split("\0").filter(Boolean)) {
+  for (const row of (await list(["-t", "--stage"])).toString("latin1").split("\0").filter(Boolean)) {
     const tab = row.indexOf("\t");
-    const [mode, id, stage] = row.slice(0, tab).split(" ");
+    const [tag, mode, id, stage] = row.slice(0, tab).split(" ");
     if (tab < 0 || stage !== "0" || !/^(100644|100755|120000|160000)$/.test(mode!)) unavailable();
-    index.set(validPath(Buffer.from(row.slice(tab + 1), "latin1")), { mode: mode!, id: oid.parse(id) });
+    const key = validPath(Buffer.from(row.slice(tab + 1), "latin1"));
+    index.set(key, { mode: mode!, id: oid.parse(id) });
+    if (tag === "S") skipWorktree.add(key);
   }
   const paths = new Set(index.keys());
   // Intent-to-add has the id of the empty blob in ls-files, but no entry in the
@@ -122,7 +125,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     if (directory) embedded.push(key);
     paths.add(key);
   }
-  return { root, common, format, emptyBlob, head, index, intent, embedded, paths: [...paths].sort() };
+  return { root, common, format, emptyBlob, head, index, skipWorktree, intent, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);
@@ -202,6 +205,13 @@ export async function workingFile(
         };
         const data = binding.readRepositoryLink(parentFd.fd, path.subarray(parent.length + 1));
         return { data, mode: "120000" };
+      } catch (error) {
+        // lstat saw a link. If it vanished or became a different kind of entry,
+        // repeat the entire submission read on the new checkout boundary.
+        if (["ENOENT", "ENOTDIR", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          throw new RepositoryCaptureChanged();
+        }
+        throw error;
       } finally {
         await parentFd.close();
       }
@@ -216,7 +226,11 @@ export async function workingFile(
       await fd.close();
     }
   } catch (error) {
-    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    const code = (error as NodeJS.ErrnoException).code;
+    // Git projects an absent skip-worktree path from the index. Present files
+    // were read above; an ordinary missing tracked path is still a deletion.
+    if (code === "ENOENT" && indexed && state.skipWorktree.has(key)) return { entry: indexed };
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
     throw error;
   }
 }

@@ -8339,8 +8339,12 @@ export class WorkflowManager {
     }
     try {
       await this.repositoryArtifacts.reconcile();
-    } catch {
-      workflowLog("error", { event: "repository_reconcile_failed", error: "artifact_unavailable" });
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      workflowLog("error", {
+        event: "repository_reconcile_failed",
+        error: typeof code === "string" ? code : error instanceof Error ? error.name : "unknown",
+      });
     } finally {
       this.retentionRunning = false;
     }

@@ -53,6 +53,9 @@ blob, which has zero payload bytes. The sensitive path still denies reads.
 
 Capture reads index entries and Git's nonignored untracked enumeration with optional locks
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
+An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
+Files present on disk supply their actual contents, including edits outside a sparse cone.
+If a symlink disappears or changes type while its target is being read, stable capture retries.
 Status classifications come from comparing the layers. This avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.
 

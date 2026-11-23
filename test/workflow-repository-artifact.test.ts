@@ -691,6 +691,107 @@ test("stable submission retries an index-only edit across the outer evidence bou
   await f.service.reconcile();
 });
 
+for (const replace of [false, true]) {
+  test(`stable capture retries a symlink ${replace ? "replaced" : "removed"} between lstat and readlinkat`, async (t) => {
+    const f = fixture(t);
+    const link = join(f.checkout, "racing-link");
+    symlinkSync("old-target", link);
+    f.git("add", "racing-link");
+    f.git("commit", "-qm", "link");
+    let reads = 0;
+    let changed = false;
+    const fs = (await import("node:fs/promises")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const original = fs.lstat;
+    const inspect = t.mock.method(fs, "lstat", async (...args: Parameters<typeof original>) => {
+      const stat = await original(...args);
+      if (reads === 1 && !changed && String(args[0]).endsWith("/racing-link") && stat.isSymbolicLink()) {
+        rmSync(link);
+        if (replace) f.write("racing-link", "new regular file");
+        changed = true;
+      }
+      return stat;
+    });
+    syncBuiltinESMExports();
+    try {
+      const stable = await captureStableWorkflowContext(async () => ++reads, async () => false, {
+        sampleBoundary: () => f.service.sampleBoundary(f.checkout, signal),
+        prepare: () => f.prepare(),
+        stillCurrent: candidate => f.service.stillCurrent(candidate, signal),
+        discard: candidate => f.service.discard(candidate),
+      });
+      assert.ok(changed && stable);
+      assert.equal(stable.captured, 2);
+      assert.deepEqual(readdirSync(join(f.root, "pending")), [stable.candidate.id]);
+      const snapshot = await f.service.promote(stable.candidate, f.submission());
+      f.store.commitRepositoryCaptureActivation(snapshot);
+      const lease = await f.service.materialize(f.request(snapshot), signal);
+      const entry = lease.descriptor.worktree.find(e => e.path === "racing-link");
+      assert.ok(entry);
+      assert.equal(entry.blob, replace ? f.git("hash-object", "racing-link") : null);
+      assert.ok(entry.classifications.includes(replace ? "unstaged" : "deleted"));
+      await lease.release();
+      await f.service.release(snapshot.submissionId);
+      await f.service.reconcile();
+    } finally {
+      inspect.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
+
+for (const indexFlag of ["--sparse-index", "--no-sparse-index"]) {
+  test(`sparse checkout ${indexFlag} preserves skipped index entries and reports real edits`, async (t) => {
+    const f = fixture(t);
+    mkdirSync(join(f.checkout, "outside"));
+    mkdirSync(join(f.checkout, "inside"));
+    mkdirSync(join(f.checkout, "edited"));
+    f.write("outside/file", "out-of-cone bytes");
+    f.write("outside/.env", "private value");
+    f.write("edited/file", "indexed bytes");
+    f.write("inside/removed", "deleted by the author");
+    f.git("add", ".");
+    f.git("commit", "-qm", "base");
+    f.git("sparse-checkout", "set", "--cone", indexFlag, "inside");
+    assert.equal(existsSync(join(f.checkout, "outside/file")), false);
+    assert.equal(f.git("ls-files", "-t", "outside/file"), "S outside/file");
+    mkdirSync(join(f.checkout, "edited"));
+    f.write("edited/file", "local out-of-cone edit");
+    rmSync(join(f.checkout, "inside/removed"));
+    const secret = f.git("rev-parse", ":outside/.env");
+    const index = readFileSync(join(f.checkout, ".git/index"));
+    const snapshot = await f.service.promote(await f.prepare(), f.submission());
+    assert.deepEqual(readFileSync(join(f.checkout, ".git/index")), index);
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    rmSync(f.checkout, { recursive: true });
+    assert.equal(existsSync(join(f.root, "digests", snapshot.digest, secret)), false);
+    const request = f.request(snapshot);
+    const lease = await f.service.materialize(request, signal);
+    const reader = createRepositoryReader({
+      view: lease.descriptor,
+      objectDirectory: lease.objectDirectory,
+      workloadId: request.workloadId,
+      attemptId: request.attemptId,
+      gitBinary: "git",
+      budgets: {},
+      signal,
+      audit: async () => {},
+    });
+    assert.equal((await reader.query("read", { path: "outside/file" })).items[0]?.text, "out-of-cone bytes");
+    assert.equal((await reader.query("read", { path: "edited/file" })).items[0]?.text, "local out-of-cone edit");
+    assert.equal((await reader.query("read", { path: "edited/file", layer: "index" })).items[0]?.text, "indexed bytes");
+    assert.equal((await reader.query("read", { path: "outside/.env" })).code, "denied_path");
+    const status = await reader.query("git_status", {});
+    assert.deepEqual(status.items.find(e => e.path === "outside/file")?.metadata?.classifications, ["committed"]);
+    const diff = await reader.query("git_diff", { pair: "index_worktree" });
+    assert.equal(diff.status, "ok");
+    assert.deepEqual(diff.items.map(e => e.path), ["edited/file", "inside/removed"]);
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
+
 test("an index-only change between the context read and artifact preparation retries both captures", async (t) => {
   const f = fixture(t);
   f.write("a", "committed");

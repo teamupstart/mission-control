@@ -105,6 +105,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
   const probe = join(dir, "probe.cjs");
   const digest = createHash("sha256").update(secret).digest("hex");
   writeFileSync(probe, `
+    if (process.argv[2]) require("node:fs").appendFileSync(process.argv[2], "started\\n");
     const env = process.env;
     const matches = require("node:crypto").createHash("sha256").update(env.FIXTURE_TOKEN ?? "").digest("hex") === ${JSON.stringify(digest)};
     process.exitCode = matches && !env.MISSION_API_TOKEN && !env.MISSION_SCOUT_SESSION_LOCATOR
@@ -142,6 +143,18 @@ test("terminal handoff enforces SDK isolation before either launch command execu
       await promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: pane });
     });
   }
+
+  await t.test("a terminal handoff delivers the credential once and rejects the same argv before a second agent starts", async (t) => {
+    const starts = join(dir, "agent-starts");
+    const handoff = await terminalEnvironmentArgv([...agent, starts], { cwd: dir, stateHome: dir }, named);
+    t.after(handoff.dispose);
+    const launch = () => promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: { TMUX_PANE: "%real" } });
+
+    await launch(); // The agent exits successfully only when it receives the expected credential.
+    assert.equal(readFileSync(starts, "utf8"), "started\n");
+    await assert.rejects(launch(), { code: 1, stderr: /could not read the terminal environment handoff/ });
+    assert.equal(readFileSync(starts, "utf8"), "started\n", "reusing the handoff must never enter the agent");
+  });
 
   await t.test("concurrent handoffs use separate private directories and remove them after use or disposal", async (t) => {
     const start = () => terminalEnvironmentArgv(["/bin/pwd", "-P"], { cwd: dir, stateHome: dir }, named);

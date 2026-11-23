@@ -77,9 +77,9 @@ Node helper, the Swift listener, the shell and the dashboard. Four phases:
 
 | Phase | File | Delivers | Depends on | Runs on | Est. lines |
 | --- | --- | --- | --- | --- | --- |
-| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, the stop handshake, the audio, events, stop and audition routes, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
+| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, the stop handshake, the supervisor route, the audio, events, stop and audition routes, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
 | Speech 2 | `phase-2-mission-control-voices.md` | The speech model entry and its download routes, the synthesizer helper, attribution, the Linux CI synthesis test | Phase 8, Phase 16, Speech 1 | Astra | 450 to 600 |
-| Speech 3 | `phase-3-macos-listener-playback.md` | The macOS listener plays audio and system voices, confirms every stop and lists the voices; the hotkey tap stops speech; the shell restarts a listener that does not confirm; the leak check | Phase 10, Phase 11, Speech 1 | Astra | 350 to 500 |
+| Speech 3 | `phase-3-macos-listener-playback.md` | The macOS listener plays audio and system voices, confirms every stop and lists the voices; the hotkey tap stops speech; the shell names each listener process, reports its exit and replaces one that does not confirm; the leak check | Phase 10, Phase 11, Speech 1 | Astra | 350 to 500 |
 | Speech 4 | `phase-4-voice-picker.md` | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 | Opus | 400 to 550 |
 
 "Opus" is Claude Opus 5.5 at extra-high effort, for a phase with a dashboard part. "Astra" is
@@ -163,8 +163,9 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   `VOICE_SPEECH_END_MARGIN_MS` 1500, added to the audio's length and counted from `started`;
   `VOICE_SPEECH_SYSTEM_LIMIT_MS` 10000, counted from `started`, for a system voice;
   `VOICE_SPEECH_CONFIRM_LIMIT_MS` 5000, counted from a stop request.
-- The stop handshake. A job the directive has named ends only when the listener posts `ended`
-  for it, or when that listener is replaced. A stop (a click, the hotkey, muting, a settled
+- The stop handshake. A job the directive has named ends only when the listener instance that
+  was given it posts `ended` for it, or when that instance's supervisor reports that its process
+  has exited. A stop (a click, the hotkey, muting, a settled
   card) or an expired limit moves the job to `stopping`: the directive's `speak` becomes
   `{ id, stop: true }` and `capture` stays false. The listener stops playback or does not start
   it, and posts `ended` as `stopped`, also for an id it never received. On that `ended` the job
@@ -172,14 +173,27 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   follows the mode. A `started` for a `stopping` job is recorded and changes nothing. With no
   `ended` by the confirm limit, the daemon treats the listener as absent: the `listener` reason
   holds, the `listener` capability carries "the listener did not confirm that speech had
-  stopped", and capture stays false. A late `ended` from the same listener, or a hello whose
-  `speech.instance` differs from the one that was given the job, ends the job (`failed` in the
-  second case) and lifts the condition. A job still `preparing` has not been named by the
-  directive and ends at once.
+  stopped", and capture stays false, whatever other listener says hello meanwhile. A late `ended` from that instance, or an exit report for
+  that instance, ends the job (`failed` in the second case) and lifts the condition. A hello
+  from a different instance does neither: it proves nothing about the instance that holds the
+  job, so the job stays as it is, `capture` stays false for every listener that polls, and the
+  newcomer is given no job. A job still `preparing` has not been named by the directive and
+  ends at once.
+- Supervised instances. Token route `POST /voice/listener/supervised { instance, state }`,
+  built by Speech 1, where `state` is `started` or `exited`. A supervisor chooses `instance`,
+  posts `started` before it starts the process, passes the id to the process in
+  `MISSION_VOICE_LISTENER_INSTANCE`, and posts `exited` only after the operating system has
+  reported that process's exit: its own child's exit event, or, for a process a previous run of
+  the supervisor left behind, the recorded process id no longer existing after it was checked
+  to be the listener and stopped. It repeats `started` when it reconnects to a restarted daemon.
+  The daemon gives a speech job only to an announced instance; `speech-output` is unavailable
+  for any other, with the reason "this listener was not started by a supervisor". `exited` ends
+  every job that instance holds as `failed`. The record of which instance holds an unresolved
+  job is kept by instance, so muting, or switching voice off and on, does not clear it.
 - The hello (contract B) gains optional `speech { audio, systemVoices, instance }`. `audio`
   says the listener can play an audio job. A system voice is `{ id, name, language, quality }`
-  with quality `premium`, `enhanced` or `default`. `instance` is a random id the listener
-  chooses when its process starts.
+  with quality `premium`, `enhanced` or `default`. `instance` is the id the listener's
+  supervisor chose for that process and passed to it in `MISSION_VOICE_LISTENER_INSTANCE`.
 - The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`,
   `{ id, kind: "system", voiceId, text }`, or `{ id, stop: true }`. While `speak` is set,
   `capture` is false.
@@ -214,7 +228,7 @@ voice plan.
 | Requirement | Owner |
 | --- | --- |
 | V14, the ask-aloud half: one spoken question per unsure card, answered by a name or a click | Speech 1 |
-| Capture is stopped before playback and restarted after real completion (S9), including when a limit expires or speech is stopped | Speech 1 (the rule, its limits and the stop handshake), Speech 3 (the macOS listener, its confirmation of every stop, and the leak check) |
+| Capture is stopped before playback and restarted after real completion (S9), including when a limit expires or speech is stopped | Speech 1 (the rule, its limits and the stop handshake), Speech 3 (the macOS listener, its confirmation of every stop, the shell's exit report, and the leak check) |
 | The hotkey or a click cuts speech off | Speech 1 (click and route), Speech 3 (hotkey) |
 | A better voice on macOS and Linux, downloaded on demand, pinned and verified | Speech 2 |
 | macOS system voices, Enhanced and Premium included | Speech 3 |
@@ -225,7 +239,8 @@ voice plan.
 ## Not scheduled here
 
 - **Playback on Linux.** The Linux follow-on plan adds it to the sherpa-onnx listener, with
-  the same stop handshake and the restart of a listener that does not confirm, and verifies it
+  the same stop handshake, the supervisor's announcement and exit report, and the replacement
+  of a listener that does not confirm, and verifies it
   on a Linux desktop. Until then `speech-output` reads unavailable on Linux with the
   reason "this listener cannot play speech", and the card is used.
 - **Playback in the sherpa-onnx listener on macOS.** Same work, same owner. With `backend` set
@@ -257,32 +272,55 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After plan validation round 2: the only endings of a job a listener holds are that
+  listener's `ended` and its supervisor's exit report, in `plan.md`, contract L, Speech 1 and
+  Speech 3. No sentence in the bundle lets a hello, a timer or a restart return capture.
 - After plan validation round 1: no path in `plan.md`, contract L, Speech 1 or Speech 3 lets
-  capture return before the listener's `ended` or its replacement. The 2 second, 1.5 second,
+  capture return before the listener's `ended` or the proof of its exit. The 2 second, 1.5 second,
   10 second and 5 second limits read the same in each.
 - After the completion review: the audio route has one owner, Speech 1, in the phase table,
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
 
-## Plan validation round 1
+## Plan validation round 2
 
 One finding was accepted and applied across the bundle.
+
+- **A new listener's hello released capture without proof the old one had stopped.** Round 1
+  ended an unconfirmed job when a hello arrived with a different instance id, on the reasoning
+  that the old process was gone. A hello shows only that a new process exists; the old one can
+  still be alive and still be playing. A hello from a different instance now ends nothing,
+  returns no capture and is given no job. The only ending besides the holder's own `ended` is
+  an exit report from the supervisor that started the holder, sent after the operating system
+  has reported the exit. To make that ending always available, instance ids are chosen by the
+  supervisor, announced before the process starts, and only an announced instance is given a
+  speech job. Contract L gained the supervised-instances route. `plan.md`, Speech 1 and
+  Speech 3 say the same. Speech 1 tests a second instance saying hello while the first still
+  plays, and Speech 3 tests that the shell reports an exit only from the exit event and starts
+  the next process only after it.
+
+## Plan validation round 1
+
+One finding was accepted and applied across the bundle. Its replacement rule was tightened by
+round 2, above.
 
 - **Capture resumed on a timeout before playback was known to have stopped.** The plan had the
   daemon end a job at a limit, clear `speak` and let capture resume, while the listener might
   still be playing, or might start a job it had already received. That broke the spike's S9
   rule. A limit, like a click, now only asks the listener to stop. Capture stays off until the
-  listener posts `ended` for the job, or until that listener process is replaced. A late
+  listener posts `ended` for the job, or until that listener process is replaced (round 2
+  defines what proves that). A late
   `started` changes nothing. A listener that does not confirm within 5 seconds is treated as
   absent, so voice reads as not listening instead of capturing, and on a Mac the shell restarts
   it. The listener also refuses, on its own, to open the microphone while it is playing.
   Contract L gained the `stopping` state, the stop form of `speak`, the confirm limit and the
-  hello's `instance`. `plan.md`, Speech 1 and Speech 3 say the same, and Speech 1's tests now
+  hello's `instance`, which round 2 made the supervisor's choice. `plan.md`, Speech 1 and Speech 3 say the same, and Speech 1's tests now
   drive a fake listener that keeps playing past the limit and one that starts late.
 
 This replaces an earlier default, "silence is the failure mode, never a stuck microphone". The
-cost is stated: a listener that never confirms leaves voice not listening until it is replaced.
+cost is stated: a listener that never confirms leaves voice not listening until its supervisor
+has stopped it and reported its exit.
 
 ## Completion review
 

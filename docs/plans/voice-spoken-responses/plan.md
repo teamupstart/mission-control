@@ -221,8 +221,9 @@ helper synthesizes, and the listener plays.
 ### Rules that keep capture correct
 
 - **Capture stays off until the listener confirms playback has stopped.** The daemon never
-  resumes capture on its own clock. The only thing that ends a job the listener has been given
-  is the listener's `ended` report, or that listener process being replaced.
+  resumes capture on its own clock. Only two things end a job a listener has been given: that
+  listener's `ended` report, or proof from the supervisor that started that listener that its
+  process has exited.
 - **A time limit turns into a stop request, not into capture.** With no `started` within
   2 seconds of the job being ready, or no `ended` after `started` within the audio's length plus
   1.5 seconds (10 seconds for a system voice, whose length is unknown), the daemon stops asking
@@ -230,12 +231,23 @@ helper synthesizes, and the listener plays.
   playback if it is playing, does not start if it has not started, and reports `ended` either
   way, even for a job it never received. Capture stays off until that report. A `started` that
   arrives after the limit changes nothing: the job is still being stopped.
-- **A listener that does not confirm is treated as gone.** With no `ended` within 5 seconds of
-  a stop request, voice reads as not listening, with the reason that the listener did not
-  confirm speech had stopped, and capture stays off. It returns when that listener confirms
-  late, or when a new listener process says hello, because the old process and any sound it was
-  making are gone. On a Mac the shell restarts the listener when this happens. The failure
-  mode is not listening with the reason shown, never capture during playback.
+- **A listener that does not confirm is treated as not answering.** With no `ended` within
+  5 seconds of a stop request, voice reads as not listening, with the reason that the listener
+  did not confirm speech had stopped, and capture stays off. It returns when that listener
+  confirms late, or when its supervisor proves the process has exited. The failure mode is not
+  listening with the reason shown, never capture during playback.
+- **A new listener saying hello proves nothing about the old one.** Two listeners can be alive
+  at once, so a hello from a different listener does not end the job, does not return capture,
+  and is not given a job of its own. Capture is off for every listener while any job is
+  unresolved.
+- **What counts as proof of exit.** Every listener is started by a supervisor: the shell on a
+  Mac, the development launcher, and on Linux the daemon's own supervisor. The supervisor gives
+  the process an instance id, tells the daemon the id before starting it, and tells the daemon
+  the process has exited only after the operating system has reported that exit. A signal sent,
+  a timer, or a replacement started is not an exit. A listener no supervisor has announced is
+  given no speech job, so every job has an ending someone can observe. On a Mac the shell
+  stops a listener that is not answering, waits for it to exit, reports that, and only then
+  starts the next one.
 - **An utterance captured during speech is discarded.** The utterance route ignores one
   captured while a job was live, and Recently heard lists the reason. This is a second guard
   behind the listener's own pause.
@@ -276,8 +288,8 @@ none to disk. It is not started for a system voice. It touches no database.
 - The directive (contract I) gains `speak`: null, an audio job, a system-voice job, or a
   request to stop a job.
 - The hello (contract B) gains an optional `speech` part: whether the listener can play audio,
-  on macOS the installed English system voices with their quality tier, and an instance id that
-  changes each time the listener process starts.
+  on macOS the installed English system voices with their quality tier, and the instance id
+  its supervisor gave that process when it started it.
 - The listener never opens the microphone while it is playing or holds a job it has not ended,
   whatever the directive's `capture` says. This is a second guard, in the process that owns
   both the microphone and the playback.
@@ -352,8 +364,10 @@ Spoken replies
   Ask aloud is enabled when `speech-output` is available, as Phase 12 step 6 said. In a browser
   with no shell it now works whenever a listener that can play is running.
 - **The shell report.** No new field. The shell stops reporting `speech-output`. The shell
-  gains two duties: to call the stop route on a hotkey tap while a job is live, and to restart
-  a listener that the daemon reports did not confirm speech had stopped.
+  gains three duties: to call the stop route on a hotkey tap while a job is live; to name each
+  listener process it starts and tell the daemon when that process has started and when it has
+  exited; and to stop and replace a listener that the daemon reports did not confirm speech had
+  stopped, starting the next one only after the old one has exited.
 - **Contracts.** A gains `speech`. B gains the hello's `speech` part and the speech state. H
   gains a speech model entry. I gains `speak`. A new contract L fixes the speech job, its
   states and its routes. A and B are merged and the others are not. Each change is an addition
@@ -399,9 +413,9 @@ The work is phased in `phased-plan.md`, with one file per phase beside it.
 
 | Phase | Delivers | Depends on |
 | --- | --- | --- |
-| Speech 1 | Contract L, the `speech` config field, the speech job, its time limits and the stop handshake, the capture rules, the audio, events, stop and audition routes, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
+| Speech 1 | Contract L, the `speech` config field, the speech job, its time limits, the stop handshake and the supervisor's exit report, the capture rules, the audio, events, stop and audition routes, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
 | Speech 2 | The speech model entry and its download routes, the synthesizer helper, attribution, a Linux CI synthesis test | 8, 16, Speech 1 |
-| Speech 3 | The macOS listener plays audio and system voices, confirms every stop, lists system voices in its hello, and the hotkey tap stops speech. The shell restarts a listener that does not confirm. A leak check on a Mac with the new playback path | 10, 11, Speech 1 |
+| Speech 3 | The macOS listener plays audio and system voices, confirms every stop, lists system voices in its hello, and the hotkey tap stops speech. The shell names each listener process, reports its exit, and replaces one that does not confirm. A leak check on a Mac with the new playback path | 10, 11, Speech 1 |
 | Speech 4 | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 |
 
 ## Adopted decisions

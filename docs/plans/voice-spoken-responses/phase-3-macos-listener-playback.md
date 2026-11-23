@@ -9,7 +9,8 @@ hotkey stop and the leak check.
 On a Mac, the listener speaks the question: it stops capture, plays the daemon's audio or speaks
 with a system voice, reports when it started and ended, and restarts capture only once playback
 has really stopped. It confirms every stop the daemon asks for. A tap of the mute hotkey cuts
-the speech off. The shell restarts a helper that does not confirm. Ask aloud does not hear
+the speech off. The shell names each helper process, tells the daemon when it has started and
+when it has exited, and replaces one that does not confirm. Ask aloud does not hear
 itself.
 
 ## 2. Entry criteria
@@ -19,7 +20,8 @@ Phases 10 and 11 and Speech 1 are merged. May run beside Speech 2.
 ## 3. Scope and non-goals
 
 In scope: the Swift helper's speech side, its hello's `speech` part, the shell's hotkey rule,
-the shell's restart of a helper that does not confirm a stop, the leak check, docs and tests.
+the shell's naming of each helper process, its exit report and its replacement of a helper that
+does not confirm a stop, the same in the development launcher, the leak check, docs and tests.
 
 Not in scope: synthesis (Speech 2), the picker (Speech 4), playback in the sherpa-onnx listener
 and on Linux (the Linux follow-on).
@@ -64,8 +66,10 @@ and on Linux (the Linux follow-on).
    only if `capture` is true, as a fresh recognition segment. Replay nothing buffered before
    the pause.
 5. **Hello.** Send `speech { audio: true, systemVoices, instance }` with the installed English
-   voices, each with its identifier, name, language and quality tier, and an instance id chosen
-   when the process starts.
+   voices, each with its identifier, name, language and quality tier, and the instance id from
+   `MISSION_VOICE_LISTENER_INSTANCE`, which the process that started the helper chose. The
+   helper exits when the process that started it goes away, so it does not outlive its
+   supervisor.
 6. **Leak check.** With the real helper on a Mac, loudspeakers and the built-in or a desk
    microphone: three trials with capture forced to stay on during an audio job, then three with
    the normal pause, then the same six with a system voice. Record what the recognizer heard in
@@ -79,13 +83,23 @@ and on Linux (the Linux follow-on).
 7. **Hotkey.** In the shell's tap handler from Phase 11: when the voice state shows a live
    speech job, a tap calls `POST /api/voice/speech/stop` and does not toggle mute. Otherwise
    it toggles mute as before.
-8. **Restart a listener that does not confirm.** In the shell's listener supervisor from
-   Phase 10: when the voice state's `listener` capability carries the daemon's "did not confirm
-   that speech had stopped" condition, stop the helper process and start it again. The new
-   process has a new instance id, which is what lets the daemon end the job and return capture.
-   One restart per condition, with the supervisor's usual backoff.
+8. **Name, report and replace.** In the shell's listener supervisor from Phase 10, following
+   contract L's supervised instances. Before each start: choose a new instance id, post
+   `started`, pass the id in `MISSION_VOICE_LISTENER_INSTANCE`, and record the id and the process
+   id under `<state home>/voice/`. On the child's exit event, and on nothing earlier, post
+   `exited` for that id. A signal sent to the child, a timeout waiting for it, and the start of
+   a new child are not an exit and post nothing. When the voice state's `listener` capability
+   carries the daemon's "did not confirm that speech had stopped" condition: stop the helper,
+   escalate to a kill if it does not exit, wait for the exit event, post `exited`, and only then
+   start the next helper under a new id. One replacement per condition, with the supervisor's
+   usual backoff. At shell start, if a recorded helper from an earlier run is still alive: check
+   that the process id still belongs to the helper, stop it, wait until that process id no
+   longer exists, and then post `exited` for the recorded id before starting a new one. Repeat
+   `started` for the running helper whenever the shell reconnects to a restarted daemon. The
+   development launcher from Phase 9 does the same for the helper it starts.
 9. **Docs.** `docs/voice.md` (system voices, how to install a better one, the leak check's
-   result, what happens when a listener does not confirm), `docs/desktop-and-packaging.md`.
+   result, what happens when a listener does not confirm), `docs/desktop-and-packaging.md`,
+   `docs/storage.md` (the listener record under the state home).
 
 ## 6. Data and compatibility
 
@@ -99,8 +113,13 @@ as unable to play. The protocol's major version does not change.
   stub player reports it has stopped; a stop before playback started, which never starts it; a
   stop for an unknown id, which is still answered; no resume while `capture` is false; no
   microphone while the stub player is still playing, even with `capture` true.
-- `test/voice-listener-supervisor.test.ts` gains a case: the "did not confirm" condition
-  restarts the helper once.
+- `test/voice-listener-supervisor.test.ts` gains cases with a fake child process: `started` is
+  posted before the child starts and carries the id the child receives; `exited` is posted from
+  the exit event and not when the stop signal is sent; a child that ignores the stop signal is
+  killed and `exited` is still posted only after its exit event; the next child is not started
+  until the previous one's exit has been reported; the "did not confirm" condition replaces the
+  helper once; a recorded helper from an earlier run is stopped and reported before a new one
+  starts, and a recorded process id that now belongs to another program is not signalled.
 - `test/voice-listener-protocol.test.ts` gains cases for `speak` against the fake listener.
 - `test/voice-hotkey-tap.test.ts`: a tap stops speech while a job is live and toggles mute
   otherwise, as a pure function of the voice state.
@@ -122,14 +141,18 @@ says so. The helper still builds on macOS arm64 and is skipped cleanly elsewhere
 
 Speech 4 lists the system voices this phase reports. The Linux follow-on implements steps 1, 3
 and 4, and the `audio` flag and instance id of step 5, in the sherpa-onnx listener, and the
-restart of step 8 in whatever supervises the listener on Linux.
+announcement, exit report and replacement of step 8 in whatever supervises the listener on
+Linux.
 
 ## 10. Cross-phase audit record
 
 - The audit note in Phase 12 about S9 moves here, and is stricter: a leak that pausing cannot
   stop leaves Ask aloud unavailable, where Phase 12 said off by default.
+- Plan validation round 2: a new helper saying hello no longer releases capture. The shell
+  proves the old helper has stopped by reporting its exit from the exit event, and starts the
+  next helper only after that. Step 8, its tests and the hello's instance id changed.
 - Plan validation round 1: the helper confirms every stop and never opens the microphone while
-  it is playing, and the shell restarts a helper that does not confirm, so capture cannot
+  it is playing, and the shell replaces a helper that does not confirm, so capture cannot
   return while playback continues after a limit.
 - The audio route is Speech 1's, so this phase does not wait for Speech 2. With Speech 2
   unmerged no neural voice is ready, so an audio job arrives only in tests, where Speech 1's

@@ -51,16 +51,20 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
 2. **Hello and state.** Add the optional `speech` part to the hello schema. Add
    `VoiceState.speech` and include it in `canonicalVoiceState` and `voiceStateOff`. Compute
    `speech-output` in the state store beside `listener`, with a reason for each way it is
-   unavailable: no listener, a listener that cannot speak the voice, no voice ready.
+   unavailable: no listener, a listener no supervisor has announced, a listener that cannot
+   speak the voice, no voice ready.
 3. **Speech manager.** `src/server/voice/speech.ts`: one live job at a time and a queue in
    opening order; `open(purpose, text, cardId)`; `stop(id)`; the events route's `started` and
    `ended`; a timer per job that expires at the start limit after it became `ready`, or, after
    `started`, at the audio length plus the end margin, or at the system limit when the length
    is unknown. An expired timer and a stop both move the job to `stopping`, as contract L's
-   stop handshake defines: the job becomes final only on the listener's `ended`, or when a
-   hello arrives from a different listener instance. A late `started` leaves it `stopping`.
-   With no `ended` by the confirm limit the manager tells the state store the listener is not
-   answering, and the store treats it as absent until a late `ended` or a new instance. A job
+   stop handshake defines: the job becomes final only on the `ended` of the instance that was
+   given it, or on an exit report for that instance (step 8). A hello from a different instance
+   changes nothing: the job stays as it is and the newcomer is given no job. A late `started`
+   leaves the job `stopping`. With no `ended` by the confirm limit the manager tells the state
+   store the listener is not answering, and the store treats it as absent until a late `ended`
+   or the exit report. The manager records which instance holds each unresolved job, and that
+   record survives muting and a voice off and on. A job
    whose card is settled while it is still `preparing` is dropped. Clocks and timers are
    injected, as in the state store.
 4. **Voice and audio.** The manager resolves the voice with `resolveSpeechVoice`. For a neural
@@ -69,8 +73,9 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    that refuses, and an empty neural catalog, so only system voices can be spoken.
 5. **Directive.** Extend Phase 9's directive: `speak` carries the ready job, or
    `{ id, stop: true }` while the job is `stopping`. `capture` is false while a job is `ready`,
-   `speaking` or `stopping`, so it cannot return before the listener's `ended`. A change to
-   either field ends the long poll.
+   `speaking` or `stopping`, so it cannot return before the listener's `ended` or its exit
+   report. The directive is the same for every listener that polls, so a second listener cannot
+   capture while the first still holds a job. A change to either field ends the long poll.
 6. **Utterance guard.** The utterance route ignores an utterance whose `capturedAt` falls
    between a job becoming `ready` and its becoming final, with the Recently heard reason
    `while-speaking`.
@@ -81,7 +86,10 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
 8. **Routes.** `POST /api/voice/speech/stop` stops the live job. `POST
    /api/voice/speech/audition` opens an `audition` job for the resolved voice with the first two
    roster names, or "Steve or Stephen?" when the roster has fewer than two, and answers 409 with
-   the capability's reason when nothing can speak. The two token routes of contract L: the
+   the capability's reason when nothing can speak. `POST /voice/listener/supervised` (token)
+   records an announced instance on `started` and, on `exited`, ends every job that instance
+   holds as `failed`; an `exited` for an instance that holds nothing changes nothing. A speech
+   job is given only to an announced instance. The two token routes of contract L: the
    events route, and the audio route, which serves the WAV the manager holds for a `ready` or
    `speaking` job and answers 404 for any other job.
 9. **Card.** `VoiceCardView` marks an `unsure` card whose id is the `cardId` of a job that is
@@ -93,9 +101,11 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
     is kept and behaves as `show` until speech is available.
 11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`. Its hello says it can play, lists one
     system voice, so a voice resolves in this phase, where no neural voice exists, and carries
-    an instance id. It answers a stop request with `ended`, as a listener must. It has options
-    to delay `started`, to keep playing past the limit until told to end, to ignore a stop
-    request altogether, and to come back as a new instance.
+    an instance id. It also plays the supervisor: it announces its instance before its first
+    hello and can report that instance's exit. It answers a stop request with `ended`, as a
+    listener must. It has options to delay `started`, to keep playing past the limit until told
+    to end, to ignore a stop request altogether, and to start a second instance while the first
+    is still playing.
 12. **Docs.** `docs/voice.md`: how ask aloud works, the capture rule, the limits, what stops
     speech.
 
@@ -121,8 +131,16 @@ runs.
   `capture` false until `ended`;
   a stop request for a job the listener never received is answered with `ended` and ends it;
   a listener that ignores the stop: at the confirm limit the mode is `unavailable` with the
-  `listener` reason and its sentence, `capture` is still false, and a hello from a new instance
-  ends the job as `failed` and lets `capture` return;
+  `listener` reason and its sentence, and `capture` is still false;
+  a second instance says hello while the first is still playing: the job is still `stopping`,
+  the directive both of them read has `capture` false, the second is given no job, and an
+  utterance from the second is refused with `while-speaking`. This holds whether or not the
+  second instance was announced, and it still holds after muting and after voice is switched
+  off and on;
+  only the exit report for the first instance, or its own late `ended`, ends the job (`failed`
+  for the exit report) and lets `capture` return; an exit report naming the second instance, or
+  an unknown one, changes nothing, and one without the token is refused;
+  an instance that was never announced is given no speech job, and `speech-output` says why;
   a click on Stop follows the same order;
   the next queued job does not start until the one before it is final.
 - The same file: the directive shows `capture` false and `speak` while a job is live and returns
@@ -145,8 +163,9 @@ runs.
 With a fake listener that plays, one question is asked per unsure card, and capture is off from
 the moment the job is handed over until the listener confirms it has ended. No limit, stop or
 late start returns capture before that confirmation. A listener that never confirms leaves voice
-not listening with the reason shown, and a new listener instance restores it. With no listener
-that can play, the card behaves as it did before this phase.
+not listening with the reason shown. Only that listener's late confirmation or its supervisor's
+exit report restores it; a second listener saying hello does not. With no listener that can
+play, the card behaves as it did before this phase.
 
 ## 9. Downstream handoff
 
@@ -164,6 +183,9 @@ and fetches audio from this phase's audio route. Speech 4 writes
 - After Speech 3: the hotkey tap calls this phase's stop route.
 - Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
   audio without waiting for Speech 2.
+- Plan validation round 2: a hello from a new instance used to end an unconfirmed job. It ends
+  nothing now. The supervised-instances route in step 8 carries the only other ending, the
+  exit report, and steps 3 and 5, the fixture and the tests changed.
 - Plan validation round 1: a limit used to clear `speak` and let capture resume while the
   listener might still be playing. It now only requests a stop, and capture waits for the
   listener's `ended` or its replacement. Steps 3 and 5, the fixture and the tests changed.

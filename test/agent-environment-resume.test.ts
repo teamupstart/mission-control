@@ -115,6 +115,17 @@ test("Pi's launched bash tool observes shell-only selection and rotation after S
   }
 });
 
+function discoverTerminalResume(id: string, stateHome: string) {
+  // Discovery must claim the launch record while the guard's lease still exists.
+  const registry = new Registry();
+  registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: "claude", nameSource: "process",
+    cwd, gitBranch: null, repoRoot: cwd, gitRoot: cwd, pid: 123, tty: "ttys123", terminals: [],
+    startedAt: 1, missionLaunched: true, missionLaunchHome: stateHome }]);
+  const session = registry.getSession(id);
+  assert.ok(session, "the registry discovered the resumed agent");
+  return session;
+}
+
 test("launchPreparedResume reads the rotated shell at launch and publishes the newly missing name", async () => {
   writeProfile(false);
   writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\n" + probe, { mode: 0o700 });
@@ -125,14 +136,8 @@ test("launchPreparedResume reads the rotated shell at launch and publishes the n
     const prepared = await prepareTerminalResume(source, { managed: true, requiredTools: [], extraDirs: [] });
     if (phase === "rotated") writeProfile(true);
     const result = await launchPreparedResume({ name: "env-resume", prepared }, async ({ argv, stateHome }) => {
-      // Model the discovery event while this lease is still live. On normal exit the
-      // guard removes its home and Registry can no longer attribute the launch to it.
-      const registry = new Registry();
-      const id = "proc:env-resume-" + phase;
-      registry.applyDiscovery([{ syntheticId: id, agent: source.agent, name: source.agent, nameSource: "process",
-        cwd, gitBranch: null, repoRoot: cwd, gitRoot: cwd, pid: 123, tty: "ttys123", terminals: [],
-        startedAt: 1, missionLaunched: true, missionLaunchHome: stateHome }]);
-      assert.deepEqual(registry.getSession(id)?.missingEnvironment, phase === "rotated" ? [removable] : []);
+      const session = discoverTerminalResume("proc:env-resume-" + phase, stateHome);
+      assert.deepEqual(session.missingEnvironment, phase === "rotated" ? [removable] : []);
       const { stdout } = await promisify(execFile)(argv[0]!, argv.slice(1), { cwd, env: paneEnv, timeout: 30_000 });
       return { outcome: "launched", value: stdout.trim() };
     });
@@ -140,22 +145,35 @@ test("launchPreparedResume reads the rotated shell at launch and publishes the n
   }
 });
 
-test("an unmanaged terminal resume skips the configured environment lookup and launches without its credentials", async () => {
-  const source = { id: "external-terminal", agentSessionId: "external-native", agent: "claude", cwd,
+async function checkExcludedResume(id: string, ownership: { managed: boolean; resident: boolean }) {
+  const source = { id, agentSessionId: id + "-native", agent: "claude", cwd,
     runtime: "terminal", permissionMode: null } as const;
-  const marker = join(home, "unmanaged-shell-probed");
-  writeFileSync(process.env.MISSION_CLAUDE_BIN!, `#!/bin/sh\ntest -z "\${${token}+x}\${${removable}+x}"\n`, { mode: 0o700 });
-  const prepared = await prepareTerminalResume(source, { managed: false, requiredTools: [], extraDirs: [] });
+  const marker = join(home, id + "-shell-probed");
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, `#!/bin/sh\ntest -z "\${${token}+x}\${${removable}+x}" && echo clean\n`, { mode: 0o700 });
   // The guard may discover system executables through this shell. Record only a probe for configured names.
   writeFileSync(process.env.SHELL!, [
-    "#!/bin/sh", `case "$2" in *${token}*) touch "${marker}" ;; esac`,
-    `export ${token}=profile-example`, 'exec /bin/sh -c "$2"',
+    "#!/bin/sh", `case "$2" in *${token}*|*${removable}*) touch "${marker}" ;; esac`,
+    `export ${token}=profile-example`, `unset ${removable}`, 'exec /bin/sh -c "$2"',
   ].join("\n"), { mode: 0o700 });
-  const result = await launchPreparedResume({ name: "external-resume", prepared }, async ({ argv }) => {
+  const prepared = await prepareTerminalResume(source, { ...ownership, requiredTools: [], extraDirs: [] });
+  assert.equal(prepared.managed, ownership.managed);
+  assert.equal(prepared.resident, ownership.resident);
+  const result = await launchPreparedResume({ name: id, prepared }, async ({ argv, stateHome }) => {
+    const session = discoverTerminalResume("proc:" + id, stateHome);
+    const { stdout } = await promisify(execFile)(argv[0]!, argv.slice(1), {
+      cwd, env: { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) }, timeout: 30_000,
+    });
+    assert.equal(stdout.trim(), "clean", "the resumed agent ran with both configured names absent");
+    assert.equal(session.missingEnvironment, undefined, "the absent configured name must not warn on this session");
     assert.deepEqual(argv, prepared.wrappedArgv);
-    await promisify(execFile)(argv[0]!, argv.slice(1), { cwd, env: { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) } });
     return { outcome: "launched", value: null };
   });
   assert.equal(result.outcome, "launched");
   assert.equal(existsSync(marker), false, "launch must not even probe the profile");
-});
+}
+
+test("an unmanaged terminal resume skips the configured environment lookup and launches without its credentials",
+  () => checkExcludedResume("external-resume", { managed: false, resident: false }));
+
+test("a managed resident terminal resume skips the named shell lookup, credential injection and missing-name warning",
+  () => checkExcludedResume("resident-resume", { managed: true, resident: true }));

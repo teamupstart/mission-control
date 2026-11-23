@@ -1104,3 +1104,37 @@ test("only the daemon's own repository sentences start the repo retry; any other
   assert.equal(fake.dialogs.some((d) => d.header === "Repo"), false);
   assert.equal(createdDrafts(daemon).length, 1);
 });
+
+test("a confirm refusal that arrives after the session ended is returned but not posted to the current session", async () => {
+  const refuse = (ended: { value: boolean }) => {
+    const { daemon, fake, filed } = world();
+    // The daemon refuses the start outright (no task was filed), and the session ends while it answers.
+    daemon.override("POST /dispatch/drafts/:id/confirm", () => ({ status: 409, body: { error: "the repository has a launch hold" } }));
+    const real = fake.host.fetch;
+    fake.host.fetch = async (path, init) => {
+      const reply = await real(path, init);
+      if (path.endsWith("/confirm")) ended.value = true;
+      return reply;
+    };
+    return { daemon, fake, filed };
+  };
+
+  const ended = { value: false };
+  const { fake } = refuse(ended);
+  const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended.value }, "ship add retries");
+  assert.equal(result.outcome, "refused");
+  assert.equal(result.line, "the repository has a launch hold");
+  assert.ok(fake.notices.every((n) => n !== "the repository has a launch hold"));
+
+  // The tool still gets the refusal text.
+  const endedTool = { value: false };
+  const tool = refuse(endedTool);
+  const line = await runStartDispatchTool(tool.fake.host, { ...SESSION, live: () => !endedTool.value }, { brief: "add retries" });
+  assert.equal(line, "the repository has a launch hold");
+  assert.ok(tool.fake.notices.every((n) => n !== "the repository has a launch hold"));
+
+  // With the session still there, the refusal is posted as before.
+  const live = refuse({ value: false });
+  await runDispatchCommand(live.fake.host, { ...SESSION, live: () => true }, "ship add retries");
+  assert.equal(live.fake.notices.at(-1), "the repository has a launch hold");
+});

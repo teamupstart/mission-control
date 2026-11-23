@@ -74,13 +74,15 @@ export function isNoSuchDraft(outcome: Outcome<unknown>): boolean {
 }
 
 /** Shows what went wrong as written and ends the flow. */
-export function fail(host: FlowHost, outcome: Failed): FlowResult {
+export function fail(host: FlowHost, outcome: Failed, session?: FlowSession): FlowResult {
   // The session ended under an open dialog: nothing was filed, and there is no one to tell.
   if (outcome.kind === "ended") return { outcome: "cancelled", line: CANCELLED_LINE };
   const line = isNoSuchDraft(outcome)
     ? EXPIRED_NOTICE
     : unreachableLine(outcome);
-  host.notice(line);
+  // The line is the truth for the caller (the tool returns it) whether or not the session is still
+  // there; only the notice is for the person, and it must not land in whichever session is current now.
+  if (!session || !gone(session)) host.notice(line);
   return { outcome: "refused", line };
 }
 
@@ -280,7 +282,8 @@ async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchD
     tell(host, session, line);
     return { outcome: "backlog", line, taskId: filed };
   }
-  return fail(host, result);
+  // A refusal to a confirm can arrive after the session ended (the reply is kept): the result carries it.
+  return fail(host, result, session);
 }
 
 /** What the Repo question came to: a tagged answer, so a repository named `cancelled` is not a cancel. */

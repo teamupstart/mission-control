@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
@@ -644,5 +644,21 @@ test("--uninstall removes the shim along with the hooks", () => {
     assert.ok(existsSync(shim), "install writes the shim");
     runInstaller(path, ["--uninstall"]);
     assert.ok(!existsSync(shim), "uninstall removes it");
+  });
+});
+
+// A hook starting mid-install reads the shim it opened, so a rewrite must swap files, never truncate one.
+test("a reinstall from another checkout replaces the shim by rename", () => {
+  withTempSettings("{}\n", (path) => {
+    const home = homeDirFor(path);
+    const shim = join(home, MARKER);
+    runFromFakePool(path, fakePoolInstaller(join(path, "..")), ["--force"], home);
+    const before = statSync(shim);
+    runInstallerHome(path, home);
+    const after = statSync(shim);
+    assert.notEqual(after.ino, before.ino, "the new shim is a new file, renamed into place");
+    assert.equal(after.mode & 0o777, 0o755);
+    assert.equal(missionHookScriptPath(readFileSync(shim, "utf8")), join(import.meta.dirname, "..", "hooks", "harness-hook.mjs"));
+    assert.deepEqual(readdirSync(join(shim, "..")), ["harness-hook"], "no staged file is left behind");
   });
 });

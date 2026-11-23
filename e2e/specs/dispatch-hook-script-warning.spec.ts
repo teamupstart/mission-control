@@ -239,6 +239,8 @@ test("a settings file that runs the hook shim is checked through this machine's 
   note = environmentNote(dialog);
   await expect(note).toContainText(stalePath(daemon));
   await expect(note).toContainText("MODULE_NOT_FOUND");
+  await expect(note).toContainText("run `npm run install-hooks` from a Mission Control checkout");
+  await expect(note).not.toContainText("desktop app");
   await closeDispatch(dashboard);
 
   // The repaired shim: nothing to say.

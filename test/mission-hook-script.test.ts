@@ -356,6 +356,9 @@ test("a shim pointing at a moved checkout is reported through the shim", async (
   assert.ok(view.warning);
   assert.ok(view.warning.includes(STALE), view.warning);
   assert.match(view.warning, /10 hook events/);
+  // The desktop installer refuses shim commands as custom, so the repo installer is the only repair.
+  assert.match(view.warning, /run `npm run install-hooks` from a Mission Control checkout\.$/);
+  assert.doesNotMatch(view.warning, /desktop app/);
 });
 
 test("a shim pointing at a live checkout hears nothing", async () => {

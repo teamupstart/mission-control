@@ -261,7 +261,7 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
     return {
       warning:
         `${sentences.join(" ")} Every one of those events fails with MODULE_NOT_FOUND, prints its stack into the session transcript, and reports nothing back, so terminal sessions on this machine show no state. ` +
-        `The path was baked in by an installer and does not follow a checkout or app that moved. To point the hooks at a script that exists, ${REPAIR}.`,
+        `The path was baked in by an installer and does not follow a checkout or app that moved. To point the hooks at a script that exists, ${shimEvents.size > 0 ? `run \`${REPAIR_COMMAND}\` from a Mission Control checkout` : REPAIR}.`,
       detail: `${settingsPath} names ${missing.map(({ script }) => shortPath(script)).join(", ")}`,
     };
   },

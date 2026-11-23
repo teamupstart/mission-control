@@ -34,7 +34,7 @@
 // nothing needs to change, the file isn't rewritten at all. This is opt-in: the
 // user runs `npm run install-hooks`. It never runs itself.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, chmodSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -326,7 +326,16 @@ if (uninstall) {
   }
   if (current !== shim) {
     mkdirSync(dirname(shimPath), { recursive: true });
-    writeFileSync(shimPath, shim);
+    // Hooks already running the shim must never exec a truncated one, so publish by rename.
+    const staged = `${shimPath}.${process.pid}.tmp`;
+    try {
+      writeFileSync(staged, shim, { mode: 0o755 });
+      chmodSync(staged, 0o755);
+      renameSync(staged, shimPath);
+    } catch (error) {
+      rmSync(staged, { force: true });
+      throw error;
+    }
     shimChanged = true;
   }
   // Every run, not only on a write: a shim that lost its mode is skipped by the guard.

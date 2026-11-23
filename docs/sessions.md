@@ -1152,8 +1152,8 @@ master switch in Settings → Skills.
 <summary>What it writes to <code>settings.json</code></summary>
 
 Tool events (`PreToolUse`, `PostToolUse`) get a `"*"` matcher; the rest match
-every invocation. Paths are absolute (a durable alias for your `node`, and this
-repo):
+every invocation. Each command names only the shim, through `$HOME`, so the file is the
+same on every machine:
 
 ```jsonc
 {
@@ -1161,19 +1161,26 @@ repo):
     "PreToolUse": [
       { "matcher": "*", "hooks": [
         { "type": "command",
-          "command": "\"/usr/local/bin/node\" \"/Users/you/workspace/ai-harness/hooks/harness-hook.mjs\" PreToolUse" }
+          "command": "[ ! -x \"$HOME/.mission-control/bin/harness-hook\" ] || \"$HOME/.mission-control/bin/harness-hook\" PreToolUse" }
       ]}
     ],
     "Stop": [
       { "hooks": [
         { "type": "command",
-          "command": "\"/usr/local/bin/node\" \"/Users/you/workspace/ai-harness/hooks/harness-hook.mjs\" Stop" }
+          "command": "[ ! -x \"$HOME/.mission-control/bin/harness-hook\" ] || \"$HOME/.mission-control/bin/harness-hook\" Stop" }
       ]}
     ]
     // ...one group per event: SessionStart, UserPromptSubmit, PostToolUse,
     //    Notification, SubagentStop, PreCompact, SessionEnd, SubagentStart
   }
 }
+```
+
+The shim holds this machine's paths (a durable alias for your `node`, and this repo):
+
+```sh
+#!/bin/sh
+exec "/usr/local/bin/node" "/Users/you/workspace/ai-harness/hooks/harness-hook.mjs" "$@"
 ```
 
 Each fired hook POSTs `{ agent, event, sessionId, cwd, env }` to

@@ -432,6 +432,28 @@ test("a late scan never records a process that took the driver's pid after the s
   assert.equal(getSdkSessionProcess(session.id), null, "a reused pid's process is not this driver's lifetime");
 });
 
+test("a driver whose whole-second start time reads after the scan was asked for still records its lifetime", async (t) => {
+  const handle = fakeHandle();
+  let pid: number | null = null;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  let startMs = 0;
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    startMs = Math.ceil((Date.now() + 1) / 1000) * 1000;
+    return { processes: [{ pid: 41601, ppid: 1, tty: null, startRaw: "fixture", startMs,
+      command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  pid = 41601;
+  handle.push({ kind: "bound", agentSessionId: "agent-late-lstart", transcriptPath: null, modelId: null, pid });
+  await drain();
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41601, startMs });
+  handle.end();
+  await drain();
+});
+
 test("a session adopted under the same id never inherits its predecessor's late scan", async (t) => {
   // Teardown no longer waits on a scan, so once the old card's linger evicts it, a new handle
   // can be adopted under that id while the old driver's scan is still outstanding.

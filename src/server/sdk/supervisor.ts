@@ -204,6 +204,10 @@ class SessionFrozenError extends Error {}
 /** The refusal an automated turn meets on a paused session, held or frozen. */
 const SESSION_HELD = "this session is paused - its automated turns wait until it resumes";
 
+// `ps lstart` has whole-second resolution, and Linux derives it from boot time plus elapsed
+// ticks, so a driver's own start can read up to a second after the moment it was observed.
+const PROCESS_START_SLACK_MS = 2_000;
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -1954,7 +1958,8 @@ export class SdkSupervisor {
       lifetime = lifetime.then(async () => {
         try {
           const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-          const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0 && p.startMs <= requestedAt);
+          const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0
+            && p.startMs <= requestedAt + PROCESS_START_SLACK_MS);
           if (!snapshot.unknownReason && child && this.lifetimeOwners.get(id) === handle && handle.recoveryProcessId === pid) {
             // Capture while this driver is owned. Fingerprinting a later lookup would
             // bless a replacement PID; retaining raw argv could disclose credentials.

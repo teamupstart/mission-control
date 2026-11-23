@@ -5,7 +5,7 @@
 // dismissed stall back when the flag is switched.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isIdleStall, type Stall } from "../src/shared/stall.ts";
+import { isIdleStall, legacyStallFingerprint, type Stall } from "../src/shared/stall.ts";
 import { inboxStalls, NO_STALLED_DRAWN, NO_STALLED_SESSIONS, stalledSessions } from "../src/web/lib/stalled.ts";
 import { orderSessions, stalledInOrder } from "../src/web/lib/fleet-order.ts";
 import { attentionDismissalKeys, foldAttention, stallDismissalKey } from "../src/web/lib/attention.ts";
@@ -125,4 +125,13 @@ test("an idle stall on a session inside a declared wait is a Stalled card and le
   assert.deepEqual(kept, [SILENT, ESCALATED]);
   const fold = foldAttention({ sessions, reviews: [], ensembles: [], stalls: kept });
   assert.equal(fold.items.some((item) => item.kind === "session_stuck" && item.session.id === "s-idle"), false);
+});
+
+test("a legacy stall keeps its identity as it ages and renews after session activity", () => {
+  const session = idleSession("s-idle");
+  const legacy = { ...IDLE_WORK, fingerprint: undefined, reason: "idle 21m" };
+  const older = { ...legacy, reason: "idle 22m", forMs: legacy.forMs + 60_000 };
+  assert.deepEqual(stallDismissalKey(session.id, older), stallDismissalKey(session.id, legacy));
+  assert.equal(legacyStallFingerprint(older, session), legacyStallFingerprint(legacy, session));
+  assert.notEqual(legacyStallFingerprint(older, { ...session, lastActivity: 123 }), legacyStallFingerprint(legacy, session));
 });

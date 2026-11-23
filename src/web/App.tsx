@@ -432,7 +432,7 @@ export function App(): React.JSX.Element {
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
-  const stalls = useStalls();
+  const stalls = useStalls(sessions);
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
   const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);

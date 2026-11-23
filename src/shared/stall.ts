@@ -298,6 +298,17 @@ export function stallFingerprint(facts: StallFacts, since: number): string {
   return JSON.stringify({ ...facts, since });
 }
 
+/** Mixed-version peers may omit the fingerprint. Use the session's episode start and the
+ * reported work identity so a changing elapsed minute never creates a new dismissal key. */
+export function legacyStallFingerprint(stall: Stall, session?: Session): string {
+  const since = stall.kind === "escalated" ? session?.note?.updatedAt : session?.lastActivity ?? session?.firstSeen;
+  return JSON.stringify([
+    stall.kind, since, stall.workflowRunId, stall.facts,
+    stall.kind === "unfinished-work" ? session?.task?.id : null,
+    stall.kind === "unfinished-work" ? session?.queue?.openCount : null,
+  ]);
+}
+
 /** A stall with its facts and fingerprint attached. */
 function withFacts(stall: Stall, facts: StallFacts, since: number): Stall {
   return { ...stall, facts, fingerprint: stallFingerprint(facts, since) };

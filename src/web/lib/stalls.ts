@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import type { Stall } from "@shared/stall.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Session } from "@shared/types.ts";
+import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -30,7 +31,7 @@ const NONE: Stall[] = [];
  * consumer cannot tell a stall that is news from one that was there all along (see
  * withKnownStalls).
  */
-export function useStalls(): Stall[] | undefined {
+export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
   const [stalls, setStalls] = useState<Stall[] | undefined>(undefined);
   const seen = useRef<string | null>(null);
 
@@ -43,7 +44,7 @@ export function useStalls(): Stall[] | undefined {
       // comparing on it would re-render on each poll for a stall nothing changed
       // about. The alert engine edge-triggers on (session, kind) anyway. The fingerprint is in
       // it because a Stuck row draws the facts, which can change while the sentence does not.
-      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint ?? ""}`).join("|");
+      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint ?? legacyStallFingerprint(s)}`).join("|");
       if (sig === seen.current) return;
       seen.current = sig;
       setStalls(next.length > 0 ? next : NONE);
@@ -56,5 +57,11 @@ export function useStalls(): Stall[] | undefined {
     };
   }, []);
 
-  return stalls;
+  return useMemo(() => {
+    if (!stalls?.some(stall => !stall.fingerprint)) return stalls;
+    const byId = new Map(sessions.map(session => [session.id, session]));
+    return stalls.map(stall => stall.fingerprint ? stall : {
+      ...stall, fingerprint: legacyStallFingerprint(stall, byId.get(stall.sessionId)),
+    });
+  }, [stalls, sessions]);
 }

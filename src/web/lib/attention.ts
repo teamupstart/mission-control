@@ -14,7 +14,7 @@ import {
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { reportToRead, type ReportItem } from "@shared/reports.ts";
-import type { Stall } from "@shared/stall.ts";
+import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
 import { stateDisplay } from "./format.ts";
 import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
@@ -392,13 +392,13 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
  *
  * The rule and its clock-free facts, never the sentence: the sentence carries the minutes, so a
  * dismissal keyed on it would come back every minute. A stall from a daemon that predates
- * fingerprints falls back to the sentence, which is the most it can say.
+ * fingerprints uses its work identity and any available session episode data.
  */
 export function stallDismissalKey(
   sessionId: string,
-  stall: Pick<Stall, "kind" | "fingerprint" | "reason">,
+  stall: Stall,
 ): AttentionDismissalKey {
-  return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? stall.reason) };
+  return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? legacyStallFingerprint(stall)) };
 }
 
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */

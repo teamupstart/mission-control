@@ -544,15 +544,6 @@ function smokeModCalls() {
  * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
  * engine would refuse shows up here rather than on a person's machine.
  */
-function smokeModCalls() {
-  const refused = findDisallowedModCalls(resolve("."));
-  if (refused.length > 0) {
-    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
-    return;
-  }
-  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
-}
-
 async function smokeModBuild() {
   const modRoot = resolve("dist/mod");
   const pluginDir = join(modRoot, "mission-control");

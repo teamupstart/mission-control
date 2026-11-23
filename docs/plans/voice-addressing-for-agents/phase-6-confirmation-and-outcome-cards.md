@@ -54,6 +54,10 @@ As of `2088bd522`:
    - a two-part card lists both messages; Cancel stops both. A mention says the second agent is
      mentioned and nothing is sent to it;
    - `cancelled` and `failed` say so.
+   The two answer hints, on the sent or queued card and on the held card, are drawn through the
+   inbox plan's `SpokenHint`. Its voice-hints context is off until Phase 13 turns it on, so
+   they render nothing in this phase and appear when the phrases they name work. The other
+   hints name phrases that work already and are drawn directly.
    Settled states fade after a few seconds. The card is a live region, so a screen reader
    announces it.
 2. **Host.** `VoiceCardHost` at the app root shows the newest cards as a toast stack in the
@@ -109,3 +113,6 @@ Cancel and Submit now pair for the countdown footer.
   selected mock-up shows, where the inbox plan's report card uses a sentence.
 - Plan validation round 1: the unsure card's Recently heard link moved to Phase 12, the first
   phase that follows both this card and the Recently heard surfaces.
+- Pull request review, fifth round: the answer hints named phrases that Phase 13 adds. They go
+  through `SpokenHint`, so they are hidden until Phase 13, which also defines the bare
+  "<name>, answer" and adds a question row to `VoiceCardView` for its question pick.

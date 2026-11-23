@@ -81,7 +81,7 @@ from the operator's reviews.
 | V41 | In-window voice state is offered in five styles, chosen by checkboxes with previews. The status line is on by default. |
 | V42 | A setting turns off voice filling of plan-decision forms while voice stays on elsewhere. It is on by default. |
 | V43 | Recently heard appears in a tray popover and as a diagnostic table. |
-| V44 | The model step tries a decision model first when a key is configured (OpenAI Decisions API or Jev), then Haiku or Luna. A missing key is not an error. The key is entered in Voice settings or read from the environment. A provider is used only when one has been selected, in Voice settings or by `MISSION_VOICE_DECISION_PROVIDER`; a key in the environment selects none. |
+| V44 | The model step tries a decision model first when a key is configured (OpenAI Decisions API or Jev), then Haiku or Luna. A missing key is not an error. The key is entered in Voice settings or read from the environment. A key alone switches the decision model on; Off in Voice settings stops it. |
 | V45 | The listener has two backends behind one protocol: FluidAudio by default on Apple silicon, and sherpa-onnx as the portable one. |
 | V46 | Voice prefers the built-in microphone, with a picker. |
 
@@ -115,7 +115,7 @@ Root plan review and the conversation that followed it.
 | Signing | The shell phase may add the microphone entitlement and usage string and extend the distribution verifier. |
 | Conversion signal | The MCP child states the capability on each wait poll. |
 | Model step | V44. Haiku when the candidate agents are Claude sessions, Luna when they are GPT sessions, otherwise the provider chosen for background jobs. |
-| Decision-model key | Entered in Voice settings. `OPENAI_API_KEY` or `TYPESAFE_API_KEY` in the environment is used for the selected provider; a key saved in Settings overrides it on that machine. The provider is selected in Voice settings, or for each machine by `MISSION_VOICE_DECISION_PROVIDER`. A key alone selects no provider and sends nothing (pull request review, 2026-11-23). |
+| Decision-model key | Entered in Voice settings. `OPENAI_API_KEY` or `TYPESAFE_API_KEY` in the environment is used when present; a key saved in Settings overrides it on that machine. A key alone switches the decision model on, with no provider to select first (confirmed 2026-11-23 after a pull request review asked for a required selection). A person can choose Off. |
 | Ask aloud | Built, with the macOS system voice. |
 | Default confirmation placement | Floating pill. |
 | Plan forms by voice | On by default, with a setting to turn it off. |
@@ -255,7 +255,7 @@ Three owners:
 
 In order: a control phrase; an exact name; a phonetic match; the model step when a second name or
 a weak match leaves doubt; otherwise unsure. The model step is a ladder: a decision model when a
-provider is selected and has a key, then Haiku or Luna with thinking off and a short system prompt, then unsure.
+key is configured, then Haiku or Luna with thinking off and a short system prompt, then unsure.
 Unsure shows roster rows, and the operator answers by saying a row's name or clicking it. What was
 heard, and why it did or did not route, goes to the Recently heard ring buffer in memory.
 

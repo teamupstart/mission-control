@@ -97,18 +97,30 @@ A third review raised three more, all accepted.
   card opened, while a held message can wait longer. The hold now lasts until the message is
   delivered, survives a restart, and the 10 minutes count from delivery.
 
-A fourth review raised two more, both accepted.
+A fourth review raised two more. One was accepted and one was settled by the operator.
 
-- **An environment key used without anyone choosing a provider.** Phase 4 used
-  `OPENAI_API_KEY` or `TYPESAFE_API_KEY` whenever one was present, which would send ambiguous
+- **An environment key used without anyone choosing a provider.** Phase 4 uses
+  `OPENAI_API_KEY` or `TYPESAFE_API_KEY` whenever one is present, which sends ambiguous
   sentences and roster names to a provider for anyone who has that key set for other tools.
-  A provider must now be selected, in Voice settings or by `MISSION_VOICE_DECISION_PROVIDER`,
-  and an environment key is credentials for that provider only. An organization still enables
-  it for each machine through the environment, with two variables.
+  Revision 10 required a selected provider. The operator was asked and reversed it on
+  2026-11-23: a key alone switches the decision model on, so one variable enables it for an
+  organization. This finding is therefore declined as a change of behaviour. What it did
+  change: Phase 4 states the rule outright, a person can choose Off, and Voice settings names
+  the provider in use and what is sent to it.
 - **A late submit after a refusal.** Phase 14 refused a spoken submit when the dashboard did
   not answer in 5 seconds, but a slow dashboard could still resolve the form afterwards. Each
   submit request now carries an id that is revoked at the timeout and refused by the resolve
   route.
+
+A fifth review raised two more, both accepted.
+
+- **The Foreman hold reading the claim as delivery.** The third round's fix timed the hold
+  from `composed_at`, which is stamped when the outbox claims a turn and before anything is
+  sent. The hold now lasts while the spoken turn's row exists, which is until delivery is
+  confirmed, and the 10 minutes start at `turn_delivered`.
+- **A bare "<name>, answer".** Phase 6's card advertises it and Phase 13 defined only the
+  form with words, and not the case of several questions with no card open. Both now open a
+  question pick. Phase 6's two answer hints stay hidden until Phase 13 makes them work.
 
 ## Sizing and phase count
 
@@ -210,7 +222,7 @@ phase file decides behaviour.
 `async-input`, `inbox` and `filed-plan-decisions` ids) in `src/shared/voice.ts`. `VoiceConfig`, the
 `voice` app-config entry: `muted`, `hotkey`, `autoMuteDuringCalls`, `cancelWindow { enabled,
 seconds }`, `whenUnsure` (`show` or `ask`), `planFormsByVoice`, `inputDevice`, `decisionProvider`
-(null, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
+(null for automatic, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
 (`pill`, `toast` or `popover`) and `indicators` (a list of indicator ids). Later phases read and
 write these fields and add none.
 
@@ -241,7 +253,9 @@ it while the mode is `listening` or `push-to-talk`. `routeUtterance(utterance, c
 `src/shared/voice-routing.ts` returns `control`, `addressed`, `needs-model` or `ignored`.
 `VoiceCard { id, state, parts, deadline, candidates, reason, openQuestions }` with states
 `pending`, `resolving`, `unsure`, `sent`, `queued`, `held`, `not-running`, `cancelled`, `failed`;
-a part is `{ target, text }` and a split has two. Event `voice_card`. Routes `POST
+a part is `{ target, text }` and a split has two. A candidate is `{ kind, id, title, detail }`:
+`kind` is `agent` in Phases 3 and 4, with a roster key as its id, and Phase 13 adds `question`,
+with a review id. Event `voice_card`. Routes `POST
 /api/voice/cards/:id/cancel`, `/send-now` and `/pick`. The `VoiceDeliverer` interface. `GET` and
 `DELETE /api/voice/heard` with `HeardEntry`. `say` in `e2e/fixtures/voice.ts`.
 
@@ -255,13 +269,13 @@ pending voice answer, together with its companion card when it has one, as one e
 own entry, not the newest.
 
 **E. Model step (Phase 4).** `VoiceDecider.ask(questions)` with question kinds `who`, `split` and
-`option`, each answered with a choice and a confidence. Rungs in order: the selected decision
+`option`, each answered with a choice and a confidence. Rungs in order: the effective decision
 provider, the `voice-routing` background job, none. `effectiveDecisionProvider(config, env)`
-names the provider: the one chosen in Voice settings, else the one named by
-`MISSION_VOICE_DECISION_PROVIDER`, else none. A key in the environment selects no provider and
-is read for the selected one only. Key routes `GET`, `PUT` and `DELETE
-/api/voice/decision-key`; `GET` reports the effective provider, where it was selected and the
-key's source (`settings`, `environment` or none), and does not return the key.
+names the provider: none when the setting is `off`; the one chosen in Voice settings; and with
+the setting null, the provider of whichever key is present, so a key in the environment alone
+switches it on (the operator's decision of 2026-11-23). Key routes `GET`, `PUT` and `DELETE
+/api/voice/decision-key`; `GET` reports the effective provider and the key's source
+(`settings`, `environment` or none), and does not return the key.
 
 **F. Spoken turns (Phase 5).** `VOICE_TURN_PREFIX`, `spokenMessageText(words, notes)` and
 `openQuestionsNote(asks)` in `src/shared/voice-delivery.ts`;
@@ -269,8 +283,9 @@ key's source (`settings`, `environment` or none), and does not return the key.
 composes the notes once, when the turn is claimed for delivery; the `pending_turns` columns
 `spoken_words` and `composed_at`; the delivery outcomes `sent`, `queued`, `held`, `not-running`,
 `failed`; `voiceHold(sessionId)`, which is true while a card is pending for the session, while a
-spoken turn for it is queued and undelivered, and for at most 10 minutes after delivery until
-that turn ends.
+spoken turn's row exists for it in any state (the row is deleted when delivery is confirmed),
+and for at most 10 minutes after `turn_delivered` until the agent's turn ends. `composed_at`
+marks the claim, not delivery, and the hold does not read it.
 
 **G. Card component (Phase 6).** `VoiceCardView` draws one `VoiceCard`. `VoiceCardHost` shows it
 as a toast when `ui.voice.confirmation` is `toast` or the `floating-windows` capability is

@@ -31,6 +31,11 @@ As of `2088bd522`:
   (`src/web/components/ReviewAnswer.tsx:158`).
 - A hibernated task resumes through `src/server/hibernation/manager.ts:291`; queued turns are held
   until the session is bound again.
+- A `pending_turns` row is `queued`, `sending` or `uncertain` (`src/shared/types.ts:182`) and
+  exists until delivery is confirmed. Confirmation deletes the row and announces it once through
+  `Registry.turnDelivered` (`src/server/registry.ts:2107`, called from `journalDelivered`,
+  `src/server/pending-turns.ts:1488`). A claim is not a delivery: a claimed row is `sending`,
+  and one whose handoff cannot be proven is `uncertain`.
 - Foreman is refused by `foremanWriteRefusal` (`src/server/routes.ts:1022`), which already reads
   the composer-activity lease (`src/server/composer-activity.ts:43`).
 - Inherited: `VoiceDeliverer` (contract D); `SpokenName.state` (contract C); from the inbox plan
@@ -64,17 +69,22 @@ As of `2088bd522`:
 5. **Stop.** `stop` interrupts through `interruptSession` and, where the harness cannot be
    interrupted, reports `failed` with the reason.
 6. **Foreman hold.** `voiceHold(sessionId)` is true in three cases, and in no other:
-   - a pending card targets the session, until it is cancelled or delivered;
-   - a spoken turn for the session is queued and has not been delivered (no `composed_at`),
-     for as long as that lasts. This is the `held` outcome's case, and it has no time limit:
-     a message waiting behind a question keeps Foreman off that question however long the
-     operator takes. Removing the queued turn ends it;
-   - a spoken turn has been delivered and its own turn has not ended, for at most 10 minutes
-     after `composed_at`. The limit guards against a turn end that is never observed and does
-     not apply before delivery.
-   The second and third cases are read from the spoken turn's row, so they survive a daemon
-   restart with it. `foremanWriteRefusal` refuses review writes for a held session with the
-   reason `voice-message-pending`.
+   - a pending card targets the session, until it is cancelled or handed to delivery;
+   - a spoken turn's row exists for the session, in any state: `queued`, `sending` or
+     `uncertain`. The row is there until delivery is confirmed, so this covers a turn waiting
+     behind a question (the `held` outcome), a turn that was claimed and composed but whose
+     send failed or is being retried, and one whose handoff is uncertain. It has no time
+     limit: Foreman stays off that session's questions however long the message waits.
+     Recalling or removing the row ends it. `composed_at` is not read here, because it is
+     stamped at the claim and says nothing about delivery;
+   - the spoken turn's delivery has been confirmed (`turn_delivered` for its id) and the
+     agent's turn that received it has not ended, for at most 10 minutes after that event's
+     `deliveredAt`. The limit guards against a turn end that is never observed and cannot
+     start before the delivery is confirmed.
+   The second case is read from the row, so it survives a daemon restart with it. The third
+   is in memory and lapses on a restart, by which time the agent has the message.
+   `foremanWriteRefusal` refuses review writes for a held session with the reason
+   `voice-message-pending`.
 7. **Conversation.** Present a turn with the voice prefix as `spoken_words` with a small
    "Spoken" mark and a "What the agent received" disclosure, following the review-message model.
 8. **Docs.** `docs/voice.md`, `docs/sessions.md`, `docs/foreman.md`,
@@ -84,9 +94,9 @@ As of `2088bd522`:
 
 One migration: two nullable columns on `pending_turns`, `spoken_words` and `composed_at`. An
 existing database opens unchanged and other turns leave both null. It takes the next schema
-number at merge time. A queued spoken turn survives a daemon restart as any queued turn does, and
-so does its hold, which is read from the row. A pending card is in memory, so a card lost in a
-restart is not delivered and holds nothing.
+number at merge time. A spoken turn's row survives a daemon restart as any pending turn does, and
+so does its hold, which is the row's existence. A pending card is in memory, so a card lost in a
+restart is not delivered and holds nothing. The hold after a confirmed delivery is in memory.
 
 ## 7. Tests and verification
 
@@ -101,8 +111,10 @@ restart is not delivered and holds nothing.
 - `test/voice-foreman-hold.test.ts`: refused while held, allowed after the turn ends and after a
   cancel. With the `held` outcome and the clock moved past 10 minutes, Foreman is still refused
   on the blocking question; it is still refused after a daemon restart; it is allowed once the
-  queued turn is removed. A delivered turn whose end is never observed stops holding 10 minutes
-  after delivery.
+  queued turn is removed. A turn that was claimed and composed but whose send keeps failing
+  sits past 10 minutes with `composed_at` set: Foreman is still refused. An `uncertain` row
+  holds until the operator settles it. After `turn_delivered`, the hold ends when the agent's
+  turn ends, and 10 minutes after `deliveredAt` when that end is never observed.
 - `e2e/specs/voice-spoken-message.spec.ts`: say "Steve, check the build" to a fake session with an
   open question; its conversation shows "check the build" marked Spoken; the disclosure shows the
   open-questions note and the post-a-report line.
@@ -130,3 +142,8 @@ text builders are also what phases 13 and 14 use when an answer falls back to a 
   the `held` outcome Foreman could answer the question the message was waiting behind. The
   hold now lasts while the turn is undelivered, the 10 minutes count from delivery, and the
   hold is read from the row so a restart does not drop it.
+- Pull request review, fifth round: that fix took `composed_at` for delivery, but step 3 stamps
+  it at the claim, before anything is sent, so a composed turn that was retried or still
+  waiting was already on the 10-minute clock. The hold now follows the repository's own
+  delivery fact: the row exists until delivery is confirmed, and the clock starts at
+  `turn_delivered`.

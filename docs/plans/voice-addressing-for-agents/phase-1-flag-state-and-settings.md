@@ -45,7 +45,7 @@ As of `2088bd522`:
 2. **Config.** The `voice` app-config entry with contract A's fields and defaults (`muted` false,
    `autoMuteDuringCalls` true, `cancelWindow` on at 4 seconds, `whenUnsure` `show`,
    `planFormsByVoice` true, `inputDevice` `built-in`, `decisionProvider` null, `backend` `auto`;
-   `decisionProvider` accepts null, `off`, `openai` or `jev`),
+   `decisionProvider` accepts null, which means automatic, `off`, `openai` or `jev`),
    its routes, and `ui.voice` (`confirmation` `pill`, `indicators` holding `status-line`).
 3. **State.** `voiceMode(inputs)` in `src/shared/voice.ts`: off when the flag is off; unavailable
    when a reason holds; then muted; then, during a call with auto-mute on, push-to-talk while held

@@ -1,7 +1,7 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { reportToRead, type ReportItem } from "@shared/reports.ts";
+import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
@@ -948,6 +948,8 @@ export class Registry extends EventEmitter {
    * or replaced. Never touched by eviction - a report outlives its session.
    */
   private reports = new Map<string, ReportItem>();
+  /** Muted report authors: a cache and a notifier for `ReportManager`, which owns `report_mutes`. */
+  private reportMutes: ReportMute[] = [];
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
@@ -1428,6 +1430,7 @@ export class Registry extends EventEmitter {
     restoringSessions: RestoringSession[];
     reviews: ReviewItem[];
     reports?: ReportItem[];
+    reportMutes?: ReportMute[];
     tasks: Task[];
     personas: PersonaView[];
     sessionActions: SessionAction[];
@@ -1459,7 +1462,7 @@ export class Registry extends EventEmitter {
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
       // Behind its flag, like the routes: with it off no window is handed a report.
-      ...(featureEnabled(INBOX_FLAG) ? { reports: [...this.reports.values()] } : {}),
+      ...(featureEnabled(INBOX_FLAG) ? { reports: [...this.reports.values()], reportMutes: [...this.reportMutes] } : {}),
       // Memory keeps an earlier launch's record so a later publish can carry it forward; what
       // leaves the daemon carries only the record of the session the task is on now.
       tasks: [...this.tasks.values()].map(taskShapingForReads),
@@ -7697,6 +7700,17 @@ export class Registry extends EventEmitter {
   /** Every report waiting to be read, as the snapshot carries them. */
   reportsToRead(): ReportItem[] {
     return [...this.reports.values()];
+  }
+
+  /** Replace the muted authors and tell every window, behind the `inbox` flag like reports. */
+  setReportMutes(mutes: readonly ReportMute[]): void {
+    this.reportMutes = [...mutes];
+    if (featureEnabled(INBOX_FLAG)) this.emitEvent({ type: "report_mutes", mutes: [...mutes] });
+  }
+
+  /** The muted report authors, as the snapshot carries them. */
+  listReportMutes(): ReportMute[] {
+    return [...this.reportMutes];
   }
 
   getReview(id: string): ReviewItem | undefined {

@@ -1041,3 +1041,24 @@ test("awaitsAwayState: only a report alert, with the flag on, waits while Away m
 function reportAlertFixture(): Alert {
   return detectAlerts(reportsScope([mkReport({ id: "r-1" })]), reportsScope([stamped("working")]))[0]!;
 }
+
+// ---- a muted author (Phase 7) ----
+
+test("shouldDeliver: a muted author's report raises nothing; another author's still does, and no other alert reads mutes", () => {
+  const ALL_ON: NotifySwitches = { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true };
+  const report = reportAlertFixture();
+  assert.equal(report.authorKey, "resident:steve", "the alert carries the key a mute is keyed by");
+  const muted = new Set([report.authorKey!]);
+  assert.equal(shouldDeliver(report, ALL_ON, false), true);
+  assert.equal(shouldDeliver(report, ALL_ON, false, muted), false);
+  assert.equal(shouldDeliver(report, ALL_ON, false, new Set(["session:someone-else"])), true);
+  // Every other alert, from that same session, is unaffected by the mute.
+  const sameSession: Alert[] = [
+    { id: "q", kind: "review", title: "", body: "", sessionId: "s1", severity: "attention", notify: "blocking-question" },
+    { id: "s", kind: "stuck", title: "", body: "", sessionId: "s1", severity: "attention", notify: "stuck" },
+    { id: "n", kind: "needs-input", title: "", body: "", sessionId: "s1", severity: "attention" },
+  ];
+  for (const a of sameSession) assert.equal(shouldDeliver(a, ALL_ON, false, muted), shouldDeliver(a, ALL_ON, false), a.id);
+  // With the flag off there are no report alerts to mute, and delivery is exactly `deliverable`.
+  for (const a of sameSession) assert.equal(shouldDeliver(a, null, false, muted), deliverable(a));
+});

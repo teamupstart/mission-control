@@ -33,9 +33,13 @@ export function mkReport(over: Partial<ReportItem> & { id: string }): ReportItem
  * Report controls for a rendered inbox, recording each call. `AttentionInbox` requires real
  * controls, so a render test passes these rather than an inert default.
  */
-export function mkReportControls(openReportId: string | null = null, target: ReplyTarget = { kind: "live", sessionId: "s1" }) {
-  const calls: { toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[] } =
-    { toggled: [], markedRead: [], replied: [], followedUp: [] };
+export function mkReportControls(
+  openReportId: string | null = null,
+  target: ReplyTarget = { kind: "live", sessionId: "s1" },
+  mutedAuthors: ReadonlySet<string> = new Set(),
+) {
+  const calls: { toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[]; muted: string[]; markedAllRead: string[][] } =
+    { toggled: [], markedRead: [], replied: [], followedUp: [], muted: [], markedAllRead: [] };
   return {
     calls,
     controls: {
@@ -45,6 +49,9 @@ export function mkReportControls(openReportId: string | null = null, target: Rep
       targetFor: (_report: ReportItem): ReplyTarget => target,
       onReply: async (report: ReportItem) => { calls.replied.push(report.id); return null; },
       onFollowUp: async (report: ReportItem) => { calls.followedUp.push(report.id); return null; },
+      mutedAuthors,
+      onMute: async (report: ReportItem) => { calls.muted.push(report.author.key); return null; },
+      onMarkAllRead: async (ids: readonly string[]) => { calls.markedAllRead.push([...ids]); return null; },
     },
   };
 }

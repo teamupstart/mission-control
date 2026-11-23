@@ -311,6 +311,12 @@ export interface AttentionInput {
    */
   reports?: readonly ReportItem[];
   /**
+   * Author keys whose reports are muted (`report_mutes`). Their reports are left out of the
+   * Reports section and `toRead`, and are not marked read: drop a key and they are listed again.
+   * Optional, and absent means nobody is muted.
+   */
+  mutedAuthors?: ReadonlySet<string>;
+  /**
    * The daemon's current stalls (`GET /api/away/stalls`), passed only while the `inbox` flag is
    * on. Absent, or with stall detection off, the fold draws no Stuck rows and is the fold every
    * caller that predates them already gets.
@@ -437,7 +443,8 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  *     backstop so a stuck session is not drawn twice.
  *  8. **Parked finalizations** - a stuck destructive step.
  *  9. **Reports** - agent reports waiting to be read, grouped by author. Last, so the inbox's own
- *     Snoozed heading always follows it, and counted in `toRead` rather than `total`.
+ *     Snoozed heading always follows it, and counted in `toRead` rather than `total`. A muted
+ *     author's reports are left out (`mutedAuthors`) without being marked read.
  *
  * The five that predate pipelines keep their relative order exactly: the pipeline sections were
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
@@ -668,7 +675,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // queue; authors are ordered by their oldest report, so the longest wait still leads.
   const reportsByAuthor = new Map<string, ReportItem[]>();
   for (const report of input.reports ?? []) {
-    if (!reportToRead(report)) continue;
+    if (!reportToRead(report) || input.mutedAuthors?.has(report.author.key)) continue;
     const group = reportsByAuthor.get(report.author.key);
     if (group) group.push(report);
     else reportsByAuthor.set(report.author.key, [report]);
@@ -713,6 +720,15 @@ const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();
  * dismissed (Mark read is how it leaves), so reports fold exactly as they always do: the Reports
  * section and the to read figure do not wait on a read they do not depend on.
  */
-export function foldWhileDismissalsUnknown(reports?: readonly ReportItem[]): AttentionFold {
-  return foldAttention({ sessions: [], reviews: [], ensembles: [], ...(reports ? { reports } : {}) });
+export function foldWhileDismissalsUnknown(
+  reports?: readonly ReportItem[],
+  mutedAuthors?: ReadonlySet<string>,
+): AttentionFold {
+  return foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    ...(reports ? { reports } : {}),
+    ...(mutedAuthors ? { mutedAuthors } : {}),
+  });
 }

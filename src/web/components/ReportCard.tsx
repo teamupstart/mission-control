@@ -24,6 +24,11 @@ import { Tooltip } from "./Tooltip.tsx";
  * that has ended; or a line saying no follow-up can be
  * started when the report stored no repository. A completed session is never resumed.
  *
+ * Mute is `mute`, drawn as "Mute <name>'s reports" while the author is not muted. A muted
+ * author's reports leave the inbox, so the one place this card is drawn for one is the "Opened
+ * from a notification" band; there it draws no Mute and says the author is muted and that Unmute
+ * is in Settings > Reports.
+ *
  * Which report is open is the dashboard's (`openReportId` in App), never this card's: a voice
  * command binds to the report that is open on screen, so there is one answer to "which one".
  * Opening a report does NOT mark it read; Mark read, a reply, or a dispatched follow-up does.
@@ -36,6 +41,8 @@ export function ReportCard({
   onMarkRead,
   onReply,
   onFollowUp,
+  muted = false,
+  onMute,
   error = null,
   now,
 }: {
@@ -49,6 +56,10 @@ export function ReportCard({
   onReply: (text: string) => Promise<string | null>;
   /** Start, or retry, the follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (text: string) => Promise<string | null>;
+  /** Whether the report's author is muted. A muted author's card offers no Mute. */
+  muted?: boolean;
+  /** Mute the report's author. Absent draws no Mute control. */
+  onMute?: () => void;
   /** Why the last Mark read was refused, drawn beneath the card until it is tried again. */
   error?: string | null;
   /** Injectable so a render test can own the clock. */
@@ -104,7 +115,24 @@ export function ReportCard({
             ) : (
               <span className="dim">Read</span>
             )}
+            {!muted && onMute && (
+              <InboxActionButton
+                action="mute"
+                name={name}
+                label={`Mute ${name}'s reports`}
+                className="btn btn-ghost"
+                tooltip={`Stop notifying you about ${name}'s reports and stop listing them in the inbox. Nothing is marked read, and they stay in its conversation. Unmute in Settings > Reports`}
+                cardOpen
+                onClick={onMute}
+              />
+            )}
           </div>
+          {muted && (
+            <p className="inbox-line dim agent-report-muted">
+              {name}'s reports are muted, so they raise no notification and are not listed in the
+              inbox. Unmute in Settings &gt; Reports.
+            </p>
+          )}
         </div>
       )}
       {error && <p className="inbox-line inbox-error" role="alert">{error}</p>}

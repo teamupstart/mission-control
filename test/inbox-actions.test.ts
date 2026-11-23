@@ -360,3 +360,32 @@ test("the Stuck card's ten actions are declared with the spoken forms or reasons
   assert.equal(actions.find((entry) => entry.id === "push")?.label, "Tell it to push");
   assert.ok(!actions.some((entry) => /cancel/i.test(entry.id) || /cancel/i.test(entry.label)), "no inbox action is Cancel");
 });
+
+// ---- report noise controls (Phase 7) ----
+
+test("Mute has its spoken form; Mark all read is click-only and section-wide", () => {
+  assert.deepEqual(inboxAction("mute").spoken, { named: "{name}, mute reports", whileOpen: null });
+  assert.equal(inboxAction("mute").clickOnly, null);
+  assert.equal(spokenHintText(inboxAction("mute"), "Steve", true), '"Steve, mute reports"');
+  assert.equal(inboxAction("mark-all-read").spoken, null);
+  assert.equal(inboxAction("mark-all-read").clickOnly, "section-wide");
+  assert.equal(inboxAction("mark-all-read").label, "Mark all read");
+  // Declined by the operator: there is no per-agent Mark all read.
+  assert.equal(actions.filter((action) => /mark-all/.test(action.id)).length, 1);
+});
+
+test("the report card draws Mute through its action with the spoken hint, and none for a muted author", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-1", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } });
+  const draw = (muted: boolean) => renderToStaticMarkup(voice(true, createElement(ReportCard, {
+    report, open: true, ...reportCardProps(), muted, onMute: () => undefined, now: 1,
+  })));
+  const open = draw(false);
+  assert.match(open, /data-inbox-action="mute"[^>]*>Mute Steve&#x27;s reports<\/button>/);
+  assert.match(open, /data-spoken-action="mute">&quot;Steve, mute reports&quot;</);
+  const muted = draw(true);
+  assert.doesNotMatch(muted, /data-inbox-action="mute"/);
+  assert.match(muted, /Steve&#x27;s reports are muted/);
+  assert.match(muted, /Unmute in Settings &gt; Reports\./);
+});

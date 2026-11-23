@@ -23,6 +23,7 @@ import {
   type ReportAuthor,
   type ReportDocumentKind,
   type ReportItem,
+  type ReportMute,
   type ReportReadBy,
 } from "@shared/reports.ts";
 import { reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -240,6 +241,7 @@ export class ReportManager {
     // is read when the session is first seen, or when the grace period ends. The grace period
     // keeps its original deadline, 20 seconds after the post: a restart neither extends it nor
     // restarts it.
+    this.registry.setReportMutes(this.listMutes());
     for (const report of this.listToRead()) {
       this.registry.upsertReport(report);
       if (report.announcedAs === null) {
@@ -253,7 +255,11 @@ export class ReportManager {
     let wasOn = featureEnabled(INBOX_FLAG);
     this.stopFlags = onFeatureFlagsChanged(() => {
       const on = featureEnabled(INBOX_FLAG);
-      if (on && !wasOn) for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
+      if (on && !wasOn) {
+        // Mutes first, so a window never lists a muted author's reports in between.
+        this.registry.setReportMutes(this.registry.listReportMutes());
+        for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
+      }
       wasOn = on;
     });
     // A follow-up's report follows its task: cleared once the task has started, however it was
@@ -562,6 +568,60 @@ export class ReportManager {
     const report = getRow(id);
     if (changed && report) this.registry.upsertReport(report);
     return report;
+  }
+
+  /**
+   * Mark all read: `markRead` with `mark-all` for exactly these ids, which are the reports the
+   * Reports section listed when it was pressed. A report not named stays unread, however recently
+   * it arrived. Answers the reports this call took out of to read; an unknown id, or one already
+   * read, changes nothing.
+   */
+  markAllRead(ids: readonly string[]): ReportItem[] {
+    const cleared: ReportItem[] = [];
+    for (const id of new Set(ids)) {
+      const before = getRow(id);
+      if (!before || before.readAt !== null) continue;
+      const after = this.markRead(id, "mark-all");
+      if (after?.readBy === "mark-all") cleared.push(after);
+    }
+    return cleared;
+  }
+
+  /** Muted report authors, oldest mute first. */
+  listMutes(): ReportMute[] {
+    return (openDb()
+      .prepare("SELECT author_key, author_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
+      .all() as Array<{ author_key: string; author_name: string; muted_at: number }>)
+      .map((row) => ({ authorKey: row.author_key, authorName: row.author_name, mutedAt: Number(row.muted_at) }));
+  }
+
+  /**
+   * Mute an author's reports, from now on. Named by the name its latest report stored, so
+   * Settings can list it after its session is gone. Null when no report carries that author key:
+   * a mute is offered on a report card, so there is always one. Muting twice keeps the first
+   * mute's time. Never touches `reports`: nothing is marked read, and posting is never refused.
+   */
+  mute(authorKey: string): ReportMute | null {
+    const latest = openDb()
+      .prepare("SELECT author_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
+      .get(authorKey) as { author_name: string } | undefined;
+    if (!latest) return null;
+    openDb()
+      .prepare("INSERT INTO report_mutes (author_key, author_name, muted_at) VALUES (?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
+      .run(authorKey, latest.author_name, this.now());
+    const mutes = this.listMutes();
+    this.registry.setReportMutes(mutes);
+    return mutes.find((mute) => mute.authorKey === authorKey) ?? null;
+  }
+
+  /**
+   * Unmute an author. Its reports still waiting to be read are listed and counted again, since
+   * a mute never marked them read. False when the author was not muted.
+   */
+  unmute(authorKey: string): boolean {
+    const removed = openDb().prepare("DELETE FROM report_mutes WHERE author_key = ?").run(authorKey).changes > 0;
+    if (removed) this.registry.setReportMutes(this.listMutes());
+    return removed;
   }
 
   /**

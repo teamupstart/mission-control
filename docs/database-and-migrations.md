@@ -37,6 +37,13 @@ return digest counted the report, so it raises no notification afterwards. `foll
 `published_archive_key` stay null until later phases write them. An attached document is copied to
 `<state home>/reports/<id>/`, outside the database.
 
+`report_mutes` (schema 49) holds one row per muted report author (`author_key`, the key its
+reports carry), with the name it was muted under and when. It is created in `migrate()`, so an
+older database gains an empty table on its next open, and nothing is muted until the operator
+mutes an agent. `ReportManager.mute` inserts a row and `unmute` deletes it; neither touches
+`reports`, so a mute never marks a report read. Settings > Reports' guidance is not here: it is the
+`reports` entry in `app_config`.
+
 `session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
 per note key, the same key that carries notes, goals, invites and standing instructions across
 restarts, with the bound `task_id` recorded for reference. It is created in `migrate()`, so a

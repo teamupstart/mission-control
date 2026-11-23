@@ -449,7 +449,9 @@ to promise, so a launch argument carries no section at all: the worker starts ex
 without shaping, and the record's `limit` says the combined limit could not be measured.
 
 That budget counts the daemon's environment, what the launch wrapper exports, and a 64 KiB
-reserve. The agent actually runs in the terminal server's environment, though: a reused tmux
+reserve. The wrapper unsets any `WORK_UNIT_ID` the daemon inherited and exports only the launch's
+own, so the budget counts that one alone, and a daemon started from an agent's shell is never
+charged for a work unit its launches do not carry. The agent actually runs in the terminal server's environment, though: a reused tmux
 server, a Herdr login shell or an emulator can add variables the daemon never sees. So the
 final check happens at Pi's exec, inside the launch wrapper, under the pane's real environment.
 The shaped turn one is written into the wrapper script, never into the wrapper's own launch

@@ -54,11 +54,14 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `GET /api/reviews/:id`, the earlier version a revised plan form links to, and then for the Stuck
   // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and then
   // for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you" switches in
-  // `alerts`, all on.
+  // `alerts`, all on, and then for report noise controls' seven flag-gated routes
+  // (`GET /mcp/reports/guidance`, `GET` and `PUT /api/reports/guidance`, `GET` and
+  // `POST /api/reports/mutes`, `DELETE /api/reports/mutes/:authorKey` and
+  // `POST /api/reports/read-all`), which answer 404 with the `inbox` flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 439);
+  assert.equal(others.length, 446);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "269773ad0986260062da216e61da7a1b3c79d59d1dfa4d36124f34c7fb814b09");
+    "ffd5f39db141fdbd6a9594a7cf9852e968273759c18bbce62d91a710730fe27b");
 });
 
 function sourceFiles(dir: string): string[] {

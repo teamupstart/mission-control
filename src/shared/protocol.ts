@@ -52,7 +52,7 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
-import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
+import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -1226,6 +1226,57 @@ export const ReportFollowUpSchema = z.object({
     .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
     .optional().default(""),
 });
+
+/**
+ * The `reports` settings entry (Settings > Reports). `guidance` is the operator's own text for
+ * when to post a report, or null for the default (`DEFAULT_REPORT_GUIDANCE`).
+ */
+export const ReportsSettingsSchema = z.object({
+  guidance: z.string().max(REPORT_GUIDANCE_LIMIT).nullable().catch(null).default(null),
+});
+export type ReportsSettings = z.infer<typeof ReportsSettingsSchema>;
+
+/**
+ * `PUT /api/reports/guidance`: save the operator's guidance, or null to reset it to the default.
+ * Trimmed; blank text is the same as null, so a cleared box resets rather than saving nothing.
+ */
+export const ReportGuidanceUpdateSchema = z.object({
+  guidance: z.string().trim()
+    .max(REPORT_GUIDANCE_LIMIT, `report guidance can be at most ${REPORT_GUIDANCE_LIMIT} characters`)
+    .nullable()
+    .transform((text) => (text ? text : null)),
+}).strict();
+
+/**
+ * What the guidance routes answer: the saved text, the text in force, the default and the limit.
+ * Every field is required, and the dashboard parses an answer against this rather than filling
+ * a missing field in, so a malformed answer reads as a failure and never as an empty editor.
+ */
+export const ReportGuidanceViewSchema = z.object({
+  /** The operator's own text, or null while the default is in force. */
+  guidance: z.string().nullable(),
+  /** The guidance new sessions' `post_report` carries. */
+  effective: z.string(),
+  defaultGuidance: z.string(),
+  limit: z.number().int().positive(),
+});
+export type ReportGuidanceView = z.infer<typeof ReportGuidanceViewSchema>;
+
+/** `POST /api/reports/mutes`: mute one author, named by the key its reports carry. */
+export const ReportMuteBodySchema = z.object({
+  authorKey: z.string().trim().min(1).max(512)
+    .regex(/^(resident|session):.+$/, "must be an author key such as session:<id> or resident:<id>"),
+}).strict();
+
+/**
+ * `POST /api/reports/read-all`: Mark all read for exactly the reports the Reports section listed
+ * when it was pressed, so a report that arrives after the click is not cleared. One request
+ * carries at most `REPORT_READ_ALL_BATCH` ids; the dashboard sends a longer list in batches
+ * (`markAllReportsRead`).
+ */
+export const ReportReadAllSchema = z.object({
+  ids: z.array(z.string().regex(REPORT_ID_PATTERN, "must be a report id such as r-12")).min(1).max(REPORT_READ_ALL_BATCH),
+}).strict();
 
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({

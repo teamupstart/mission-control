@@ -227,6 +227,19 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["instruction", "prompt", "repository", "always", "rule", "preamble", "per-repo"],
   },
   {
+    id: "reports",
+    label: "Reports",
+    icon: "✉",
+    blurb: "When agents post reports, and whose reports are muted",
+    // `sessions` / `machine`, after Standing instructions: the guidance is text a session's
+    // `post_report` tool starts with, and both it and the muted agents are the daemon's.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["report", "post_report", "guidance", "mute", "unmute", "muted", "noisy", "chatty", "inbox", "agent reports"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "inbox",
+  },
+  {
     id: "cost",
     label: "Cost",
     icon: "$",

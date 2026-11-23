@@ -125,6 +125,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "pause.state",
       "pipelines",
       "repoIndex",
+      // Settings > Reports' guidance for when an agent posts a report (`inbox` flag).
+      "reports",
       "residents.mcpServers",
       "residents.skillSources",
       "setup.banner",
@@ -172,6 +174,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     APP_CONFIG_ENTRIES.terminals,
     APP_CONFIG_ENTRIES.backups,
     APP_CONFIG_ENTRIES.storageLimits,
+    APP_CONFIG_ENTRIES.reports,
     APP_CONFIG_ENTRIES.ui,
   ]) {
     assert.equal(entry.classification.kind, "fields");

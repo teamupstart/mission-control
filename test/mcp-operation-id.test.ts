@@ -30,7 +30,9 @@ test("tool requests carry a generated operation id on a runtime with no crypto g
   const daemon = createServer((req, res) => {
     req.resume();
     req.on("end", () => {
-      requests.push({ path: req.url!, headers: req.headers });
+      // The MCP child reads the report guidance once as it starts; this test counts the tool's
+      // own requests, so that startup read is answered and not recorded.
+      if (req.url !== "/mcp/reports/guidance") requests.push({ path: req.url!, headers: req.headers });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ commentId: "MC-376a.1", released: true }));
     });

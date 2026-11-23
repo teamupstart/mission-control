@@ -3463,9 +3463,14 @@ finished something you need to read with the Mission Control MCP tool `post_repo
 one-line `title`, a Markdown `body` (up to 4,000 characters), and optionally a checkout-relative
 `.html` or `.md` `file`, an http(s) `url`, and `replaces`, the id of one of its own earlier
 reports. The tool returns at once with a receipt naming the report's id (`r-42`) and telling the
-agent not to wait for a reply. Its description tells the agent when to report: when asked to, or
-when it has finished something you must read to act. Progress stays on `report_status`, and
-anything urgent or needing your decision is a `request_input` question.
+agent not to wait for a reply. Its description tells the agent when to report: by default, when
+asked to, or when it has finished something you must read to act. You can change that sentence,
+and reset it, in Settings > **Reports**
+([When reports get chatty](attention-and-alerts.md#when-reports-get-chatty)). The session's MCP
+child reads it once as it starts (`GET /mcp/reports/guidance`, with a short timeout and the
+default on any failure), so a change reaches sessions started afterwards and a running session
+keeps what it started with. Progress stays on `report_status`, and anything urgent or needing
+your decision is a `request_input` question; that half of the description never changes.
 
 - **Stored apart from questions.** A report has its own table and never becomes a review: the
   session does not turn amber, nothing counts toward **need you** or **to answer**, completion is
@@ -3485,7 +3490,8 @@ anything urgent or needing your decision is a `request_input` question.
   was posted, marked **Report**, with its title (click it to show the body and link), its id, its
   version when it replaced an earlier report, and how it stands: **Waiting to be read** with
   **Mark read**, **Replaced by a later version**, or how you cleared it (**Read**, **Replied to**,
-  or **Followed up in a new task**). Every version keeps its entry, so a replaced report stays
+  **Followed up in a new task**, or **Read, with Mark all read**). Every version keeps its entry,
+  so a replaced report stays
   here after the inbox shows only its successor. Entries come from the history route and update
   live as reports are posted, read and replaced. Opening an entry opens the same report in the
   inbox: there is one open report on screen.
@@ -3498,6 +3504,9 @@ anything urgent or needing your decision is a `request_input` question.
   restated, then your words (see the format in
   [Answering a report](attention-and-alerts.md#answering-a-report)).
   Messages you type in the composer are unchanged: nothing is added to them.
+- **A muted agent.** Muting an agent never refuses its posts and never changes its conversation:
+  every report it posts is an entry here, waiting to be read, while the inbox leaves it out and no
+  notification is raised for it.
 - **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply
   and follow-up routes refuse, and no conversation entry is drawn. A session on an MCP bundle
   older than this build does not have the tool.

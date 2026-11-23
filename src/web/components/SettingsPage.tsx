@@ -2,6 +2,8 @@ import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
 import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { TaskShapingPanel } from "./TaskShapingPanel.tsx";
+import { ReportsSettingsPanel } from "./ReportsSettingsPanel.tsx";
+import type { ReportMute } from "@shared/reports.ts";
 import type { ShapingSettings } from "../useShapingSettings.ts";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
@@ -228,8 +230,11 @@ export function SettingsPage({
   onOpenForemanProfile,
   featureFlagsSettings,
   shapingSettings,
+  reportMutes = [],
   jump = null,
 }: {
+  /** Settings > Reports' muted agents, App's because the event stream holds them (`report_mutes`). */
+  reportMutes?: readonly ReportMute[];
   featureFlagsSettings?: FeatureFlagsSettings;
   /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
   shapingSettings?: ShapingSettings;
@@ -637,6 +642,8 @@ export function SettingsPage({
         return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
       case "task-shaping":
         return <TaskShapingPanel state={shapingSettings} />;
+      case "reports":
+        return <ReportsSettingsPanel mutes={reportMutes} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

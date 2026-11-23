@@ -1,12 +1,20 @@
 import type { Context, Hono } from "hono";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { McpPostReportSchema, ReportFollowUpSchema, ReportReplySchema } from "@shared/protocol.ts";
+import {
+  McpPostReportSchema,
+  ReportFollowUpSchema,
+  ReportGuidanceUpdateSchema,
+  ReportMuteBodySchema,
+  ReportReadAllSchema,
+  ReportReplySchema,
+} from "@shared/protocol.ts";
 import { reportReceipt } from "@shared/reports.ts";
 import { OPERATION_ACTOR_HEADER } from "@shared/telemetry-ingress.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { checkToken } from "./auth.ts";
 import { requireFeature } from "./feature-flags/index.ts";
 import { parseBody } from "./http-body.ts";
+import { readReportGuidance, writeReportGuidance } from "./report-guidance.ts";
 import type { Registry } from "./registry.ts";
 import { ReportRefusal, type FollowUpTaskPort, type ReportManager, type SubmitOperatorTurn } from "./reports.ts";
 
@@ -19,7 +27,7 @@ function operatorRefusal(c: Context): string | null {
   const actor = c.req.header(OPERATION_ACTOR_HEADER);
   if (c.req.header("x-harness-token") || c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER)
     || actor === "agent" || actor === "foreman") {
-    return "Only the operator can open, mark read, reply to or follow up a report";
+    return "Only the operator can open, mark read, reply to, follow up or mute reports, or change their guidance";
   }
   return null;
 }
@@ -74,6 +82,60 @@ export function registerReportRoutes(
     } catch (error) {
       return refused(c, error);
     }
+  });
+
+  // The guidance in force, for the MCP child to put in `post_report`'s description when it starts.
+  // The machine token, like the tool's own post. A child that gets no answer uses the default.
+  app.get("/mcp/reports/guidance", gate, (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    return c.json({ guidance: readReportGuidance().effective });
+  });
+
+  // Settings > Reports' guidance. Reading changes nothing; saving is the operator's. Null, or
+  // blank text, resets to the default. Registered before `/api/reports/:id`, which would
+  // otherwise read `guidance` and `mutes` as report ids.
+  app.get("/api/reports/guidance", gate, (c) => c.json(readReportGuidance()));
+  app.put("/api/reports/guidance", gate, async (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    const parsed = await parseBody(c, ReportGuidanceUpdateSchema, { strict: true });
+    if (!parsed.ok) return bodyRefusal(c, parsed);
+    return c.json(writeReportGuidance(parsed.data.guidance));
+  });
+
+  // Muted authors. A mute hides an author's reports from the inbox list, the to read figure, its
+  // notifications and the Away digest, from now on; it never refuses a post and never marks
+  // anything read. The list itself rides the snapshot and `report_mutes`.
+  app.get("/api/reports/mutes", gate, (c) => {
+    if (!reports) return unavailable(c);
+    return c.json({ mutes: reports.listMutes() });
+  });
+  app.post("/api/reports/mutes", gate, async (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    if (!reports) return unavailable(c);
+    const parsed = await parseBody(c, ReportMuteBodySchema, { strict: true });
+    if (!parsed.ok) return bodyRefusal(c, parsed);
+    const mute = reports.mute(parsed.data.authorKey);
+    return mute ? c.json({ mute, mutes: reports.listMutes() }) : c.json({ error: "no report from that author" }, 404);
+  });
+  app.delete("/api/reports/mutes/:authorKey", gate, (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    if (!reports) return unavailable(c);
+    const removed = reports.unmute(c.req.param("authorKey"));
+    return removed ? c.json({ mutes: reports.listMutes() }) : c.json({ error: "that author is not muted" }, 404);
+  });
+
+  // Mark all read: exactly the ids the Reports section listed when it was pressed, each through
+  // `markRead` as `mark-all`. A report that arrived after the click is not among them, so it stays.
+  app.post("/api/reports/read-all", gate, async (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    if (!reports) return unavailable(c);
+    const parsed = await parseBody(c, ReportReadAllSchema, { strict: true });
+    if (!parsed.ok) return bodyRefusal(c, parsed);
+    return c.json({ reports: reports.markAllRead(parsed.data.ids) });
   });
 
   // Recorded the first time the operator opens a report, never shown as a count.

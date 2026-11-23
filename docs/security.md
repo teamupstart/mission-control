@@ -288,12 +288,14 @@ delegated sessions from approving a change, not arbitrary shell code running as 
 
 An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
 session; it never names another session. Taking a report out of **to read** is the operator's:
-`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply` and
-`POST /api/reports/:id/follow-up` refuse the machine token, a signed agent credential, and a
-request attributed to an agent or to Foreman. That is the same single-user local trust boundary
-that review answers rely on. It keeps Mission Control's own agents, Foreman and delegated sessions
-from marking a report read, from sending a message in the operator's name, and from filing and
-dispatching a follow-up task; it does not verify that a header-less loopback
+`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply`,
+`POST /api/reports/:id/follow-up`, `POST /api/reports/read-all`, `PUT /api/reports/guidance`,
+`POST /api/reports/mutes` and `DELETE /api/reports/mutes/:authorKey` refuse the machine token, a
+signed agent credential, and a request attributed to an agent or to Foreman. That is the same
+single-user local trust boundary that review answers rely on. It keeps Mission Control's own
+agents, Foreman and delegated sessions from marking a report read, from sending a message in the
+operator's name, from filing and dispatching a follow-up task, and from muting an agent or
+rewriting the guidance every later session is given; it does not verify that a header-less loopback
 request came from the dashboard, so shell code running as the operator can still call these
 routes. An attached document is accepted only from inside the posting session's checkout, using
 the same containment rules as the Files viewer.

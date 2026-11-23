@@ -93,6 +93,49 @@ test("a schema 47 database, from before the digest mark, gains counted_in_digest
   upgraded.prepare("DELETE FROM reports WHERE id = 'r-mig'").run();
 });
 
+test("a schema 48 database, from before mutes, gains the empty report_mutes table on open with its reports intact", () => {
+  db.openDb().prepare(
+    `INSERT INTO reports (id, session_id, author_key, author_name, title, body, root_id, version, created_at, root_created_at)
+     VALUES ('r-mut', 's-mut', 'session:s-mut', 'Mut', 'Kept', 'b', 'r-mut', 1, 5, 5)`,
+  ).run();
+  db.closeDb();
+  const raw = new DatabaseSync(join(home, "harness.db"));
+  raw.exec("DROP TABLE IF EXISTS report_mutes; PRAGMA user_version = 48;");
+  raw.close();
+  const upgraded = db.openDb();
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
+  const columns = (upgraded.prepare("PRAGMA table_info(report_mutes)").all() as Array<{ name: string; pk: number }>);
+  assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0]]);
+  assert.equal((upgraded.prepare("SELECT COUNT(*) AS n FROM report_mutes").get() as { n: number }).n, 0);
+  const row = upgraded.prepare("SELECT title, read_at FROM reports WHERE id = 'r-mut'").get() as { title: string; read_at: number | null };
+  assert.deepEqual({ ...row }, { title: "Kept", read_at: null });
+  upgraded.prepare("DELETE FROM reports WHERE id = 'r-mut'").run();
+});
+
+test("a mute is stored, survives a restart into the snapshot, hides without reading, and unmute brings every report back", async () => {
+  const { registry, reports } = wired();
+  const session = mkSession({ id: "s-mute", name: "chatty", cwd: checkout() });
+  const first = await reports.post(session, { title: "One", body: "b" });
+  const second = await reports.post(session, { title: "Two", body: "b" });
+  const mute = reports.mute(first.author.key)!;
+  assert.equal(mute.authorName, first.author.name);
+  // A fresh manager over the same table, as after a daemon restart: the snapshot carries the mute.
+  const restarted = new Registry();
+  const again = new ReportManager(restarted);
+  after(() => again.stop());
+  assert.ok(restarted.snapshot().reportMutes?.some((m) => m.authorKey === first.author.key));
+  // Nothing was read, and the registry still holds both: the fold, not the daemon, leaves them out.
+  const held = registry.reportsToRead().filter((r) => r.sessionId === "s-mute");
+  assert.deepEqual(held.map((r) => [r.id, r.readAt]), [[first.id, null], [second.id, null]]);
+  assert.equal(reports.unmute(first.author.key), true);
+  assert.equal(reports.unmute(first.author.key), false);
+  assert.ok(!registry.snapshot().reportMutes?.some((m) => m.authorKey === first.author.key));
+  assert.deepEqual(reports.listForSession("s-mute").map((r) => r.readAt), [null, null]);
+  // Leave nothing waiting, so a later test's fresh manager hands the registry only its own.
+  assert.deepEqual(reports.markAllRead([first.id, second.id]).map((r) => r.readBy), ["mark-all", "mark-all"]);
+});
+
 test("a post stores the report with its author, task and repository, and tells every window", async () => {
   const { reports, events } = wired();
   const session = mkSession({
@@ -438,6 +481,8 @@ function fakeRegistry() {
     getSession: (id: string) => sessions.get(id),
     upsertReport: (report: ReportItem) => { upserted.push(report); },
     reportsToRead: () => [],
+    setReportMutes: () => undefined,
+    listReportMutes: () => [],
     listResidentRuns: () => [],
   } as unknown as InstanceType<typeof Registry>;
   return {

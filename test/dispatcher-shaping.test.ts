@@ -711,6 +711,15 @@ test("Pi's launch argument: the budget counts the WORK_UNIT_ID the launch export
   setFlag(false);
   setWorkUnitPreview(true);
   t.after(() => setWorkUnitPreview(false));
+  // The daemon inherited a work unit of its own, as one started from an agent's shell does. The
+  // launch wrapper unsets it, so the budget must not charge either launch for it: set here on
+  // purpose, longer than a real id, so the test reads the same inside an agent session and on CI.
+  const inherited = process.env[WORK_UNIT_ENV_VAR];
+  process.env[WORK_UNIT_ENV_VAR] = `wu_INHERITED_BY_THE_DAEMON_${"x".repeat(40)}`;
+  t.after(() => {
+    if (inherited === undefined) delete process.env[WORK_UNIT_ENV_VAR];
+    else process.env[WORK_UNIT_ENV_VAR] = inherited;
+  });
   const probeRegistry = new Registry();
   seedTask(probeRegistry, "pi-wu-probe", repo, "pi", WU_A);
   const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-wu-probe", intent: "short request", registry: probeRegistry });

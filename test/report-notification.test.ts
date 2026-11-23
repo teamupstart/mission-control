@@ -97,3 +97,21 @@ test("a replacement that reaches the window while the lookup is in flight is the
   // A replacement the window has not heard of yet cannot be followed; the last link held opens.
   assert.equal(resolvedReport({ report: first, latest: answeredLatest }, byId(heldSecond)), heldSecond);
 });
+
+test("joined to the mute: a muted author's unread report opens in the band, and after Unmute in its row", async () => {
+  const { foldAttention } = await import("../src/web/lib/attention.ts");
+  const muted = mkReport({ id: "r-1", sessionId: "s-loud", author: { key: "session:s-loud", name: "Loud", residentProfileId: null } });
+  const other = mkReport({ id: "r-2" });
+  const fold = (mutedAuthors: ReadonlySet<string>) =>
+    foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [muted, other], mutedAuthors });
+  // Muted after its notification arrived: the fold no longer lists it, so the click draws it alone,
+  // unread, and the figure counts only the other author's report.
+  const whileMuted = fold(new Set(["session:s-loud"]));
+  assert.equal(whileMuted.toRead, 1);
+  assert.deepEqual(reportToShow("r-1", byId(muted, other), whileMuted), { where: "band", report: muted });
+  assert.equal(muted.readAt, null, "a mute never marks it read");
+  // Unmuted: listed again, so the same click opens its row.
+  const unmuted = fold(new Set());
+  assert.equal(unmuted.toRead, 2);
+  assert.deepEqual(reportToShow("r-1", byId(muted, other), unmuted), { where: "row", report: muted });
+});

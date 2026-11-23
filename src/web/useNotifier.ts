@@ -64,6 +64,11 @@ export interface NotifierDelivery {
   away: boolean | null;
   /** What a click on a report notification does, read when the click lands. */
   onOpenReport: (reportId: string) => void;
+  /**
+   * Author keys whose reports are muted: their report alerts are not raised. Read at delivery, so
+   * a notification raised before the mute stays where it is, and still opens its report.
+   */
+  muted?: ReadonlySet<string>;
 }
 
 const DELIVER_AS_BEFORE: NotifierDelivery = { notify: null, away: false, onOpenReport: () => undefined };
@@ -157,20 +162,20 @@ export function useNotifier(
     if (!awayKnown || awaitingAwayRef.current.length === 0) return;
     const waited = awaitingAwayRef.current;
     awaitingAwayRef.current = [];
-    const { notify: switches, away, onOpenReport } = deliveryRef.current;
-    raiseBatch(waited.filter((a) => shouldDeliver(a, switches, away ?? false)), settingsRef.current, onOpenReport);
+    const { notify: switches, away, onOpenReport, muted } = deliveryRef.current;
+    raiseBatch(waited.filter((a) => shouldDeliver(a, switches, away ?? false, muted)), settingsRef.current, onOpenReport);
   }, [awayKnown]);
 
   useEffect(() => {
     // A report alert raised while Away mode is unknown waits for it (see above); everything else
     // is decided now, exactly as before.
     const deliver = (a: Alert) => {
-      const { notify: switches, away } = deliveryRef.current;
+      const { notify: switches, away, muted } = deliveryRef.current;
       if (awaitsAwayState(a, switches, away)) {
         awaitingAwayRef.current.push(a);
         return false;
       }
-      return shouldDeliver(a, switches, away ?? false);
+      return shouldDeliver(a, switches, away ?? false, muted);
     };
     const openReport = (reportId: string) => deliveryRef.current.onOpenReport(reportId);
     const justConnected = ready && !wasReadyRef.current;

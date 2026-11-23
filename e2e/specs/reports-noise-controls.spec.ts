@@ -529,3 +529,41 @@ test("a refused Mute says why on the card and leaves the report listed; a refuse
   await page.goto(`${daemon.baseURL}/#/`);
   await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
 });
+
+test("Unmute for an agent another window already unmuted is no error: no alert, and the list says nobody is muted", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const name = "Follow the deploy queue";
+  const follower = await agent(daemon, name);
+  await ready(page, daemon);
+  const posted = await post(daemon, follower, { title: "Deploy queue drained", body: "Nothing waiting." });
+  await api(daemon, "/api/reports/mutes", { authorKey: posted.author.key });
+  const mutes = async () => (await api<{ mutes: Array<{ authorKey: string }> }>(daemon, "/api/reports/mutes")).mutes;
+
+  const panel = await openSettingsReports(page, daemon);
+  const list = panel.getByRole("list", { name: "Muted agents" });
+  await expect(list.getByText(name, { exact: true })).toBeVisible();
+
+  // Another window unmutes first: as this window's Unmute reaches the daemon, the agent has just
+  // been unmuted there, so the real route answers 404 "that author is not muted".
+  const answers: number[] = [];
+  await page.route("**/api/reports/mutes/*", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    const other = await fetch(`${daemon.baseURL}/api/reports/mutes/${encodeURIComponent(posted.author.key)}`, { method: "DELETE" });
+    expect(other.status).toBe(200);
+    const response = await route.fetch();
+    answers.push(response.status());
+    await route.fulfill({ response });
+  });
+  await panel.getByRole("button", { name: `Unmute ${name}` }).click();
+
+  await expect.poll(() => answers).toEqual([404]);
+  // The outcome asked for is the outcome there is: no refusal, and nobody muted.
+  await expect(panel.getByText("No agent is muted. Mute one from its report card in the inbox.")).toBeVisible();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  expect(await mutes()).toEqual([]);
+  await capture(panel, "13-unmute-already-unmuted", page);
+  // And the agent's report is listed again.
+  await page.unroute("**/api/reports/mutes/*");
+  await page.goto(`${daemon.baseURL}/#/`);
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
+});

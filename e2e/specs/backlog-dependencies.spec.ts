@@ -463,6 +463,13 @@ async function revisionEditor(page: Page, daemon: DaemonHandle, episode: "same" 
       }))), task.id);
     });
     await daemon.restart();
+    // The preview adds an edge to the planning task's current episode, which the daemon allows
+    // only while that task's live session reports its lifecycle. A restarted daemon lists the
+    // session before its driver has bound again, and a preview asked for in between is refused
+    // with "dependency task has no observable work lifecycle".
+    await expect.poll(async () => ((await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[])
+      .find((session) => session.id === origin.session.id)?.hooksSeen ?? false,
+    { message: "the planning session reports its lifecycle again after the restart" }).toBe(true);
   }
   const flag = await fetch(daemon.baseURL + "/api/feature-flags", { method: "PUT",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });

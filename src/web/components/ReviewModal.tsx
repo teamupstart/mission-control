@@ -24,6 +24,7 @@ import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
+import { RevisionTag } from "./ReviewRevision.tsx";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { CheckoutPathText } from "./CheckoutPathText.tsx";
 import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
@@ -276,6 +277,7 @@ export function ReviewCard({
         {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
         {namesOn && session && <AgentName view={asker} className="review-agent" />}
         <h3>{review.title}</h3>
+        <RevisionTag review={review} />
         {foremanAvailable && (
           <ForemanRecommendationButton
             open={foremanOpen}

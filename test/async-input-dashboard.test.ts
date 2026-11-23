@@ -27,6 +27,7 @@ import { transcriptRows } from "../src/web/lib/tools.ts";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import { SnoozeSheet } from "../src/web/components/ReviewSnooze.tsx";
 import { AskedQuestionCard, ClosedQuestionCard } from "../src/web/components/AskedQuestion.tsx";
+import { EarlierVersion, RevisionTag } from "../src/web/components/ReviewRevision.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The asynchronous input inbox, Phase 3: how the dashboard renders a question its agent filed and
@@ -586,4 +587,35 @@ test("a filed plan is drawn where it was filed as Plan filed, with an Open butto
   assert.match(withdrawn, /Scope changed/);
   const merged = renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan({ status: "orphaned", closedReason: "merged" }) }));
   assert.match(merged, /Closed unanswered: pull request merged/);
+});
+
+test("a revised plan form is tagged Revision N beside an Earlier version control, on its card and its conversation entry", () => {
+  const revised = filedPlan({ id: "r2", title: "Linter plan, revised", revision: { number: 2, previousId: "r1" } });
+  const card = renderToStaticMarkup(createElement(ReviewCard, { review: revised, session: working({ pendingReviews: 1, openQuestions: 0 }) }));
+  const head = card.slice(card.indexOf('class="review-head"'), card.indexOf("</div>", card.indexOf('class="review-head"')));
+  assert.match(head, /<span class="kind-tag kind-revision">Revision 2<\/span>/, "in the header the modal and the inbox share");
+  assert.match(head, />Earlier version<\/button>/);
+  const entry = renderToStaticMarkup(createElement(AskedQuestionCard, { review: revised, session: working(), onAnswer: () => {} }));
+  assert.match(entry, /class="review-answer-head".*kind-revision">Revision 2<.*>Earlier version</s);
+  assert.match(renderToStaticMarkup(createElement(RevisionTag, { review: { revision: { number: 3, previousId: "r2" } } })), />Revision 3</);
+
+  // A form that revises nothing carries neither, anywhere.
+  for (const html of [
+    renderToStaticMarkup(createElement(ReviewCard, { review: filedPlan(), session: working() })),
+    renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan(), session: working() })),
+  ]) {
+    assert.doesNotMatch(html, /Revision \d|Earlier version/);
+  }
+});
+
+test("the earlier version shows its title, when it was filed, why it was withdrawn, its plan and its decisions, and offers no Submit", () => {
+  const earlier = filedPlan({ id: "r1", status: "withdrawn", response: "Revised: replaced by revision 2 of this plan.", resolvedAt: NOW });
+  const html = renderToStaticMarkup(createElement(EarlierVersion, { review: earlier }));
+  assert.match(html, /aria-label="Earlier version: Linter plan"/);
+  assert.match(html, /<h3>Linter plan<\/h3>/);
+  assert.match(html, /Filed .*Withdrawn by the agent/);
+  assert.match(html, /Reason<\/span> Revised: replaced by revision 2 of this plan\./);
+  assert.match(html, /Adopt one linter/, "the plan text");
+  for (const option of earlier.decisions![0]!.options) assert.ok(html.includes(option.label), option.label);
+  assert.doesNotMatch(html, /<button|<input|Submit|Dismiss/, "a record: nothing on it answers");
 });

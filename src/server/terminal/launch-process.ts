@@ -261,15 +261,19 @@ export function spawnHasLaunchIdentity(home: SpawnedHome): boolean {
  * rejects stays rejected.
  *
  * Callers check `spawnHasLaunchIdentity` first; a home without identity matches nothing here.
+ * `readOwner` is how the wrapper's identity is read from `launchStateHome`.
  */
-export function launchedSessionMatcher(home: SpawnedHome): (session: Session) => Promise<boolean> {
+export function launchedSessionMatcher(
+  home: SpawnedHome,
+  readOwner: (stateHome: string) => Promise<LaunchProcess | null> = readLaunchProcess,
+): (session: Session) => Promise<boolean> {
   // Only a found owner is kept. A lookup that finds none may simply have run before the wrapper
   // recorded itself, so the next sighting asks again; concurrent sightings share one lookup.
   let owner: LaunchProcess | null = home.launchProcess ?? null;
   let lookup: Promise<LaunchProcess | null> | null = null;
   const resolveOwner = async (): Promise<LaunchProcess | null> => {
     if (owner || !home.launchStateHome) return owner;
-    lookup ??= readLaunchProcess(home.launchStateHome).finally(() => { lookup = null; });
+    lookup ??= readOwner(home.launchStateHome).finally(() => { lookup = null; });
     owner = await lookup;
     return owner;
   };

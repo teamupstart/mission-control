@@ -2511,7 +2511,8 @@ The session uses two Mission Control tools:
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
   model, effort and permission-mode changes, and the two blocker actions
-  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)), and
+  `complete` (see below). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2544,8 +2545,20 @@ arrived keeps both labels. Review answers retain
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.
 
-These tools cannot change the controller grant, global settings, delete sessions, or reset
-worktrees. The target's normal runtime and resource guards continue to apply. See
+`complete` is the **Complete** button, delegated. It records the target's current task as done
+with the controller's `outcome` (`completed` when omitted) and then closes the target session,
+in that order, through the same routes the dialog calls, so a stop that fails never leaves the
+outcome unwritten. Its two confirmations mean what the dialog's do and are never implied:
+`satisfyDependents: true` releases tasks declared to wait on this one without a merge, and a
+scout whose report is not archived is refused with the exact problems until a repeat carries
+`confirmIncompleteScout: true`. A target with no task refuses, as the dialog does.
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"complete","outcome":"Fix merged in #42"}}
+```
+
+These tools cannot change the controller grant or global settings, delete sessions, or reset
+worktrees. A session closes only through `complete`, with its task recorded first. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
 
 ### Blocked sessions

@@ -11,7 +11,7 @@ import {
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-9), ["coderabbit-cli", "claude-mcp-trust", "codex-mcp-trust", "acli-cli", "acli-auth", "coderabbit-auth", "voice-previews", "voice-model", "voice-microphone"], "new persisted ids append after existing entries");
+  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-10), ["coderabbit-cli", "claude-mcp-trust", "codex-mcp-trust", "acli-cli", "acli-auth", "coderabbit-auth", "voice-previews", "voice-model", "voice-microphone", "macos-terminal"], "new persisted ids append after existing entries");
   // The speech model and the microphone are Voice rows too, optional like the previews row, with
   // remedies the dashboard runs itself rather than a command.
   for (const id of ["voice-model", "voice-microphone"] as const) {

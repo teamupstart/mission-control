@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "./terminal.ts";
 /**
  * Built-in executable identities.
  *
@@ -32,6 +33,7 @@ export const EXECUTABLE_IDS = [
   "profiles",
   "coderabbit",
   "acli",
+  MACOS_TERMINAL_ID,
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

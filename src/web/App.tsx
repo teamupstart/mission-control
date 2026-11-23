@@ -2,6 +2,8 @@ import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
@@ -11,6 +13,7 @@ import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentRep
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
+
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -484,7 +487,7 @@ export function App(): React.JSX.Element {
     () => (hasSnapshot ? setupReadingFlags((id) => resolveFeatureFlag(id, featureFlags)) ?? "" : null),
     [hasSnapshot, featureFlags],
   );
-  const setup = useSetupChecks(true, liveSetupFlags);
+  const setup = useSetupChecks(true, liveSetupFlags, resolveFeatureFlag(MACOS_TERMINAL_FLAG_ID, featureFlags));
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.

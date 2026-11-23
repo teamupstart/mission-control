@@ -43,7 +43,8 @@ exit. Both `npm test` and `npm run test:electron` include the preload.
 
 A test worker must load the preload or inherit its capture for `openDb` to accept even
 a temp home. An operator can configure a live state home inside the temp directory.
-The preload records that path before clearing the inherited settings. If a test needs
+If you export `MISSION_HOME` before running a test, the preload records that path as
+live operator state and `openDb` refuses to use it as a fixture. If a test needs
 a fixture home, set it in the file body before dynamically importing modules that
 resolve the state directory. See `test/ui-config-store.test.ts` for the pattern.
 
@@ -111,9 +112,9 @@ defines the unit and E2E shard matrices. The [shared unit steps](.github/actions
 run the tests, build, and smoke-check the bundles. Typecheck and lint run in the gates job.
 
 The [pull request title workflow](.github/workflows/pull-request-title.yml) checks titles
-for Release Please. The macOS packaging job runs on manual CI dispatch.
-[Signed distribution](.github/workflows/distribution.yml) checks for successful push CI
-for the release commit and ref.
+for Release Please. Keep macOS packaging on manual CI dispatch. A packaging failure
+on a tag push would block signing because [signed distribution](.github/workflows/distribution.yml)
+requires successful push CI for the release commit and ref.
 
 ## Working rules
 
@@ -222,9 +223,9 @@ Incorrect:
 </Overlay>
 ```
 
-Tests use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
+Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
 
-Browser end-to-end tests live in `e2e/`. Run them with `npm run test:e2e`.
+Browser specs in `e2e/` use `@playwright/test` and run only under `npm run test:e2e`.
 They drive the built dashboard served by the built daemon, so run `npm run build`
 first. Tests in `test/` run under `npm test` and must pass on a fresh checkout.
 

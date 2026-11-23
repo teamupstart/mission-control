@@ -79,7 +79,7 @@ export const FEATURE_FLAGS = [
     id: "session-control-requests",
     label: "Session control requests",
     description: "Let a session ask, through Mission Control's MCP tools, for permission to control other sessions. "
-      + "The request appears as a card on that session, and only your own click on Accept in the desktop app grants it.",
+      + "The request appears in the attention inbox, and only your own click on Accept in the desktop app grants it.",
     stage: "preview",
     keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
   },

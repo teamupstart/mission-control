@@ -484,6 +484,7 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
   assert.deepEqual([...INBOX_SECTION_ORDER], [
     "ensemble_decision",
     "session_reviews",
+    "session_control_request",
     "session_dialog",
     "pipeline_commission",
     "pipeline_halt",
@@ -511,7 +512,9 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
     group: "halted", prUrl: null, costTokens: null, updatedAt: 5,
   };
   const result = foldAttention({
+    sessionControlRequestsEnabled: true,
     sessions: [
+      mkSession({ id: "s-control", sessionControlRequest: { id: "control", reason: "Help another session", requestedAt: 1 } }),
       mkSession({ id: "s-ask", name: "Asking" }),
       mkSession({
         id: "s-menu", name: "Menu",
@@ -720,11 +723,41 @@ test("a dismissal of an unrelated row leaves the Reports row and the to read fig
   assert.equal(ownId.toRead, 1);
 });
 
-test("while dismissals are unknown, reports are still folded and counted, and nothing else is", () => {
-  const held = foldWhileDismissalsUnknown([mkReport({ id: "r-1" }), mkReport({ id: "r-2", readAt: 3, readBy: "mark-read" })]);
-  assert.deepEqual(held.items.map((item) => item.kind), ["agent_reports"]);
+test("a pending control request leaves the inbox and answer count when granted, stopping, or exited", () => {
+  const asker = mkSession({
+    state: "idle",
+    sessionControlEnabled: false,
+    sessionControlRequest: { id: "request", requestedAt: 1, reason: "Help another session" },
+  });
+  const fold = (session: Session) =>
+    foldAttention({ sessions: [session], reviews: [], ensembles: [], sessionControlRequestsEnabled: true });
+
+  const pending = fold(asker);
+  assert.deepEqual(pending.items.map((item) => item.kind), ["session_control_request"]);
+  assert.equal(pending.total, 1);
+
+  // Keep the same pending request on every snapshot so each suppression condition stands alone.
+  for (const session of [
+    { ...asker, sessionControlEnabled: true },
+    { ...asker, state: "stopping" },
+    { ...asker, state: "exited" },
+  ] as const) {
+    const result = fold(session);
+    assert.deepEqual(result.items, [], `rows for ${session.state} with control=${session.sessionControlEnabled}`);
+    assert.equal(result.total, 0, `answers for ${session.state} with control=${session.sessionControlEnabled}`);
+  }
+});
+
+test("while dismissals are unknown, control requests and unread reports remain actionable", () => {
+  const asker = mkSession({ id: "asker", state: "awaiting_input",
+    sessionControlRequest: { id: "request", requestedAt: 1, reason: "Help another session" } });
+  const held = foldWhileDismissalsUnknown(
+    [mkReport({ id: "r-1" }), mkReport({ id: "r-2", readAt: 3, readBy: "mark-read" })],
+    [asker, mkSession({ id: "other", state: "awaiting_input" })],
+  );
+  assert.deepEqual(held.items.map((item) => item.kind), ["session_control_request", "agent_reports"]);
   assert.equal(held.toRead, 1);
-  assert.equal(held.total, 0);
+  assert.equal(held.total, 1);
   // With the flag off the caller passes no reports, and the held fold is empty, as it always was.
   assert.deepEqual(foldWhileDismissalsUnknown(undefined), { items: [], total: 0, toRead: 0 });
 });
@@ -866,7 +899,7 @@ test("a muted author's reports leave the Reports section and to read, unread, an
   const unmuted = foldAttention({ sessions: [], reviews: [], ensembles: [], reports, mutedAuthors: new Set() });
   assert.equal(unmuted.toRead, 3);
   // The held fold applies the same mute.
-  assert.equal(foldWhileDismissalsUnknown(reports, new Set([loud.key])).toRead, 1);
+  assert.equal(foldWhileDismissalsUnknown(reports, [], new Set([loud.key])).toRead, 1);
   assert.equal(foldWhileDismissalsUnknown(reports).toRead, 3);
 });
 

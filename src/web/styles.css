@@ -41695,12 +41695,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
 
-/* A session's own ask for Control other sessions (SessionControlRequestCard.tsx). It borrows
-   the review card's head, body and action row so it reads like a `request_input` question,
-   inside its own attention-framed panel because it sits in the conversation, not a modal.
-   Like the blocker band it never shrinks under the transcript. Only the agent's reason
-   scrolls, inside its own capped box: capping the card instead scrolled Accept and Decline
-   out of view on a short window, and the decision is the one thing this card exists for. */
+/* Cap the inbox card's reason so its decision buttons stay within reach. */
 .session-control-request {
   padding: 14px 16px;
   border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
@@ -41708,7 +41703,6 @@ body.foreman-sidecar-open .modal-backdrop {
   border-radius: 8px;
   background: var(--panel);
 }
-.detail-conv > .session-control-request { flex: none; }
 .session-control-request .review-content {
   margin-bottom: 10px;
   max-height: min(9.5em, 16dvh);

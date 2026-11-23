@@ -853,8 +853,10 @@ export class ArchiveManager {
 
   /**
    * Whether `key` still names a bundle directory in this manager's library: one `stat`, no
-   * manifest read and no digesting. Used to re-check the reports named by a pass's pruned keys,
-   * and by the archive DELETE route's report cleanup; `hasArchive` is the full verification.
+   * manifest read and no digesting. This is the one check a report's recorded key is held
+   * against, at startup, on a Publish press, after a DELETE and for a pass's pruned keys. A key
+   * is cleared only when its bundle is absent; a bundle that is present but no longer verifies
+   * keeps its key and shows as unreadable on the Scouts page, where it can be deleted.
    */
   async archivePresent(key: string): Promise<boolean> {
     const identity = parseArchiveKey(key);
@@ -862,15 +864,6 @@ export class ArchiveManager {
     const root = await realpath(this.libraryPath).catch(() => null);
     if (!root) return false;
     return (await statRealDirectory(archiveDir(root, identity.producerId, identity.archiveId))) !== null;
-  }
-
-  /** Whether `key` names a bundle in this manager's library that still verifies. */
-  async hasArchive(key: string): Promise<boolean> {
-    const identity = parseArchiveKey(key);
-    if (!identity) return false;
-    const root = await realpath(this.libraryPath).catch(() => null);
-    if (!root) return false;
-    return (await verifyArchiveBundle(root, identity)).kind === "verified";
   }
 
   /**
@@ -914,6 +907,13 @@ export class ArchiveManager {
         const primary = existing.bundle.manifest.artifacts.find((artifact) => artifact.role === "primary_report");
         if (primary?.sha256 === sha256) return { ok: true as const, key, replayed: true };
         return { ok: false as const, status: 409 as const, problems: [`an archive already exists at ${key} with a different page`] };
+      }
+      // A bundle is at this key but does not verify (edited or damaged on disk). It is never
+      // renamed over or rewritten: say so, and leave it for the operator to delete.
+      if (existing && existing.kind !== "absent") {
+        return { ok: false as const, status: 409 as const, problems: [
+          `an archive already exists at ${key} but does not verify (${existing.reason}); delete it from the Scouts page, then publish again`,
+        ] };
       }
       const outcome = await publishBundle(identity, { libraryRoot: this.libraryPath, rename: this.renameDir }, async (stageDir) => {
         const target = join(stageDir, ...ARCHIVE_PRIMARY_REPORT_PATH.split("/"));

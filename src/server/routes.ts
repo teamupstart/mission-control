@@ -2314,7 +2314,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     },
     // Publish as scout: the archive's one operator-initiated capture.
     publisher: archives
-      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.hasArchive(key) }
+      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.archivePresent(key) }
       : undefined,
   });
 

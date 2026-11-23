@@ -419,21 +419,27 @@ archive.
 - **One archive per report.** The archive id is derived from this machine's producer id, the
   report's id and when it was posted. Pressing again, or after a lost response or a restart,
   re-verifies and returns the archive already there, and the report records its key once.
-  A report's recorded key is checked against the library at four moments, and cleared when its
-  archive is gone so the report can be published again under the same key:
+  A report's recorded key is checked against the library at four moments, and cleared only
+  when its bundle is absent, so the report can be published again under the same key:
 
-  - **Publish as scout.** A press on a report that already records a key verifies that archive
-    in full. If it no longer verifies, the report is published again rather than answered with
-    the stale key.
+  - **Publish as scout.** A press on a report that already records a key checks that its bundle
+    is still in the library. If it is gone, the report is published again rather than answered
+    with the stale key.
   - **Deleting the archive.** `DELETE /api/archives/:archiveKey` re-checks the reports recorded
     under that one key. The check waits behind any Publish of the same report, so a publish
     that recreated the archive meanwhile keeps its key.
-  - **Startup.** Every recorded archive is verified in full once, which heals a delete
-    interrupted between removing the bundle and clearing the key.
+  - **Startup.** Every recorded key is checked once, which heals a delete interrupted between
+    removing the bundle and clearing the key.
   - **In the background.** When a reconciliation pass prunes bundles that left the library, it
     hands over exactly those keys, and only the reports recorded under them are re-checked. A
     bundle removed by hand heals this way, and publishing or deleting other archives costs
     nothing.
+
+  A bundle that is present but no longer verifies, because it was edited or damaged on disk,
+  keeps its report's key: the card stays **Published** and the Scouts page shows the archive
+  as unreadable. It is never rewritten. Delete it from the Scouts page to publish the report
+  again. A press that finds such a bundle at its key with no key recorded refuses with that
+  instruction and writes nothing.
 
 ## Cleanup asks first
 

@@ -235,7 +235,7 @@ test("a delete interrupted before the report's key was cleared is reconciled aft
   after(() => restarted.stop());
   const upserts: ReportItem[] = [];
   registry.subscribe((event) => { if (event.type === "report_upsert") upserts.push(event.report); });
-  const cleared = await restarted.reconcilePublishedArchives((key) => archives.hasArchive(key));
+  const cleared = await restarted.reconcilePublishedArchives((key) => archives.archivePresent(key));
 
   // The table is shared by this file's tests, whose reports name archives in other libraries; only
   // this test's two reports are asserted on.
@@ -245,7 +245,7 @@ test("a delete interrupted before the report's key was cleared is reconciled aft
   assert.equal(restarted.get(kept.id)?.publishedArchiveKey, keptKey, "a verified archive keeps its key");
   assert.ok(upserts.some((r) => r.id === lost.id && r.publishedArchiveKey === null), "open cards hear it");
   assert.equal(restarted.get(lost.id)?.readAt, null);
-  assert.ok(!(await restarted.reconcilePublishedArchives((key) => archives.hasArchive(key))).includes(lost.id), "idempotent");
+  assert.ok(!(await restarted.reconcilePublishedArchives((key) => archives.archivePresent(key))).includes(lost.id), "idempotent");
 });
 
 test("reconciliation never clears a key a publish of the same report has just written", async () => {
@@ -257,12 +257,12 @@ test("reconciliation never clears a key a publish of the same report has just wr
   // the reconciliation, queued behind it for this report, finds the archive back and leaves it.
   const [published, cleared] = await Promise.all([
     publish(report.id),
-    reports.reconcilePublishedArchives((k) => archives.hasArchive(k)),
+    reports.reconcilePublishedArchives((k) => archives.archivePresent(k)),
   ]);
   assert.equal(published.status, 200, JSON.stringify(published.body));
   assert.ok(!cleared.includes(report.id), "the freshly written key survives");
   assert.equal(reports.get(report.id)?.publishedArchiveKey, key);
-  assert.equal(await archives.hasArchive(key), true);
+  assert.equal(await archives.archivePresent(key), true);
 });
 
 test("a check after an archive change visits only reports under the keys it is given, however many are published", async () => {
@@ -359,9 +359,51 @@ test("through the routes: a Publish racing a DELETE ends published, with its arc
   assert.equal(deleted.status, 200, await deleted.clone().text());
   const raced = await racing;
   assert.equal(raced.status, 200, JSON.stringify(raced.body));
-  assert.equal(await archives.hasArchive(key), true, "the republished archive exists");
+  assert.equal(await archives.archivePresent(key), true, "the republished archive exists");
   assert.equal(reports.get(report.id)?.publishedArchiveKey, key, "and the report still names it");
   assert.equal(bundles().length, 1);
+});
+
+test("a published bundle that is present but no longer verifies keeps its key, and is never rewritten", async () => {
+  const { post, publish, reports, archives, bundles, root } = setup();
+  const report = await post("damaged.html", STATIC_HTML, "Damaged on disk");
+  const key = (await publish(report.id)).body.archiveKey!;
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = join(root, PRODUCER, archiveId, "report", "report.html");
+  // Edited on disk after publishing: the bundle is still there, but its page no longer matches
+  // the digest in its manifest.
+  writeFileSync(page, "<html><body><p>Edited by hand</p></body></html>");
+  const damaged = readFileSync(page);
+
+  // The startup check and a Publish press both see the bundle present, so neither clears the key:
+  // the card keeps Published, and the Scouts page shows the archive as unreadable.
+  assert.deepEqual(await reports.reconcilePublishedArchives((k) => archives.archivePresent(k), [key]), []);
+  assert.ok(!(await reports.reconcilePublishedArchives((k) => archives.archivePresent(k))).includes(report.id));
+  const pressed = await publish(report.id);
+  assert.equal(pressed.status, 200, JSON.stringify(pressed.body));
+  assert.equal(pressed.body.archiveKey, key);
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, key);
+  assert.deepEqual(readFileSync(page), damaged, "the damaged bundle is left exactly as it is");
+  assert.deepEqual(bundles(), [archiveId]);
+});
+
+test("a press that finds an unverifiable bundle at its key, with no key recorded, says so and writes nothing", async () => {
+  const { post, publish, reports, bundles, root } = setup();
+  const report = await post("stranded.html", STATIC_HTML, "Stranded bundle");
+  await publish(report.id);
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = join(root, PRODUCER, archiveId, "report", "report.html");
+  writeFileSync(page, "<html><body><p>Edited by hand</p></body></html>");
+  const damaged = readFileSync(page);
+  // The key was lost (a crash before the row write), so the next press has no key to keep.
+  openDb().prepare("UPDATE reports SET published_archive_key = NULL WHERE id = ?").run(report.id);
+
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.problems!.join(" "), /already exists at .* but does not verify .*delete it from the Scouts page, then publish again/);
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+  assert.deepEqual(readFileSync(page), damaged, "nothing is renamed over or rewritten");
+  assert.deepEqual(bundles(), [archiveId]);
 });
 
 test("a Markdown document is published as the daemon's own render of the stored copy", async () => {

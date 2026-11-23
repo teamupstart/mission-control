@@ -98,7 +98,10 @@ export type FollowUpOutcome =
  */
 export interface ReportPublisherPort {
   publish(input: ReportPagePublication): Promise<ReportPagePublicationResult>;
-  /** Whether the archive a report recorded is still in the library and verifies. */
+  /**
+   * Whether the archive a report recorded is still in the library. Presence only: a bundle that
+   * is there but no longer verifies keeps the report's key rather than being taken for gone.
+   */
   exists(key: string): Promise<boolean>;
 }
 
@@ -632,9 +635,8 @@ export class ReportManager {
    * Clear recorded archive keys whose archive is gone, so those cards offer Publish as scout
    * again. Resolves to the ids whose key was cleared.
    *
-   * With no `keys`, every published report is checked: the daemon does this once at startup, with
-   * full bundle verification, which heals a delete interrupted between removing the bundle and
-   * clearing the key. With `keys`, only reports recorded under those keys are checked: the daemon
+   * With no `keys`, every published report is checked: the daemon does this once at startup, which
+   * heals a delete interrupted between removing the bundle and clearing the key. With `keys`, only reports recorded under those keys are checked: the daemon
    * passes exactly the keys an archive reconciliation pass pruned, so the work after a library
    * change follows the archives that disappeared, never the number of published reports.
    *

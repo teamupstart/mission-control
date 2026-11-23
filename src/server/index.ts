@@ -995,10 +995,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
-  // Every published report's archive, verified in full once at startup: a report whose archive is
-  // gone (a delete interrupted between removing the bundle and clearing the key) goes back to
+  // Every published report's archive, checked once at startup: a report whose bundle is gone (a
+  // delete interrupted between removing the bundle and clearing the key) goes back to
   // unpublished. Later removals reach a report only through `onArchivesPruned`, above.
-  void reports.reconcilePublishedArchives((key) => archives.hasArchive(key)).catch((error: unknown) => {
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key)).catch((error: unknown) => {
     console.warn("[mission-control] could not reconcile published reports:", error);
   });
   // And the captures this daemon already owed when it stopped. Separate from discovery

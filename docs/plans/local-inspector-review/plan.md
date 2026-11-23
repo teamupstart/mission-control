@@ -1,7 +1,7 @@
 # Run Inspector rounds locally, before the pull request
 
-Status: In review, not approved (revision 3). Decisions D1 to D4 each carry a proposed choice.
-None is adopted until the operator selects it and approves the exact revision.
+Status: In review, not approved. Decisions D1 to D4 each carry a proposed choice. None is
+adopted until the operator selects it and approves the exact revision.
 
 This is an analysis and options plan. Nothing in it is implemented.
 Measured on 2026-11-20 and 2026-11-21 against `main` at `9f4db6308` and this machine's
@@ -530,6 +530,9 @@ adopted only when the operator selects it and approves the exact revision that r
   and records the alternative of having no step after the pull request. It changes no proposed
   choice. Two questions from the discussion remain the operator's and are carried by D4:
   whether read-enabled judges may run on Claude, and which judges to start with.
+- Revision 4 changes no plan content. It rebuilds the rendered page from this Markdown so the
+  two carry the same wording, and drops the revision number from the status line. Every
+  decision, the phased follow-up and approval remain open.
 - No phased implementation plan exists and no implementation task is scheduled.
 
 ## Evidence

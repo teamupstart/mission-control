@@ -315,7 +315,6 @@ test("publishing after a filed final-bundle approval issues the receipt for that
   assert.equal(receipt.revision, f.input.revision);
   assert.equal(receipt.storage, "local");
   assert.deepEqual(await f.service.publish(f.authority, f.input), receipt, "publishing again returns the same receipt");
-  process.stdout.write(`FILED PUBLICATION RECEIPT ${JSON.stringify({ reviewId: receipt.reviewId, planId: receipt.planId, revision: receipt.revision, storage: receipt.storage, publishedAt: receipt.publishedAt })}\n`);
 });
 
 test("a withdrawn or dismissed filed final-bundle approval never approves", async () => {

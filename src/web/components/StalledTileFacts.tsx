@@ -4,6 +4,7 @@ import type { Stall } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
 import { stalledFactRows } from "../lib/stalled.ts";
 import { api } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 import { InboxActionButton } from "./AgentName.tsx";
 import { parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 
@@ -75,10 +76,14 @@ export function StalledTileFacts({
           />
         )}
         {facts?.kind === "unfinished-work" && facts.task && messageable && onMessage && (
-          <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
+          <Tooltip label="Open the session and focus its message box">
+            <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
+          </Tooltip>
         )}
         {facts?.kind === "unfinished-work" && facts.queueOpen > 0 && onOpenQueue && (
-          <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
+          <Tooltip label="Open this session's work queue">
+            <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
+          </Tooltip>
         )}
         {facts?.kind === "unfinished-work" && facts.task && (
           <InboxActionButton

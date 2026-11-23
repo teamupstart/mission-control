@@ -70,6 +70,7 @@
   /* Idle's Stalled section (`idle-stalled`): a yellow apart from Needs you's amber, because a
      stalled session is something to act on, not a question waiting for an answer. */
   --stalled: #e3b341;
+  --stalled-action-text: #f3d77a;
 
   /* A session the operator paused (`Session.pause`). Slate, and each neighbour was ruled out
      for the reason `--held` gives: `--working` blue would read as an agent burning tokens,
@@ -34071,7 +34072,7 @@ span.line-run-prov {
 .stalled-actions .btn-primary {
   border-color: color-mix(in oklab, var(--stalled) 55%, var(--border));
   background: color-mix(in oklab, var(--stalled) 16%, var(--panel-2));
-  color: #f3d77a;
+  color: var(--stalled-action-text);
 }
 .stalled-feedback {
   margin: 0;

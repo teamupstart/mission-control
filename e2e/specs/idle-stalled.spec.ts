@@ -238,6 +238,8 @@ test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section
   await page.waitForTimeout(6_000); // one stall poll, so a row that was coming would be drawn
   await expect(toAnswer(page)).toHaveCount(0);
 
-  await residentFactsCard.getByRole("button", { name: "Open queue" }).click();
+  const queue = residentFactsCard.getByRole("button", { name: "Open queue" });
+  await expect(queue).toHaveAccessibleDescription("Open this session's work queue");
+  await queue.click();
   await expect(page.getByRole("tab", { name: /Work queue/ })).toHaveAttribute("aria-selected", "true");
 });

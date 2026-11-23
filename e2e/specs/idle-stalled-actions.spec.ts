@@ -190,7 +190,9 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   await expect(card).toContainText("Tidy the changelog", { timeout: 15_000 });
   expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
 
-  await card.getByRole("button", { name: "Message…" }).click();
+  const message = card.getByRole("button", { name: "Message…" });
+  await expect(message).toHaveAccessibleDescription("Open the session and focus its message box");
+  await message.click();
   await expect(page.getByRole("textbox", { name: /Reply to this session/ })).toBeFocused();
   await page.getByRole("button", { name: "Back to the board" }).click();
   await expect(card).toBeVisible({ timeout: 15_000 });

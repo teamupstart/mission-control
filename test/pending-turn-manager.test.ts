@@ -3258,3 +3258,82 @@ test("an after-work turn a later launch supersedes while its delivery holds it n
   assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
   manager.stop();
 });
+
+test("an after-work turn task shaping is turned off for while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+
+  // SDK: the flag is turned off after the outbox claimed the turn, while the driver waits to send it.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-flag-held";
+    registry.registerSdkSession({ id, agent: "claude", name: "flag-held", cwd: "/repo/flag-held", agentSessionId: "conversation:flag-held" });
+    let shaping = true;
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        shaping = false;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping, afterWorkTurnOwed: () => true });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-flag-held-sdk");
+    idle(registry, id);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(sent, [], "refused at the acceptance guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+
+  // Terminal: the flag is turned off after the outbox claimed the turn, before the paste.
+  {
+    const name = "after-work-flag-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let shaping = true;
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => shaping,
+        afterWorkTurnOwed: () => true,
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          shaping = false;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-flag-held-pane");
+    stopHook(registry, name);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(pasted, [], "refused at the paste guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+});

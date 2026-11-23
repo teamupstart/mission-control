@@ -931,18 +931,12 @@ export class PendingTurnManager {
       return;
     }
     // An after-work prompt is task shaping's, and follows its flag at delivery as well as when it
-    // was written: queued while the flag was on, it is dropped, never sent, once it is off.
-    if (idleOnlyTurn(next.turn) && !this.deps.afterWorkEnabled()) {
-      if (dropQueuedAfterWorkTurn(next.turn.id, AFTER_WORK_FLAG_OFF)) {
-        this.registry.refreshPendingTurns(key);
-        this.scheduleDrain(key);
-      }
-      return;
-    }
-    // One a later launch's shaping commit superseded - possibly while a delivery held it, which
-    // the guard below refused and released - is dropped, never claimed again.
-    if (idleOnlyTurn(next.turn) && !this.afterWorkTurnOwed(next.turn)) {
-      if (dropQueuedAfterWorkTurn(next.turn.id, AFTER_WORK_SUPERSEDED)) {
+    // was written: queued while the flag was on, it is dropped, never sent, once it is off. One a
+    // later launch's shaping commit superseded is dropped the same way. Either may have happened
+    // while a delivery held it, which the delivery guards refused and released.
+    const afterWorkRefusal = this.afterWorkRefusal(next.turn);
+    if (afterWorkRefusal) {
+      if (dropQueuedAfterWorkTurn(next.turn.id, afterWorkRefusal)) {
         this.registry.refreshPendingTurns(key);
         this.scheduleDrain(key);
       }
@@ -1132,7 +1126,7 @@ export class PendingTurnManager {
           "The agent became busy before delivery.",
           this.deps.now(),
         );
-        this.dropIfSuperseded(turn);
+        this.dropIfRefused(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
           session.id,
@@ -1243,9 +1237,10 @@ export class PendingTurnManager {
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
-      // Immediately before the paste: an after-work turn a later launch superseded while this
-      // delivery held it never reaches the new launch.
-      if (idleOnlyTurn(turn) && !this.afterWorkTurnOwed(turn)) return AFTER_WORK_SUPERSEDED;
+      // Immediately before the paste: an after-work turn task shaping was turned off for, or a
+      // later launch superseded, while this delivery held it never reaches the agent.
+      const afterWorkRefusal = this.afterWorkRefusal(turn);
+      if (afterWorkRefusal) return afterWorkRefusal;
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
@@ -1300,7 +1295,7 @@ export class PendingTurnManager {
           result.error ?? "The terminal refused the message.",
           this.deps.now(),
         );
-        this.dropIfSuperseded(turn);
+        this.dropIfRefused(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
       return;
@@ -1391,15 +1386,25 @@ export class PendingTurnManager {
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
-    // At the instant the driver would take it: an after-work turn a later launch superseded
-    // while this delivery held it never reaches the new launch.
-    if (idleOnlyTurn(handoff.turn) && !this.afterWorkTurnOwed(handoff.turn)) return AFTER_WORK_SUPERSEDED;
-    return this.registry.promptResourceBlockerForSession(current.id);
+    // At the instant the driver would take it: an after-work turn task shaping was turned off
+    // for, or a later launch superseded, while this delivery held it never reaches the agent.
+    return this.afterWorkRefusal(handoff.turn) ?? this.registry.promptResourceBlockerForSession(current.id);
   }
 
-  /** A released after-work turn whose launch was superseded leaves the outbox at once. */
-  private dropIfSuperseded(turn: PendingTurn): void {
-    if (idleOnlyTurn(turn) && !this.afterWorkTurnOwed(turn)) dropQueuedAfterWorkTurn(turn.id, AFTER_WORK_SUPERSEDED);
+  /**
+   * Why an after-work turn must not be delivered now, or null: task shaping is off, or a later
+   * launch of its task replaced the launch it was for. Null for every other turn.
+   */
+  private afterWorkRefusal(turn: PendingTurn): string | null {
+    if (!idleOnlyTurn(turn)) return null;
+    if (!this.deps.afterWorkEnabled()) return AFTER_WORK_FLAG_OFF;
+    return this.afterWorkTurnOwed(turn) ? null : AFTER_WORK_SUPERSEDED;
+  }
+
+  /** A released after-work turn that must not be delivered leaves the outbox at once, settled with why. */
+  private dropIfRefused(turn: PendingTurn): void {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal) dropQueuedAfterWorkTurn(turn.id, refusal);
   }
 
   /** Whether an after-work turn's launch still owns it. A read that fails counts as owed. */

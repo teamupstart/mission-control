@@ -18,7 +18,7 @@ import { REPORT_GUIDANCE, REPORT_LIMITS } from "../src/shared/reports.ts";
 const home = mkdtempSync(join(tmpdir(), "post-report-mcp-"));
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
-let mode: "ok" | "flag-off" | "refused" = "ok";
+let mode: "ok" | "flag-off" | "refused" | "unreachable" = "ok";
 const RECEIPT = "Report r-7 posted to your operator's inbox. Do not wait for a reply: stub.";
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";
@@ -29,6 +29,8 @@ const daemon = createServer((req: IncomingMessage, res) => {
     const reply = (status: number, value: unknown) =>
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
     if (req.method === "POST" && path === "/mcp/reports") {
+      // The daemon accepted the connection and then dropped it with no response at all.
+      if (mode === "unreachable") return req.socket.destroy();
       if (mode === "flag-off") return reply(404, { error: "This feature is disabled.", feature: "inbox" });
       if (mode === "refused") return reply(409, { error: 'r-3 is not one of your reports waiting to be read. Your reports waiting to be read: r-2 "Alpha".' });
       return reply(200, { report: { id: "r-7" }, receipt: RECEIPT });
@@ -90,6 +92,19 @@ test("with the flag off the tool says where to turn it on; a refusal is passed o
   const refused = await post({ title: "t", body: "b", replaces: "r-3" });
   assert.equal(refused.isError, true);
   assert.match(refused.text, /^Not posted \(409\): r-3 is not one of your reports waiting to be read\. Your reports waiting to be read: r-2 "Alpha"\./);
+});
+
+test("when the daemon cannot be reached the tool says so as an error, and nothing claims the report was posted", async () => {
+  mode = "unreachable";
+  try {
+    const outcome = await post({ title: "Build failure diagnosed", body: "The cache was stale." });
+    assert.equal(outcome.isError, true);
+    assert.match(outcome.text, /^Could not reach Mission Control: /);
+    assert.doesNotMatch(outcome.text, /posted/);
+    assert.deepEqual(outcome.requests.map((r) => `${r.method} ${r.path}`), ["POST /mcp/reports"], "the one attempt reached the daemon and got no answer");
+  } finally {
+    mode = "ok";
+  }
 });
 
 test("the tool describes when to report and bounds its fields; a bad field never reaches the daemon", async () => {

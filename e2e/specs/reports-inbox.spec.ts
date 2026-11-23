@@ -231,3 +231,45 @@ test("with the inbox flag off a stored report shows nothing, and turning it on b
     .getByRole("button", { name: "Two unmaintained packages" })).toBeVisible();
   expect(navigations, "the figure came back without a reload").toBe(0);
 });
+
+test("a refused Mark read keeps the report and says why beneath it; trying again clears it", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  const title = "Profile the slow query";
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title, intent: "profile the slow query", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  await setInbox(daemon, true);
+  const posted = await report(daemon, session.cwd!, { title: "Missing index on orders.created_at", body: "Add the index." });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+
+  const inbox = await openInboxFromToRead(page);
+  const row = inbox.getByRole("region", { name: `Reports from ${title}` });
+  const card = row.getByRole("article", { name: "Report: Missing index on orders.created_at" });
+  await card.getByRole("button", { name: "Missing index on orders.created_at" }).click();
+
+  // The daemon refuses this one Mark read. Scripted in the browser because a refusal is what is
+  // under test here, and every other request still goes to the real daemon.
+  const refusal = "The report store is busy. Try again.";
+  const readPath = `**/api/reports/${posted.id}/read`;
+  await page.route(readPath, (route) => route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: refusal }) }));
+  await card.getByRole("button", { name: "Mark read" }).click();
+  await expect(card.getByRole("alert")).toHaveText(refusal);
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("button", { name: "Mark read" })).toBeVisible();
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  expect((await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`)).reports[0]!.readAt).toBeNull();
+  await capture(inbox, "07-inbox-mark-read-refused", page);
+
+  // Trying again, with the daemon answering, clears the reason and the report.
+  await page.unroute(readPath);
+  await card.getByRole("button", { name: "Mark read" }).click();
+  await expect(row).toHaveCount(0);
+  await expect(inbox.getByRole("alert")).toHaveCount(0);
+  await expect(toRead(page)).toHaveCount(0);
+  expect((await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`)).reports[0]!.readBy).toBe("mark-read");
+});

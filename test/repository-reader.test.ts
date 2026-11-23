@@ -19,7 +19,7 @@ import {
 } from "../src/shared/repository-access.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, content = "one\ntwo\nthree\n") {
   const root = await mkdtemp(join(tmpdir(), "repository-reader-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const git = (...args: string[]) =>
@@ -38,7 +38,7 @@ async function fixture(t: TestContext) {
     }).trim();
   git("init", "-q");
   await mkdir(join(root, "src"));
-  await writeFile(join(root, "src/a.txt"), "one\ntwo\nthree\n");
+  await writeFile(join(root, "src/a.txt"), content);
   await writeFile(join(root, ".env"), "do not expose");
   await symlink("/etc/passwd", join(root, "link"));
   git("add", ".");
@@ -153,6 +153,27 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
       ).code,
       "invalid_cursor",
     );
+});
+test("case-insensitive search returns one context line on each side and audits that exact range", async (t) => {
+  const f = await fixture(t, "first\nBefore\nNeedle\nAfter\nlast\n");
+  const result = await f.make().query("search", {
+    query: "nEEDle",
+    caseSensitive: false,
+    context: 1,
+  });
+  assert.equal(result.status, "ok");
+  assert.equal(result.items.length, 1);
+  const [item] = result.items;
+  assert.equal(item?.text, "Before\nNeedle\nAfter");
+  assert.equal(item.path, "src/a.txt");
+  assert.ok(item.evidenceHandleId);
+
+  const [audit] = f.audit;
+  assert.equal(audit?.operationId, result.operationId);
+  assert.equal(audit.handles.length, 1);
+  const [handle] = audit.handles;
+  assert.equal(handle?.evidenceHandleId, item.evidenceHandleId);
+  assert.deepEqual(handle.range, { kind: "line", startLine: 2, endLineExclusive: 5 });
 });
 test("glob and git_status return the allowed paths with their captured kinds and classifications", async (t) => {
   const f = await fixture(t);

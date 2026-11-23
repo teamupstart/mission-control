@@ -213,7 +213,7 @@ body.mk {
 <header class="mk-top">
   <h1>Recently heard</h1>
   <p>A short, in-memory list of recent utterances and why each did or did not route, including rejected near-miss names, for debugging misses. It is never written to disk and is gone when Mission Control quits. Audio is never kept.</p>
-  <p class="mk-spec">Fixed in every variant: the same six utterances (exact name, phonetic match, small-model decision, no pause after a name, rejected near miss, cancelled in the cancel window), each with how long ago, the words heard, the outcome and the reason in plain words; a Clear control; the privacy line; and an empty state. Nothing is heard while voice is muted, so muted time leaves no rows. What varies is <b>where the list lives</b> and <b>how much of the routing detail it shows</b>.</p>
+  <p class="mk-spec">Fixed in every variant: the same six utterances (exact name, phonetic match, small-model decision, first-word name without a pause, rejected near miss, cancelled in the cancel window), each with how long ago, the words heard, the outcome and the reason in plain words; a Clear control; the privacy line; and an empty state. Nothing is heard while voice is muted, so muted time leaves no rows. What varies is <b>where the list lives</b> and <b>how much of the routing detail it shows</b>.</p>
   <nav class="mk-toc"><a href="#b"><b>B</b>Tray popover</a><a href="#e"><b>E</b>Diagnostic table</a></nav>
 <p class="mk-spec"><b>Selected by the operator on 2026-11-22: variants B, E.</b> This page holds the selected designs; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
 </header>
@@ -231,10 +231,10 @@ body.mk {
           <div class="rh-pop">
             <div class="rh-pop-head">Recently heard<span class="rh-state"><span class="v-live"></span>Listening</span></div>
             <ul class="rh-list">
-              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steve, check the build and report back</q><span class="rh-time">12s</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · exact name, then a pause</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steve, check the build and report back</q><span class="rh-time">12s</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · exact first word</span></li>
               <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steven, rerun the failing shard</q><span class="rh-time">2m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · "Steven" sounds like Steve</span></li>
               <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steve, ask Alice about the build</q><span class="rh-time">5m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · small model: Alice is a mention</span></li>
-              <li class="rh-row"><svg class="mk-ico sm rh-ico-no"><use href="#i-x"/></svg><q class="rh-heard">will you grab the door</q><span class="rh-time">9m</span><span class="rh-why">Not routed · no pause after "Will"</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">will you grab the door</q><span class="rh-time">9m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-violet)">Will</span> · exact first word</span></li>
               <li class="rh-row"><svg class="mk-ico sm rh-ico-no"><use href="#i-x"/></svg><q class="rh-heard">Stevie, what's the status</q><span class="rh-time">14m</span><span class="rh-why">Not routed · near miss: Steve is only a weak match</span></li>
               <li class="rh-row"><svg class="mk-ico sm rh-ico-cancel"><use href="#i-x"/></svg><q class="rh-heard">Carol, merge it</q><span class="rh-time">21m</span><span class="rh-why">Cancelled · you said "cancel" in the cancel window</span></li>
             </ul>
@@ -250,7 +250,7 @@ body.mk {
         <div class="mk-desktop rh-desk is-short"><div class="mk-otherapp"></div>
           <div class="rh-pop">
             <div class="rh-pop-head">Recently heard<span class="rh-state"><span class="v-live"></span>Listening</span></div>
-            <div style="padding: 16px 12px"><p class="rh-empty"><b>Nothing heard yet.</b>Say an agent's name, pause, then your message. Nothing is heard while voice is muted.</p></div>
+            <div style="padding: 16px 12px"><p class="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p></div>
             <div class="rh-pop-foot"><p class="rh-privacy">In memory only. Cleared on quit. Audio is never stored.</p><button class="btn rh-btn-sm" disabled>Clear</button></div>
           </div>
         </div>
@@ -266,7 +266,7 @@ body.mk {
             <div>✓ Steve · "Steve, check the build and…" · 12s</div>
             <div>✓ Steve · "Steven, rerun the failing…" · 2m</div>
             <div>✓ Steve · "Steve, ask Alice about…" · 5m</div>
-            <div class="is-sel">✕ Not routed · no pause after "Will" · 9m</div>
+            <div class="is-sel">✓ Will · "will you grab the door" · 9m</div>
             <div>✕ Not routed · near miss, closest Steve · 14m</div>
             <div>✕ Cancelled · "Carol, merge it" · 21m</div>
             <hr><div>Clear Recently Heard</div>
@@ -287,19 +287,19 @@ body.mk {
 <!-- ============================== C ============================== -->
 <section class="mk-variant rh-e" id="e">
   <div class="mk-variant-head"><span class="mk-letter">E</span><h2>Diagnostic table</h2>
-    <p class="mk-pitch">A table that lays out each step of the routing rule in its own column: the name heard first, whether a pause followed, what it matched, which rule decided, and the outcome.</p></div>
+    <p class="mk-pitch">A table that lays out each step of the routing rule in its own column: the name heard first, any observed pause, what it matched, which rule decided, and the outcome. An opening agent name routes without a pause.</p></div>
   <div class="mk-stage">
     <div class="mk-state">
       <span class="mk-cap"><b>1</b> Opened from Voice settings</span>
       <div class="rh-dialog">
         <div class="rh-dialog-head"><strong>Recently heard</strong><span class="dim">6 since Mission Control started</span><button class="btn rh-btn-sm">Clear</button></div>
         <table class="rh-table">
-          <thead><tr><th>Ago</th><th>Heard</th><th>Pause after name</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
+          <thead><tr><th>Ago</th><th>Heard</th><th>Pause (not required)</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
           <tbody>
             <tr><td class="rh-mono">12s</td><td><mark>Steve</mark>, check the build and report back</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>, exactly</td><td class="rh-mono">exact name</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
             <tr><td class="rh-mono">2m</td><td><mark>Steven</mark>, rerun the failing shard</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>, a strong match by sound</td><td class="rh-mono">sounds like</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
             <tr><td class="rh-mono">5m</td><td><mark>Steve</mark>, ask <mark>Alice</mark> about the build</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>; <span class="v-name" style="--resident: var(--resident-violet)">Alice</span> read as a mention</td><td class="rh-mono">small model</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
-            <tr><td class="rh-mono">9m</td><td><mark class="is-miss">will</mark> you grab the door</td><td class="rh-no">No</td><td>Will, but not addressed</td><td class="rh-mono">no pause</td><td><span class="rh-out is-not">Not routed</span></td></tr>
+            <tr><td class="rh-mono">9m</td><td><mark>will</mark> you grab the door</td><td class="rh-mono">No</td><td><span class="v-name" style="--resident: var(--resident-violet)">Will</span>, exactly</td><td class="rh-mono">exact first word</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-violet)">Will</span></span></td></tr>
             <tr><td class="rh-mono">14m</td><td><mark class="is-miss">Stevie</mark>, what's the status</td><td class="rh-yes">Yes</td><td>None. Closest is Steve, a weak match (about half way)</td><td class="rh-mono">near miss rejected</td><td><span class="rh-out is-not">Not routed</span></td></tr>
             <tr><td class="rh-mono">21m</td><td><mark>Carol</mark>, merge it</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-rose)">Carol</span>, exactly</td><td class="rh-mono">you said "cancel" at 2s</td><td><span class="rh-out is-cancel">Cancelled</span></td></tr>
           </tbody>
@@ -312,15 +312,15 @@ body.mk {
       <div class="rh-dialog">
         <div class="rh-dialog-head"><strong>Recently heard</strong><span class="dim">0 since Mission Control started</span><button class="btn rh-btn-sm" disabled>Clear</button></div>
         <table class="rh-table">
-          <thead><tr><th>Ago</th><th>Heard</th><th>Pause after name</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
-          <tbody><tr><td colspan="6" class="rh-empty-cell"><p class="rh-empty"><b>Nothing heard yet.</b>Say an agent's name, pause, then your message. Nothing is heard while voice is muted.</p></td></tr></tbody>
+          <thead><tr><th>Ago</th><th>Heard</th><th>Pause (not required)</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
+          <tbody><tr><td colspan="6" class="rh-empty-cell"><p class="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p></td></tr></tbody>
         </table>
         <div class="rh-dialog-foot"><p class="rh-privacy">Kept in memory only and cleared when Mission Control quits. Audio is never stored.</p></div>
       </div>
     </div>
   </div>
   <ul class="mk-notes">
-    <li>Answers "which rule let me down" at a glance: a "No" in the pause column or an amber name is the whole diagnosis.</li>
+    <li>An exact first-word name routes without a pause. An amber name identifies a rejected near miss; a pause observation never blocks an exact match.</li>
     <li class="con">Reads like a debugger. For the operator who only wants to know whether Steve got the message, five columns is a lot of table.</li>
     <li>Maps one to one onto what the router already knows per utterance, so the ring buffer's row shape and the table's columns are the same thing.</li>
     <li class="con">Needs about 1,000px of width, so it only fits a dialog or a full settings pane, never the tray or a drawer.</li>

@@ -2981,6 +2981,12 @@ export interface TaskSummary {
    * still compare its `sessionId` with the session they draw.
    */
   shaping?: TaskShaping;
+  /**
+   * `Task.shapingDelivery`, the delivery id the task's binding was written with, carried beside
+   * `shaping` and only with it. The card's readers hand it to `currentShaping` with the record,
+   * so the chip applies the whole rule to the task's own binding rather than trusting the card.
+   */
+  shapingDelivery?: string;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */

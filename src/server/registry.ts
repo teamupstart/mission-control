@@ -8500,7 +8500,8 @@ export class Registry extends EventEmitter {
           // Present only when the session emits one, so every other card's payload is what it
           // was before work units existed.
           ...(workUnitId ? { workUnitId } : {}),
-          ...(shaping ? { shaping } : {}),
+          // The binding rides with the record, so the card's readers check one against the other.
+          ...(shaping ? { shaping, ...(t.shapingDelivery ? { shapingDelivery: t.shapingDelivery } : {}) } : {}),
         }
       : null;
   }

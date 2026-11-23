@@ -42,8 +42,8 @@ export function taskAfterWorkForReads(task: ShapingBinding & { id: string }): Ta
  * (`taskSummaryFor`); the flag is applied here, where the session leaves the daemon, because a
  * card cached before a toggle would otherwise keep it.
  */
-export function sessionShapingForReads<T extends { task?: { shaping?: TaskShaping | null } | null }>(session: T): T {
-  if (session.task?.shaping === undefined || featureEnabled("task-shaping")) return session;
-  const { shaping: _hidden, ...task } = session.task;
+export function sessionShapingForReads<T extends { task?: { shaping?: TaskShaping | null; shapingDelivery?: string } | null }>(session: T): T {
+  if ((session.task?.shaping === undefined && session.task?.shapingDelivery === undefined) || featureEnabled("task-shaping")) return session;
+  const { shaping: _hidden, shapingDelivery: _binding, ...task } = session.task!;
   return { ...session, task };
 }

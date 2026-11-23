@@ -17,22 +17,23 @@ import { Tooltip } from "./Tooltip.tsx";
  * What task shaping added to THIS session's turn one, and whether anything was degraded.
  *
  * Every surface here reads one record: `session.task.shaping`, the task's latest launch that
- * reached a worker. It is drawn only while it names the session being drawn - the same rule
- * `currentShaping` applies to every task read - so a redispatch whose record could not be
- * committed shows nothing rather than the previous launch's context or `degraded`.
+ * reached a worker. It is drawn only while it names the session being drawn and carries the
+ * delivery id of the task's binding - the same rule `currentShaping` applies to every task read -
+ * so a redispatch, or a handover back to the same session, whose record could not be committed
+ * shows nothing rather than the previous delivery's context or `degraded`.
  */
 
 /**
- * The record this session received, or null when it received none or the record names another
- * session. It does not read the `task-shaping` flag; every caller here applies that gate itself.
+ * The record this session received, or null when it received none or the record describes another
+ * session or an earlier delivery to this one. It does not read the `task-shaping` flag; every caller here applies that gate itself.
  */
 export function sessionShaping(session: Pick<Session, "id" | "task">): TaskShaping | null {
   const record = session.task?.shaping;
   if (!record) return null;
-  // The card carries no binding of its own: the daemon put the record there only after the
-  // whole rule, its delivery id included, admitted it against the task (`taskSummaryFor`). What
-  // is left to check here is that it names the session being drawn.
-  return currentShaping({ shaping: record, sessionId: session.id, shapingDelivery: record.deliveryId ?? null });
+  // The card carries the task's binding beside the record (`TaskSummary.shapingDelivery`), and the
+  // session being drawn is the one the task is bound to, so the whole rule runs here as it does on
+  // a task: a record from another session, or from an earlier delivery to this one, shows nothing.
+  return currentShaping({ shaping: record, sessionId: session.id, shapingDelivery: session.task?.shapingDelivery ?? null });
 }
 
 function entriesLabel(entries: number): string {

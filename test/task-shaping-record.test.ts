@@ -328,6 +328,8 @@ test("with the flag off, a session's task card carries no record in the snapshot
   registry.commitTaskShaping("card", "sdk:card-session", record("sdk:card-session"), "text");
   const card = () => registry.snapshot().sessions.find((session) => session.id === "sdk:card-session")?.task;
   assert.equal(card()?.shaping?.sessionId, "sdk:card-session", "the card carries its launch's record while the flag is on");
+  assert.equal(card()?.shapingDelivery, registry.getTask("card")?.shapingDelivery, "beside the task's own binding");
+  assert.equal(card()?.shapingDelivery, card()?.shaping?.deliveryId);
   setFlag(false);
   const cards: unknown[] = [];
   const onEvent = (event: { type: string; session?: { id: string; task?: { shaping?: unknown } | null } }) => {
@@ -337,6 +339,7 @@ test("with the flag off, a session's task card carries no record in the snapshot
   try {
     assert.ok(card(), "the card itself is still there");
     assert.equal(card()?.shaping, undefined, "a reconnect's snapshot hides it");
+    assert.equal(card()?.shapingDelivery, undefined, "and its binding");
     registry.upsertTask({ ...registry.getTask("card")!, priority: "high" });
     // The card was cached while the flag was on; what leaves the daemon is gated anyway.
     registry.commitTaskShaping("card", "sdk:card-session", record("sdk:card-session", "degraded"), "");

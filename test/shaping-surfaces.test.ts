@@ -34,8 +34,9 @@ function bound(sessionId: string): { sessionId: string; shapingDelivery: string 
   return { sessionId, shapingDelivery: `d-${sessionId}` };
 }
 
-function session(shaping: TaskShaping | undefined, id = "s1"): Session {
-  return mkSession({ id, task: { id: "t1", title: "Task", ...(shaping ? { shaping } : {}) } as unknown as TaskSummary });
+/** A card for session `id`, its task bound under `delivery`: by default the one `record(id, ...)` describes. */
+function session(shaping: TaskShaping | undefined, id = "s1", delivery = `d-${id}`): Session {
+  return mkSession({ id, task: { id: "t1", title: "Task", ...(shaping ? { shaping, shapingDelivery: delivery } : {}) } as unknown as TaskSummary });
 }
 
 function render(flags: FeatureFlagsConfig, element: React.ReactElement): string {
@@ -91,6 +92,17 @@ test("a record that names another session renders no chip, no tile marker and no
   assert.equal(render(on, createElement(ShapingChip, { session: other })), "");
   assert.equal(render(on, createElement(ShapingTileFlag, { session: other })), "");
   assert.equal(render(on, createElement(ShapingRailMark, { session: other })), "");
+});
+
+test("a card whose task is bound under a later delivery to the same session renders no chip, tile marker or rail marker", () => {
+  // The record names this session, but the task's binding carries a later delivery's id.
+  const stale = session(record("s1", "degraded"), "s1", "d-later");
+  assert.equal(render(on, createElement(ShapingChip, { session: stale })), "");
+  assert.equal(render(on, createElement(ShapingTileFlag, { session: stale })), "");
+  assert.equal(render(on, createElement(ShapingRailMark, { session: stale })), "");
+  // A card that carries no binding at all shows nothing either: the record cannot vouch for itself.
+  const unbound = mkSession({ id: "s1", task: { id: "t1", title: "Task", shaping: record("s1", "degraded") } as unknown as TaskSummary });
+  assert.equal(render(on, createElement(ShapingChip, { session: unbound })), "");
 });
 
 test("the board and rail markers appear only for this session's degraded launch", () => {

@@ -41,6 +41,9 @@ async function openPane(host: CommandHost, session: FlowSession, open: ModPaneOp
   // A command whose session ended while it waited opens nothing.
   if (session.live && !session.live()) return { outcome: "cancelled", line: "cancelled" };
   const placed = await host.paneOpen({ ...open, focus: true, ...(session.live ? { guard: session.live } : {}) });
+  // A session that ended while the open was in flight is also reported as not placed; it gets no
+  // "wider window" line for a pane it no longer has.
+  if (session.live && !session.live()) return { outcome: "cancelled", line: "cancelled" };
   // Opening the pane returns no text, or one line when it cannot be placed (7.11).
   if (!placed.isPlaced) host.notice(PANE_WIDER_NOTICE);
   return { outcome: "pane", line: "" };

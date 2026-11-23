@@ -418,3 +418,14 @@ test('a second dispatch while one is open is refused, so only one draft is made'
   expect(drafts()).toBe(1)
   release()
 })
+
+test('a command or tool the engine refuses to register is logged on the debug channel', async ($, on) => {
+  const seen = world(on, { flag: true })
+  const logs = []
+  // No command.register or tool.register implementation: the engine refuses both, as it would a bad schema.
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  expect(logs.some((t) => /could not register the mission-dispatch command: /.test(t))).toBe(true)
+  expect(logs.some((t) => /could not register the start_dispatch tool: /.test(t))).toBe(true)
+})

@@ -54,8 +54,8 @@ export function register(on: EngineOn, _options: unknown): void {
     flowGate = createFlowGate();
     flowSession = { sessionId, cwd: e.cwd, live: () => mine === generation };
     // The command and the tool are always registered: with the flag off they answer that it is off.
-    await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch(() => undefined);
-    await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch(() => undefined);
+    await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch((error: unknown) => logRegistrationFailure($, "command", error));
+    await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch((error: unknown) => logRegistrationFailure($, "tool", error));
     if (mine !== generation) return next(e);
     const started = createModCore(host, {
       sessionId,
@@ -150,6 +150,12 @@ export function register(on: EngineOn, _options: unknown): void {
       return { result: FLOW_FAILED_TEXT };
     }
   });
+}
+
+/** A command or tool the engine refused to register simply stops existing; this leaves a line on the debug channel to say why. */
+function logRegistrationFailure($: Engine, what: "command" | "tool", error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error);
+  $.ui.log(`mission-control: could not register the ${what === "command" ? DISPATCH_COMMAND : DISPATCH_TOOL} ${what}: ${detail}`, { to: "debug" });
 }
 
 /** What the command and the tool say when headless mode is not connected (flag off, daemon down, modApi mismatch). */

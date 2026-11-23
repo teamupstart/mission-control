@@ -637,3 +637,16 @@ test("the flow gate runs one flow at a time and frees itself when a flow ends or
   await assert.rejects(gate.run(async () => { throw new Error("x"); }));
   assert.deepEqual(await gate.run(async () => "four"), { busy: false, value: "four" });
 });
+
+test("a pane open that finishes after the session ended gets no wider-window line", async () => {
+  let ended = false;
+  const { fake } = world();
+  fake.host.paneOpen = async () => { ended = true; return { isPlaced: false }; };
+  const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "inbox");
+  assert.equal(result.outcome, "cancelled");
+  assert.deepEqual(fake.notices, []);
+  // A live session whose pane really cannot be placed still gets the line.
+  const placed = world({ host: { placed: false } });
+  await runDispatchCommand(placed.fake.host, { ...SESSION, live: () => true }, "inbox");
+  assert.deepEqual(placed.fake.notices, [PANE_WIDER_NOTICE]);
+});

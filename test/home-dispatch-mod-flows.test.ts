@@ -960,3 +960,24 @@ test("a dialog answered after the session ended opens no further dialog and post
   await runDispatchCommand(present.fake.host, { ...SESSION, live: () => true }, "");
   assert.equal(present.fake.notices.at(-1), "Cancelled. Nothing was created.");
 });
+
+test("a draft whose id could not be saved is not reported as waiting; the description is asked in a dialog instead", async () => {
+  for (const failure of ["dropped", "rejected"] as const) {
+    const { daemon, fake, filed } = world({
+      host: { answers: (q) => q.header === "Task" ? { kind: "other", text: "tidy the logging module" } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+    });
+    const real = fake.host.paneState.set;
+    fake.host.paneState.set = (async (key: "draftId", value: string | null) => {
+      if (failure === "rejected") throw new Error("the engine refused the write");
+      void real; void key; void value; // the host swallowed it: nothing was stored
+    }) as typeof real;
+    const result = await runDispatchCommand(fake.host, SESSION, "");
+    assert.ok(fake.notices.every((n) => n !== DESCRIBE_NOTICE), failure);
+    assert.ok(fake.dialogs.some((d) => d.header === "Task"), failure);
+    // The description reaches the draft that was made, and the task is filed.
+    const update = daemon.requests.find((r) => r.pattern === "/dispatch/drafts/:id" && (r.body as { words?: string }).words !== undefined)!;
+    assert.equal((update.body as { words: string }).words, "tidy the logging module", failure);
+    assert.deepEqual(filed.map((f) => f.choice), ["start"], failure);
+    assert.notEqual(result.outcome, "waiting", failure);
+  }
+});

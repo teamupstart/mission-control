@@ -119,11 +119,23 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
   // state the next session reads. (The draft itself expires at the daemon.)
   if (session.live && !session.live()) return ended();
   if (filled) {
-    await host.paneState.set("draftId", summary.draftId);
-    // The write may have outlasted the session (the host drops a stale session's write): say nothing.
+    // "Waiting" is only true if the next command can find the draft: the write is read back, because
+    // the host swallows a refused write and drops a stale session's. Anything else means a typed
+    // description would start a new brief, so the description is asked in a dialog instead.
+    let saved = false;
+    try {
+      await host.paneState.set("draftId", summary.draftId);
+      // The write may have outlasted the session: say nothing.
+      if (session.live && !session.live()) return ended();
+      saved = (await host.paneState.get("draftId")) === summary.draftId;
+    } catch {
+      saved = false;
+    }
+    if (saved) {
+      host.notice(DESCRIBE_NOTICE);
+      return { outcome: "waiting", line: DESCRIBE_NOTICE };
+    }
     if (session.live && !session.live()) return ended();
-    host.notice(DESCRIBE_NOTICE);
-    return { outcome: "waiting", line: DESCRIBE_NOTICE };
   }
   const words = await askText(host, "Task", "What should this task do? Type it under Other.");
   if (words === undefined) return cancel(host, session, summary.draftId);

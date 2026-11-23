@@ -131,9 +131,11 @@ runs:
   busy turn, echoed and captured the same way, and it counts toward the agent's Goal. It names the
   report it answers and restates it, then gives your words:
   "Reply to your report 'Build failure diagnosed' (r-42), posted 12 minutes ago", the report's
-  title and body, then what you wrote. The outbox accepting it marks the report read. A session
-  that cannot take the message refuses it, and the report stays in **to read**. A resident's
-  reply goes to whichever run of that resident is up now.
+  title and body, then what you wrote. The outbox accepting it marks the report read. If the
+  agent replaces the report while you are writing, the new version takes its place on screen
+  and keeps your words; a reply to a version that was replaced or already read is refused. A
+  session that cannot take the message refuses it, and the report stays in **to read**. A
+  resident's reply goes to whichever run of that resident is up now.
 - **A resident that is not running.** The card says "Steve isn't running" and that you can launch
   it again from the Residents drawer. That is text, not a control.
 - **A standard session that has ended.** A box with **Start a follow-up task**, which stays

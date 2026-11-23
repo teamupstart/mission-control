@@ -325,6 +325,42 @@ test("a conversation whose report history read fails retries it, and the entry a
   await page.unroute(`**/api/sessions/${encodeURIComponent(session.id)}/reports`);
 });
 
+test("a reply being written survives the agent replacing its report, and the new version stays open", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const title = "Profile the slow query";
+  const { session } = await startSession(daemon, title);
+  await setInbox(daemon, true);
+  const first = await report(daemon, session.cwd!, { title: "Slow query found", body: "The orders join scans every row." });
+
+  const inbox = await openInbox(page);
+  await inbox.getByRole("article", { name: "Report: Slow query found" }).getByRole("button", { name: "Slow query found" }).click();
+  const draft = "Add the index, then measure again.";
+  await inbox.getByRole("article", { name: "Report: Slow query found" }).getByRole("textbox", { name: `Reply to ${title}` }).fill(draft);
+
+  // The agent corrects its report while the operator is still typing.
+  const second = await report(daemon, session.cwd!, { title: "Slow query fixed", body: "Indexed orders.customer_id.", replaces: first.id });
+  const replaced = inbox.getByRole("article", { name: "Report: Slow query fixed" });
+  await expect(replaced).toBeVisible();
+  await expect(inbox.getByRole("article", { name: "Report: Slow query found" })).toHaveCount(0);
+  // The new version is the open one, and the words are still there.
+  await expect(replaced.getByRole("button", { name: "Slow query fixed" })).toHaveAttribute("aria-expanded", "true");
+  await expect(replaced.getByRole("textbox", { name: `Reply to ${title}` })).toHaveValue(draft);
+
+  // A reply aimed at the replaced version is refused, pointing at the new one.
+  const stale = await fetch(`${daemon.baseURL}/api/reports/${first.id}/reply`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: draft }),
+  });
+  expect(stale.status).toBe(409);
+  expect((await stale.json() as { error: string }).error).toBe(`This report was replaced by ${second.id}. Reply to that version instead.`);
+
+  // Sent from the card, it answers the new version and the draft is cleared.
+  await replaced.getByRole("button", { name: "Send reply" }).click();
+  await expect(toRead(page)).toHaveCount(0, { timeout: 30_000 });
+  expect((await history(daemon, session.id)).find((r) => r.id === second.id)?.readBy).toBe("reply");
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+});
+
 const RESIDENT = "Report watcher";
 
 test("a resident that is not running gets a line and a relaunch hint instead of a reply box", async ({ dashboard: page, daemon }) => {

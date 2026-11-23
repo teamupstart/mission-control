@@ -15,7 +15,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { STATE_DIR } from "../../config.ts";
-import { workflowLog } from "../log.ts";
+import { workflowErrorCode, workflowLog } from "../log.ts";
 import type {
   RepositoryArtifactMaterializer,
   RepositoryMaterializationRequest,
@@ -100,7 +100,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     } catch (error) {
       if (error instanceof RepositoryCaptureChanged) throw error;
       this.failures++;
-      workflowLog("warn", { event, error: "artifact_unavailable" });
+      workflowLog("warn", { event, error: workflowErrorCode(error) });
       return unavailable();
     } finally {
       workflowLog("info", { event, duration_ms: Date.now() - start });

@@ -237,7 +237,7 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
-import { workflowLog } from "./log.ts";
+import { workflowErrorCode, workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import { stackPrInstruction } from "../stacking/lineage.ts";
 import { resolveStackDiffBase } from "../stacking/diff-base.ts";
@@ -8340,10 +8340,9 @@ export class WorkflowManager {
     try {
       await this.repositoryArtifacts.reconcile();
     } catch (error) {
-      const code = error instanceof Error && "code" in error ? error.code : undefined;
       workflowLog("error", {
         event: "repository_reconcile_failed",
-        error: typeof code === "string" ? code : error instanceof Error ? error.name : "unknown",
+        error: workflowErrorCode(error),
       });
     } finally {
       this.retentionRunning = false;

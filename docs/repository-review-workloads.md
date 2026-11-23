@@ -80,7 +80,8 @@ claims and reclaims marked pending and lease directories. A publication intent b
 candidate identifies a rename interrupted before database commit. Periodic maintenance
 skips live candidates and leases. Reconciliation inspects existing directories and leaves
 unused artifact storage absent. Its failures log `repository_reconcile_failed` independently
-of Workflow retention results. Unknown filesystem entries are counted for investigation.
+of Workflow retention results. Artifact operation logs record the underlying error code
+or class. Callers receive `artifact_unavailable`. Unknown filesystem entries are counted for investigation.
 The cleanup transaction rechecks ownership before removing digest files.
 
 For truncated history, the materializer supplies a `shallow` file containing exactly the

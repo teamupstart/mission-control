@@ -304,8 +304,17 @@ test("artifact readiness guards first activation and a failed artifact permits l
   const id = snapshot.submissionId;
   assert.throws(() => f.store.setSubmissionState(id, "running"), /repository claim is not active/);
   f.store.commitRepositoryCaptureActivation(snapshot);
+  const warnings = t.mock.method(console, "warn", () => {});
+  const cancelled = AbortSignal.abort(new TypeError("private cancellation details"));
+  await assert.rejects(f.service.verify(snapshot, cancelled), { code: "artifact_unavailable" });
   rmSync(join(f.root, "digests", snapshot.digest, "manifest.json"));
+  await assert.rejects(f.service.materialize(f.request(snapshot), signal), { code: "artifact_unavailable" });
   await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
+    "[workflow] event=repository_verify error=TypeError",
+    "[workflow] event=repository_materialize error=ENOENT",
+    "[workflow] event=repository_verify error=ENOENT",
+  ]);
   assert.equal(f.store.updateSubmissionCapture(id, { context: {}, evidence: {} }).status, "running");
   f.store.setSubmissionState(id, "waiting_for_session");
   assert.equal(f.store.setSubmissionState(id, "running").status, "running");
@@ -846,6 +855,7 @@ test("an index-only change between the context read and artifact preparation ret
 
 test("disk failure and a deferred SQLite failure after rename leave no claim and recover only the marked bytes", async (t) => {
   const f = fixture(t);
+  const warnings = t.mock.method(console, "warn", () => {});
   f.write("a", "sealed");
   let failedWrite = false;
   const fs = (await import("node:fs/promises")).default;
@@ -876,11 +886,15 @@ test("disk failure and a deferred SQLite failure after rename leave no claim and
     CREATE TEMP TRIGGER fail_after_publish AFTER INSERT ON workflow_repository_snapshot_claims
       BEGIN INSERT INTO deferred_failure VALUES(1); END;`);
   try {
-    await assert.rejects(f.service.promote(c, submissionId));
+    await assert.rejects(f.service.promote(c, submissionId), { code: "artifact_unavailable" });
   } finally {
     f.db.exec("DROP TRIGGER fail_after_publish; DROP TABLE deferred_failure; DROP TABLE parent;");
   }
   assert.deepEqual(f.service.artifacts(), []);
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
+    "[workflow] event=repository_seal error=ENOSPC",
+    "[workflow] event=repository_promote error=ERR_SQLITE_ERROR",
+  ]);
   assert.ok(existsSync(join(f.root, "digests", c.digest)));
   await f.service.discard(c);
   assert.deepEqual(readdirSync(join(f.root, "digests")), []);

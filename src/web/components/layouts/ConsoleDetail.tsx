@@ -502,7 +502,9 @@ export function ConsoleDetail({
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  // Dependency install warnings render inside the band, so they keep it mounted on their own.
+  const showClaimWarnings = (session.task?.claimWarnings?.length ?? 0) > 0;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || showClaimWarnings;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.

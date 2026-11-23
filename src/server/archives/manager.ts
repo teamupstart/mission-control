@@ -913,9 +913,20 @@ export class ArchiveManager {
       const root = await realpath(this.libraryPath).catch(() => null);
       const existing = root ? await verifyArchiveBundle(root, identity) : null;
       if (existing?.kind === "verified") {
-        const primary = existing.bundle.manifest.artifacts.find((artifact) => artifact.role === "primary_report");
+        const manifest = existing.bundle.manifest;
+        const primary = manifest.artifacts.find((artifact) => artifact.role === "primary_report");
         if (primary?.sha256 === sha256) return { ok: true as const, key, replayed: true };
-        return { ok: false as const, status: 409 as const, problems: [`an archive already exists at ${key} with a different page`] };
+        // The id is derived from this producer, the report id and its posting time, so a verified
+        // report bundle from the same session is this report's own archive even when the page
+        // built now differs: a Markdown page is re-rendered on every press, and a renderer or
+        // style change since the first publish must not turn the report's own archive into a
+        // conflict. It is returned as it is, never rewritten.
+        if (manifest.origin.source === "report" && manifest.origin.session?.id === input.session.id) {
+          return { ok: true as const, key, replayed: true };
+        }
+        return { ok: false as const, status: 409 as const, problems: [
+          `an archive already exists at ${key} that this report did not publish; delete it from the Scouts page, then publish again`,
+        ] };
       }
       // A bundle is at this key but does not verify (edited or damaged on disk). It is never
       // renamed over or rewritten: say so, and leave it for the operator to delete.

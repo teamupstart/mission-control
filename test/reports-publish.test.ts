@@ -153,24 +153,48 @@ test("an archive already published for a report whose key was lost is re-verifie
   assert.deepEqual(archivedPage(archiveId), before);
 });
 
-test("an archive at the report's key holding a different page is a conflict and is never overwritten", async () => {
-  const { post, publish, bundles, archivedPage, reports } = setup();
-  const report = await post("findings.html", STATIC_HTML);
-  const first = await publish(report.id);
-  assert.equal(first.status, 200);
+test("after a lost key, a report's own archive is returned even when the page built now differs, and is never rewritten", async () => {
+  const { post, publish, reports, bundles, archivedPage } = setup();
+  const report = await post("render.md", "# Findings\n\nFirst render.\n", "Markdown re-render");
+  const key = (await publish(report.id)).body.archiveKey!;
   const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
   const before = archivedPage(archiveId);
-  // Unstamp the report and change what its stored copy now builds, so the page it would publish
-  // no longer matches the bundle already at its key.
+  // The key is lost, and the page the daemon would build now differs from the archived one, as it
+  // does when the Markdown renderer or its page style has changed since the first publish.
   openDb().prepare("UPDATE reports SET published_archive_key = NULL WHERE id = ?").run(report.id);
-  writeFileSync(join(reportDocumentDir(report.id, home), "findings.html"), "<html><body><p>Different page</p></body></html>");
+  writeFileSync(join(reportDocumentDir(report.id, home), "render.md"), "# Findings\n\nA different render.\n");
+
+  const again = await publish(report.id);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.replayed, true);
+  assert.equal(again.body.archiveKey, key);
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, key, "its own archive's key is restored");
+  assert.deepEqual(archivedPage(archiveId), before, "the archive is returned as it is, never rewritten");
+  assert.deepEqual(bundles(), [archiveId]);
+});
+
+test("a bundle at the report's key that this report did not publish is a conflict with a remedy, and is never overwritten", async () => {
+  const { post, publish, reports, bundles, archivedPage, archives } = setup();
+  const report = await post("taken.html", STATIC_HTML, "Key taken");
+  // Another session's report bundle already sits at this report's derived id.
+  const foreign = await archives.publishReportPage({
+    reportId: report.id,
+    reportCreatedAt: report.createdAt,
+    title: "Someone else's page",
+    page: Buffer.from("<html><body><p>Not this report</p></body></html>"),
+    session: { id: "s-someone-else", name: "Other", taskId: null },
+    repositoryLabel: null,
+  });
+  assert.equal(foreign.ok, true);
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const before = archivedPage(archiveId);
 
   const conflict = await publish(report.id);
   assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
-  assert.match(conflict.body.problems!.join(" "), /already exists .* with a different page/);
-  assert.deepEqual(archivedPage(archiveId), before, "the archived page is unchanged");
+  assert.match(conflict.body.problems!.join(" "), /that this report did not publish; delete it from the Scouts page, then publish again/);
+  assert.deepEqual(archivedPage(archiveId), before, "the archive at that key is untouched");
   assert.deepEqual(bundles(), [archiveId]);
-  assert.equal(reports.get(report.id)?.publishedArchiveKey, null, "a refused publish stamps nothing");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
 });
 
 test("deleting a report's archive clears its key, tells every window, and Publish as scout writes it again", async () => {

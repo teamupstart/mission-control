@@ -420,7 +420,11 @@ archive.
   report's id and when it was posted. Pressing again on a report that records its key checks
   only that the bundle is still present and returns it. When the key was lost (a lost response,
   or a restart before the key was written), the press verifies the bundle already at that id in
-  full and reuses it only if it holds the same page. Either way the report records its key once.
+  full and reuses it, unchanged, when it holds the same page or when its manifest says this
+  report's session published it (a Markdown page is re-rendered on every press, so a renderer
+  change must not turn the report's own archive into a conflict). Any other bundle at that id
+  is a conflict that is never overwritten: delete it from the Scouts page, then publish again.
+  Either way the report records its key once.
   A report's recorded key is checked against the library at four moments, and cleared only
   when its bundle is absent, so the report can be published again under the same key:
 

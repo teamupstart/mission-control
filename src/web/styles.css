@@ -23024,6 +23024,125 @@ button.wf-carried.is-link:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
+   would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
+   never red: a warning is advice and nothing it says blocks a save. */
+.spoken-name-field .field-label {
+  display: block;
+}
+.voice-heard {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font: 11.5px var(--mono);
+  overflow-wrap: anywhere;
+}
+.voice-heard b {
+  color: var(--fg);
+  font-weight: 650;
+}
+.voice-heard.is-empty {
+  color: var(--dim);
+  font-family: var(--sans);
+}
+.voice-heard-glyph {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: var(--working);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.voice-heard.is-empty .voice-heard-glyph {
+  stroke: var(--dim);
+}
+.voice-meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.voice-meter {
+  display: inline-flex;
+  gap: 3px;
+}
+.voice-meter i {
+  width: 20px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.voice-meter.is-good i.on {
+  background: var(--idle);
+}
+.voice-meter.is-warn i.on {
+  background: var(--attention);
+}
+.voice-meter-good {
+  color: var(--idle);
+  font-weight: 600;
+}
+.voice-meter-bad {
+  color: var(--attention);
+  font-weight: 600;
+}
+.voice-name-warning {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+/* Settings > Voice's roster: who answers to a name, read-only, with each name's check. */
+.voice-roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.voice-roster-table th {
+  text-align: left;
+  padding: 4px 8px 5px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--dim);
+  font: 640 10px var(--sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.voice-roster-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+.voice-roster-agent {
+  font-weight: 620;
+  color: var(--fg);
+}
+.voice-roster-kind,
+.voice-roster-state {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.voice-roster-state-running {
+  color: var(--idle);
+}
+.voice-roster-say {
+  font: 600 11.5px var(--mono);
+  overflow-wrap: anywhere;
+}
+.voice-roster-ok {
+  color: var(--dim);
+  font-size: 11px;
+}
+.voice-roster-warn {
+  color: var(--attention);
+  font-size: 11px;
+}
 /* The capture target is a button that shows the current key, and swaps to a live
    "Press a key…" prompt while recording. Min-width keeps the row from jumping. */
 .kb-capture {

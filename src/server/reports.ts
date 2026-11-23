@@ -3,8 +3,9 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, join } from "node:path";
-import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
+import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { launchFailureOutcome } from "@shared/launch-failure.ts";
 import type { PostReportBody } from "@shared/protocol.ts";
 import {
@@ -281,9 +282,11 @@ export class ReportManager {
   authorFor(session: Session): ReportAuthor {
     const runs = this.registry.listResidentRuns();
     const run = session.task ? runs.find((candidate) => candidate.taskId === session.task!.id) : undefined;
+    const names = withCurrentReferenceNames(runs, this.registry.listResidentProfiles());
     return {
       key: run ? residentAuthorKey(run.profileId) : sessionAuthorKey(session.id),
-      name: agentDisplayName(sessionDisplayNameInput(session, runs)).name,
+      // A call sign or reference name names the author only while voice is on.
+      name: agentDisplayName(sessionDisplayNameInput(session, names, featureEnabled(VOICE_FLAG))).name,
       residentProfileId: run?.profileId ?? null,
     };
   }

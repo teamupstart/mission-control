@@ -376,7 +376,7 @@ export function ResidentProfileEditor({
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>
-            <Body draft={draft} update={update} changeHarness={changeHarness} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+            <Body draft={draft} update={update} changeHarness={changeHarness} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
           </section>
         ))}
         {profile && <ResidentState key={profile.id} profileId={profile.id} />}

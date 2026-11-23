@@ -235,7 +235,7 @@ export const SETTINGS_CATEGORIES = [
     // here is daemon-backed. Audio never leaves the machine; the panel says so where it matters.
     group: "sessions",
     scope: "machine",
-    keywords: ["voice", "speech", "microphone", "listening", "mute", "cancel window", "unsure", "plan forms", "hands-free"],
+    keywords: ["voice", "speech", "microphone", "listening", "mute", "cancel window", "unsure", "plan forms", "hands-free", "call sign", "reference name", "roster"],
     // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
     flag: "voice",
   },

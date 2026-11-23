@@ -18,8 +18,10 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
-import type { ResidentRunSummary } from "@shared/residents.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
+import { withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
@@ -47,6 +49,8 @@ export interface AwaySource {
     pipelineRuns?: PipelineRun[];
     /** Live resident runs, which name a resident's alerts while the `inbox` flag is on. */
     residentRuns?: ResidentRunSummary[];
+    /** Live resident profiles, whose current reference names those alerts use. */
+    residentProfiles?: ResidentProfile[];
   };
 }
 
@@ -177,7 +181,13 @@ export function startAwayWatcher(
         pipelineRuns: snap.pipelineRuns,
         // Read each pass, like the browser's gate, so a toggle names the next alert alike on
         // both sides without a restart.
-        ...(featureEnabled(INBOX_FLAG) ? { names: snap.residentRuns ?? [] } : {}),
+        // Call signs and reference names name an agent only while voice is on as well.
+        ...(featureEnabled(INBOX_FLAG)
+          ? {
+              names: withCurrentReferenceNames(snap.residentRuns ?? [], snap.residentProfiles ?? []),
+              spokenNames: featureEnabled(VOICE_FLAG),
+            }
+          : {}),
       };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than
@@ -220,7 +230,7 @@ export function startAwayWatcher(
       if (buffer) {
         buffer = refreshAlerts(
           buffer,
-          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names)),
+          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names, scope.spokenNames)),
         );
       }
       prev = scope;

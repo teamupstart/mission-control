@@ -390,10 +390,11 @@ test("MCP advertises and persists every backlog configuration field without laun
   const created = await f.create({
     kind: "bugfix", agent: "codex", model: "gpt-6-sol", effort: "high",
     workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID, enabled: false,
-    priority: "high", labels: [" api ", "api", "mcp"],
+    priority: "high", labels: [" api ", "api", "mcp"], callSign: "  Atlas ",
     additionalRepositories: ["secondary"], dependsOnTaskIds: [prerequisite.id],
   });
   const stored = getTask(created.id)!;
+  assert.equal(created.callSign, "Atlas", "the call sign is trimmed and saved");
   assert.equal(created.agent, "codex");
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");

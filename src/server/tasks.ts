@@ -291,6 +291,8 @@ export interface CreateTaskInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** Launch with this Library Persona's guidance as standing instructions; omitted is none. */
   personaId?: string;
+  /** A call sign the operator can say to address the session by voice; omitted is none. */
+  callSign?: string;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -3552,6 +3554,8 @@ export class TaskManager {
       // An id, read again at launch like model and effort: a Persona edited while the task
       // waits reaches it, and the launch's standing-instruction snapshot pins what was sent.
       personaId: input.personaId ?? null,
+      // Present only when given, so a task with none carries no key, as a stored row reads back.
+      ...(input.callSign ? { callSign: input.callSign } : {}),
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -4768,6 +4772,9 @@ export class TaskManager {
       effort,
       advisorModel,
       personaId,
+      // Annotation, like priority: `undefined` leaves it and `null` takes it off, and either may
+      // reach a running task (`isAnnotationOnlyUpdate`).
+      ...(patch.callSign === undefined ? {} : { callSign: patch.callSign }),
       // A recorded Persona refusal is answered by choosing another Persona (or none), so that
       // edit returns the task to autopilot. Any other recorded error is left for its own fix.
       ...(personaId !== t.personaId && isPersonaLaunchRefusal(t.error) ? { error: null } : {}),

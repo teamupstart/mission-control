@@ -203,7 +203,8 @@ export interface MissionState {
   /**
    * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
    * while the `voice` flag is off at connect time; a `voice_state` frame replaces it whole, and
-   * the one sent when the flag turns off carries the mode `off`.
+   * the one sent when the flag turns off carries the mode `off`. A `voice_roster` frame replaces
+   * only its `roster` (contract C).
    */
   voice: VoiceState | null;
   /**
@@ -733,6 +734,12 @@ export function useEventStream(): MissionState {
         // Replaced whole: one state for every window, which is how a mute in one reaches another.
         case "voice_state":
           setVoice(msg.state);
+          break;
+        // Who can be addressed moved: replace the roster inside the state. A frame that lands
+        // while no state is held (voice was off at connect) has nothing to update; the frame
+        // that switches voice on carries the roster itself.
+        case "voice_roster":
+          setVoice((prev) => (prev ? { ...prev, roster: msg.roster } : prev));
           break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));

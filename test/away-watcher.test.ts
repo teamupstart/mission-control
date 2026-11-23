@@ -236,6 +236,35 @@ test("with the inbox flag on, a resident's digest line is named by the one namin
   assert.equal(titleWith(true), "Linter watcher went idle");
 });
 
+test("a call sign or reference name names a digest line only while voice is on as well as inbox", (t) => {
+  t.after(() => {
+    applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false });
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  const named = mkSession({ id: "a", name: "parser-1", task: { id: "t-alice", title: "Fix the parser", callSign: "Alice" } as Session["task"] });
+  const resident = mkSession({ id: "b", name: "watcher-1", task: { id: "t-resident", title: "Watch lint" } as Session["task"] });
+  const residentRuns = [{ taskId: "t-resident", profileId: "p-lint", settings: { identity: { name: "Linter watcher" }, board: { colorId: "teal" } } }];
+  const residentProfiles = [{ id: "p-lint", settings: { identity: { name: "Linter watcher", referenceName: "Sage" } } }];
+  const titlesWith = (voice: boolean): (string | undefined)[] => {
+    applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: voice });
+    let sessions = [named, resident].map((s) => ({ ...s, state: "working" as SessionState }));
+    const src = { snapshot: () => ({ sessions, tasks: [], residentRuns, residentProfiles }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+    const w = startAwayWatcher(src, () => 1000);
+    setAwayConfig({ away: true }, 500);
+    w.tick(); // baseline
+    sessions = [named, resident].map((s) => ({ ...s, state: "idle" as SessionState }));
+    w.tick();
+    const titles = (w.buffer()?.events ?? []).map((event) => event.title).sort();
+    w.stop();
+    setAwayConfig({ away: false }, 2000);
+    return titles;
+  };
+  // Voice off: a saved call sign and reference name are kept, and name nothing.
+  assert.deepEqual(titlesWith(false), ["Fix the parser went idle", "Linter watcher went idle"]);
+  assert.deepEqual(titlesWith(true), ["Alice went idle", "Sage went idle"]);
+});
+
 test("workflow transitions use the same away window and coalesce stable ids", () => {
   const running = workflowRun();
   const completed = workflowRun({ status: "completed", phase: "complete", updatedAt: 2 });

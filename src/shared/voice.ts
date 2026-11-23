@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
+import type { SpokenName } from "./voice-names.ts";
 import { boundedRecord } from "./zod-shapes.ts";
 
 /** The preview flag for voice addressing. */
@@ -230,10 +231,11 @@ export interface VoiceState {
   hotkeyError: VoiceHotkeyError | null;
   model: VoiceModelState;
   /**
-   * Who can be addressed. Empty in this phase: Phase 2 (contract C) fills it with spoken names
-   * and widens the element type.
+   * Who can be addressed (contract C): every live resident profile and every task with a call
+   * sign, running or not. The daemon's `VoiceNameRegistry` fills it. A change to it alone is
+   * published as `voice_roster`, not as a `voice_state` frame; see `canonicalVoiceState`.
    */
-  roster: readonly never[];
+  roster: readonly SpokenName[];
 }
 
 /** Whether the state says a capability is reported and available. */
@@ -315,6 +317,10 @@ export const VOICE_MODE_LABEL: Record<VoiceMode, string> = {
 /**
  * The state as one string with its keys in a fixed order, so two states that say the same thing
  * compare equal. The registry uses it to drop a frame that restates the last one.
+ *
+ * The roster is left out: it travels on its own event, `voice_roster`, so an agent starting or
+ * stopping does not wake the shell, which follows the mode and has no use for names. A
+ * `voice_state` frame still carries the roster as it stands when it is sent.
  */
 export function canonicalVoiceState(state: VoiceState): string {
   const capabilities: Record<string, VoiceCapability> = {};
@@ -328,8 +334,17 @@ export function canonicalVoiceState(state: VoiceState): string {
     capabilities,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     state.model,
-    state.roster,
   ]);
+}
+
+/**
+ * The roster as one string, entries and fields in a fixed order, so the registry can drop a
+ * `voice_roster` frame that restates the last one.
+ */
+export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
+  return JSON.stringify(roster.map((entry) => [
+    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state,
+  ]));
 }
 
 /** The state with the flag off: what every follower is told when voice is switched off. */

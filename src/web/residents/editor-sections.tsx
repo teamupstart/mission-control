@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import {
   RESIDENT_WEEKDAYS,
@@ -36,7 +36,11 @@ import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
-import { FeatureFlagsContext } from "../useFeatureFlag.ts";
+import { FeatureFlagsContext, useFeatureFlag } from "../useFeatureFlag.ts";
+import { SpokenNameField } from "../components/SpokenNameField.tsx";
+import { rosterWithout, VoiceRosterContext } from "../lib/voice-roster.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { residentSpokenNameKey } from "@shared/voice-names.ts";
 import { residentAccentStyle } from "./marker.ts";
 import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
@@ -59,6 +63,8 @@ export interface ResidentEditorSectionProps {
   spendUnavailable?: string | null;
   /** Open the Library's blank Persona editor. Absent where the editor cannot navigate. */
   onCreatePersona?: () => void;
+  /** The profile being edited, or null for a new one: its own roster entry is not a clash. */
+  profileId?: string | null;
 }
 
 /**
@@ -84,7 +90,13 @@ export interface ResidentEditorSection {
   featureFlag?: FeatureFlagId;
 }
 
-function IdentitySection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+function IdentitySection({ draft, update, disabled, profileId = null }: ResidentEditorSectionProps): React.JSX.Element {
+  const voiceNames = useFeatureFlag(VOICE_FLAG);
+  const voiceRoster = useContext(VoiceRosterContext);
+  const roster = useMemo(
+    () => rosterWithout(voiceRoster, profileId ? residentSpokenNameKey(profileId) : null),
+    [voiceRoster, profileId],
+  );
   return (
     <div className="resident-fields">
       <label className="field">
@@ -111,6 +123,20 @@ function IdentitySection({ draft, update, disabled }: ResidentEditorSectionProps
           onChange={(event) => update("identity", { ...draft.identity, description: event.target.value })}
         />
       </label>
+      {/* Behind the voice preview. A saved reference name stays on the profile either way. */}
+      {voiceNames && (
+        <SpokenNameField
+          className="resident-reference-name"
+          label="Reference name"
+          value={draft.identity.referenceName ?? ""}
+          disabled={disabled}
+          roster={roster}
+          placeholder={`Said instead of ${draft.identity.name.trim() || "the name"}`}
+          // Saved blank when cleared, never dropped: a save that omits the key would keep the
+          // previous revision's reference name.
+          onChange={(value) => update("identity", { ...draft.identity, referenceName: value })}
+        />
+      )}
     </div>
   );
 }

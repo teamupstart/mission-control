@@ -199,6 +199,7 @@ test("every field on the form reaches the patch", () => {
     // moved to Settings -> Harnesses, so it is judged against a task that has one.
     advisorModel: "",
     personaId: "persona-reviewer",
+    callSign: "Atlas",
     workflowId: "workflow-review",
     grillFirst: true,
     enabled: false,
@@ -230,6 +231,16 @@ test("every field on the form reaches the patch", () => {
     assert.ok(patch, `changing ${field} must produce a patch`);
     assert.equal(Object.keys(patch).length, 1, `changing ${field} must send ${field} alone`);
   }
+});
+
+test("a call sign reads back, is sent trimmed, is cleared with null, and a stray space is no edit", () => {
+  const t = mkTask({ callSign: "Alice" });
+  assert.equal(draftFromTask(t).callSign, "Alice");
+  assert.equal(draftFromTask(mkTask()).callSign, "", "no call sign is the empty field");
+  assert.equal(taskUpdatePatch(t, edited(t, { callSign: " Alice " }), t.intent), null, "the same name, padded, is not an edit");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "  Atlas   Prime " }), t.intent), { callSign: "Atlas Prime" });
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { callSign: "   " }), t.intent), { callSign: null });
+  assert.equal(taskUpdatePatch(mkTask(), edited(mkTask(), { callSign: "" }), t.intent), null);
 });
 
 test("a Persona reads back, is cleared with null, and follows every kind the form offers", () => {

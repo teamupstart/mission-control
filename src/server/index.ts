@@ -9,6 +9,8 @@ import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
+import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -23,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, getAppConfig, openDb, setAppConfig } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, getTask as getDurableTask, openDb, setAppConfig } from "./db.ts";
 import { PauseManager } from "./pause/manager.ts";
 import { processFreezer } from "./pause/freezer.ts";
 import { StoredPauseStateSchema } from "@shared/protocol.ts";
@@ -247,6 +249,14 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
+// the voice state, which reads its roster from it on its first publish.
+const voiceNames = new VoiceNameRegistry(registry, {
+  now: () => Date.now(),
+  enabled: () => featureEnabled(VOICE_FLAG),
+  taskStored: (id) => getDurableTask(id) !== undefined,
+});
+const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
 // The shapers folder is read at start, and again at every shaping run: never watched.
@@ -1108,6 +1118,7 @@ async function shutdown(): Promise<void> {
   stopPersonDeliveries();
   stopShapingConfig();
   stopVoiceState();
+  stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();

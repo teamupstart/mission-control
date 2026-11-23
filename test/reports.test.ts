@@ -116,6 +116,19 @@ test("a resident is one author across its runs: keyed by its profile and named b
   assert.deepEqual(report.author, { key: "resident:steve", name: "Steve", residentProfileId: "steve" });
 });
 
+test("a session's call sign names a report's author only while the voice flag is on", async (t) => {
+  t.after(() => { flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const { reports } = wired();
+  const session = (id: string) => mkSession({
+    id, cwd: checkout(), task: mkTaskSummary({ id: `t-${id}`, title: "Fix the parser", callSign: "Alice" }),
+  });
+  const off = await reports.post(session("s-voice-off"), { title: "Parser fixed", body: "Done." });
+  assert.equal(off.author.name, "Fix the parser", "a saved call sign names nothing with voice off");
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  const on = await reports.post(session("s-voice-on"), { title: "Parser fixed", body: "Done." });
+  assert.equal(on.author.name, "Alice");
+});
+
 test("replaces: the new report takes the old one's place and keeps its place in the queue", async () => {
   let clock = 1_000;
   const registry = new Registry();

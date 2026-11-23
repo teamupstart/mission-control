@@ -112,6 +112,12 @@ export interface AlertScope {
    * line name one agent alike.
    */
   names?: readonly ResidentNameSource[];
+  /**
+   * The `voice` flag: whether a call sign or reference name may name an agent in `names`'s rule.
+   * Absent reads as off, so a title names an agent as it did before voice. Both callers pass it
+   * from the same flag, for the reason `names` gives.
+   */
+  spokenNames?: boolean;
 }
 
 /**
@@ -130,8 +136,8 @@ export function bufferable(a: Alert): boolean {
   return !deliverable(a);
 }
 
-function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined): string {
-  if (names) return agentDisplayName(sessionDisplayNameInput(s, names)).name;
+function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined, spokenNames = false): string {
+  if (names) return agentDisplayName(sessionDisplayNameInput(s, names, spokenNames)).name;
   return s.task?.title || s.name || "a session";
 }
 
@@ -166,12 +172,17 @@ function stallKeys(scope: AlertScope): Set<string> {
  * threshold tripped. Deriving both from here means the refreshed line and the alert
  * that announced it can never diverge.
  */
-export function stuckAlert(st: Stall, sessions: Session[], names?: readonly ResidentNameSource[]): Alert {
+export function stuckAlert(
+  st: Stall,
+  sessions: Session[],
+  names?: readonly ResidentNameSource[],
+  spokenNames = false,
+): Alert {
   const s = sessions.find((x) => x.id === st.sessionId);
   return {
     id: `stuck:${st.sessionId}:${st.kind}`,
     kind: "stuck",
-    title: `${s ? sessionLabel(s, names) : "a session"} looks stuck`,
+    title: `${s ? sessionLabel(s, names, spokenNames) : "a session"} looks stuck`,
     body: st.reason,
     sessionId: st.sessionId,
     // Spread, so only the one stall kind that HAS a run carries the key. The toast turns
@@ -220,7 +231,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
-    const label = sessionLabel(s, next.names);
+    const label = sessionLabel(s, next.names, next.spokenNames);
 
     // needs-input: the agent is blocked on you (awaiting input or a review decision).
     const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
@@ -374,7 +385,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
-    alerts.push(stuckAlert(st, next.sessions, next.names));
+    alerts.push(stuckAlert(st, next.sessions, next.names, next.spokenNames));
   }
 
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));

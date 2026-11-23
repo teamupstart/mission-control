@@ -7,10 +7,13 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
+import { withCurrentReferenceNames } from "@shared/display-name.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -427,13 +430,23 @@ export function App(): React.JSX.Element {
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
   const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
+  // The runs as the naming rule reads them: each with its profile's current reference name, the
+  // name the operator says to it (`withCurrentReferenceNames`).
+  const residentNames = useMemo(
+    () => withCurrentReferenceNames(residentRuns, residentProfiles),
+    [residentRuns, residentProfiles],
+  );
+  // Call signs and reference names are voice's names: they name an agent only while it is on.
+  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
   const alertScope = useMemo(
     () => ({
       sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
-      ...(inboxNames ? { names: residentRuns } : {}),
+      ...(inboxNames ? { names: residentNames, spokenNames } : {}),
     }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns],
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentNames, spokenNames],
   );
+  // Who can be addressed by voice, for the fields that check a new name against it.
+  const voiceRoster = voice?.roster ?? NO_SPOKEN_NAMES;
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   useEffect(() => {
@@ -4814,7 +4827,8 @@ export function App(): React.JSX.Element {
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
-      <ResidentNamesContext.Provider value={residentRuns}>
+      <ResidentNamesContext.Provider value={residentNames}>
+      <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
@@ -5124,6 +5138,8 @@ export function App(): React.JSX.Element {
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
               voice={voice}
+              sessions={sessions}
+              residentProfiles={residentProfiles}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -5711,6 +5727,7 @@ export function App(): React.JSX.Element {
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
+      </VoiceRosterContext.Provider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>

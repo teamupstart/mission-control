@@ -148,9 +148,10 @@ export const FEATURE_FLAGS = [
     description:
       "Talk to agents by name, with speech recognized on this machine. Needs Ask without stopping, " +
       "Reports and inbox upgrades and File plan decisions: the Voice family in Settings > Setup turns " +
-      "them on. Settings > Voice shows whether voice is listening and why not.",
+      "them on. Settings > Voice shows whether voice is listening and why not, and who can be addressed: " +
+      "residents by name or reference name, and sessions given a call sign under Dispatch > Advanced.",
     stage: "preview",
-    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
+    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "reference name", "mute"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

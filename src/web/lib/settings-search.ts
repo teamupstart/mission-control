@@ -581,6 +581,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("derived-status"),
   },
   {
+    id: "voice-roster",
+    label: "Who you can address",
+    description: "Every resident and every session with a call sign, the name to say to each, whether it is running, and any name warning.",
+    category: "voice",
+    anchor: "voice/roster",
+    keywords: ["roster", "call sign", "reference name", "spoken name", "address", "who", "agents", "names"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
     id: "voice-auto-mute",
     label: "Auto-mute during calls",
     description: "Stop listening while another app, such as a call, is using the microphone.",

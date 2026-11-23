@@ -497,6 +497,12 @@ export class ReportManager {
   reply(id: string, words: string, submit: SubmitOperatorTurn): { report: ReportItem; sessionId: string; pendingTurn: PendingTurn | null } {
     const report = getRow(id);
     if (!report) throw new ReportRefusal("no such report", 404);
+    // Only a report still waiting is answered: a reply to a replaced version would restate what
+    // the agent has since corrected, and one to a read report would not say how it was cleared.
+    if (report.supersededBy !== null) {
+      throw new ReportRefusal(`This report was replaced by ${report.supersededBy}. Reply to that version instead.`, 409);
+    }
+    if (report.readAt !== null) throw new ReportRefusal("This report has already been read.", 409);
     const target = this.replyTargetFor(report);
     if (target.kind !== "live") throw new ReportRefusal(replyRefusal(target, report.author.name), 409);
     const sent = submit(target.sessionId, reportReplyText(report, words, this.now()));

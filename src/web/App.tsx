@@ -7,7 +7,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { replyTarget } from "@shared/reports.ts";
+import { replyTarget, reportToRead } from "@shared/reports.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -474,12 +474,35 @@ export function App(): React.JSX.Element {
   // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
   // read" to. Opening a report records that it was opened (once) and never marks it read.
   const [openReportId, setOpenReportId] = useState<string | null>(null);
+  // The chain (`rootId`) of the open report, so that when the agent replaces it the replacement
+  // takes its place on screen rather than the card closing under the operator.
+  const openReportRoot = useRef<string | null>(null);
+  useEffect(() => {
+    if (openReportId === null || reports.some((report) => report.id === openReportId)) return;
+    const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
+    if (successor) setOpenReportId(successor.id);
+  }, [reports, openReportId]);
+  // What the operator is typing on each report card, by chain, so a replacement (a new id with
+  // the same `rootId`) keeps the words. Cleared once a reply or follow-up is accepted.
+  const [reportDrafts, setReportDrafts] = useState<ReadonlyMap<string, string>>(new Map());
+  const setReportDraft = useCallback((rootId: string, text: string) => {
+    setReportDrafts((current) => {
+      if ((current.get(rootId) ?? "") === text) return current;
+      const next = new Map(current);
+      if (text) next.set(rootId, text);
+      else next.delete(rootId);
+      return next;
+    });
+  }, []);
   const reportOpenPosted = useRef(new Set<string>());
   const reportControls = useMemo<InboxReportControls>(() => ({
     openReportId,
+    draftFor: (report) => reportDrafts.get(report.rootId) ?? "",
+    onDraft: (report, text) => setReportDraft(report.rootId, text),
     onToggle: (report) => {
       const opening = openReportId !== report.id;
       setOpenReportId(opening ? report.id : null);
+      openReportRoot.current = opening ? report.rootId : null;
       if (opening && report.openedAt === null && !reportOpenPosted.current.has(report.id)) {
         reportOpenPosted.current.add(report.id);
         void api.openReport(report.id).then((result) => {
@@ -499,16 +522,18 @@ export function App(): React.JSX.Element {
     onReply: async (report, text) => {
       const result = await api.replyToReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not send the reply";
+      setReportDraft(report.rootId, "");
       setOpenReportId((current) => (current === report.id ? null : current));
       return null;
     },
     onFollowUp: async (report, text) => {
       const result = await api.followUpReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      setReportDraft(report.rootId, "");
       setOpenReportId((current) => (current === report.id ? null : current));
       return null;
     },
-  }), [openReportId, sessions, residentRuns]);
+  }), [openReportId, sessions, residentRuns, reportDrafts, setReportDraft]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It

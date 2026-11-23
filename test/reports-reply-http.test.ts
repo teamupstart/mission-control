@@ -194,3 +194,18 @@ test("parseBody hands a route the schema's issues, so a refusal sentence never d
   assert.equal((await probe(JSON.stringify({ text: "   " }))).issues?.[0]?.message, "a reply needs words");
   assert.equal((await probe(JSON.stringify({ text: "x".repeat(4_001) }))).issues?.[0]?.message, "a reply can be at most 4000 characters");
 });
+
+test("a reply to a replaced or already-read report is refused, and nothing is sent", async () => {
+  const f = setup();
+  const first = await post(f, "First version");
+  const second = await f.reports.post(f.registry.getSession(f.session.id)!, { title: "Second version", body: "Corrected.", replaces: first.id });
+  const replaced = await f.reply(first.id, "About the first one");
+  assert.equal(replaced.status, 409);
+  assert.equal(replaced.body.error, `This report was replaced by ${second.id}. Reply to that version instead.`);
+  f.reports.markRead(second.id, "mark-read");
+  const read = await f.reply(second.id, "Too late");
+  assert.equal(read.status, 409);
+  assert.equal(read.body.error, "This report has already been read.");
+  assert.deepEqual(f.registry.getSession(f.session.id)?.pendingTurns ?? [], [], "nothing was queued");
+  assert.equal(f.reports.get(second.id)!.readBy, "mark-read", "it keeps how it was cleared");
+});

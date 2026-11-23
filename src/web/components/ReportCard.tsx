@@ -35,6 +35,8 @@ export function ReportCard({
   onMarkRead,
   onReply,
   onFollowUp,
+  draft,
+  onDraft,
   error = null,
   now,
 }: {
@@ -48,6 +50,12 @@ export function ReportCard({
   onReply: (text: string) => Promise<string | null>;
   /** Start, or retry, the follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (text: string) => Promise<string | null>;
+  /**
+   * What the operator has typed in the reply or follow-up box. Held by the dashboard by chain,
+   * not by this card, so a replacement report (a new card) keeps it.
+   */
+  draft: string;
+  onDraft: (text: string) => void;
   /** Why the last Mark read was refused, drawn beneath the card until it is tried again. */
   error?: string | null;
   /** Injectable so a render test can own the clock. */
@@ -88,7 +96,7 @@ export function ReportCard({
           {report.document && (
             <p className="inbox-line">Attached: {report.document.name}</p>
           )}
-          <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} />
+          <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} draft={draft} onDraft={onDraft} />
           <div className="agent-report-actions">
             <InboxActionButton
               action="mark-read"
@@ -116,23 +124,26 @@ function ReportAnswer({
   target,
   onReply,
   onFollowUp,
+  draft,
+  onDraft,
 }: {
   report: ReportItem;
   target: ReplyTarget;
   onReply: (text: string) => Promise<string | null>;
   onFollowUp: (text: string) => Promise<string | null>;
+  draft: string;
+  onDraft: (text: string) => void;
 }): React.JSX.Element {
   const name = report.author.name;
-  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  // The dashboard clears the draft once a send is accepted; a refusal leaves it in the box.
   const run = (send: (text: string) => Promise<string | null>, text: string) => {
     setBusy(true);
     setFailure(null);
     void send(text).then((error) => {
       setBusy(false);
       setFailure(error);
-      if (!error) setDraft("");
     });
   };
   const failureLine = failure && <p className="inbox-line inbox-error" role="alert">{failure}</p>;
@@ -203,7 +214,7 @@ function ReportAnswer({
             rows={3}
             value={draft}
             disabled={busy}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => onDraft(event.target.value)}
           />
           {failureLine}
           <div className="agent-report-actions">

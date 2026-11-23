@@ -42,6 +42,8 @@ export function mkReportControls(openReportId: string | null = null, target: Rep
       onToggle: (report: ReportItem) => { calls.toggled.push(report.id); },
       onMarkRead: async (report: ReportItem) => { calls.markedRead.push(report.id); return null; },
       targetFor: (_report: ReportItem): ReplyTarget => target,
+      draftFor: (_report: ReportItem) => "",
+      onDraft: (_report: ReportItem, _text: string) => undefined,
       onReply: async (report: ReportItem) => { calls.replied.push(report.id); return null; },
       onFollowUp: async (report: ReportItem) => { calls.followedUp.push(report.id); return null; },
     },
@@ -56,5 +58,7 @@ export function reportCardProps(target: ReplyTarget = { kind: "live", sessionId:
     onMarkRead: () => undefined,
     onReply: async () => null,
     onFollowUp: async () => null,
+    draft: "",
+    onDraft: () => undefined,
   };
 }

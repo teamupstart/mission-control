@@ -296,7 +296,10 @@ let db: DatabaseSync | undefined;
 // 42: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
 //     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
 //     table, with no backfill: no launch was shaped before they existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 42;
+// 43: revised plan forms (`reviews.revises_review_id`, `revision`) and the index that keeps one
+//     revision per form, nullable with no backfill: every existing row is a form that revises
+//     nothing.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 43;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4505,6 +4508,15 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "reviews", "meanwhile", "TEXT");
   addColumn(d, "reviews", "closed_reason", "TEXT");
 
+  // Revised plan forms (`request_plan_decisions` with `revises`). `revises_review_id` names the
+  // form a revision replaced and `revision` is its place in the chain (2 for the first). Both
+  // nullable with no default: an existing row is a form that revises nothing. The partial unique
+  // index is the durable half of "a form is revised at most once"; the review manager refuses a
+  // second revision with a reason before the insert would trip it.
+  addColumn(d, "reviews", "revises_review_id", "TEXT");
+  addColumn(d, "reviews", "revision", "INTEGER");
+  d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_revises ON reviews(revises_review_id) WHERE revises_review_id IS NOT NULL");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -5435,6 +5447,8 @@ interface ReviewRow {
   wait_mode?: string | null;
   meanwhile?: string | null;
   closed_reason?: string | null;
+  revises_review_id?: string | null;
+  revision?: number | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
@@ -5466,6 +5480,10 @@ function rowToReview(r: ReviewRow): ReviewItem {
     ...(r.wait_mode === "message" ? { waitMode: "message" as const } : {}),
     ...(r.meanwhile ? { meanwhile: r.meanwhile } : {}),
     ...(closedReason ? { closedReason } : {}),
+    // Spread only when both halves are stored, so a form that revises nothing decodes exactly as
+    // it always did.
+    ...(r.revises_review_id && typeof r.revision === "number" && Number.isSafeInteger(r.revision) && r.revision >= 2
+      ? { revision: { number: r.revision, previousId: r.revises_review_id } } : {}),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
@@ -5522,8 +5540,8 @@ export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
       `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at,
-                            wait_mode, meanwhile, mcp_wait_detached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       r.id,
@@ -5540,7 +5558,20 @@ export function insertReview(r: ReviewItem): void {
       message ? "message" : null,
       r.meanwhile ?? null,
       message ? r.createdAt : null,
+      r.revision?.previousId ?? null,
+      r.revision?.number ?? null,
     );
+}
+
+/** One review row by id, whatever its status or age, or null when no review has that id. */
+export function loadReview(id: string): ReviewItem | null {
+  return loadReviewsByIds([id])[0] ?? null;
+}
+
+/** The id of the form that revises this one (`revises_review_id`), or null when none does. */
+export function reviewRevisedBy(id: string): string | null {
+  const row = openDb().prepare("SELECT id FROM reviews WHERE revises_review_id = ?").get(id) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 /**

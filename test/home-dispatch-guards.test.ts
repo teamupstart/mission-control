@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 427 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 428 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`) and the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -41,11 +41,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
-  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off.
+  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then
+  // for `GET /api/reviews/:id`, the earlier version a revised plan form links to.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 427);
+  assert.equal(others.length, 428);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "4a816ba449844ddf3817078e6725c7b42562966b4c4fdc768b2783190473408d");
+    "42a70d2d83223f62a61bd28cdc2e180816611237883fdbbfb47b37851f243edd");
 });
 
 function sourceFiles(dir: string): string[] {

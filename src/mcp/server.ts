@@ -128,6 +128,13 @@ async function createReview(
  */
 type CreatedReview = { id: string; wait: "call" } | { id: string; wait: "message"; receipt: string };
 
+/**
+ * The daemon refused the ask with a reason meant for the agent (409): the ten-question limit, or a
+ * `revises` that names no form this ask may revise. Nothing was filed, so the tool result is that
+ * reason, not a transport failure.
+ */
+class AskRefused extends Error {}
+
 async function postReview(input: {
   kind: string;
   title: string;
@@ -138,6 +145,8 @@ async function postReview(input: {
   /** This child can hand back a receipt instead of long-polling. `request_input` and `request_plan_decisions` say so. */
   asyncCapable?: boolean;
   meanwhile?: string;
+  /** The filed plan form this one revises (`request_plan_decisions`). */
+  revises?: string;
 }): Promise<CreatedReview> {
   const res = await http(input.managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
@@ -151,7 +160,14 @@ async function postReview(input: {
     ...(input.snoozable ? { snoozable: true } : {}),
     ...(input.asyncCapable ? { asyncCapable: true } : {}),
     ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
+    ...(input.revises ? { revises: input.revises } : {}),
   });
+  if (res.status === 409) {
+    const text = await res.text();
+    let reason: unknown = null;
+    try { reason = (JSON.parse(text) as { error?: unknown }).error; } catch { /* not JSON: reported below */ }
+    throw typeof reason === "string" ? new AskRefused(reason) : new Error(`harness 409: ${text}`);
+  }
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   const created = (await res.json()) as { id: string; wait?: string; receipt?: unknown };
   return created.wait === "message" && typeof created.receipt === "string"
@@ -504,7 +520,9 @@ server.registerTool(
       "and end your turn. The answer arrives later as a message in this conversation, restating " +
       "the plan and each decision. A dismissal is not approval. The human " +
       "may move any decision to chat instead of choosing; the result then names it and says " +
-      "how to discuss it, and you must not decide or re-ask it. Use this " +
+      "how to discuss it, and you must not decide or re-ask it. When scope changes after you " +
+      "filed a plan, file the revised plan with revises set to the earlier form's review id: " +
+      "the operator then sees one card tagged as the revision. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
       "expressed as options.",
     inputSchema: {
@@ -543,18 +561,30 @@ server.registerTool(
         .max(PLAN_DECISION_LIMITS.decisions)
         .default([])
         .describe("Open choices; empty is allowed for managed final-bundle approval"),
+      revises: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "The review id of your earlier filed plan form that this plan replaces, for example after " +
+          "the operator said the scope changed. Pass it whether or not you already withdrew that form: " +
+          "an open one is withdrawn for you. Only your own session's filed plan forms can be revised, " +
+          "each once; revise the latest. Omit it for a new plan.",
+        ),
     },
   },
-  async ({ title, plan, decisions, managedPlan }, extra) => {
+  async ({ title, plan, decisions, managedPlan, revises }, extra) => {
     try {
       // `asyncCapable`: the daemon decides how this form waits (`filed-plan-decisions`). Told
       // `message`, the plan is filed and the receipt is the whole result - nothing long-polls.
-      const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true });
+      const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true, revises });
       if (created.wait === "message") return textResult(created.receipt);
       const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
+      if (err instanceof AskRefused) return textResult(err.message, true);
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
   },
@@ -1084,6 +1114,7 @@ server.registerTool(
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
+      if (err instanceof AskRefused) return textResult(err.message, true);
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
   },

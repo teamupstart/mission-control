@@ -115,6 +115,18 @@ export function isAgentAsk(review: Pick<ReviewItem, "kind" | "snoozable" | "wait
   return isRequestInputQuestion(review) || isFiledGate(review);
 }
 
+/**
+ * A review its own agent took back: settled `withdrawn` with no actor recorded. The status has one
+ * write path, the review manager's agent withdrawal, and both of its entries (`withdraw_question`
+ * and a `revises` that names an open form) are the asking agent's own act and record no actor,
+ * so a `withdrawn` row with no actor was withdrawn by its agent. A row that names an actor was
+ * not, and this is false for it, as it is for every other terminal status. Whose agent is the
+ * caller's check: pair it with the same-session test.
+ */
+export function withdrawnByItsAgent(review: Pick<ReviewItem, "status" | "resolvedBy">): boolean {
+  return review.status === "withdrawn" && (review.resolvedBy ?? null) === null;
+}
+
 /** Still unanswered: pending in front of the operator, or parked by "Remind me later". */
 export function isOutstandingReview(review: Pick<ReviewItem, "status">): boolean {
   return review.status === "pending" || review.status === "snoozed";
@@ -197,9 +209,10 @@ export function asyncInputAnswer(review: ReviewItem, now = Date.now()): string {
 /**
  * The tool result a filed `request_plan_decisions` call returns at once (`filed-plan-decisions`).
  *
- * Four points, in order: the plan is filed and not answered; it is still a gate, so nothing
+ * Five points, in order: the plan is filed and not answered; it is still a gate, so nothing
  * outward happens until the answer, though read-only preparation is fine; do not file it again
- * or poll, and how to take it back; and then say what is waiting and end the turn. The gate is an
+ * or poll, and how to take it back; how to file a revision of it (`revises`); and then say what
+ * is waiting and end the turn. The gate is an
  * instruction, as `request_input`'s receipt is; nothing enforces read-only at the tool level.
  *
  * `bundleApproved`: a standing approval already approved the final bundle, so only the remaining
@@ -213,6 +226,7 @@ export function filedPlanReceipt(review: Pick<ReviewItem, "id">, options: { bund
     `Filed, not answered: your plan is in the operator's Mission Control inbox (review ${review.id}), and this call does not wait for the answer.`,
     "This is still a gate. Make no edits, commits, pushes, task creation or other outward action until the answer arrives. Read-only preparation, such as reading code or checking facts the plan relies on, is fine.",
     `Do not file this plan again and do not poll for it. The answer arrives as a message in this conversation. If the operator tells you the scope changed, or the plan is no longer needed, use withdraw_question with id ${review.id} and a reason, then file the revised plan with request_plan_decisions.`,
+    `To file a revised plan, call request_plan_decisions with revises set to ${review.id}, after withdrawing this form or instead of withdrawing it: an open form is withdrawn for you, and the operator sees one card tagged as the revision.`,
     "When your preparation is done, say what is waiting on this plan and end your turn. Mission Control shows this session as waiting on the operator and wakes it with the answer.",
   ].join("\n\n");
 }

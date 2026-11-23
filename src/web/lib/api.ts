@@ -2164,6 +2164,8 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
   /** Answer now: bring a snoozed question back before its time. */
   wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
+  /** One review by id, settled or not: the earlier version a revised plan form links to. */
+  review: (id: string) => readJson<ReviewItem>(`/api/reviews/${encodeURIComponent(id)}`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**

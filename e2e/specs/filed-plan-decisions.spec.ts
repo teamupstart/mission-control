@@ -179,7 +179,9 @@ test("a filed plan form is a gate: amber and counted while its agent still works
 
   // The agent finishes its turn; the answer then reaches it as a message, which starts its next turn.
   writeFileSync(join(daemon.recordDir, "e2e-release-held-turn"), "");
-  await expect(detail.getByText(`Mock reply to: Mission Control answer to your filed plan ${filed.id}`, { exact: false }).first())
+  // A delivered answer opens with its review marker (`[mission-control:answer review=...]`), as
+  // every message-mode answer does, and the fake echoes it first.
+  await expect(detail.getByText(`Mock reply to: [mission-control:answer review=${filed.id}]`, { exact: false }).first())
     .toBeVisible({ timeout: 30_000 });
   // The fake agent replies with the prompt it received, so its reply is the delivered message:
   // one message restating the plan and every decision with what was chosen.

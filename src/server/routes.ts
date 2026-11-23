@@ -1,6 +1,6 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
-import { OpenQuestionLimitError } from "./reviews.ts";
+import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
@@ -621,6 +621,7 @@ import {
   getSkillsAcks,
   loadConversationResolvedReviews,
   loadReviewsByIds,
+  loadReview,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   loadOpenInspectorInspections,
@@ -4413,6 +4414,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
+  // One review by id, settled or not: the earlier version of a revised plan form, which leaves
+  // the live snapshot at the next restart. The registry copy first, for what it derives.
+  app.get("/api/reviews/:id", (c) => {
+    const id = c.req.param("id");
+    const review = registry.getReview(id) ?? loadReview(id);
+    return review ? c.json(review) : c.json({ error: "no such review" }, 404);
+  });
   // Every task read applies the one shaping reader rule: a record left by an earlier launch
   // describes another session and is not returned.
   app.get("/api/tasks", (c) => c.json(tasks.list().map(taskShapingForReads)));
@@ -5191,7 +5199,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions, snoozable, revises } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
     // How this ask waits, decided once here and said in the response (`async-input`, and
@@ -5206,9 +5214,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       asyncCapable: parsed.data.asyncCapable === true,
       messageable: canMessage(session),
     });
+    // `revises` rides with the wait: every branch below that files a form passes it, and the
+    // review manager validates it and withdraws an open target with the insert.
     const waitOptions = {
       ...(wait === "message" ? { waitMode: "message" as const } : {}),
       callerPolls: parsed.data.asyncCapable !== true,
+      ...(revises !== undefined ? { revises } : {}),
     };
     // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
     // answer names the row's own mode rather than the one this ask would have had.
@@ -5236,15 +5247,24 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (hasStandingBundleApproval(authority.taskId)) {
           // A retried identical ask reuses its approval rather than logging a second one.
           let approvedId = reusableStandingApproval(authority, input, manager);
+          const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
+          // With nothing else to ask, the recorded approval is the revision. A reused approval
+          // answers a revision request only when it is that same revision (a retry); any other is
+          // set aside, so `revises` is checked and applied below.
+          if (approvedId && revises !== undefined && remaining.length === 0
+            && loadReview(approvedId)?.revision?.previousId !== revises) approvedId = null;
           if (!approvedId) {
+            // Refused before the binding, so an invalid `revises` leaves no approval behind. With
+            // nothing else to ask, the recorded approval is the revision and carries the link.
+            if (revises !== undefined) reviews.assertRevisable(session.id, kind, revises);
             approvedId = randomUUID();
             bindPlanReview(authority, input, approvedId, manager);
             reviews.record({
               id: approvedId, sessionId: session.id, kind, title, body: fullBody,
               ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
+              ...(revises !== undefined && remaining.length === 0 ? { revises } : {}),
             });
           }
-          const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
           // Born settled: said as `call` even to a capable child, whose one poll returns the
           // recorded approval as the tool result. Nothing is filed, so nothing is waited on.
           if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id, wait: "call" });
@@ -5267,7 +5287,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return created(review);
     } catch (error) {
-      if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
+      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
     }
   }

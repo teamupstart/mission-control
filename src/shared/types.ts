@@ -3177,8 +3177,22 @@ export interface ReviewItem {
    * the question `orphaned`. Persisted (`reviews.closed_reason`); absent on every other row.
    */
   closedReason?: ReviewClosedReason | null;
+  /**
+   * The plan form this one revises (`request_plan_decisions` with `revises`): `number` is this
+   * form's place in the chain, 2 for the first revision, and `previousId` is the form it
+   * replaced, which its agent withdrew. Persisted (`reviews.revision`, `revises_review_id`);
+   * absent on every form that revises nothing. Links the cards only: no approval or answer is
+   * ever carried from the earlier form.
+   */
+  revision?: ReviewRevision;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
+}
+
+/** Where a revised plan form sits in its chain (`ReviewItem.revision`). */
+export interface ReviewRevision {
+  number: number;
+  previousId: string;
 }
 
 // ---- roundup report (/bearings) ----

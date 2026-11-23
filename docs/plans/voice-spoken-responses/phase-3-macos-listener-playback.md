@@ -61,8 +61,11 @@ and on Linux (the Linux follow-on).
 3. **Stop and failure.** When `speak` is `{ id, stop: true }`: stop playback of that job if it
    is playing, do not start it if it has not started, and post `ended` as `stopped` once the
    player has actually stopped. Post that `ended` also for an id the helper never received,
-   because the daemon waits for it. When `speak` becomes null or names another job mid-speech,
-   as after a daemon restart, stop playback the same way. A fetch error, a playback error or an
+   because the daemon waits for it. After a daemon restart the daemon recovers the job from
+   its record and the helper's directive names the stop request for the job it holds, so the
+   helper stops and posts `ended` on this same path. When `speak` becomes null or names
+   another job mid-speech, which only a lost record could cause, stop playback the same way
+   and post `ended` for the job it held. A fetch error, a playback error or an
    output device change that halts playback is `ended` as `failed`. Every job the helper was
    given, and every stop request, gets exactly one `ended`.
 4. **Resume.** The helper opens the microphone only when it is not playing and holds no job it
@@ -89,26 +92,55 @@ and on Linux (the Linux follow-on).
    it toggles mute as before.
 8. **Name, report and replace.** In the shell's listener supervisor from Phase 10, following
    contract L's supervised instances. Before each start: choose a new instance id, post
-   `started`, pass the id in `MISSION_VOICE_LISTENER_INSTANCE`, and record the id and the process
-   id under `<state home>/voice/`. On the child's exit event, and on nothing earlier, post
-   `exited` for that id. A signal sent to the child, a timeout waiting for it, and the start of
+   `started`, write the id to the supervisor record that section 6 defines, pass the id in
+   `MISSION_VOICE_LISTENER_INSTANCE`, and add the process id and the process's start time to
+   the record as soon as the child has started. On the child's exit event, and on nothing
+   earlier, post `exited` for that id, and remove the record once the daemon has accepted it.
+   An `exited` the daemon did not accept, because it was down, is kept and repeated when the
+   shell reconnects. A signal sent to the child, a timeout waiting for it, and the start of
    a new child are not an exit and post nothing. When the voice state's `listener` capability
    carries the daemon's "did not confirm that speech had stopped" condition: stop the helper,
    escalate to a kill if it does not exit, wait for the exit event, post `exited`, and only then
    start the next helper under a new id. One replacement per condition, with the supervisor's
-   usual backoff. At shell start, if a recorded helper from an earlier run is still alive: check
-   that the process id still belongs to the helper, stop it, wait until that process id no
-   longer exists, and then post `exited` for the recorded id before starting a new one. Repeat
+   usual backoff. At shell start, read the record an earlier run left. If its process is still
+   alive: check by the start time that the process id still belongs to the helper, stop it, and
+   wait until that process no longer exists. If its process is already gone, there is nothing
+   to stop. Either way post `exited` for the recorded id before starting a new helper. A record
+   that has an id and no process id, left by a run that ended in the instant between starting
+   the helper and recording it, is reported as exited only once the operating system lists no
+   process running the helper executable. Read the other supervisor's record too: report and
+   remove it when its process is gone, and leave it alone while its process is alive. Repeat
    `started` for the running helper whenever the shell reconnects to a restarted daemon. The
-   development launcher from Phase 9 does the same for the helper it starts.
+   development launcher from Phase 9 does the same for the helper it starts, under its own
+   record.
 9. **Docs.** `docs/voice.md` (system voices, how to install a better one, the leak check's
    result, what happens when a listener does not confirm), `docs/desktop-and-packaging.md`,
    `docs/storage.md` (the listener record under the state home).
 
 ## 6. Data and compatibility
 
-Nothing stored. A helper built before this phase sends no `speech` part and the daemon reads it
-as unable to play. The protocol's major version does not change.
+One file is stored per supervisor, by the supervisor and never by the daemon:
+`<state home>/voice/supervised/<supervisor>.json`, where `<supervisor>` is `shell` for the
+desktop shell and `dev` for the development launcher. It holds one record, for the helper that
+supervisor most recently started: `{ instance, pid, startedAt }`. `startedAt` is the process's
+start time as the operating system reports it, which tells the helper from another program
+that was later given the same process id.
+
+- Who may read it. The directory is created owner-only (0700) and the file owner-only (0600),
+  written by write-then-rename, because the instance id in it is the secret contract L
+  describes. Supervisors read it at their start and nothing else reads it. It appears in no
+  log.
+- Lifetime. Written with the id before the helper is started, and completed with the process
+  id and start time as soon as the helper has started. Kept while the helper runs and after it
+  exits until the daemon has accepted `exited` for that id, then removed. The next start
+  writes a new record only after that.
+- What it is not. It is machine-local runtime state: not in the database, not part of a config
+  export, and not restored with one. Deleting it while a helper it names is running loses the
+  supervisor's way to report that helper's exit, so nothing but the supervisor removes it.
+
+The daemon's record of unresolved speech jobs, `speech-holds.json`, is Speech 1's. A helper
+built before this phase sends no `speech` part and the daemon reads it as unable to play. The
+protocol's major version does not change.
 
 ## 7. Tests and verification
 
@@ -117,7 +149,9 @@ as unable to play. The protocol's major version does not change.
   URL; one `ended` on each path; a stop
   mid-speech, where `ended` is posted only after the
   stub player reports it has stopped; a stop before playback started, which never starts it; a
-  stop for an unknown id, which is still answered; no resume while `capture` is false; no
+  stop for an unknown id, which is still answered; a stop request for the held job arriving on
+  the first poll after a reconnect, as after a daemon restart, which stops playback and posts
+  one `ended`; no resume while `capture` is false; no
   microphone while the stub player is still playing, even with `capture` true.
 - `test/voice-listener-supervisor.test.ts` gains cases with a fake child process: `started` is
   posted before the child starts and carries the id the child receives; `exited` is posted from
@@ -125,7 +159,14 @@ as unable to play. The protocol's major version does not change.
   killed and `exited` is still posted only after its exit event; the next child is not started
   until the previous one's exit has been reported; the "did not confirm" condition replaces the
   helper once; a recorded helper from an earlier run is stopped and reported before a new one
-  starts, and a recorded process id that now belongs to another program is not signalled.
+  starts, and a recorded process id that now belongs to another program is not signalled;
+  the record is written owner-only with the id before the child starts, gains the process id
+  and start time once it has started, and is removed only after the daemon accepts `exited`;
+  an `exited` posted while the daemon is down is repeated on reconnect and the record is kept
+  until then; a recorded helper whose process is already gone is reported at start; a record
+  with no process id is not reported while a helper process is listed and is reported once
+  none is; the other supervisor's record is reported and removed when its process is gone and
+  left alone while it is alive.
 - `test/voice-listener-protocol.test.ts` gains cases for `speak` against the fake listener.
 - `test/voice-hotkey-tap.test.ts`: a tap stops speech while a job is live and toggles mute
   otherwise, as a pure function of the voice state.
@@ -147,13 +188,18 @@ says so. The helper still builds on macOS arm64 and is skipped cleanly elsewhere
 
 Speech 4 lists the system voices this phase reports. The Linux follow-on implements steps 1, 3
 and 4, and the `audio` flag and instance id of step 5, in the sherpa-onnx listener, and the
-announcement, exit report and replacement of step 8 in whatever supervises the listener on
-Linux.
+announcement, exit report, record and replacement of step 8 in whatever supervises the
+listener on Linux, including the proof a restarted daemon needs when it is that supervisor.
 
 ## 10. Cross-phase audit record
 
 - The audit note in Phase 12 about S9 moves here, and is stricter: a leak that pausing cannot
   stop leaves Ask aloud unavailable, where Phase 12 said off by default.
+- Plan validation round 4: section 6 said nothing was stored while step 8 stored the
+  supervisor's record. Section 6 now defines the record, its permissions and its lifetime, and
+  step 8 names it. The same round made the daemon keep unresolved jobs across a restart, so
+  step 3 no longer expects a restarted daemon to clear `speak`, and the shell repeats an exit
+  report the daemon was not up to accept.
 - Pull request review: the helper sends its instance in a header, not in a URL, so the id
   does not reach a request log. Step 1 and its test changed.
 - Plan validation round 3: the helper names its instance on every request, which is how the

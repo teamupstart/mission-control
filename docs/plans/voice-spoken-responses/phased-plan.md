@@ -190,12 +190,33 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   posts `started` before it starts the process, passes the id to the process in
   `MISSION_VOICE_LISTENER_INSTANCE`, and posts `exited` only after the operating system has
   reported that process's exit: its own child's exit event, or, for a process a previous run of
-  the supervisor left behind, the recorded process id no longer existing after it was checked
-  to be the listener and stopped. It repeats `started` when it reconnects to a restarted daemon.
+  the supervisor left behind, the recorded process no longer existing, after it was checked to
+  be the listener and stopped if it was still alive, or, for a record that has no process id,
+  the operating system listing no process that runs the listener executable. When it reconnects to a restarted daemon
+  it repeats `started` for a running process and any `exited` the daemon did not accept.
   The daemon gives a speech job only to an announced instance; `speech-output` is unavailable
   for any other, with the reason "this listener was not started by a supervisor". `exited` ends
   every job that instance holds as `failed`. The record of which instance holds an unresolved
-  job is kept by instance, so muting, or switching voice off and on, does not clear it.
+  job is kept by instance, so muting, or switching voice off and on, does not clear it. It is
+  also kept on disk, as the next item defines, so a daemon restart does not clear it either.
+- Restart recovery. The daemon keeps the holder of every unresolved job in
+  `<state home>/voice/speech-holds.json`, owner-only, written by write-then-rename, one entry
+  `{ jobId, instance, purpose }` per job. An entry is written before its job becomes `ready`,
+  so before any directive names the job, and removed when the job is final. A job whose entry
+  cannot be written ends as `failed` and is never named. When the speech manager starts, at
+  daemon start or when the `voice` flag turns on, it reads the file before the directive route
+  answers its first poll. Each entry becomes a recovered job in the state `stopping`, with its
+  recorded holder and no audio, text or card. For a recovered job `capture` is false in every
+  listener's directive, only the holder's directive names `{ id, stop: true }`, no new job
+  starts, the confirm limit counts from the manager's start, and the utterance guard covers
+  everything captured before the job is final. It ends as `failed` on the holder's `ended`, or
+  on an exit report for the holder, which is accepted for a recorded holder whether or not it
+  has been announced again, and on nothing else. A hold left for a job the listener never
+  received, or one it had already ended, is ended by that same `ended`, which a listener posts
+  for every stop request. A file that exists and cannot be read keeps `capture` false and holds
+  the `listener` reason with the sentence "the record of unfinished speech could not be read",
+  until the operator switches voice off and on, which removes the file; that manual release
+  applies to this case only.
 - The hello (contract B) gains optional `speech { audio, systemVoices, instance }`. `audio`
   says the listener can play an audio job. A system voice is `{ id, name, language, quality }`
   with quality `premium`, `enhanced` or `default`. `instance` is the id the listener's
@@ -218,6 +239,8 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   else. An instance id is at least 128 random bits, chosen by the supervisor, known to the
   supervisor, the process it started and the daemon, and never written to a URL, the published
   voice state, an event, a response body or a log, so one listener cannot present another's.
+  On disk it exists only in two owner-only files under `<state home>/voice/`: the daemon's
+  `speech-holds.json` and the supervisor's record of the process it started (Speech 3).
 - The listener's own rule: it does not open the microphone while it is playing or holds a job
   it has not ended, whatever `capture` says.
 - Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio`, which serves the
@@ -250,7 +273,7 @@ voice plan.
 | Requirement | Owner |
 | --- | --- |
 | V14, the ask-aloud half: one spoken question per unsure card, answered by a name or a click | Speech 1 |
-| Capture is stopped before playback and restarted after real completion (S9), including when a limit expires or speech is stopped | Speech 1 (the rule, its limits and the stop handshake), Speech 3 (the macOS listener, its confirmation of every stop, the shell's exit report, and the leak check) |
+| Capture is stopped before playback and restarted after real completion (S9), including when a limit expires, speech is stopped or the daemon restarts | Speech 1 (the rule, its limits, the stop handshake and the record that survives a daemon restart), Speech 3 (the macOS listener, its confirmation of every stop, the shell's exit report, and the leak check) |
 | The hotkey or a click cuts speech off | Speech 1 (click and route), Speech 3 (hotkey) |
 | A better voice on macOS and Linux, downloaded on demand, pinned and verified | Speech 2 |
 | macOS system voices, Enhanced and Premium included | Speech 3 |
@@ -263,7 +286,10 @@ voice plan.
 - **Playback on Linux.** The Linux follow-on plan adds it to the sherpa-onnx listener, with
   the same stop handshake, the supervisor's announcement and exit report, and the replacement
   of a listener that does not confirm, and verifies it
-  on a Linux desktop. Until then `speech-output` reads unavailable on Linux with the
+  on a Linux desktop. On Linux the daemon is itself the listener's supervisor, so the
+  follow-on also defines how a restarted daemon proves that the listener an earlier run
+  started has exited before a recovered job ends; contract L's restart recovery already keeps
+  capture off until then. Until then `speech-output` reads unavailable on Linux with the
   reason "this listener cannot play speech", and the card is used.
 - **Playback in the sherpa-onnx listener on macOS.** Same work, same owner. With `backend` set
   to `sherpa-onnx` on a Mac, ask aloud uses the card.
@@ -294,6 +320,10 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After plan validation round 4: a daemon restart is one more event that cannot return
+  capture, in `plan.md`, contract L, Speech 1 and Speech 3. Every file a phase writes is named
+  in that phase's data section with what it holds, who may read it and when it is removed: the
+  daemon's `speech-holds.json` in Speech 1 and the supervisor's record in Speech 3.
 - After the review of the pull request: the instance id is in a header or a body wherever a
   file names it, and in no URL, in `plan.md`, contract L, Speech 1 and Speech 3. The conditions
   for warming the synthesizer and for opening an ask are one predicate, in contract L, Speech 1
@@ -311,6 +341,27 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
+
+## Plan validation round 4
+
+Two findings were accepted and applied, one from each judge. The pull request's reviewer
+raised the first as well.
+
+- **Speech 3 said nothing was stored while its step 8 stored a record.** The shell records the
+  instance id and process id of the helper it starts so that a later run can find, stop and
+  report a helper an earlier run left behind. Speech 3's data section now defines that record:
+  its path, its fields, its owner-only permissions, and its lifetime from before the helper
+  starts until the daemon has accepted the helper's exit report. Step 8 and its tests name the
+  same file, and cover a record whose process is already gone and a record left by the other
+  supervisor.
+- **A daemon restart lost the job and its holder.** Both lived only in memory, so a restarted
+  daemon could tell a second listener to capture while the first was still playing. The daemon
+  now writes each unresolved job's holder to `speech-holds.json` before the job is handed
+  over. A daemon that starts and finds an entry treats the job as still being stopped: capture
+  is off for every listener, the holder is told to stop, and the job ends only on the holder's
+  `ended` or its supervisor's exit report. The supervisor repeats, after a daemon restart, any
+  exit report the daemon did not accept. Contract L gained "Restart recovery". Speech 1 owns
+  the record and tests a restart with the holder playing and a second listener active.
 
 ## Pull request review
 

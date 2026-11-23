@@ -251,7 +251,9 @@ helper synthesizes, and the listener plays.
   or end report, or an audio fetch, from any listener but the holder is refused and changes
   nothing. An instance id is a long random value known only to the supervisor, the process it
   started and the daemon. It travels in a request header or body and never in a URL, where an
-  access log or an error message would keep it, so one listener cannot present another's.
+  access log or an error message would keep it, so one listener cannot present another's. On
+  disk it exists only in two owner-only files in the state home: the supervisor's record of the
+  process it started, and the daemon's record of unfinished speech.
 - **What counts as proof of exit.** Every listener is started by a supervisor: the shell on a
   Mac, the development launcher, and on Linux the daemon's own supervisor. The supervisor gives
   the process an instance id, tells the daemon the id before starting it, and tells the daemon
@@ -259,7 +261,15 @@ helper synthesizes, and the listener plays.
   a timer, or a replacement started is not an exit. A listener no supervisor has announced is
   given no speech job, so every job has an ending someone can observe. On a Mac the shell
   stops a listener that is not answering, waits for it to exit, reports that, and only then
-  starts the next one.
+  starts the next one. A report the daemon was not running to receive is repeated when the
+  daemon is back.
+- **A daemon restart does not return capture.** Before the daemon hands a job to a listener it
+  writes down which listener holds it, in a small owner-only file in its state home, and it
+  erases the entry when the job ends. A daemon that starts and finds an entry treats that job
+  as one it is still stopping: capture is off for every listener, the holder is told to stop,
+  and capture returns only on the holder's `ended` or its supervisor's exit report, as for any
+  other stop. A second listener that is running across the restart therefore gets no capture
+  while the first may still be playing. A job the daemon cannot write down is not spoken.
 - **An utterance captured during speech is discarded.** The utterance route ignores one
   captured while a job was live, and Recently heard lists the reason. This is a second guard
   behind the listener's own pause.

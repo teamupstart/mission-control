@@ -66,7 +66,14 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    leaves the job `stopping`. With no `ended` by the confirm limit the manager tells the state
    store the listener is not answering, and the store treats it as absent until a late `ended`
    or the exit report. The manager records which instance holds each unresolved job, and that
-   record survives muting and a voice off and on. A job
+   record survives muting and a voice off and on. It also survives a daemon restart, as
+   contract L's restart recovery defines: the manager writes a job's entry to
+   `<state home>/voice/speech-holds.json` before the job becomes `ready` and removes it when
+   the job is final, fails a job whose entry cannot be written, and at its own start, before
+   the directive route answers a poll, turns every entry it finds into a recovered job in the
+   state `stopping` that only its recorded holder's `ended` or an exit report for that holder
+   can end. The file is written owner-only by write-then-rename, as
+   `src/server/window-background.ts` writes its own. A job
    whose card is settled while it is still `preparing` is dropped. Clocks and timers are
    injected, as in the state store.
 4. **Voice and audio.** The manager resolves the voice with `resolveSpeechVoice`. For a neural
@@ -84,7 +91,8 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    neither capture nor learn of the job. A change to either field ends the long poll.
 6. **Utterance guard.** The utterance route ignores an utterance whose `capturedAt` falls
    between a job becoming `ready` and its becoming final, with the Recently heard reason
-   `while-speaking`.
+   `while-speaking`. For a recovered job, whose start is not known, it ignores every utterance
+   captured before that job is final.
 7. **Ask aloud.** When a card becomes `unsure` and `askAloudPossible` is true (`whenUnsure` is
    `ask`, the mode is `listening` and `speech-output` is available), open one `ask` job with
    `askSentence` of the candidates' names. The conditions are read through that one function
@@ -95,7 +103,9 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    roster names, or "Steve or Stephen?" when the roster has fewer than two, and answers 409 with
    the capability's reason when nothing can speak. `POST /voice/listener/supervised` (token)
    records an announced instance on `started` and, on `exited`, ends every job that instance
-   holds as `failed`; an `exited` for an instance that holds nothing changes nothing. A speech
+   holds as `failed`; an `exited` for an instance that holds nothing changes nothing. An
+   `exited` for the recorded holder of a recovered job is accepted whether or not that instance
+   has been announced since the restart. A speech
    job is given only to an announced instance. The two token routes of contract L. The events
    route accepts `started` and `ended` only when the report's `x-mission-voice-instance` header
    names the job's holder, and answers 409 without changing anything otherwise. The audio route
@@ -122,13 +132,24 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
     to end, to ignore a stop request altogether, and to start a second instance while the first
     is still playing.
 12. **Docs.** `docs/voice.md`: how ask aloud works, the capture rule, the limits, what stops
-    speech.
+    speech, and what a daemon restart does to a question being asked. `docs/storage.md`: the
+    `speech-holds.json` file.
 
 ## 6. Data and compatibility
 
 One new config key with a default. No migration. An older listener's hello has no `speech` part
 and reads as unable to play. With the `voice` flag off the routes answer 404 and no manager
 runs.
+
+One file is stored: `<state home>/voice/speech-holds.json`, the daemon's record of unresolved
+speech jobs. It holds one entry `{ jobId, instance, purpose }` per job that a listener has
+been or is about to be given, and nothing else: no text, no audio. Only the daemon reads and
+writes it. It is created owner-only (0600) by write-then-rename, because the instance id in it
+is the secret contract L describes, and it appears in no log. An entry lives from just before
+its job becomes `ready` until the job is final, so the file is empty whenever nothing is being
+spoken or stopped. It is machine-local runtime state: not in the database, not part of a
+config export, and not restored with one. A file from a build before this phase does not
+exist, and a missing file reads as no entries.
 
 ## 7. Tests and verification
 
@@ -167,6 +188,19 @@ runs.
   for the exit report) and lets `capture` return; an exit report naming the second instance, or
   an unknown one, changes nothing, and one without the token is refused;
   an instance that was never announced is given no speech job, and `speech-output` says why;
+  a daemon restart with the holder playing and a second listener active: a job is `speaking`
+  for the first instance, then a second manager is started over the same state home, as a
+  restarted daemon would be, and the second instance says hello and polls. Its directive has
+  `capture` false and `speak` null, its utterance is refused with `while-speaking`, and no new
+  job starts. The first instance's poll reads `{ id, stop: true }`. `capture` turns true only
+  after the first instance's `ended`, which ends the job as `failed` and empties the file; in
+  a second run of the case only the exit report for the first instance does it, sent before
+  any new announcement, and the second instance's `ended` or exit report changes nothing;
+  the entry is on disk before the first directive that names the job, the file is owner-only,
+  and no log line carries the id; a job whose entry cannot be written ends as `failed` and is
+  never named; an entry left for a job the listener never received is ended by that
+  listener's `ended`; a file that cannot be read keeps `capture` false with the `listener`
+  reason until voice is switched off and on;
   a click on Stop follows the same order;
   the next queued job does not start until the one before it is final.
 - The same file: the directive shows `capture` false and `speak` while a job is live and returns
@@ -188,7 +222,8 @@ runs.
 
 With a fake listener that plays, one question is asked per unsure card, and capture is off from
 the moment the job is handed over until the listener confirms it has ended. No limit, stop or
-late start returns capture before that confirmation. A listener that never confirms leaves voice
+late start returns capture before that confirmation, and neither does a daemon restart. A
+listener that never confirms leaves voice
 not listening with the reason shown. Only that listener's late confirmation or its supervisor's
 exit report restores it; a second listener saying hello does not. With no listener that can
 play, the card behaves as it did before this phase.
@@ -209,6 +244,11 @@ and fetches audio from this phase's audio route. Speech 4 writes
 - After Speech 3: the hotkey tap calls this phase's stop route.
 - Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
   audio without waiting for Speech 2.
+- Plan validation round 4: the job and its holder used to live only in memory, so a daemon
+  restart could return capture to a second listener while the first was still playing. The
+  holder is now also written to `speech-holds.json` before the job is handed over, and a
+  restarted daemon recovers it as a job being stopped. Steps 3, 6, 8 and 12, the data section
+  and the tests changed.
 - Pull request review: the instance id moved from the query string and the events body to the
   `x-mission-voice-instance` header, and the ask's conditions became `askAloudPossible`. Steps
   5, 7 and 8, the fixture and the tests changed.

@@ -137,6 +137,38 @@ test("successive cancels stop exactly one action across kinds; a duplicate captu
   assert.equal((await readHeard())[0]?.rule, "nothing-pending");
 });
 
+test("a delayed spoken cancel targets the latest preceding capture even when POSTs arrive out of order", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postCapture = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  await postCapture("middle", "Will discard the middle message", now - 300);
+  await postCapture("oldest", "Will keep the first message", now - 400);
+  await postCapture("newest", "Will keep the last message", now - 100);
+  await postCapture("delayed", "cancel", now - 200);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["middle", "cancelled"]);
+  assert.equal((await readHeard())[0]?.detail, "middle");
+
+  await postCapture("before-all", "cancel", now - 500);
+  assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.id), ["oldest", "newest"]);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(queued("Will").slice(-2), ["keep the first message", "keep the last message"]);
+});
+
+test("a picked card's new cancel window follows the time of the pick", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  await post("/voice/utterances", { ...capture("Steven ask Will about the build", "choice"), capturedAt: now - 400 }, token);
+  await post("/voice/utterances", { ...capture("Will"), capturedAt: now - 200 }, token);
+
+  await post("/voice/utterances", { ...capture("cancel"), capturedAt: now - 300 }, token);
+  assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await post("/voice/utterances", { ...capture("cancel"), capturedAt: now - 100 }, token);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+});
+
 test("Cancel targets its own card, Send now queues once, and clearing history leaves no entry", async () => {
   await say("Steve cancel by id", "a");
   await say("Will send now", "b");

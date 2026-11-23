@@ -79,6 +79,25 @@ test("turning voice off clears pending actions and gates every contract D route"
       app.request("/api/voice/heard", { method, headers: { host: "localhost" } })))]) assert.equal(response.status, 404);
 });
 
+test("a cancel retried after toggling voice cannot dismiss a new card", async () => {
+  await say("Steve old message", "old");
+  await say("Steve cancel this one", "cancelled");
+  const cancel = capture("cancel", "original-cancel");
+  await post("/voice/utterances", cancel, token);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["old"]);
+
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.deepEqual(await readHeard(), []);
+  await say("Will check the new build", "new");
+  assert.deepEqual(await (await post("/voice/utterances", cancel, token)).json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["new", "pending"]]);
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["new"]);
+  await say("cancel", "fresh-cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");

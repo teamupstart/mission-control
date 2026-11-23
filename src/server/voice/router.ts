@@ -178,12 +178,16 @@ export class VoiceRouter {
     return true;
   }
 
-  reset(): void {
+  clearActionsAndHistory(): void {
     for (const item of this.open.values()) clearTimeout(item.timer);
     this.open.clear();
     this.delivering.clear();
     this.pendingVoiceActions.length = 0;
-    this.recentIds.clear();
     this.heard.clear();
+  }
+
+  reset(): void {
+    this.clearActionsAndHistory();
+    this.recentIds.clear();
   }
 }

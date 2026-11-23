@@ -55,7 +55,9 @@ Picking a candidate opens the ordinary cancel window. The loopback card routes a
 `GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
 ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
-card history exist only in memory and disappear on daemon restart or disabling voice. A message
+card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview
+toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
+a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
 
 ## Turning voice on

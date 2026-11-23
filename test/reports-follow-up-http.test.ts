@@ -382,10 +382,11 @@ test("a body that is not JSON is refused, and starts no task with empty instruct
   assert.equal(garbled.body.error, "the request body is not valid JSON");
   assert.equal(f.followUpTasks().length, 0);
   assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
-  // An absent body still reads as {}, which is how a wordless call reaches the route.
+  // An absent body still reads as {} and reaches the route, which files nothing without words.
   const empty = await f.followUpRaw(report.id, "");
-  assert.equal(empty.status, 200, JSON.stringify(empty.body));
-  assert.equal(f.followUpTasks().length, 1);
+  assert.equal(empty.status, 409, JSON.stringify(empty.body));
+  assert.equal(empty.body.error, "Write what the follow-up task should do, then start it.");
+  assert.equal(f.followUpTasks().length, 0);
 });
 
 test("a follow-up whose report stamp rolls back leaves no task in the registry and launches nothing", async () => {
@@ -459,6 +460,47 @@ test("a task_upsert listener that throws while the follow-up is created leaves n
   assert.equal(f.followUpTasks().length, 0, "the published task was removed again");
   assert.equal(f.reports.get(report.id)!.followUpTaskId, null, "the stamp rolled back with the row");
   assert.deepEqual(f.dispatched, []);
+});
+
+test("no wordless call ever files a follow-up task, however often it is repeated", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  f.failDispatches("not now");
+  const held = await f.followUp(report.id, "Fix it");
+  const taskId = String(held.body.taskId);
+  f.failDispatches(null);
+  f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
+  // Retry pressed twice (or twice at once): the first forgets the cancelled task, and neither
+  // files a replacement without the operator's words.
+  const [first, second] = await Promise.all([f.followUp(report.id), f.followUp(report.id)]);
+  assert.equal(first.status, 409);
+  assert.equal(second.status, 409);
+  assert.match(String(second.body.error), /Write what the follow-up task should do/);
+  assert.equal(f.followUpTasks().length, 1, "only the cancelled task, no replacement");
+  assert.deepEqual(f.dispatched, []);
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
+});
+
+test("a dispatched follow-up whose task is cancelled answers nothing: the report waits again, and new words relaunch it", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  const started = await f.followUp(report.id, "First attempt");
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const firstTask = String(started.body.taskId);
+  assert.equal(f.reports.get(report.id)!.readBy, "follow-up");
+  f.registry.upsertTask({ ...f.registry.getTask(firstTask)!, status: "cancelled" });
+
+  // New instructions file and DISPATCH a replacement: the stale follow-up clearing does not
+  // short-circuit the dispatch.
+  const replaced = await f.followUp(report.id, "Second attempt");
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const secondTask = String(replaced.body.taskId);
+  assert.notEqual(secondTask, firstTask);
+  assert.deepEqual(f.dispatched, [firstTask, secondTask], "the replacement was dispatched");
+  assert.ok(f.registry.getTask(secondTask)!.intent.startsWith("Second attempt"));
+  const cleared = f.reports.get(report.id)!;
+  assert.equal(cleared.readBy, "follow-up");
+  assert.equal(cleared.followUpTaskId, secondTask);
 });
 
 test("only the operator starts a follow-up", async () => {

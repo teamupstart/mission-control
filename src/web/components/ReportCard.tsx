@@ -223,7 +223,7 @@ function ReportAnswer({
                 name={name}
                 className="btn btn-primary"
                 tooltip="Dispatch a new task in this report's repository with your words and the report as context. It marks the report read once the task is dispatched"
-                disabled={busy}
+                disabled={busy || !draft.trim()}
                 cardOpen
                 onClick={() => run(onFollowUp, draft)}
               />

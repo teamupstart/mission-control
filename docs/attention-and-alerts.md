@@ -127,7 +127,8 @@ runs:
   reply goes to whichever run of that resident is up now.
 - **A resident that is not running.** The card says "Steve isn't running" and that you can launch
   it again from the Residents drawer. That is text, not a control.
-- **A standard session that has ended.** A box with **Start a follow-up task**. It files a new
+- **A standard session that has ended.** A box with **Start a follow-up task**, which stays disabled until you write what
+  the follow-up should do: a follow-up task is never filed without your instructions. It files a new
   task in the repository the report recorded, with your words followed by the report as its
   intent, and dispatches it. When the report's own task can still be found, the follow-up keeps
   its harness and model, and its kind if that is a shipping kind (ship, bugfix or document;
@@ -139,7 +140,8 @@ runs:
   hold, say), the card reads "Follow-up task created but not started" with **Retry**, which
   dispatches that same task: a report has at most one follow-up task however often you press it.
   If that task has since been deleted or cancelled, **Retry** files and launches nothing: the
-  card goes back to the instructions box, so a new follow-up never starts without your words.
+  report waits again, even if the follow-up had cleared it, and the card goes back to the
+  instructions box, so a new follow-up never starts without your words.
   The report follows its task however the task is started: a held follow-up you later start
   from the Backlog leaves **to read** as soon as it starts, without pressing **Retry**.
   The route refuses a follow-up while the session has not ended: a running agent is replied to,

@@ -490,13 +490,17 @@ export class ReportManager {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
     // A task that was deleted or cancelled since it was recorded cannot be dispatched, and it is
-    // no longer a follow-up either: forget it. Retry carries no words (it only ever relaunched the recorded
-    // task), so a new task is not filed from it, which would drop the instructions the operator
-    // typed: the report goes back to the instructions box instead. A call that brings words
-    // files the one new follow-up the report then has.
+    // no longer a follow-up either: forget it, and with it any clearing it gave the report (a
+    // follow-up that no longer exists answers nothing, so the report waits again). Retry carries
+    // no words, and a follow-up task is only ever filed with the operator's instructions (below),
+    // so the report goes back to the instructions box rather than being re-filed from a Retry.
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
-      openDb().prepare("UPDATE reports SET follow_up_task_id = NULL WHERE id = ? AND follow_up_task_id = ?")
-        .run(id, report.followUpTaskId);
+      openDb().prepare(
+        `UPDATE reports SET follow_up_task_id = NULL,
+           read_at = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_at END,
+           read_by = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_by END
+         WHERE id = ? AND follow_up_task_id = ?`,
+      ).run(id, report.followUpTaskId);
       report = getRow(id)!;
       this.registry.upsertReport(report);
       if (!words.trim()) {
@@ -515,6 +519,12 @@ export class ReportManager {
       if (target.kind === "unreachable") return refuse(409, replyRefusal(target, report.author.name), report);
       if (!report.repository) {
         return refuse(409, "This report recorded no repository, so a follow-up task cannot be started from it.", report);
+      }
+      // A follow-up task is only ever filed with the operator's instructions. That keeps every
+      // wordless call (Retry, a double press after the card went back to its box) from filing a
+      // task that would start on the report alone: wordless, this route only relaunches.
+      if (!words.trim()) {
+        return refuse(409, "Write what the follow-up task should do, then start it.", report);
       }
       let created: Awaited<ReturnType<FollowUpTaskPort["create"]>>;
       try {

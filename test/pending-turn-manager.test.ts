@@ -3179,3 +3179,47 @@ for (const refused of [false, true]) test(`a marked answer pasted into a termina
   else await until(() => deliveriesFor(key)[0]?.confirmedAt != null, "the pasted delivery to be confirmed");
   f.manager.stop(); clearPendingTurns(key);
 });
+
+test("a queued after-work prompt is dropped, never sent, when task shaping is off at delivery", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const run = (name: string, enabled: boolean) => {
+    const registry = new Registry();
+    const id = `sdk:${name}`;
+    registry.registerSdkSession({ id, agent: "claude", name, cwd: `/repo/${name}`, agentSessionId: `conversation:${name}` });
+    const sent: string[] = [];
+    let shaping = true;
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn) => { sent.push(turn.text); return "started"; },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping });
+    manager.start();
+    working(registry, id);
+    const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}task-${name}:${id}:1`;
+    // Queued while task shaping was on, as the after-work prompter queues it.
+    const queued = manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+      taskId: `task-${name}`, sessionId: id, noteKey, turnId, text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], fromHeld: false, now,
+    }));
+    assert.equal(queued.pendingTurn?.id, turnId);
+    shaping = enabled;
+    return { registry, manager, id, sent, row: () => getTaskSkillPrompt(`task-${name}`, id) };
+  };
+
+  const off = run("after-work-off", false);
+  idle(off.registry, off.id);
+  await settles(() => (off.registry.getSession(off.id)?.pendingTurns.length ?? 1) === 0);
+  await tick(20);
+  assert.deepEqual(off.sent, [], "nothing is sent once the flag is off");
+  assert.deepEqual(off.registry.getSession(off.id)?.pendingTurns, [], "the queued turn is gone from the outbox");
+  assert.equal(off.row()?.state, "not_delivered");
+  assert.equal(off.row()?.reason, AFTER_WORK_FLAG_OFF);
+  off.manager.stop();
+
+  // The same turn with the flag still on is delivered at idle.
+  const on = run("after-work-on", true);
+  idle(on.registry, on.id);
+  await until(() => on.sent.length > 0, "the after-work turn to be delivered");
+  assert.equal(on.sent[0]!.split("\n")[0], "/wrap-notes");
+  on.manager.stop();
+});

@@ -2,7 +2,7 @@ import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
-  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
+  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage, idleOnlyTurn,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -19,6 +19,7 @@ import {
   SNOOZE_INSTRUCTION_TURN_PREFIX,
   MESSAGE_ANSWER_TURN_PREFIX,
   deleteClaimedPendingTurn,
+  dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
   recallPendingTurn,
@@ -56,6 +57,8 @@ import {
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
+/** Why a queued after-work prompt was not delivered: task shaping was off when its turn came. */
+export const AFTER_WORK_FLAG_OFF = "Task shaping was turned off before the prompt was delivered.";
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -95,6 +98,11 @@ interface PendingTurnDeps {
   /** Where a session's transcript is read, for noticing that a steer has been read. */
   messagesFor: (session: Session) => SessionMessages | null;
   steerReceiptPollMs: number;
+  /**
+   * Whether task shaping is on, read when an after-work turn is about to be delivered. A turn
+   * queued while it was on is dropped rather than sent once it is off, including after a restart.
+   */
+  afterWorkEnabled: () => boolean;
 }
 
 /**
@@ -246,6 +254,7 @@ export class PendingTurnManager {
       interruptPane: deps.interruptPane ?? interruptPaneSession,
       messagesFor: deps.messagesFor ?? sessionMessages,
       steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
+      afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
     };
   }
 
@@ -904,6 +913,15 @@ export class PendingTurnManager {
       // of returning: nothing re-polls an embedded session on the outbox's behalf, so a
       // dropped claim here is a queued row that never leaves.
       this.scheduleDrain(key);
+      return;
+    }
+    // An after-work prompt is task shaping's, and follows its flag at delivery as well as when it
+    // was written: queued while the flag was on, it is dropped, never sent, once it is off.
+    if (idleOnlyTurn(next.turn) && !this.deps.afterWorkEnabled()) {
+      if (dropQueuedAfterWorkTurn(next.turn.id, AFTER_WORK_FLAG_OFF)) {
+        this.registry.refreshPendingTurns(key);
+        this.scheduleDrain(key);
+      }
       return;
     }
     this.draining.add(key);

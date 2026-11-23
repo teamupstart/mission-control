@@ -104,11 +104,12 @@ export interface ShapeTaskInput {
    */
   workUnitId?: string | null;
   /**
-   * The attached repositories, by name, whose own task skill for this task's kind is in this
+   * The attached worktrees, by path, whose own task skill for this task's kind is in this
    * launch's turn one (FR-05's `resolveRepoTaskSkills`). A routed skill named for the kind is not
-   * announced for them (D14). Absent, nothing is taken.
+   * announced for them (D14). By path, never by name: two attached worktrees of one repository
+   * share a name, and only one of them may carry the skill. Absent, nothing is taken.
    */
-  repositoryTaskSkills?: readonly string[];
+  repositoryTaskSkillWorktrees?: readonly string[];
   /**
    * The harness a dry run renders routed skills for, when the request names no harness of its
    * own. A launch always names its harness, and this is then ignored.
@@ -612,12 +613,15 @@ async function runShaping(
    * total. The words of each line are Mission Control's; a router supplies only a validated name.
    */
   function routeSkills(): { skills: ShapingSkillSummary[]; section: string } {
-    const replies = results.filter((call) => call.stage === "route")
-      .map(({ resolved: shaper, repo, result }) => ({ shaper: shaper.shaper.id, repo: repo.name, skills: result.skills }));
+    const routeCalls = results.filter((call) => call.stage === "route");
+    const replies = routeCalls.map(({ resolved: shaper, repo, result }) => ({ shaper: shaper.shaper.id, repo: repo.name, skills: result.skills }));
     const skills = mergeRoutedSkills(replies);
     const agent = skillAgent(input);
-    const ownTaskSkills = new Set(input.repositoryTaskSkills ?? []);
-    const repositoryNames = new Set(repositories.map((repo) => repo.name));
+    const ownTaskSkills = new Set(input.repositoryTaskSkillWorktrees ?? []);
+    const ownSkillIn = (repo: { path: string | null }) => repo.path !== null && ownTaskSkills.has(repo.path);
+    // The worktrees, by slot, whose router named a skill: identity, where a name can be shared.
+    const routedSlots = (name: string, keep: (repo: ShapeTaskRepository & { slot: string }) => boolean) => new Set(routeCalls
+      .filter((call) => keep(call.repo) && call.result.skills.some((skill) => skill.name === name)).map((call) => call.repo.slot));
     const references = new Map<ShapingSkillSummary, string>();
     for (const skill of skills) {
       if (skill.state !== "announced") continue;
@@ -625,7 +629,9 @@ async function runShaping(
       // repository's own task skill for that kind, so the repository's own wins where it is in
       // turn one. With no repository left, it is not announced at all.
       if (skill.name === input.context.kind && ownTaskSkills.size > 0) {
-        skill.repositories = skill.repositories.filter((name) => !ownTaskSkills.has(name));
+        // Per worktree: a second worktree of the same repository, without the skill, keeps it.
+        const kept = routeCalls.filter((call) => !ownSkillIn(call.repo) && call.result.skills.some((routed) => routed.name === skill.name));
+        skill.repositories = [...new Set(kept.map((call) => call.repo.name))];
         if (skill.repositories.length === 0) {
           Object.assign(skill, { state: "superseded", reason: "The repository's own task skill for this kind is in turn one." });
           continue;
@@ -663,8 +669,10 @@ async function runShaping(
       reference: references.get(skill)!,
       // Announced skills have a known point: `mergeRoutedSkills` made the others unsupported.
       lifecyclePoint: isShapingLifecyclePoint(skill.lifecyclePoint) ? skill.lifecyclePoint : "during",
-      // Only a skill routed for some of a task's repositories names them.
-      repositories: multiRepo && skill.repositories.length < repositoryNames.size ? skill.repositories : null,
+      // Only a skill routed for some of a task's worktrees names them, counted by worktree.
+      repositories: multiRepo && routedSlots(skill.name, (repo) => skill.name !== input.context.kind || !ownSkillIn(repo)).size < repositories.length
+        ? skill.repositories
+        : null,
     }));
     let kept = lines.length;
     while (kept > 0 && utf8Length(composeSkillsSection(lines.slice(0, kept))) > room) kept -= 1;

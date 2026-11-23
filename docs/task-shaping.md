@@ -749,15 +749,18 @@ skills, not context:
   skills and marks the launch degraded.
 - **Merging.** Replies merge in list order, then repository order. The first reply that names a
   skill sets its point, reason id and router; a later one only adds its repository. At most 10
-  skills a launch; the rest are `dropped`.
+  skills a launch; the rest are `dropped`. The record keeps at most 32 routed skills, whatever
+  their state, in merge order: a distinct skill routed after the record holds 32 is left out of
+  it entirely, and is never announced.
 - **Names (D15).** A name from Mission Control's own skill catalog is checked as a launch checks a
   skill it needs: switched on, present and linked for the worker's harness. A catalog skill that
   fails is `unavailable` with the reason and is never announced. Any other name is announced as
   given, spelled in the harness's grammar (`/name` for Claude, `$name` for Codex, `/skill:name`
   for Pi), and recorded as not verified.
 - **The repository's own skill wins (D14).** A routed skill named for the task's kind is not
-  announced for a repository whose own task skill for that kind is in turn one, and with no
-  repository left it is `superseded`.
+  announced for an attached worktree whose own task skill for that kind is in turn one, and with
+  no worktree left it is `superseded`. It goes by worktree, not by name, so of two attached
+  worktrees of one repository only the one carrying the skill gives the routed one up.
 - **Budget.** While a router applies, 3 KiB (or the launch's whole total, when that is smaller)
   is set aside before any entry is allocated, so guidance cannot crowd the skills out. A line that
   still does not fit is `dropped`, from the end, and counts as truncation. With no router nothing

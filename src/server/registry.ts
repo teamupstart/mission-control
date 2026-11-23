@@ -323,8 +323,7 @@ import {
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
-  rekeyTaskShaping as dbRekeyTaskShaping,
-  rekeyTaskSkillPrompt as dbRekeyTaskSkillPrompt,
+  rekeyTaskLaunch as dbRekeyTaskLaunch,
   clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
@@ -7852,10 +7851,9 @@ export class Registry extends EventEmitter {
     const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== prior.sessionId) return null;
     try {
-      if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
-      // The launch's after-work prompt row moves with its record: the same conversation
-      // continuing is the same launch, so it is never prompted a second time.
-      dbRekeyTaskSkillPrompt(taskId, prior.sessionId, toSessionId);
+      // The record and the launch's after-work prompt row move in one transaction: the same
+      // conversation continuing is the same launch, so it is never prompted a second time.
+      if (!dbRekeyTaskLaunch(taskId, prior.sessionId, toSessionId)) return null;
     } catch (error) {
       // The successor still binds: the record keeps naming the prior session, so
       // `currentShaping` hides it rather than show it for a conversation it no longer describes.
@@ -7912,7 +7910,7 @@ export class Registry extends EventEmitter {
     const record = current ? current.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== fromSessionId || fromSessionId === toSessionId) return;
     try {
-      if (!dbRekeyTaskShaping(taskId, fromSessionId, toSessionId)) return;
+      if (!dbRekeyTaskLaunch(taskId, fromSessionId, toSessionId)) return;
     } catch (error) {
       console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its resumed session:`, error);
       return;

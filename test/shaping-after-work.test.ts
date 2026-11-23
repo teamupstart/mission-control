@@ -61,7 +61,13 @@ function baseTask(id: string): Task {
 
 interface Queued { sessionId: string; turn: PendingTurn }
 
-function setup(options: { enabled?: boolean; staged?: Set<string>; catalog?: Record<string, string> } = {}) {
+function setup(options: {
+  enabled?: boolean;
+  staged?: Set<string>;
+  catalog?: Record<string, string>;
+  /** Catalog ids whose live check fails, with the sentence `requiredSkillCommand` would give. */
+  refused?: Record<string, string>;
+} = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
   let now = 1_000;
@@ -78,7 +84,9 @@ function setup(options: { enabled?: boolean; staged?: Set<string>; catalog?: Rec
     enabled: () => options.enabled ?? true,
     now: () => ++now,
     catalogId: (name) => options.catalog?.[name] ?? null,
-    catalogCommand: (_session, id) => ({ ok: true, command: `/${id}` }),
+    catalogCommand: (_session, id) => options.refused?.[id]
+      ? { ok: false, message: options.refused[id]! }
+      : { ok: true, command: `/${id}` },
   });
   prompts.start();
   return { registry, queued, prompts };
@@ -301,14 +309,48 @@ test("a session that ends before delivery leaves the row not delivered, with why
 });
 
 test("a prompt whose skills cannot be invoked is not delivered, and says which and why", () => {
+  const refusal = "Wait for Claude to reload its skills before sending this instruction.";
+  const { registry, queued, prompts } = setup({ catalog: { retro: "retro" }, refused: { retro: refusal } });
+  const taskId = nextTask();
+  // The one after-work skill is a catalog skill whose live check fails when the work is complete.
+  registry.launch(taskId, "s1", record("s1"));
+  const outcome = prompts.prompt("s1");
+  assert.equal(outcome.kind, "not_delivered");
+  assert.equal(queued.length, 0, "no turn is queued");
+  const row = db.getTaskSkillPrompt(taskId, "s1");
+  assert.equal(row?.state, "not_delivered");
+  assert.equal(row?.turnId, null, "it never reached the outbox");
+  assert.deepEqual(row?.skills, ["retro"]);
+  assert.equal(row?.reason, `No skill resolved. retro: ${refusal}`, "the reason names the skill and why");
+  // Once per launch: the failure is the launch's answer, and a later call does not retry it.
+  assert.deepEqual(prompts.prompt("s1"), { kind: "none", why: "already" });
+  assert.equal(queued.length, 0);
+  // A held prompt that cannot be invoked when it is released ends the same way.
+  const held = nextTask();
+  registry.launch(held, "s2", record("s2"));
+  assert.deepEqual(prompts.prompt("s2", { hold: true }), { kind: "held" });
+  prompts.release("s2");
+  assert.equal(queued.length, 0);
+  assert.equal(db.getTaskSkillPrompt(held, "s2")?.state, "not_delivered");
+  assert.equal(db.getTaskSkillPrompt(held, "s2")?.reason, `No skill resolved. retro: ${refusal}`);
+  // With one skill refused and another resolved, the prompt goes out with the one that resolved.
+  const mixed = nextTask();
+  registry.launch(mixed, "s3", record("s3", [["retro", "after-work"], ["notes", "after-work"]]));
+  assert.equal(prompts.prompt("s3").kind, "queued");
+  assert.equal(queued[0]!.turn.text.split("\n")[0], "/notes");
+  assert.doesNotMatch(queued[0]!.turn.text, /retro/);
+  assert.deepEqual(db.getTaskSkillPrompt(mixed, "s3")?.skills, ["notes"]);
+  assert.equal(renderAfterWorkPrompt("s1", []), null);
+  prompts.stop();
+});
+
+test("a Codex session's prompt leads with Codex's typed invocation and names the rest without it", () => {
   const { registry, queued, prompts } = setup();
   const taskId = nextTask();
-  registry.launch(taskId, "s1", record("s1"), "codex");
-  // Codex can invoke by name, so this one resolves; its line keeps Codex's typed clause first.
+  registry.launch(taskId, "s1", record("s1", [["retro", "after-work"], ["notes", "after-work"]]), "codex");
   assert.equal(prompts.prompt("s1").kind, "queued");
   assert.equal(queued[0]!.turn.text.split("\n")[0], "$retro - run this skill now.");
-  assert.match(queued[0]!.turn.text, /1\. `\$retro`/, "the list names it without the clause");
-  assert.equal(renderAfterWorkPrompt("s1", []), null);
+  assert.match(queued[0]!.turn.text, /1\. `\$retro`\n2\. `\$notes`/, "the list names them without the clause");
   prompts.stop();
 });
 
@@ -386,4 +428,33 @@ test("the engine's activation and a claim with no binding both reach the prompte
   assert.equal(claimed.claimed, true);
   assert.deepEqual(calls.slice(1), [["bound", false]], "the after-work step starting prompts it");
   assert.deepEqual([...workflows.sessionActionSkills("bound")], [], "this workflow runs no skill as a stage");
+});
+
+test("a resume moves the launch's record and its prompt row together, or neither", () => {
+  const taskId = nextTask();
+  db.upsertTask(mkTask({ id: taskId, status: "running", sessionId: "s1" }));
+  db.commitTaskShaping(taskId, record("s1"), "", 1);
+  db.insertTaskSkillPrompt({ taskId, sessionId: "s1", state: "held", reason: null, skills: ["retro"], now: 1 });
+  const d = db.openDb();
+  // The second write fails: the first is undone with it, so a restart can never find the record
+  // on the successor with its prompt row left behind on the prior session.
+  d.exec(`CREATE TEMP TRIGGER fail_prompt_rekey BEFORE UPDATE OF session_id ON task_skill_prompts
+          BEGIN SELECT RAISE(ABORT, 'prompt re-key failed'); END`);
+  assert.throws(() => db.rekeyTaskLaunch(taskId, "s1", "s2"), /prompt re-key failed/);
+  assert.equal(db.taskShapingRecord(taskId)?.sessionId, "s1", "the record did not move without its prompt row");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "held");
+  // Inside a caller's transaction the failure undoes only the two moves, never the caller's writes.
+  d.exec("BEGIN IMMEDIATE");
+  db.insertTaskSkillPrompt({ taskId, sessionId: "caller-write", state: "skipped", reason: null, skills: [], now: 2 });
+  assert.throws(() => db.rekeyTaskLaunch(taskId, "s1", "s2"));
+  assert.equal(d.isTransaction, true, "the caller's transaction is still open");
+  d.exec("COMMIT");
+  assert.equal(db.getTaskSkillPrompt(taskId, "caller-write")?.state, "skipped");
+  assert.equal(db.taskShapingRecord(taskId)?.sessionId, "s1");
+  d.exec("DROP TRIGGER fail_prompt_rekey");
+  // With nothing failing, both move in the one call.
+  assert.equal(db.rekeyTaskLaunch(taskId, "s1", "s2"), true);
+  assert.equal(db.taskShapingRecord(taskId)?.sessionId, "s2");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1"), null);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s2")?.state, "held");
 });

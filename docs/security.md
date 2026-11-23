@@ -572,8 +572,9 @@ both held to strict character sets, and Mission Control writes every word around
 from Mission Control's catalog is checked before it is announced, and a catalog skill the
 operator switched off never is. Any other name is announced as given and marked not verified,
 because a skill installed some other way is not inventoried. A router can therefore point the
-worker at any skill installed for its harness; the record and the viewer show every routed skill
-and who routed it. The after-work prompt Mission Control sends is its own text, delivered only
+worker at any skill installed for its harness; the record and the viewer show each routed skill
+and who routed it, up to 32 a launch. A distinct skill routed past that limit is left out of the
+record and is never announced, so nothing reaches turn one that the record does not show. The after-work prompt Mission Control sends is its own text, delivered only
 when the session is idle, once per launch, and recorded as daemon-written, never as the
 operator's words. A name or reason id that holds a resolved credential value is dropped, never
 rewritten.

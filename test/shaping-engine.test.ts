@@ -941,21 +941,46 @@ test("the harness decides each skill's spelling, and a dry run with no harness u
 
 test("the repository's own task skill wins over a routed skill of the kind's name (D14)", async () => {
   const replies = () => data({ skills: [skill("ship", "task-start"), skill("lint-fix")] });
-  const one = await routeRun(configWith([router("r")]), replies, input(1, { repositoryTaskSkills: ["billing-api"] }));
+  const one = await routeRun(configWith([router("r")]), replies, input(1, { repositoryTaskSkillWorktrees: ["/work/billing-api"] }));
   assert.deepEqual(one.skills?.map((entry) => [entry.name, entry.state]), [["ship", "superseded"], ["lint-fix", "announced"]]);
   assert.doesNotMatch(one.section, /`\/ship`/);
   // Two repositories, and only one has its own skill: the routed one stays for the other, by name.
-  const two = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkills: ["billing-api"] }));
+  const two = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkillWorktrees: ["/work/billing-api"] }));
   assert.deepEqual(two.skills?.map((entry) => [entry.name, entry.state, entry.repositories]), [
     ["ship", "announced", ["ledger"]], ["lint-fix", "announced", ["billing-api", "ledger"]],
   ]);
   assert.match(two.section, /- `\/ship` - at the start: use this skill before you begin the work\. For ledger\./);
   assert.match(two.section, /- `\/lint-fix` - during the work: use this skill when it applies\.$/, "routed for every repository, so no names");
-  const both = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkills: ["billing-api", "ledger"] }));
+  const both = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkillWorktrees: ["/work/billing-api", "/work/ledger"] }));
   assert.deepEqual(both.skills?.map((entry) => entry.state), ["superseded", "announced"]);
   // Absent, as for a caller that resolved no repository task skill: nothing is taken.
   const none = await routeRun(configWith([router("r")]), replies, input(1));
   assert.deepEqual(none.skills?.map((entry) => entry.state), ["announced", "announced"]);
+});
+
+test("D14 goes by worktree: of two worktrees of one repository, only the one with its own skill gives up the routed one", async () => {
+  // Two attached worktrees of the same repository, so one name, and only the second carries the
+  // repository's own task skill for the kind.
+  const twins: ShapeTaskInput = {
+    ...input(2),
+    context: {
+      ...input(2).context,
+      repositories: [
+        { name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
+        { name: "billing-api", role: "additional", branch: "task/other", baseSha: "def456", path: "/work/billing-api-2" },
+      ],
+    },
+  };
+  const replies = () => data({ skills: [skill("ship", "task-start")] });
+  const one = await routeRun(configWith([router("r")]), replies, { ...twins, repositoryTaskSkillWorktrees: ["/work/billing-api-2"] });
+  assert.deepEqual(one.skills?.map((entry) => [entry.name, entry.state, entry.repositories]), [["ship", "announced", ["billing-api"]]],
+    "the worktree without its own skill keeps the routed one");
+  assert.match(one.section, /- `\/ship` - at the start: use this skill before you begin the work\. For billing-api\./,
+    "routed for one of the two worktrees, so the line names it");
+  const both = await routeRun(configWith([router("r")]), replies, { ...twins, repositoryTaskSkillWorktrees: ["/work/billing-api", "/work/billing-api-2"] });
+  assert.deepEqual(both.skills?.map((entry) => entry.state), ["superseded"]);
+  const neither = await routeRun(configWith([router("r")]), replies, twins);
+  assert.match(neither.section, /- `\/ship` - at the start: use this skill before you begin the work\.$/, "routed for both, so no names");
 });
 
 test("the reserve keeps room for skills under a full budget, and lines that still do not fit go from the end", async () => {

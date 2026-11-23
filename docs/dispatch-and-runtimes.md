@@ -39,7 +39,9 @@ order:
    skill. It rides in the same section as the task context, after it.
 7. Repository task skills, only with the `headless-mode` flag on and a skill the repository
    ships for the task's kind (`.claude/skills/{kind}/SKILL.md`). A routed skill of the kind's
-   name is not announced for a repository whose own task skill is here.
+   name is not announced for an attached worktree whose own task skill is here; another
+   worktree of the same repository without one keeps it
+   ([Skill routing](task-shaping.md#skill-routing)).
 
 Repository lessons (FR-06), when they arrive, go between the skills for this task and the
 repository task skills.

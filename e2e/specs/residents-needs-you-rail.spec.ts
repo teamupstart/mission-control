@@ -256,21 +256,20 @@ test("with no conversation open, residents that need you stay out of the Needs y
     await expect(headOf(drawer, name)).toBeFocused();
   }
 
-  // `e` reaches the group: no fleet session is asking, so it opens the first resident's queue.
+  // The drawer's key reaches the same inbox as the topbar count.
+  await expect(page.getByRole("button", { name: /2 to answer/ })).toBeVisible();
   await page.locator("body").click({ position: { x: 5, y: 400 } });
   await page.keyboard.press("e");
-  const reviewDialog = page.getByRole("dialog");
-  await expect(reviewDialog).toBeVisible();
-  await expect(reviewDialog).toContainText(`${ASK_A}: ship it?`);
-  await expect(headOf(drawer, ASK_A)).toHaveAttribute("aria-current", "true");
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox.getByRole("heading", { name: `${ASK_A}: ship it?` })).toBeVisible();
+  await expect(inbox.getByRole("heading", { name: `${ASK_B}: ship it?` })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(reviewDialog).toHaveCount(0);
+  await expect(inbox).toBeHidden();
 });
 
-test("with a fleet session and a drawer resident both asking, `e` opens the fleet session's question first", async ({ dashboard: page, daemon }) => {
+test("e focuses the resident's question when its conversation is open alongside a fleet question", async ({ dashboard: page, daemon }) => {
   const askA = await launch(daemon, ASK_A);
   const residentReview = await ask(daemon, askA);
-  // A fleet session asking too: dispatched straight over the API, opted out of Workflows.
   const task = await request<{ id: string }>(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
@@ -282,41 +281,26 @@ test("with a fleet session and a drawer resident both asking, `e` opens the flee
   await expect(drawer.getByRole("region", { name: "Needs you", exact: true })).toBeVisible();
   await expect(page.locator(".board-col.tone-attention")).toContainText("Fleet neighbour");
 
-  // The fleet is to the drawer's left and comes first.
-  await page.locator("body").click({ position: { x: 5, y: 400 } });
-  await page.keyboard.press("e");
-  const reviewDialog = page.getByRole("dialog");
-  await expect(reviewDialog).toContainText("Fleet neighbour: ship it?");
-  await expect(reviewDialog).not.toContainText(`${ASK_A}: ship it?`);
-  await capture(page, "06-e-fleet-first");
-  await page.keyboard.press("Escape");
-  await expect(reviewDialog).toHaveCount(0);
-
-  // Still first with the resident's own conversation open and selected, when the resident is a
-  // row in the Needs you rail: its review does not jump ahead of the fleet session's.
   await drawer.getByRole("button", { name: `Open ${ASK_A}` }).click();
   await expect(band(page, ASK_A)).toBeVisible();
   await expect(railRowOf(page.locator(".board-col.is-rail.tone-attention"), ASK_A)).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("button", { name: /2 to answer/ })).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("e");
-  await expect(reviewDialog).toContainText("Fleet neighbour: ship it?");
-  await expect(reviewDialog).not.toContainText(`${ASK_A}: ship it?`);
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox.getByRole("heading", { name: `${ASK_A}: ship it?` })).toBeFocused();
+  await expect(inbox.getByRole("heading", { name: "Fleet neighbour: ship it?" })).toHaveCount(1);
+  await capture(page, "06-e-resident-question");
   await page.keyboard.press("Escape");
-  await expect(reviewDialog).toHaveCount(0);
+  await expect(inbox).toBeHidden();
+  await expect(band(page, ASK_A)).toBeVisible();
 
-  // Once the fleet session's question is answered, `e` reaches the resident in the drawer.
   await request(daemon, `/api/reviews/${fleetReview}/resolve`, { action: "dismiss" });
-  await expect(page.locator(".board-col.tone-attention")).not.toContainText("Fleet neighbour");
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("e");
-  await expect(reviewDialog).toContainText(`${ASK_A}: ship it?`);
-  await expect(headOf(drawer, ASK_A)).toHaveAttribute("aria-current", "true");
-  await page.keyboard.press("Escape");
   await request(daemon, `/api/reviews/${residentReview}/resolve`, { action: "dismiss" });
   await expect(drawer.getByRole("region", { name: "Needs you", exact: true })).toHaveCount(0);
 });
 
-test("a drawer resident that needs you without a review: `e` still addresses it, by opening its conversation", async ({ dashboard: page, daemon }) => {
+test("a drawer resident waiting for input appears in the inbox before opening its conversation", async ({ dashboard: page, daemon }) => {
   const resident = await launch(daemon, ASK_A);
   await useDrawer(page, daemon, "board");
   await page.keyboard.press("Shift+KeyH");
@@ -326,69 +310,19 @@ test("a drawer resident that needs you without a review: `e` still addresses it,
   await parkOnPermissionPrompt(daemon, resident);
   const group = drawer.getByRole("region", { name: "Needs you", exact: true });
   await expect(headOf(group, ASK_A)).toBeVisible();
-  // No review is filed, and the heading still names the key, because the key still reaches it.
   await expect(group.locator(".residents-drawer-group-key kbd")).toHaveText("e");
+  await expect(page.getByRole("button", { name: /1 to answer/ })).toBeVisible();
   await capture(page, "07-awaiting-input-group");
 
   await page.locator("body").click({ position: { x: 5, y: 400 } });
   await page.keyboard.press("e");
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox).toContainText(ASK_A);
+  await inbox.getByRole("button", { name: "Open session" }).click();
+  await expect(inbox).toBeHidden();
   await expect(band(page, ASK_A)).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".board-detail").getByRole("tab", { name: "Conversation", exact: true })).toHaveAttribute("aria-selected", "true");
-  // The cursor lands in its reply box, ready to answer.
-  await expect(page.locator(".board-detail").getByPlaceholder(/^Reply to this session/)).toBeFocused();
-  // Its conversation is open, so it is a row in the Needs you rail like any other resident asking.
   await expect(railRowOf(page.locator(".board-col.is-rail.tone-attention"), ASK_A)).toBeVisible();
-  await capture(page, "08-e-opens-awaiting-input-conversation");
-});
-
-test("with another conversation open, `e` still reaches a resident awaiting input from the Needs you rail", async ({ dashboard: page, daemon }) => {
-  const resident = await launch(daemon, ASK_A);
-  // A fleet session that is NOT asking: the conversation the operator has open.
-  const neighbour = await request<{ id: string }>(daemon, "/api/tasks", {
-    repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
-  });
-  await useDrawer(page, daemon, "board");
-  await page.keyboard.press("Shift+KeyH");
-  const drawer = drawerOf(page);
-  await drawer.getByRole("button", { name: "Pin", exact: true }).click();
-  await parkOnPermissionPrompt(daemon, resident);
-  const group = drawer.getByRole("region", { name: "Needs you", exact: true });
-  await expect(headOf(group, ASK_A)).toBeVisible();
-  await expect(group.locator(".residents-drawer-group-key kbd")).toHaveText("e");
-
-  // Open the fleet session's conversation. The resident is on the fleet now, as a Needs you row,
-  // and no review is pending anywhere.
-  // The session's own tile, never the provisioning placeholder (`.pend-tile`) the Board draws
-  // with the same title while the task starts: that placeholder opens nothing, and under suite
-  // load the task was still starting when the click landed on it.
-  await sessionOfTask(daemon, neighbour.id);
-  const fleetTile = page.locator("section.board-col .tile:not(.pend-tile)").filter({ hasText: "Fleet neighbour" });
-  await expect(fleetTile).toBeVisible({ timeout: 60_000 });
-  // The tile's pointer half is the card itself, as a person clicks it.
-  await fleetTile.click();
-  const detail = page.locator(".board-detail");
-  await expect(detail.locator(".cdetail")).toBeVisible();
-  await expect(detail).toContainText("Fleet neighbour");
-  await expect(band(page, ASK_A)).toHaveCount(0);
-
-  // `e` addresses the resident: its conversation opens, with the cursor in its reply box.
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("e");
-  await expect(band(page, ASK_A)).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  const reply = detail.getByPlaceholder(/^Reply to this session/);
-  await expect(reply).toBeFocused();
-  await expect(railRowOf(page.locator(".board-col.is-rail.tone-attention"), ASK_A)).toHaveAttribute("aria-current", "true");
-  await capture(page, "09-e-from-another-conversation");
-
-  // Pressed again with that conversation open and nothing else asking, `e` puts the cursor back
-  // in its reply box rather than doing nothing.
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect(reply).not.toBeFocused();
-  await page.keyboard.press("e");
-  await expect(reply).toBeFocused();
-  await expect(band(page, ASK_A)).toBeVisible();
 });
 
 test("in Console, a resident that needs you joins the rail as a row once a conversation is open", async ({ dashboard: page, daemon }) => {

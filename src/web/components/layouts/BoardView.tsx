@@ -663,10 +663,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{c.label}</h2>
-                {/* The review chord's keycap, on Needs you while pressing it would open a queue:
-                    `e` goes to the first session asking without a card being picked first. The
-                    same rule the chord itself follows, so the keycap is never on a column the
-                    key would leave alone. */}
+                {/* Remind the operator of the attention shortcut when this column has a review. */}
                 {c.id === "attention" && g !== null && reviewShortcutTarget(g.sessions, null) && (
                   <span className="board-col-key"><Keycap action="review" /></span>
                 )}

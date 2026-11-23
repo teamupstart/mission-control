@@ -361,9 +361,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
           <p className="residents-drawer-empty" role="status">No residents match the filter.</p>
         ) : (
           <>
-            {/* Residents that need you lead the drawer, in the Board's Needs you color, with the
-                review chord's keycap on the heading: after any fleet session asking, `e` addresses
-                the first of them - its review queue, or its conversation (`reviewChordTarget`). */}
+            {/* Residents that need you lead the drawer, with the attention shortcut on the heading. */}
             {groups.needsYou.length > 0 && (
               <section className="residents-drawer-group is-needs-you" aria-labelledby="residents-drawer-needs-you">
                 <h3 className="residents-drawer-group-head" id="residents-drawer-needs-you">

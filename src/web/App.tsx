@@ -476,10 +476,9 @@ export function App(): React.JSX.Element {
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
-  // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
-  // target of its own - what it draws is `attention` below, folded from state App already has -
-  // so it cannot go stale behind an item that resolved while it was open.
-  const [inboxOpen, setInboxOpen] = useState(false);
+  // The entry point can ask for initial focus on a conversation's question. The inbox still
+  // renders the live attention fold.
+  const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
   // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
   // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
   // read" to. Opening a report records that it was opened (once) and never marks it read.
@@ -591,7 +590,7 @@ export function App(): React.JSX.Element {
     publishStateFor: (report) => publishStates.get(report.id) ?? { busy: false, refusal: null },
     onOpenArchive: (report) => {
       if (!report.publishedArchiveKey) return;
-      setInboxOpen(false);
+      setInbox(null);
       navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
   }), [reportEntryControls, sessions, residentRuns, publishStates, navigate]);
@@ -2898,9 +2897,8 @@ export function App(): React.JSX.Element {
     ? detailSession.id
     : null;
   /**
-   * The drawer's Needs you group while the drawer is on screen, residents asking in the Needs you
-   * rail included: the group prints the review chord's keycap, so the chord reaches every resident
-   * it lists, after every fleet session with a review (see `reviewChordTarget`).
+   * The drawer's Needs you group, including residents in the rail. The review shortcut
+   * uses this group when the inbox entry point does not apply.
    */
   const drawerAsking = useMemo(() => {
     if (!residentDrawerShown) return [];
@@ -3162,6 +3160,8 @@ export function App(): React.JSX.Element {
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
   const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  const hasAnswers = attention.total > 0;
+  const hasOtherInboxItems = attention.toRead > 0 || snoozed.length > 0;
   // A filter can hide the selected detail without clearing the saved drill-in intent.
   // Navigation follows the overview that BoardView renders until a detail is visible again.
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
@@ -4237,6 +4237,15 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The inbox can hold items even with no visible session rows.
+      if (chord === bindings.review && (
+        (layout === "board" && hasAnswers) || (readerSession && (hasAnswers || hasOtherInboxItems))
+      )) {
+        e.preventDefault();
+        setInbox({ focusSessionId: readerSession?.id ?? null });
+        return;
+      }
+
       // The flat rail order, minus anything a folded repository frame is hiding. `visible` itself
       // is NOT filtered: the views still need every session to draw a frame's count and to know
       // what a fold is covering. Only what the keyboard walks is narrowed.
@@ -4467,15 +4476,7 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
-      // The review queue. The same click the attention-toned badge on the card performs,
-      // and deliberately the same TARGET rule: the selected session when it is the one
-      // asking, otherwise the first session in fleet order that is. Unclaimed - no
-      // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
-      // fleet stays the browser's.
-      // After the fleet, the first resident in the drawer's Needs you group: its review queue, with
-      // its card selected, or - asking without a review - its conversation with the cursor in the
-      // reply box, which is also what the chord does when that conversation is already the one
-      // open. See `reviewChordTarget`.
+      // Session and resident shortcuts when the inbox entry point does not apply.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
         const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
@@ -4595,7 +4596,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -4835,7 +4836,7 @@ export function App(): React.JSX.Element {
           snoozed={snoozed.length}
           toRead={attention.toRead}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
-          onOpenInbox={() => setInboxOpen(true)}
+          onOpenInbox={() => setInbox({ focusSessionId: null })}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
@@ -5492,12 +5493,13 @@ export function App(): React.JSX.Element {
                 </OverlayRegistration>
               )}
 
-              {inboxOpen && (
+              {inbox && (
                 <AttentionInbox
                   fold={attention}
+                  focusSessionId={inbox.focusSessionId}
                   snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
-                  onClose={() => setInboxOpen(false)}
+                  onClose={() => setInbox(null)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}

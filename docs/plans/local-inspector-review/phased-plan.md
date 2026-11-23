@@ -1,7 +1,13 @@
 # Local Inspector review - phased implementation
 
-Source plan: `docs/plans/local-inspector-review/plan.md`, managed plan revision 7, approved by
-the operator on 2026-11-23.
+Source plan: `docs/plans/local-inspector-review/plan.md`. The operator approved its design and
+decisions on 2026-11-23 as managed plan revision 7. The text beside this index is later:
+revisions 8 and 9 added this index and the phase files, revision 10 changed the wording of one
+rule after review of the pull request (the spent-allowance rule in design item 2), and
+revision 11 changed only this paragraph. None changed a decision. Mission Control records the
+approval of each exact revision. Revisions 9 and 10 were approved on 2026-11-23 under the
+operator's standing approval for this plan, and the source plan's review record lists every
+change to it.
 
 Six serial merge units. Phases 1 to 3 are the three phases of the approved repository-access
 plan and keep their existing phase files. Phases 4 to 6 are new and have phase files beside

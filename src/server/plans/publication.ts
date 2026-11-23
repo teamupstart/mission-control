@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
-import type { PlanDecision, PlanDecisionAnswer, Task } from "@shared/types.ts";
+import { approvesFinalBundle, PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
+import { isFiledGate } from "@shared/async-input.ts";
+import type { PlanDecision, PlanDecisionAnswer, ReviewItem, Task } from "@shared/types.ts";
 import { decisionLead, formatResponse, STANDING_APPROVAL_NOTE } from "@shared/review-item.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
@@ -87,6 +88,59 @@ export function recordStandingFollowUp(reviewId: string, approvalReviewId: strin
 
 export function isStandingFollowUp(reviewId: string): boolean {
   return Boolean(openDb().prepare("SELECT 1 FROM managed_plan_standing_follow_ups WHERE review_id = ?").get(reviewId));
+}
+
+/** A managed plan revision as a filed form's answer names it. */
+export interface FiledPlanBinding { planId: string; revision: number; slug: string | null }
+
+/**
+ * Which managed plan a filed form concerns: the revision it is bound to itself, or, for the
+ * follow-up beside a standing approval, the revision that approval covered. The database half of
+ * `filedPlanIdentityNote`; `describeFiledPlanIdentity` turns its result into words.
+ */
+export function loadFiledPlanBinding(reviewId: string): { own: FiledPlanBinding } | { followUpOf: FiledPlanBinding } | null {
+  const db = openDb();
+  const bound = (id: string): FiledPlanBinding | undefined => {
+    const row = db.prepare(`SELECT m.plan_id, m.revision, p.slug FROM managed_plan_reviews m
+      LEFT JOIN managed_plans p ON p.id = m.plan_id WHERE m.review_id = ?`).get(id) as { plan_id: string; revision: number; slug: string | null } | undefined;
+    return row ? { planId: row.plan_id, revision: row.revision, slug: row.slug } : undefined;
+  };
+  const own = bound(reviewId);
+  if (own) return { own };
+  const followUp = db.prepare("SELECT approval_review_id FROM managed_plan_standing_follow_ups WHERE review_id = ?").get(reviewId) as { approval_review_id: string } | undefined;
+  const approved = followUp ? bound(followUp.approval_review_id) : undefined;
+  return approved ? { followUpOf: approved } : null;
+}
+
+/**
+ * The words of `filedPlanIdentityNote`, from a review and its loaded binding, with no I/O: which
+ * exact plan and revision the answer approved, did not approve, or followed up on.
+ */
+export function describeFiledPlanIdentity(
+  review: Pick<ReviewItem, "status" | "resolvedBy" | "selections">,
+  binding: ReturnType<typeof loadFiledPlanBinding>,
+): string | null {
+  if (!binding) return null;
+  const name = (plan: FiledPlanBinding) => `${plan.slug ?? "managed plan"} (plan ${plan.planId}, revision ${plan.revision})`;
+  if ("followUpOf" in binding) {
+    return `Managed plan: ${name(binding.followUpOf)}. Its final bundle was already approved by standing approval; this answer covers only the remaining decisions.`;
+  }
+  const approved = review.status === "answered" && isApprovingActor(review.resolvedBy) && approvesFinalBundle(review.selections);
+  return approved
+    ? `Managed plan: ${name(binding.own)}. This answer approved that exact final bundle.`
+    : `Managed plan: ${name(binding.own)}. This answer did not approve that final bundle.`;
+}
+
+/**
+ * The managed plan a filed plan form's answer concerns, for the message that delivers it
+ * (`filed-plan-decisions`). The agent ended its turn on the form, so the answer says which exact
+ * plan and revision it approved or did not, rather than leaving the agent to work it out from a
+ * body that may have been cut. A form that is not filed, or not bound to a managed plan, adds
+ * nothing: a call-mode form's tool result is unchanged.
+ */
+export function filedPlanIdentityNote(review: ReviewItem): string | null {
+  if (!isFiledGate(review)) return null;
+  return describeFiledPlanIdentity(review, loadFiledPlanBinding(review.id));
 }
 
 /** Both selection and pinned bindings require review-only completion. */

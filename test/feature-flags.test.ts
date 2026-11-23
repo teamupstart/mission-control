@@ -92,6 +92,8 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
   assert.equal(flags.find((flag) => flag.id === "async-input")?.stage, "preview", "ask without stopping ships as a preview");
+  assert.equal(flags.find((flag) => flag.id === "filed-plan-decisions")?.stage, "preview", "filed plan decisions ships as a preview");
+  assert.ok(ids.indexOf("filed-plan-decisions") === ids.indexOf("async-input") + 1, "filed plan decisions sits beside the flag it needs");
   // Reports and inbox upgrades ships as a preview, off until the operator opts in.
   const inbox = flags.find((flag) => flag.id === INBOX_FLAG);
   assert.equal(inbox?.stage, "preview", "reports and inbox upgrades ships as a preview");
@@ -110,6 +112,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   // Off by default: the suite's default is every preview off.
   assert.equal(resolveFeatureFlag("task-shaping", FEATURE_FLAGS_DEFAULTS), false);
   assert.equal(resolveFeatureFlag("async-input", FEATURE_FLAGS_DEFAULTS), false);
+  assert.equal(resolveFeatureFlag("filed-plan-decisions", FEATURE_FLAGS_DEFAULTS), false);
   const files = ["src/shared/feature-flags.ts", "src/shared/feature-flag-registry.ts",
     ...readdirSync("src/server/feature-flags").map((name) => `src/server/feature-flags/${name}`)];
   for (const file of files) {

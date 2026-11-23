@@ -2674,8 +2674,10 @@ What is stored, and what agents and Foreman read back, keeps the agent's own wor
 The MCP tools are:
 
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
-  options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer. Every decision also has an optional note
+  options (radios / checkboxes) as a **gate** until the human submits their choices or
+  dismisses that decision set without an answer. The call waits for that answer, or, with
+  [filed plan decisions](#filed-plan-decisions) on, returns a receipt at once and the answer
+  arrives later as a message; the agent stops on the form either way. Every decision also has an optional note
   box, so the human can pick an option and send instructions with it; a note returns to the
   agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
   an empty `decisions` list to show a plan for approval with no open choices. Any decision
@@ -3155,7 +3157,8 @@ The receipt names the question id and both tools; listing is for housekeeping, n
 The daemon decides how each ask waits and says so in its response. A question is filed this way
 only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
 a receipt, and the session can receive a message. Everything else waits inside the call as
-before: the other review tools (plan decisions, diff review, the confirmations other tools raise),
+before: the other review tools (plan decisions unless [filed plan decisions](#filed-plan-decisions)
+is also on, diff review, the confirmations other tools raise),
 an MCP child from an older build, and a session no message can reach, such as a Pipeline engine
 session or a terminal session with no writable pane. The flag is read for every ask, so it takes
 effect without a restart.
@@ -3176,6 +3179,64 @@ Operator messages, workflow repair rounds and `report_blocker` are not held by a
 Turning the flag off sends new asks back to waiting inside the call. Questions already filed stay
 answerable, their answers are still delivered, and both completion rules keep applying to them
 until they are settled; questions waiting in a call return to today's completion behavior.
+
+#### Filed plan decisions
+
+**File plan decisions** is a preview feature behind the `filed-plan-decisions` flag. It takes
+effect only while **Ask without stopping** (`async-input`) is also on; with either flag off,
+`request_plan_decisions` waits inside the call exactly as before. With both on, a current MCP
+child and a session that can receive a message, the form is filed and the tool returns a receipt
+at once, so no call is held open and nothing can time out.
+
+The form is still a gate:
+
+- The receipt says the plan is filed and not answered. The agent may do read-only preparation,
+  makes no edits, commits, pushes, task creation or other outward action, does not file the form
+  again or poll, then says what is waiting and ends its turn. Nothing enforces read-only at the
+  tool level; it is an instruction, as `request_input`'s receipt is.
+- The session is amber and the form counts in **to answer** from the moment it is filed, while
+  the agent is still finishing its turn and after it stops. The session reads **to review**, and
+  the "needs review" alert fires once, at filing. A resident with a filed form is held too.
+- The form is the one a blocking plan form uses: the inbox row, the review modal, Submit and
+  Dismiss, and the check that keeps a half-filled form from being submitted. It offers no
+  **Remind me later**, and its status line reads **Waiting on your decisions**, never "Still
+  working". The conversation shows a **Plan filed** entry where it was filed, with an **Open**
+  button while it is open and how it ended afterwards.
+- Your answer reaches the agent as one message through the same outbox as a filed question's
+  answer. It names the form and how long ago it was filed, the plan's title, an excerpt of the
+  plan of about 2,000 characters cut at a line, every decision with what you chose (notes and
+  "Chat about it" included), and what to do next. A dismissal says nothing was selected or
+  approved. A form bound to a managed plan also names the plan and revision it approved or did
+  not.
+- Nothing completes the task past an open filed form except a merge. Prompted completion,
+  workflow resumption and automatic evidence preparation refuse while it is open. A merge closes
+  it as `orphaned` with the reason `merged`, shown as **Closed unanswered: pull request merged**.
+- `list_open_questions` lists the caller's filed forms with its questions, each with its kind,
+  and `withdraw_question(id, reason)` takes one back with a reason, for example when you message
+  the agent that the scope changed; the agent then files the revised plan. A withdrawal sends no
+  answer and never approves. Only the asking session can withdraw its own form, and a form that
+  waits inside a call cannot be withdrawn.
+- Plan forms take no slot in the ten-question limit, and are never refused by it. There is no
+  limit across sessions.
+
+Managed final-bundle approval works on the filed path. The form is bound to its plan revision at
+filing, exactly as a blocking one is, and the approval, **Approve all future bundles**,
+`publish_plan` and the workflow freeze read the settled answer as before. A standing approval that
+covers the bundle with nothing else to ask still returns the approval as the tool result; with
+other decisions left, only those are filed, and the receipt says the bundle is already approved.
+
+Operator messages, typed or spoken, still reach an agent behind a filed form. Switching a flag never
+changes a form that already exists: switching either flag off sends new forms back to waiting inside
+the call, while a form already filed stays filed and keeps its hold. It can still be answered, and
+is listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+
+One thing does turn a filed form into a blocking one. If an MCP child from an older build re-asks
+the same form word for word, it cannot read a receipt and waits in its call, so the form becomes a
+form that waits inside that call, like any call-mode plan form. Its session stays amber, it still
+blocks completion, and its answer becomes that call's result. It is no longer listed or
+withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
+being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
+as a message.
 
 ### The ask channel
 

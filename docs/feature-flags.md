@@ -7,9 +7,16 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Session control requests](sessions.md#when-a-session-asks-for-control),
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
+[File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
 [Work unit id](work-units.md#the-launch-environment) (`work-unit-id`) and
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
+
+**File plan decisions** (`filed-plan-decisions`) files a `request_plan_decisions` form instead of
+holding its tool call open. It takes effect only while **Ask without stopping** is also on: the
+registry has no flag-to-flag dependency, so the one route that decides how an ask waits reads both
+flags for every ask, and with either off a plan form blocks exactly as before. A form filed while
+both were on stays filed after either is turned off; turning a flag off closes nothing.
 
 **Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
 [atomic pin change](dispatch-and-backlog.md#change-a-pinned-plan-revision-preview). Turning it off

@@ -89,6 +89,16 @@ export const FEATURE_FLAGS = [
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
   },
   {
+    id: "filed-plan-decisions",
+    label: "File plan decisions",
+    description:
+      "request_plan_decisions files the plan form in the attention inbox instead of holding a tool call open. " +
+      "The agent still stops and waits on it, and your answer reaches it later as a message. Takes effect only " +
+      "while Ask without stopping is on.",
+    stage: "preview",
+    keywords: ["request_plan_decisions", "plan", "decisions", "inbox", "asynchronous", "approval"],
+  },
+  {
     id: WORK_UNIT_ID_FLAG_ID,
     label: "Work unit id",
     description:

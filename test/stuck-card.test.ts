@@ -116,6 +116,31 @@ test("a session that cannot take messages draws no message controls", () => {
   assert.deepEqual(actions(html), ["open-session", "dismiss", "mark-done"]);
 });
 
+test("a session that cannot take messages draws none of its rule's message controls", () => {
+  // No pane and not embedded: `canMessage` is false, so every control that sends a message goes.
+  const silentSession = mkSession({ id: "s1", state: "working", runtime: "terminal", terminals: [], tty: null });
+  const idleSession = mkSession({ id: "s1", state: "idle", runtime: "terminal", terminals: [], tty: null });
+  const silent = draw(stall({ kind: "silent-working", activity: "Running npm test", quietSince: 0 }, "working but silent for 12m"), silentSession);
+  assert.doesNotMatch(silent, />Nudge</);
+  assert.doesNotMatch(silent, /data-inbox-action="message"|<textarea/);
+  const push = draw(stall({
+    kind: "workflow-parked", runId: "r", workflowName: "W", status: "waiting_for_new_head",
+    round: 1, resubmittable: false, unpushedCommits: 2, externalSource: null,
+  }), idleSession);
+  assert.deepEqual(actions(push), ["open-session", "dismiss", "open-run"]);
+  assert.doesNotMatch(push, />Tell it to push</);
+  const nextTurn = draw(stall({
+    kind: "workflow-parked", runId: "r", workflowName: "W", status: "waiting_for_session",
+    round: 1, resubmittable: false, unpushedCommits: 0, externalSource: null,
+  }), idleSession);
+  assert.deepEqual(actions(nextTurn), ["open-session", "dismiss", "open-run"]);
+  const escalated = draw(stall({ kind: "escalated", text: "Approve the migration?" }, "escalated to you 6m ago, still unanswered"), idleSession);
+  assert.deepEqual(actions(escalated), ["open-session", "dismiss"]);
+  assert.doesNotMatch(escalated, />Reply<|<textarea/);
+  // What does not send a message stays: the escalation still says what Foreman escalated.
+  assert.match(escalated, /Foreman escalated: Approve the migration\?/);
+});
+
 test("no Stuck card offers Cancel", () => {
   for (const facts of [
     { kind: "unfinished-work", task, queueOpen: 1 },

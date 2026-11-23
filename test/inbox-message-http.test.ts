@@ -106,8 +106,16 @@ test("each kind queues its fixed text under the daemon-written prefix", async ()
     assert.ok(body.pendingTurn.id.startsWith(INBOX_MESSAGE_TURN_PREFIX), body.pendingTurn.id);
     f.pending.stop();
   }
-  assert.match(INBOX_MESSAGES.nudge, /^Status check from your operator: you have gone quiet\./);
-  assert.match(INBOX_MESSAGES.continue, /^Your operator asks you to continue\./);
+  // The adopted wording, written out here rather than read from the constants, so a change to
+  // any word of it fails (plan.md, "Stuck rows").
+  assert.equal(
+    INBOX_MESSAGES.nudge,
+    "Status check from your operator: you have gone quiet. Reply with one line on what you are doing and whether anything is blocking you, then carry on. If you are waiting on a long-running command, say which one.",
+  );
+  assert.equal(
+    INBOX_MESSAGES.continue,
+    "Your operator asks you to continue. Work is still open against this session. Pick it up where you stopped and carry it through. If something is blocking you, say what it is instead of stopping.",
+  );
   assert.equal(INBOX_MESSAGES.push, "Push your commits. The review is waiting for a pushed head on this branch.");
 });
 

@@ -104,8 +104,12 @@ app.whenReady().then(async () => {
       }
       next();
     })`, true);
-    process.stdout.write(`${JSON.stringify({ ...result, preloadError, authorization, keyboardAuthorization })}\n`);
-    app.quit();
+    // Once the result reaches the parent, the fixture has finished with its window.
+    // Waiting for graceful app shutdown here can outlast the parent's test deadline.
+    process.stdout.write(
+      `${JSON.stringify({ ...result, preloadError, authorization, keyboardAuthorization })}\n`,
+      (error) => app.exit(error ? 1 : 0),
+    );
   } catch (error) {
     console.error(error);
     setImmediate(() => app.exit(1));

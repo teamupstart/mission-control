@@ -377,3 +377,47 @@ test("Mark all read clears a Reports section of 1,001 reports with one click, in
   expect(history.reports).toHaveLength(1001);
   expect(history.reports.every((report) => report.readBy === "mark-all")).toBe(true);
 });
+
+test("a refused Mark all read says why in the Reports section and leaves every report listed, counted and unread", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const name = "Triage the nightly failures";
+  const triager = await agent(daemon, name);
+  await ready(page, daemon);
+  const first = await post(daemon, triager, { title: "Nightly failure one", body: "A timeout in the importer." });
+  const second = await post(daemon, triager, { title: "Nightly failure two", body: "A flaky snapshot." });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("2", { timeout: 30_000 });
+
+  // The daemon stays real; only this one request is answered with a refusal, as a daemon that
+  // could not store it would answer.
+  const refusal = "Mission Control could not mark these reports read: the database is busy";
+  let refused = 0;
+  await page.route("**/api/reports/read-all", async (route) => {
+    refused++;
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: refusal }) });
+  });
+
+  const inbox = await openInbox(page);
+  const row = inbox.getByRole("region", { name: `Reports from ${name}` });
+  await inbox.getByRole("button", { name: "Mark all read" }).click();
+
+  // The reason, under the Reports heading.
+  await expect(inbox.getByRole("alert")).toHaveText(refusal);
+  expect(refused).toBe(1);
+  // Nothing left: the row, its two reports, the section's figure and the top bar's all stay.
+  await expect(inbox.getByRole("heading", { name: "Reports", exact: true })).toBeVisible();
+  await expect(row).toContainText("2 to read");
+  await expect(row.getByRole("button", { name: "Nightly failure one" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Nightly failure two" })).toBeVisible();
+  await expect(inbox.locator(".modal-head")).toContainText("2 to read");
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("2");
+  for (const id of [first.id, second.id]) expect((await report(daemon, id)).readAt).toBeNull();
+  await capture(page, "08-mark-all-read-refused", page);
+
+  // Let the request through: the same button clears the section, and the refusal line goes.
+  await page.unroute("**/api/reports/read-all");
+  await inbox.getByRole("button", { name: "Mark all read" }).click();
+  await expect(row).toHaveCount(0);
+  await expect(inbox.getByRole("alert")).toHaveCount(0);
+  await expect(toRead(page)).toHaveCount(0);
+  for (const id of [first.id, second.id]) expect((await report(daemon, id)).readBy).toBe("mark-all");
+});

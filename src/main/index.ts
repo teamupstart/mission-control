@@ -30,6 +30,7 @@ import { announceStartupNotice } from "./startup-notice.ts";
 import { showStartupNoticeWindow } from "./startup-notice-window.ts";
 import { holdQuitUntilDrained } from "./quit-drain.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
+import { foremanLogPath } from "../server/foreman/decision-log.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
@@ -411,7 +412,7 @@ app.whenReady().then(async () => {
       startForeman({
         workerEntry: paths.foremanEntry,
         cwd: appRoot,
-        logPath: join(stateDir(), "foreman.log"),
+        logPath: foremanLogPath(),
       }),
   );
 

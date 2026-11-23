@@ -85,6 +85,9 @@ As of `2088bd522`:
    showing that card, the router also opens a `pending` voice card whose text is the answer, so
    the countdown and Cancel stay on screen. That card and the answer are one entry: stopping
    either stops both.
+   Only a `VoiceAnswer` is a pending voice answer. Phase 14's plan-form fill state is a
+   different record, `VoiceFormFill`, with no deadline; it is not registered, and neither
+   "cancel" nor "No, A" acts on it.
 5. **Card.** On `voice_answer` the dashboard writes the selection or text into the review draft
    with a voice mark, and `ReviewCard` swaps its action row for the countdown footer: what will
    be sent, the seconds, Cancel and Submit now. A click on another option during the window
@@ -150,3 +153,6 @@ Phase 14 extends the open-cards report with report and Stuck cards and reuses `C
   Step 3 now decides by the number pending, and both undefined cases open a question pick.
   Phase 6 draws its two answer hints through `SpokenHint`, so they appear when this phase
   turns hints on and not before the phrases work.
+- Pull request review, seventh round: step 4's rules name `VoiceAnswer` only. Phase 14's fill
+  state is a separate record, so it is outside the cancel order and outside "No, A". A
+  question pick is an `unsure` card, which contract D makes an entry: "cancel" closes it.

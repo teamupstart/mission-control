@@ -36,8 +36,13 @@ form for a control the inbox plan declares click-only.
    (also "reply, ..."). Ordinals count the form's decisions in drawn order, the appended approval
    decision included. A letter picks that decision's option. Other wording for one decision goes
    to `ask`.
-2. **Fill state.** The daemon holds a `VoiceAnswer` for the form with no deadline: it fills and
-   does not submit. The dashboard mirrors each fill into the draft with a voice mark. Clicks and
+2. **Fill state.** The daemon holds a `VoiceFormFill { reviewId, selections }` for the form and
+   emits `voice_form_fill`. It is a separate record from Phase 13's `VoiceAnswer`, on purpose:
+   it has no deadline, it fills and does not submit, it is not an entry in
+   `pendingVoiceActions`, and it is not a pending voice answer. So a bare "cancel" never
+   clears it, and "no, A" never rewrites it. A filled decision is changed by saying it again
+   ("<name>, first one A") or by a click.
+   The dashboard mirrors each fill into the draft with a voice mark. Clicks and
    voice edit the same draft, and the draft is what is submitted; the daemon's fill state is
    never submitted by itself. The fill state is cleared when the review stops being pending
    (answered, dismissed, withdrawn or replaced by a revised form), when `planFormsByVoice` is
@@ -46,7 +51,9 @@ form for a control the inbox plan declares click-only.
 3. **Submit.** "<name>, submit" or "reply, submit", while the agent has a pending plan form. It
    acts only when that form is the agent's voice target at that moment, which means a dashboard
    has it open (contract J). The daemon then asks that dashboard to submit its draft, so clicks
-   made meanwhile are included. The request carries a `submitId` the daemon issued, and the
+   made meanwhile are included. A spoken submit is the operator's confirmation (V29), so it
+   has no cancel window and is not an entry in `pendingVoiceActions` either. The request
+   carries a `submitId` the daemon issued, and the
    dashboard sends it back as `voiceSubmitId` on the resolve route. When a decision is
    unanswered the submit is refused: the card marks that decision and the voice card says which
    one and how to say it.
@@ -95,7 +102,12 @@ live ids are in memory, so after a restart a pending voice submit is refused as 
   still pending and the agent receives nothing. A resolve inside the 5 seconds succeeds once
   and its id cannot be used again. "<name>, submit" with no plan form pending is a
   message. The fill state is cleared when the review settles, when the setting is turned off
-  and 10 minutes after the form was last reported open.
+  and 10 minutes after the form was last reported open. The cancel order: route a message to
+  Alice, fill Steve's form while that message is still in its window, then say "cancel";
+  Alice's message is stopped and Steve's fill and draft are unchanged. A second "cancel" is
+  listed as `nothing-pending` and still changes no fill. With a question card's answer
+  counting down and a form filled after it, "no, A" switches the answer and changes no
+  decision on the form.
 - `test/voice-inbox-actions.test.ts`: a phrase for each spoken action in the registry, no phrase
   for a click-only one, the mark-read target, and "cancel" inside the window leaving the report
   unread.
@@ -132,3 +144,8 @@ None inside this plan.
   resolve the review, so the card would say nothing was sent while the agent got the answers.
   Each submit request now carries an id that the daemon revokes at the timeout and the resolve
   route refuses.
+- Pull request review, seventh round: step 2 reused `VoiceAnswer` for the fill state, and
+  Phase 13 registers a `VoiceAnswer` in the cancel order and makes it the target of "no, A".
+  A fill with no deadline would have stayed the newest entry, so "cancel" meant for a routed
+  message would have wiped the form. The fill state is now its own record, `VoiceFormFill`,
+  outside the cancel order and outside "no, A", and the sequence is tested.

@@ -129,6 +129,14 @@ A sixth review raised one more, accepted.
   complete and says so, with `hotkey` defaulting to the chord the selected settings mock-up
   shows.
 
+A seventh review raised one more, accepted.
+
+- **Plan-form fill state in the cancel order.** Phase 14 reused Phase 13's `VoiceAnswer` for a
+  form's fill state, which would have put a record with no deadline into the cancel order and
+  under "no, A". The fill state is now its own record, outside both, and Phase 14 tests a
+  routed message, a filled form and then "cancel". Contract D also says what the order does
+  hold and does not: an open `unsure` card is an entry, and a spoken submit is not.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -267,14 +275,17 @@ with a review id. Event `voice_card`. Routes `POST
 /api/voice/cards/:id/cancel`, `/send-now` and `/pick`. The `VoiceDeliverer` interface. `GET` and
 `DELETE /api/voice/heard` with `HeardEntry`. `say` in `e2e/fixtures/voice.ts`.
 
-One cancel order. The router keeps every voice action still inside its cancel window in one
+One cancel order. The router keeps every voice action that a "cancel" can still stop in one
 list, `pendingVoiceActions`, in the order they opened; an entry is `{ id, kind, openedAt,
 cancel }`. A bare "cancel" stops the newest entry and nothing else, whatever its kind, and each
 further "cancel" stops the next newest. With the list empty it does nothing and is listed in
 Recently heard. Phase 3 registers pending cards, and a split is one entry. Phase 13 registers a
 pending voice answer, together with its companion card when it has one, as one entry. Phase
-14's inbox actions are pending cards, so they are entries already. A Cancel button stops its
-own entry, not the newest.
+14's inbox actions are pending cards, so they are entries already. An open `unsure` card, a
+question pick included, is an entry with no deadline: "cancel" closes it and nothing is sent.
+A Cancel button stops its own entry, not the newest. Two things are never entries: a plan
+form's fill state (`VoiceFormFill`, Phase 14), which has no window and is changed by saying
+the decision again, and a spoken submit of a plan form, which is the confirmation itself.
 
 **E. Model step (Phase 4).** `VoiceDecider.ask(questions)` with question kinds `who`, `split` and
 `option`, each answered with a choice and a confidence. Rungs in order: the effective decision
@@ -312,7 +323,9 @@ inputDevice, pauseMs, revision }`, and posts contract D's utterances.
 
 **J. Open cards and voice answers (Phase 13).** `PUT /api/voice/open-cards { windowId, focused,
 cards: [{ kind, id, focused }] }`; `VoiceAnswer` and the event `voice_answer`;
-`optionLetter(index)`; `CardVoiceFoot`.
+`optionLetter(index)`; `CardVoiceFoot`. Phase 14 adds `VoiceFormFill { reviewId, selections }`
+and the event `voice_form_fill` for plan forms. It is not a `VoiceAnswer`: no deadline, no
+entry in the cancel order, and not a target for "no, A".
 
 **K. Conversion (Phase 15).** The wait poll's `convertible=1` query, the response field
 `converted { receipt }`, `ReviewManager.convertToFiled(reviewId)`, and the `reviews` column

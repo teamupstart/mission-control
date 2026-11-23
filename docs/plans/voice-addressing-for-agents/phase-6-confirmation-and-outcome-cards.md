@@ -39,7 +39,8 @@ As of `2088bd522`:
      Send now, and the hint: Say "cancel" to stop;
    - `resolving`: "Working out who this is for";
    - `unsure`: "Who is this for?", the words as heard, one roster row per candidate (name, role,
-     live state); a row is a button; the hint says to say the name again or click a row;
+     live state); a row is a button; Cancel, which closes the card and sends nothing; the hint
+     says to say the name again or click a row, or say "cancel";
    - `sent` and `queued`: "Sent to <name>", or "Queued behind his current turn"; when the agent
      has open questions, the count and the hint: Say "<name>, answer" to reply to one;
    - `held`: "Held for <name>", the row, the question it waits behind, Open question, Cancel

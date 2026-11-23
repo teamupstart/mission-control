@@ -1389,8 +1389,10 @@ them and never edits another phase's entry:
   (`preserveUnknownResidentSettings`), and settings snapshots carry and restore each revision as
   stored.
 - `RESIDENT_EDITOR_SECTIONS` (`src/web/residents/editor-sections.tsx`) - how each section is
-  edited on `#/residents`, keyed by the same section id. `blankResidentDraft` reads section
-  defaults from the schema registry, so a new section needs no edit there.
+  edited on `#/residents`, keyed by the same section id. The editor and create API use the
+  section registry and share the MCP creation default. A new profile defaults to all native
+  sources only when its harness supports that mode. Stored revisions that predate source modes
+  use the pinned set.
 - `RESIDENT_LAUNCH_CONTRIBUTORS` (`src/server/residents/launch.ts`) - what each section adds to an
   SDK launch. Contributors read only the run: its pinned revision, persona snapshot and run
   instructions. Widen `ResidentLaunchContribution` with an optional field; never branch on a

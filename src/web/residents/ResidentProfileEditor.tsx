@@ -7,8 +7,8 @@ import { resolveLaunchModel } from "@shared/kind-defaults.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
 import { fetchHarnessesConfig } from "../lib/api.ts";
 import {
-  RESIDENT_PROFILE_SECTIONS,
-  RESIDENT_PROFILE_SECTION_IDS,
+  newResidentMcpSettings,
+  ResidentProfileRevisionSchema,
   ResidentProfileRevisionRequestSchema,
   type ResidentAgent,
   type ResidentMcpNativeSources,
@@ -28,19 +28,11 @@ import { RESIDENT_EDITOR_SECTIONS, type ResidentEditorSection } from "./editor-s
 import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "../workflows/WorkflowConfirmModal.tsx";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 
-/**
- * A new profile's draft: no name and no Persona yet, and every other section at its schema
- * default - read from the section registry, so a section a later phase appends arrives here
- * with its defaults and no edit to this function.
- */
+const BlankDraftSections = ResidentProfileRevisionSchema.omit({ identity: true, mcp: true });
+
 export function blankResidentDraft(): ResidentProfileRevision {
-  const required = { identity: { name: "", description: "" }, persona: { personaId: "" } };
-  const defaulted = Object.fromEntries(
-    RESIDENT_PROFILE_SECTION_IDS
-      .filter((id) => !(id in required))
-      .map((id) => [id, RESIDENT_PROFILE_SECTIONS[id].parse(undefined)]),
-  );
-  return { ...defaulted, ...required } as ResidentProfileRevision;
+  const sections = BlankDraftSections.parse({});
+  return { ...sections, identity: { name: "", description: "" }, mcp: newResidentMcpSettings(sections.execution.agent) };
 }
 
 /**
@@ -111,6 +103,7 @@ export function ResidentProfileEditor({
   const readOnly = profile?.builtin === true;
   const featureFlags = useContext(FeatureFlagsContext);
   const [dirty, setDirtyState] = useState(profile === null);
+  const [mcpEdited, setMcpEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The residents tour reads the open profile, then points at Duplicate and Launch.
@@ -143,8 +136,10 @@ export function ResidentProfileEditor({
     setDirty(true);
     setError(null);
   };
-  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void =>
+  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void => {
+    if (id === "mcp") setMcpEdited(true);
     editDraft((current) => ({ ...current, [id]: value }));
+  };
   const changeHarness = (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources): void =>
     editDraft((current) => ({
       ...current,
@@ -182,10 +177,9 @@ export function ResidentProfileEditor({
     setBusy(true);
     setError(null);
     try {
-      const parsed = ResidentProfileRevisionRequestSchema.parse(draft);
       const saved = base && expectedRevision !== null
-        ? await updateResidentProfile(base.id, expectedRevision, parsed)
-        : await createResidentProfile(parsed);
+        ? await updateResidentProfile(base.id, expectedRevision, draft)
+        : await createResidentProfile(draft);
       setBase(saved);
       setDraft(saved.settings);
       setDirty(false);
@@ -376,7 +370,7 @@ export function ResidentProfileEditor({
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>
-            <Body draft={draft} update={update} changeHarness={changeHarness} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
+            <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
           </section>
         ))}
         {profile && <ResidentState key={profile.id} profileId={profile.id} />}

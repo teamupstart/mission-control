@@ -254,4 +254,40 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   const after = (await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`))
     .reports.find((r) => r.id === refused.id)!;
   expect(after.publishedArchiveKey).toBeNull();
+
+  // A page with more than one problem lists every one the checker named, not only the first.
+  writeFileSync(join(session.cwd!, "tracking.html"),
+    "<html><body><p>Tracking</p><script>fetch('/api/sessions')</script><img src=\"https://tracker.example/p.png\"></body></html>");
+  const twoProblems = await report(daemon, session.cwd!, { title: "Tracking dashboard", body: "Script and a remote image.", file: "tracking.html" });
+  card = inbox.getByRole("article", { name: "Report: Tracking dashboard" });
+  await card.getByRole("button", { name: "Tracking dashboard" }).click();
+  await card.getByRole("button", { name: "Publish as scout" }).click();
+  const problems = card.getByRole("alert");
+  await expect(problems).toContainText("Not published. The archive refused this document:", { timeout: 30_000 });
+  await expect(problems.getByRole("listitem")).toHaveText([
+    "<script> is not allowed in an archived report",
+    "the https: scheme is not allowed in an archived report",
+  ]);
+  await capture(card, "08-card-refused-two-problems", page);
+  expect((await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`))
+    .reports.find((r) => r.id === twoProblems.id)!.publishedArchiveKey).toBeNull();
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+
+  // Open report from the report's entry in its session's conversation reads the same stored copy.
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = page.locator(".console-detail");
+  const entry = detail.getByRole("note", { name: "Report: Build failure diagnosed" });
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  if (!(await entry.getByRole("button", { name: "Open report" }).isVisible())) {
+    await entry.getByRole("button", { name: "Build failure diagnosed" }).click();
+  }
+  await entry.getByRole("button", { name: "Open report" }).click();
+  const entryReader = page.getByRole("dialog", { name: "Report document: Build failure diagnosed" });
+  await expect(entryReader.frameLocator('iframe[title="Report document: diagnosis.html"]')
+    .getByRole("heading", { name: DOCUMENT_TITLE })).toBeVisible({ timeout: 20_000 });
+  await expectContentClearsBorder(entryReader);
+  await capture(entryReader, "09-reader-from-conversation-entry", page);
+  await page.keyboard.press("Escape");
+  await expect(entryReader).toBeHidden();
 });

@@ -772,6 +772,12 @@ test("a blocked session gets no pre-PR recovery send until the blocker clears", 
   assert.equal(decideShipShepherd(input()).kind, "recover");
 });
 
+test("a session awaiting its own background process gets no pre-PR recovery send until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(decideShipShepherd(input({ session: session({ awaiting }) })), { kind: "skip", why: "the session is awaiting a background process" });
+  assert.equal(decideShipShepherd(input({ session: session({ awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }) })).kind, "recover");
+});
+
 test("a held plan whose foreman_complete workflow waits on the claim gets its gaps at once", () => {
   // The reported stall: a plan's held verdict spends the cycle that alone would have started
   // its Plan Validation run, and nothing else ever sends the session another turn.

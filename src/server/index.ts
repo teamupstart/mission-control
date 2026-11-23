@@ -4,6 +4,7 @@
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
@@ -29,7 +30,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery, onPersonDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
@@ -227,6 +228,20 @@ try {
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
 const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// A declared wait holds idle automation, so it must not outlive the preview that draws it on the
+// card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
+const endAwaitingsWhenOff = (): void => {
+  if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) registry.clearAllAwaitings("flag");
+};
+endAwaitingsWhenOff();
+const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
+// Mission Control's own deliveries, stored on a waiting session's wait as they are claimed, so
+// the turn one starts is never taken for the session's wake, even across a restart.
+const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
+  registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+// And a person's own words, so an automated delivery of the same words cannot pass off the
+// person's turn as Mission Control's nudge.
+const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The shapers folder is read at start, and again at every shaping run: never watched.
@@ -1063,6 +1078,9 @@ async function shutdown(): Promise<void> {
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
   stopFeatureFlags();
+  stopAwaitingFlag();
+  stopAutomatedDeliveries();
+  stopPersonDeliveries();
   stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();

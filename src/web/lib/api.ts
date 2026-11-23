@@ -2022,6 +2022,9 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
+  /** End a session's declared wait. `awaitingId` refuses a wait the session re-declared since. */
+  clearAwaiting: (id: string, awaitingId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/awaiting/clear`, { awaitingId }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /** Pause one session: freeze it now, or once its current turn ends. */
   pauseSession: (id: string, mode: SessionPauseMode = "now") =>

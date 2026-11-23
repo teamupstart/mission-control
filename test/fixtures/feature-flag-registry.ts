@@ -4,6 +4,7 @@ import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
+export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 // Replaces only the registry module in reader tests.
 export const FEATURE_FLAGS = [{

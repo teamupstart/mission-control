@@ -319,6 +319,13 @@ export interface SessionViewProps {
    */
   residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
   /**
+   * The sessions under Idle's Awaiting rule, computed once by App on one clock
+   * (`awaitingSessionIds`) so the views draw the same order the arrow keys walk. A wait's
+   * membership changes at its deadline, and two views reading their own clocks could disagree
+   * for a tick. Absent means none.
+   */
+  awaitingIds?: ReadonlySet<string>;
+  /**
    * App-owned join from each session Restart on new profile replaced to its replacement
    * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no
    * `residentBySession` entry; the Console offers Complete and the new session from this.

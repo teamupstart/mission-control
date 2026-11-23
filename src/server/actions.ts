@@ -81,6 +81,12 @@ export interface ActionResult {
    * the post-paste Enter is refused with `paneBlocked` set and `pasted: true`.
    */
   paneBlocked?: boolean;
+  /**
+   * False when the write was refused before anything reached the pane (no handle, the pane
+   * lock held, a mode block, a write guard): positive evidence that nothing landed. Absent
+   * when a write was attempted, whatever came of it. `InjectResult` states it always.
+   */
+  pasted?: boolean;
 }
 
 /** Shared error when a session has no pane handle we can drive. */
@@ -356,12 +362,16 @@ async function writeText(
   assertBeforeWrite?: () => boolean,
   beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
-  if (!pane.write) return { ok: false, error: cannotType(pane) };
+  // Every refusal before the write says so (`pasted: false`); only the write itself can have
+  // landed text, whatever it reports.
+  if (!pane.write) return { ok: false, error: cannotType(pane), pasted: false };
   const blocked = await paneWriteBlock(pane);
-  if (blocked) return blocked;
-  if (assertBeforeWrite && !assertBeforeWrite()) return { ok: false, error: "the session changed before its effort could be updated" };
+  if (blocked) return { ...blocked, pasted: false };
+  if (assertBeforeWrite && !assertBeforeWrite()) {
+    return { ok: false, error: "the session changed before its effort could be updated", pasted: false };
+  }
   const refused = beforeWrite?.();
-  if (refused) return { ok: false, error: refused };
+  if (refused) return { ok: false, error: refused, pasted: false };
   return fromTerminal(await pane.write.text(text));
 }
 
@@ -398,7 +408,7 @@ export async function sendText(
 ): Promise<ActionResult> {
   return withPaneLock<ActionResult>(
     session,
-    () => ({ ok: false, error: PANE_BUSY }),
+    () => ({ ok: false, error: PANE_BUSY, pasted: false }),
     () => sendTextLocked(session, text, submit, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
     lockOwner,
   );
@@ -781,7 +791,7 @@ async function sendTextLocked(
   beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const pane = deps.pane(session);
-  if (!pane) return { ok: false, error: NO_HANDLE };
+  if (!pane) return { ok: false, error: NO_HANDLE, pasted: false };
   const typed = await writeText(pane, text, undefined, beforeWrite);
   if (!typed.ok || !submit) return typed;
   // Re-probed rather than covered by the check above, exactly as the two `send-keys` calls

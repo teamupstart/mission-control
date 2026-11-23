@@ -689,6 +689,43 @@ test("a blocked session is not handed the next round until its blocker clears", 
   await h.manager.stop();
 });
 
+test("a session awaiting its own background process is not handed the next round until its deadline passes", async () => {
+  const h = await personaFeedbackRun("awaiting-persona", "v-awaiting-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "awaiting-persona", h.agentSessionId, h.paneId);
+  // Further out than the sweep's settled clock, so the first sweep falls inside the deadline.
+  const expectedBy = Date.now() + 20 * 60_000;
+  const declared = h.registry.reportAwaiting("awaiting-persona", {
+    what: "CI checks on PR #7", wakeSource: "command", expectedBy, referenceUrl: null, details: null,
+  });
+  assert.equal(declared.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a session awaiting its CI was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+
+  // No wake came and the deadline passed: the hold lifts and the round is handed over.
+  await h.manager.sweepResumptions(expectedBy + 1);
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "the deadline passing did not release the round");
+  await h.manager.stop();
+});
+
+test("a wait declared while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-awaiting", "v-probe-awaiting", "auto");
+  reportIdle(h, "probe-awaiting", h.agentSessionId, h.paneId);
+  h.duringProbe.fn = () => {
+    h.registry.reportAwaiting("probe-awaiting", {
+      what: "CI checks on PR #7", wakeSource: "command", expectedBy: Date.now() + 20 * 60_000,
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for an awaiting session");
+  await h.manager.stop();
+});
+
 test("an outstanding request_input question holds the next round, snoozed or not, until it is answered (async-input)", async () => {
   const h = await personaFeedbackRun("asked-persona", "v-asked-persona", "auto");
   h.head.sha = "head-2";

@@ -767,6 +767,28 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("standing-instructions"),
   },
   {
+    id: "reports-guidance",
+    label: "Report guidance",
+    description: "The text that tells agents when to post a report. Sessions started after a change use it; Reset to default puts the shipped text back.",
+    category: "reports",
+    anchor: "reports/guidance",
+    keywords: ["report", "guidance", "when to report", "post_report", "reset", "default", "chatty"],
+    kind: "jump",
+    backup: backupDomains("reports"),
+  },
+  {
+    id: "reports-muted",
+    label: "Muted agents",
+    description: "Agents whose reports raise no notification and are not listed in the inbox. Unmute one to list its reports again.",
+    category: "reports",
+    anchor: "reports/muted",
+    keywords: ["mute", "unmute", "muted", "silence", "noisy", "agent", "report"],
+    kind: "jump",
+    // Muting is an action on a report card, recorded in its own table; a settings snapshot
+    // restored onto another installation would name agents that never ran there.
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
     id: "cost-track",
     label: "Track Claude estimated cost",
     description: "Write a telemetry env block so sessions report usage to the daemon.",

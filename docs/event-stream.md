@@ -204,5 +204,13 @@ history, older versions and read reports included, is read on demand from
 Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
 `report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
 read, so an open window fills its Reports section and **to read** figure with no reload.
+`report_mutes` carries `{ mutes }`, the whole list of muted report authors (`ReportMute` in
+`src/shared/reports.ts`), after every mute and unmute. It is sent whole because the list is small
+and applying it twice ends in the same state. The snapshot's `reportMutes` field holds the same
+list. A muted author's reports still arrive in `reports` and `report_upsert`: the dashboard's
+inbox fold leaves them out, so an unmute lists them again without a fetch. Both follow the
+`inbox` flag like `reports`; turning the flag on sends `report_mutes` before the reports it
+resends. `MissionState.reportMutes` is their only browser owner.
+
 `MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
 stage folds reports.

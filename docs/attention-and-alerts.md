@@ -191,6 +191,43 @@ A report also raises a notification, and **Agent reports are listed in the inbox
 reports out of the inbox list and the **to read** figure; see
 [What notifies you](#what-notifies-you).
 
+#### When reports get chatty
+
+Three controls, all behind the same flag:
+
+- **Report guidance.** Settings > **Reports** holds the text that tells agents when to post a
+  report, in a box with **Save** and **Reset to default**, up to 2,000 characters. It replaces
+  only the when-to-report sentence of `post_report`'s description; the rest (progress goes to
+  `report_status`, and anything urgent or anything you must decide is a question) is fixed and
+  shown beneath the box. A session reads the guidance once, when its Mission Control tools
+  start, so a change reaches sessions started afterwards and a session already running keeps the
+  guidance it started with. If the daemon does not answer that read in time, the session gets the
+  default guidance.
+- **Mute an agent.** An open report offers **Mute Steve's reports**. A muted agent can still post,
+  and nothing it posts is refused. From the moment of the mute its reports raise no notification,
+  are left out of the inbox's Reports section, the **to read** figure and the Away digest, and stay
+  in its conversation. A mute hides reports and never marks them read, so **Unmute** brings back
+  every report still waiting. Because a muted agent's rows leave the inbox, **Unmute** is in
+  Settings > **Reports**, which lists every muted agent by the name its reports carried. A mute is
+  keyed like the reports: a resident across all of its runs, any other agent by its session.
+- **Mark all read.** The **Reports** heading has **Mark all read**, which marks read exactly the
+  reports listed when you press it, however many there are, recorded as read with **Mark all
+  read** in each conversation. The dashboard sends them in batches of up to 1,000 ids, the most
+  one `POST /api/reports/read-all` accepts.
+  A report that arrives after the click is not cleared, and neither is a report shown only under
+  "Opened from a notification". There is no per-agent Mark all read.
+
+A mute does not withdraw a notification that already arrived: the operating system keeps it, and
+clicking it still opens its report. The inbox no longer lists that report, so it is drawn on its
+own under "Opened from a notification", readable and unread, without a Mute control and with a
+line saying the agent is muted and that Unmute is in Settings. The click leaves the Reports
+section and the **to read** figure as they were. A mute stops only later notifications.
+
+**Mute** has the spoken form "Steve, mute reports". **Mark all read** names no agent, so it is
+click-only. With the flag off the Reports panel is hidden, the guidance and mute routes refuse,
+sessions get the default guidance, and stored guidance and mutes are kept for when it is turned
+on again.
+
 ### Stuck rows
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, every session the daemon's
@@ -352,7 +389,7 @@ notifies you** group under **How you're reached**, with five switches, all on by
 | --- | --- |
 | **Blocking questions notify** | A question the agent waits on inside the call raises no notification. |
 | **Questions filed while working notify** | A question filed with [Ask without stopping](sessions.md#asking-without-stopping) raises no notification. |
-| **Agent reports notify** | A report raises no notification. |
+| **Agent reports notify** | A report raises no notification. To silence one agent rather than all of them, [mute it](#when-reports-get-chatty). |
 | **Agent reports are listed in the inbox** | Reports leave the inbox's Reports section and the **to read** figure. They stay in each conversation and are not marked read, and a report notification still arrives. |
 | **Stuck sessions notify** | A [stuck session](#stuck-sessions) raises no notification. |
 
@@ -603,7 +640,8 @@ written when you return, and reading it is what consumes it.
 While away, anything blocked on you still notifies immediately, unless you turned its switch off
 under [What notifies you](#what-notifies-you) - everything else accumulates. With the **Reports and inbox upgrades** flag on, agent reports wait too: they raise
 no notification while you are away, stay in the inbox, and the digest's rollup says how many are
-waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). It counts the reports
+waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). A
+[muted agent's](#when-reports-get-chatty) reports are never counted. It counts the reports
 waiting as you return: one posted just before you came back is included before its notification
 wording is settled, and one you read or that was replaced while you were away is not. A report
 the digest counted raises no notification afterwards, even when its wording settles after you are

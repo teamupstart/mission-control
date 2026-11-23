@@ -885,3 +885,84 @@ test("an open report shows its body, its link and Mark read", async () => {
   assert.match(html, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
   assert.doesNotMatch(html, /updated \d+ time/, "a first report replaced nothing");
 });
+
+// ---- report noise controls (Phase 7): mutes and Mark all read ----
+
+test("a muted author's reports leave the Reports section and to read, unread, and come back when unmuted", () => {
+  const loud = { key: "session:s-loud", name: "Loud", residentProfileId: null };
+  const reports = [mkReport({ id: "r-1", author: loud }), mkReport({ id: "r-2", author: loud }), mkReport({ id: "r-3" })];
+  const muted = foldAttention({ sessions: [], reviews: [], ensembles: [], reports, mutedAuthors: new Set([loud.key]) });
+  assert.deepEqual(muted.items.map((item) => item.id), ["agent-reports:session:s1"]);
+  assert.equal(muted.toRead, 1);
+  assert.equal(muted.total, 0);
+  assert.ok(reports.every((report) => report.readAt === null), "hidden, not read");
+  const unmuted = foldAttention({ sessions: [], reviews: [], ensembles: [], reports, mutedAuthors: new Set() });
+  assert.equal(unmuted.toRead, 3);
+  // The held fold applies the same mute.
+  assert.equal(foldWhileDismissalsUnknown(reports, [], new Set([loud.key])).toRead, 1);
+  assert.equal(foldWhileDismissalsUnknown(reports).toRead, 3);
+});
+
+async function drawInbox(
+  fold: ReturnType<typeof foldAttention>,
+  controls: ReturnType<typeof mkReportControls>["controls"],
+  pinned: import("../src/web/components/AttentionInbox.tsx").PinnedReport | null = null,
+): Promise<string> {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  return renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: controls,
+        pinned,
+      }))),
+  );
+}
+
+test("the Reports heading carries Mark all read, click-only, once however many authors are listed", async () => {
+  const reports = [
+    mkReport({ id: "r-1", author: { key: "session:a", name: "Ada", residentProfileId: null } }),
+    mkReport({ id: "r-2", author: { key: "session:b", name: "Bea", residentProfileId: null } }),
+  ];
+  const html = await drawInbox(foldAttention({ sessions: [], reviews: [], ensembles: [], reports }), mkReportControls().controls);
+  assert.equal((html.match(/data-inbox-action="mark-all-read"/g) ?? []).length, 1);
+  assert.match(html, /<div class="inbox-section-head"><h4 class="inbox-section">Reports<\/h4>(?:<span[^>]*>)?<button[^>]*data-inbox-action="mark-all-read"[^>]*>Mark all read<\/button>/);
+  assert.match(html, /Mark the 2 listed reports read/);
+  // No Reports section, no Mark all read.
+  const none = await drawInbox(foldAttention({ sessions: [], reviews: [], ensembles: [] }), mkReportControls().controls);
+  assert.doesNotMatch(none, /mark-all-read/);
+});
+
+test("a listed report offers Mute; a muted author's report opened from its notification says it is muted instead", async () => {
+  const loud = { key: "session:s-loud", name: "Loud", residentProfileId: null };
+  const report = mkReport({ id: "r-1", author: loud, title: "Too many words" });
+  // Listed and open: Mute, named for the author.
+  const listed = await drawInbox(
+    foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [report] }),
+    mkReportControls("r-1").controls,
+  );
+  assert.match(listed, /data-inbox-action="mute"[^>]*>Mute Loud&#x27;s reports<\/button>/);
+  assert.doesNotMatch(listed, /reports are muted/);
+  // Muted since the notification arrived: no Reports row for it, no to read figure, the card on its
+  // own in the band, readable, with no Mute and a line saying where Unmute is.
+  const muted = new Set([loud.key]);
+  const fold = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [report], mutedAuthors: muted });
+  const band = await drawInbox(fold, mkReportControls("r-1", undefined, muted).controls, { status: "ready", report });
+  const headings = [...band.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  assert.deepEqual(headings, ["Opened from a notification"]);
+  assert.doesNotMatch(band, /Reports from Loud/);
+  assert.doesNotMatch(band, /\d+ to read/, "no to read figure");
+  assert.match(band, /What I found\./, "its body is readable");
+  assert.doesNotMatch(band, /data-inbox-action="mute"/);
+  assert.match(band, /Loud&#x27;s reports are muted, so they raise no notification and are not listed in the\s+inbox\. Unmute in Settings &gt; Reports\./);
+  // Still unread, so Mark read is still there.
+  assert.match(band, /data-inbox-action="mark-read"/);
+});

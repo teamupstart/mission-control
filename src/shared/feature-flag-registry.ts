@@ -133,9 +133,10 @@ export const FEATURE_FLAGS = [
       "One rule names an agent in alert titles, the attention inbox, the review modal and question cards: " +
       "its resident name in its board colour, else its task title, else its session name. The alerts " +
       "popover gains What notifies you switches, and a report notifies you when its agent is back or " +
-      "still working.",
+      "still working. Settings > Reports edits when agents post reports and lists muted agents, and the " +
+      "Reports section has Mark all read.",
     stage: "preview",
-    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you"],
+    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
     id: MCP_SCHEDULES_FLAG_ID,

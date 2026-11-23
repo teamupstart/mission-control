@@ -2,7 +2,7 @@ import { useContext, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
-import { AgentName } from "./AgentName.tsx";
+import { AgentName, InboxActionButton } from "./AgentName.tsx";
 import { ensembleStageWord } from "@shared/ensemble.ts";
 import {
   PIPELINE_HALT_ACTIONS,
@@ -92,6 +92,15 @@ export interface InboxReportControls extends ReportEntryControls {
   onReply: (report: ReportItem, text: string) => Promise<string | null>;
   /** Start, or retry, its follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (report: ReportItem, text: string) => Promise<string | null>;
+  /** Author keys whose reports are muted. A listed row never has one; the pinned band may. */
+  mutedAuthors: ReadonlySet<string>;
+  /** Mute this report's author. Resolves to why the daemon refused, or null. */
+  onMute: (report: ReportItem) => Promise<string | null>;
+  /**
+   * Mark all read, for exactly these ids: the reports the Reports section lists at the click.
+   * Resolves to why the daemon refused, or null.
+   */
+  onMarkAllRead: (ids: readonly string[]) => Promise<string | null>;
   /** Publish its attached document as a scout archive. The outcome lands in `publishStateFor`. */
   onPublish: (report: ReportItem) => void;
   /** Its Publish as scout state: in flight, and why the last attempt published nothing. */
@@ -194,6 +203,28 @@ export function AttentionInbox({
       if (error) setReadRefused((current) => new Map(current).set(report.id, error));
     });
   };
+  // A refused Mute shares the card's error line with a refused Mark read: one line, the latest.
+  const mute = (report: ReportItem) => {
+    void reports.onMute(report).then((error) => {
+      if (error) setReadRefused((current) => new Map(current).set(report.id, error));
+    });
+  };
+  // Mark all read sends the ids the Reports section lists now, never the pinned band's report:
+  // a report that arrives after the click, or one opened only from a notification, stays.
+  const listedReportIds = fold.items.flatMap((item) => (item.kind === "agent_reports" ? item.reports.map((report) => report.id) : []));
+  // A refused Mark all read, kept with the reports the press was for, and drawn only while one of
+  // them is still listed. Cleared another way (Mark read, a reply, a mute), the line goes with
+  // them, and a report that arrives later never brings back a refusal nobody made for it. After a
+  // press refused partway, the reports of the refused batch are still listed, so the reason stays.
+  const [markAllRefused, setMarkAllRefused] = useState<{ error: string; ids: ReadonlySet<string> } | null>(null);
+  const markAllRead = () => {
+    setMarkAllRefused(null);
+    const ids = listedReportIds;
+    void reports.onMarkAllRead(ids).then((error) => setMarkAllRefused(error ? { error, ids: new Set(ids) } : null));
+  };
+  const markAllRefusal = markAllRefused && listedReportIds.some((id) => markAllRefused.ids.has(id))
+    ? markAllRefused.error
+    : null;
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
   const leave = (go: () => void) => () => {
@@ -279,6 +310,8 @@ export function AttentionInbox({
                 onMarkRead={() => markRead(pinned.report)}
                 onReply={(text) => reports.onReply(pinned.report, text)}
                 onFollowUp={(text) => reports.onFollowUp(pinned.report, text)}
+                muted={reports.mutedAuthors.has(pinned.report.author.key)}
+                onMute={() => mute(pinned.report)}
                 onOpenDocument={() => reports.onOpenDocument(pinned.report)}
                 onPublish={() => reports.onPublish(pinned.report)}
                 publishState={reports.publishStateFor(pinned.report)}
@@ -304,13 +337,28 @@ export function AttentionInbox({
           section = item.kind;
           return (
             <div key={item.id} className="inbox-entry">
-              {heading && <h4 className="inbox-section">{heading}</h4>}
+              {heading && item.kind === "agent_reports" ? (
+                <>
+                  <div className="inbox-section-head">
+                    <h4 className="inbox-section">{heading}</h4>
+                    <InboxActionButton
+                      action="mark-all-read"
+                      name={heading}
+                      className="btn btn-ghost inbox-section-action"
+                      tooltip={`Mark the ${listedReportIds.length} listed report${listedReportIds.length === 1 ? "" : "s"} read. A report that arrives after this click stays`}
+                      onClick={markAllRead}
+                    />
+                  </div>
+                  {markAllRefusal && <p className="inbox-line inbox-error" role="alert">{markAllRefusal}</p>}
+                </>
+              ) : heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem
                 item={item}
                 initialQuestionId={initialQuestionId}
                 questionTitleRef={questionTitle}
                 reports={reports}
                 onMarkRead={markRead}
+                onMute={mute}
                 readRefused={readRefused}
                 dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
@@ -431,6 +479,7 @@ function InboxItem({
   questionTitleRef,
   reports,
   onMarkRead,
+  onMute,
   readRefused,
   dismissButton,
   onOpenEnsemble,
@@ -446,6 +495,7 @@ function InboxItem({
   questionTitleRef: Ref<HTMLHeadingElement>;
   reports: InboxReportControls;
   onMarkRead: (report: ReportItem) => void;
+  onMute: (report: ReportItem) => void;
   readRefused: ReadonlyMap<string, string>;
   /** Drawn last in the row's header, whatever the kind but a report row's, which Mark read clears. */
   dismissButton: React.ReactNode;
@@ -702,6 +752,8 @@ function InboxItem({
               onMarkRead={() => onMarkRead(report)}
               onReply={(text) => reports.onReply(report, text)}
               onFollowUp={(text) => reports.onFollowUp(report, text)}
+              muted={reports.mutedAuthors.has(report.author.key)}
+              onMute={() => onMute(report)}
               onOpenDocument={() => reports.onOpenDocument(report)}
               onPublish={() => reports.onPublish(report)}
               publishState={reports.publishStateFor(report)}

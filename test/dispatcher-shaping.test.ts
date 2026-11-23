@@ -788,17 +788,20 @@ test("Pi's launch argument: the budget counts the WORK_UNIT_ID the launch export
   registerLargeShaper();
   const repo = seedRepo("pi-argmax-work-unit");
   const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
-  // The comparison below needs the work unit to come from the launch alone. A runner that is
-  // itself an agent Mission Control started carries WORK_UNIT_ID in its own environment, which
-  // every launch inherits, so both launches would hold the variable and differ by nothing.
-  const inherited = process.env[WORK_UNIT_ENV_VAR];
-  delete process.env[WORK_UNIT_ENV_VAR];
-  t.after(() => { if (inherited !== undefined) process.env[WORK_UNIT_ENV_VAR] = inherited; });
   // Fill the environment to leave the terminal reserve plus about 24 KiB, as above, measured from
   // a launch that carries the work unit, so a 64 KiB section has to be cut.
   setFlag(false);
   setWorkUnitPreview(true);
   t.after(() => setWorkUnitPreview(false));
+  // The daemon inherited a work unit of its own, as one started from an agent's shell does. The
+  // launch wrapper unsets it, so the budget must not charge either launch for it: set here on
+  // purpose, longer than a real id, so the test reads the same inside an agent session and on CI.
+  const inherited = process.env[WORK_UNIT_ENV_VAR];
+  process.env[WORK_UNIT_ENV_VAR] = `wu_INHERITED_BY_THE_DAEMON_${"x".repeat(40)}`;
+  t.after(() => {
+    if (inherited === undefined) delete process.env[WORK_UNIT_ENV_VAR];
+    else process.env[WORK_UNIT_ENV_VAR] = inherited;
+  });
   const probeRegistry = new Registry();
   seedTask(probeRegistry, "pi-wu-probe", repo, "pi", WU_A);
   const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-wu-probe", intent: "short request", registry: probeRegistry });

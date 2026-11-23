@@ -56,3 +56,22 @@ test("a report body is capped at its own 4,000 characters, not borrowed from the
   const source = readFileSync(new URL("../src/shared/reports.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /decision-asks|DECISION_CONTEXT_MAX_CHARS/);
 });
+
+test("markAllReportsRead sends each id once, in bounded batches, and stops at the first refused batch", async () => {
+  const { markAllReportsRead } = await import("../src/web/lib/report-state.ts");
+  const { REPORT_READ_ALL_BATCH } = await import("../src/shared/reports.ts");
+  const ids = Array.from({ length: REPORT_READ_ALL_BATCH * 2 + 1 }, (_, n) => `r-${n + 1}`);
+  const sent: string[][] = [];
+  assert.equal(await markAllReportsRead([...ids, "r-1"], async (batch) => { sent.push(batch); return { ok: true }; }), null);
+  assert.deepEqual(sent.map((batch) => batch.length), [REPORT_READ_ALL_BATCH, REPORT_READ_ALL_BATCH, 1]);
+  assert.deepEqual(sent.flat(), ids, "each listed id once, in order");
+  // A refused batch ends the press with its reason; later batches are not sent.
+  const tried: number[] = [];
+  const refused = await markAllReportsRead(ids, async (batch) => {
+    tried.push(batch.length);
+    return tried.length === 2 ? { ok: false, error: "nope" } : { ok: true };
+  });
+  assert.equal(refused, "nope");
+  assert.equal(tried.length, 2);
+  assert.equal(await markAllReportsRead([], async () => { throw new Error("nothing to send"); }), null);
+});

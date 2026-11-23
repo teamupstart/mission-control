@@ -2738,3 +2738,26 @@ test("missing accepted-tree proof allows adoption after the first settled sweep"
     assert.equal(h.injected.length, 1);
   } finally { await h.stop(); }
 });
+
+
+test("clean checkout returned to base completes when adoption arrives on a later sweep", async () => {
+  const h = await harness("returned-to-base-adoption", { pullRequest: true, unchangedRepository: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    // Publication can finish before its adoption hook arrives, with the checkout back on main.
+    h.repository.branch = "main";
+    h.head.sha = "base-head";
+    h.contentTree.oid = h.full("base-tree");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    await h.manager.sweepSessionActions(now + 59_999);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(now + 59_999);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption after checkout returned to base did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});

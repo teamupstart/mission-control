@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -178,7 +178,7 @@ async function queueSiblingFeedback(daemon: DaemonHandle, runId: string): Promis
   return peer.id;
 }
 
-for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead", "tree_retry_adoption"]) test(scenario === "tree_retry_adoption" ? "missing accepted-tree proof allows a late PR adoption before recovery" : scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
+for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead", "tree_retry_adoption", "returned_to_base"]) test(scenario === "returned_to_base" ? "a clean checkout returned to base waits for late PR adoption" : scenario === "tree_retry_adoption" ? "missing accepted-tree proof allows a late PR adoption before recovery" : scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
   ? "an earlier merged PR completes the action and names the publication in Runs"
   : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
   : "a durably adopted pull request completes before provider metadata arrives", async ({
@@ -189,8 +189,14 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   const alreadyMerged = scenario === "merged";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const detached = scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption";
+  const detached = scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base";
   const sessionId = await dispatch(dashboard, daemon, detached);
+  if (scenario === "returned_to_base") {
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+    writeFileSync(join(session.cwd, "published-plan.md"), "Plan content prepared for publication.\n");
+    execFileSync("git", ["-C", session.cwd, "add", "published-plan.md"]);
+    execFileSync("git", ["-C", session.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Plan to publish"]);
+  }
   if (scenario === "detached_ahead") {
     const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
     execFileSync("git", ["-C", session.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "Detached work to publish"]);
@@ -261,6 +267,11 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       }
     }
     const siblingId = await queueSiblingFeedback(daemon, runId);
+    if (scenario === "returned_to_base") {
+      const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+      execFileSync("git", ["-C", session.cwd, "switch", "--detach", "origin/main"]);
+      expect(execFileSync("git", ["-C", session.cwd, "status", "--porcelain"], { encoding: "utf8" }).trim()).toBe("");
+    }
     if (scenario === "missing_tree" || scenario === "tree_retry_adoption") withDaemonDb(daemon, db => {
       // Delivery proves capture has finished. Remove the historical proof only now, so an
       // in-flight capture cannot overwrite the seed with a freshly measured content tree.
@@ -271,10 +282,10 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       expect(stored?.tree).toBeNull();
     });
     await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-    if (scenario === "missing_base" || scenario === "retry_adoption" || scenario === "missing_tree" || scenario === "tree_retry_adoption") {
+    if (scenario === "missing_base" || scenario === "retry_adoption" || scenario === "missing_tree" || scenario === "tree_retry_adoption" || scenario === "returned_to_base") {
       await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_proof");
     }
-    if (scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption") {
+    if (scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base") {
       if (scenario === "detached_ahead") {
         await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_pull_request");
         await expect(dashboard.locator("article.wf-run-action")).toContainText("Awaiting PR");
@@ -286,7 +297,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
         `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
       await expect(dashboard.locator("article.wf-run-action")).toContainText("PR opened with warning");
-      await shoot(dashboard, scenario === "tree_retry_adoption" ? "23-missing-tree-adopted" : scenario === "detached_ahead" ? "21-detached-ahead-adopted" : "19-proof-retry-adopted");
+      await shoot(dashboard, scenario === "returned_to_base" ? "24-returned-to-base-adopted" : scenario === "tree_retry_adoption" ? "23-missing-tree-adopted" : scenario === "detached_ahead" ? "21-detached-ahead-adopted" : "19-proof-retry-adopted");
       return;
     }
     try {

@@ -884,9 +884,11 @@ A SessionAction is a durable side effect, not an evaluator:
   continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
   This completion releases the existing conversation hold without creating a PR, including for
   actions already waiting when the daemon restarts.
-  Missing accepted-tree proof and unavailable local reads (including timeouts, moving HEAD,
-  and an unresolved base) retry for one minute after a settled turn with no adopted PR before
-  a recoverable `expectation_unmet` block with a precise diagnostic.
+  Missing accepted-tree proof, unavailable local reads (including timeouts, moving HEAD, and
+  an unresolved base), and clean-checkout mismatches with accepted or captured content all
+  retry for one minute after a settled turn with no adopted PR before a recoverable
+  `expectation_unmet` block with a precise diagnostic. A checkout returned to the default branch
+  after publication gets the same adoption grace period.
   The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
   sweeps and restart; a recovered read or a new active turn resets it. Adoption can still
   complete the action during that window. Both completion and blocking re-offer

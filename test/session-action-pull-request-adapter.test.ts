@@ -715,7 +715,7 @@ test("a settled untouched detached repository completes without borrowing a sibl
 
 test("no-change proof cannot discard accepted work or replace a same-repository adoption", () => {
   const unchangedRepository = { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" };
-  assert.equal(decide([], { unchangedRepository, acceptedContentTreeOid: OTHER_HEAD }).kind, "blocked");
+  assert.equal(decide([], { unchangedRepository, acceptedContentTreeOid: OTHER_HEAD, now: 60_003 }).kind, "blocked");
   const adopted = decide([pr()], { unchangedRepository });
   assert.equal(adopted.kind === "complete" && adopted.continuationExpectation.kind, "pull_request");
 });
@@ -810,4 +810,22 @@ test("no-change capture reports an unreadable HEAD as capture failure", () => {
   assert.equal(result.code, "capture_failed");
   assert.match(result.detail, /HEAD could not be read/);
   assert.doesNotMatch(result.detail, /repository changed/);
+});
+
+
+for (const mismatch of ["accepted tree", "captured HEAD"]) test(`clean checkout with mismatched ${mismatch} allows late adoption before expiry`, () => {
+  const context = {
+    unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" },
+    ...(mismatch === "accepted tree" ? { acceptedContentTreeOid: OTHER_HEAD } : { capturedHeadOid: OTHER_HEAD }),
+    settledAt: 5_000,
+  };
+  for (const now of [5_000, 64_999]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
+    assert.equal(decide([pr()], { ...context, now }).kind, "complete");
+  }
+  const expired = decide([], { ...context, now: 65_000 });
+  assert.equal(expired.kind, "blocked");
+  if (expired.kind !== "blocked") return;
+  assert.equal(expired.code, "expectation_unmet");
+  assert.match(expired.detail, /does not match the accepted or captured content/);
 });

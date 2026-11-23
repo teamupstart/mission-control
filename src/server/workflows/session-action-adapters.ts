@@ -395,20 +395,20 @@ function completePullRequest(
   };
 }
 
-/** A settled turn must not hold sibling feedback indefinitely on unreadable local proof. */
+/** A settled turn must not hold sibling feedback indefinitely on unverifiable no-change proof. */
 function unprovenPullRequest(context: SessionActionAdapterContext): SessionActionCompletionDecision {
   const missingAcceptedTree = !context.acceptedContentTreeOid
     ? "The accepted content tree is missing from the reviewed submission." : null;
   const readProblem = context.unchangedRepositoryProblem
     ?? (!context.repository ? "The bound repository could not be read." : null)
     ?? (!context.repository?.headOid ? "The checkout HEAD could not be verified." : null);
-  // Missing review proof also gets time for adoption to arrive after the agent settles.
-  // The manager preserves the first unavailable-proof sweep across sweeps/restart.
-  if ((missingAcceptedTree || readProblem) && context.now - context.settledAt < 60_000) {
-    return { kind: "waiting", reason: "awaiting_proof" };
-  }
   const problem = missingAcceptedTree ?? readProblem
     ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null);
+  // Every failed no-change proof gets time for adoption to arrive after the agent settles,
+  // including a checkout returned to main. The manager preserves the first such sweep.
+  if (problem && context.now - context.settledAt < 60_000) {
+    return { kind: "waiting", reason: "awaiting_proof" };
+  }
   return problem
     ? { kind: "blocked", code: "expectation_unmet",
       detail: `${problem} No pull request was adopted. Restore the missing proof or publish the work, then resubmit with fresh evidence.` }

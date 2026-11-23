@@ -29,7 +29,8 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
       return { text, startMs, endMs: startMs + 100 };
     });
     expect(await (await say(daemon, phrase, { words })).json()).toEqual({ accepted: true });
-    await expect(row(phrase)).toContainText("Routed to Will");
+    await expect(row(phrase).getByRole("cell", { name: "Will, exactly" })).toBeVisible();
+    await expect(row(phrase).getByRole("cell", { name: "Queued", exact: true })).toBeVisible();
     await expect(row(phrase)).toContainText("exact first word");
     await expect(row(phrase).locator("mark")).toHaveText("Will");
   }

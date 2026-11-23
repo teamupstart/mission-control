@@ -2897,7 +2897,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   ) => {
     const code = `workflow_command_${result.reason}`;
     if (result.reason === "invalid_recipe") return c.json({ error: c.req.param("slot") === "coderabbit"
-      ? "CodeRabbit requires typed repository-root tuning and no arbitrary argv"
+      ? "CodeRabbit requires repository-root tuning and a supported coderabbit review command"
       : `${c.req.param("slot")} requires nonempty argv overrides without review tuning`, code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);

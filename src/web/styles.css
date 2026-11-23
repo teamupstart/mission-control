@@ -21029,6 +21029,7 @@ button.lib-chip:focus-visible {
   gap: 12px;
 }
 .wf-command-review-tuning > label,
+.wf-command-review-rule > label,
 .wf-command-review-fields > label {
   display: grid;
   gap: 6px;

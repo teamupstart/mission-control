@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { stateDir } from "../../shared/harness-runtime.mjs";
 import {
   VOICE_KEY_ENV,
@@ -18,32 +19,36 @@ import {
 // used and never written here.
 
 type SavedKeys = Partial<Record<VoiceKeyProvider, string>>;
+const SavedKeysSchema = z.partialRecord(z.enum(VOICE_KEY_PROVIDERS), z.string().min(1));
 
 /** Where the saved keys live. Resolved per call, so a test's state home is honoured. */
 export function decisionKeyPath(): string {
   return join(stateDir(), "voice", "decision-key.json");
 }
 
-/** The saved keys. A missing or unreadable file reads as none saved. */
-export function savedDecisionKeys(path = decisionKeyPath()): SavedKeys {
+/** Mutations can start a new store only when there is no existing file. */
+function readKeys(path: string): SavedKeys {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
-  } catch {
-    return {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
   }
   try {
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return {};
-    const keys: SavedKeys = {};
-    for (const provider of VOICE_KEY_PROVIDERS) {
-      const value = (parsed as Record<string, unknown>)[provider];
-      if (typeof value === "string" && value.length > 0) keys[provider] = value;
-    }
-    return keys;
+    return SavedKeysSchema.parse(JSON.parse(text));
   } catch {
-    // Deliberately says nothing about the content: it may be a key.
-    console.warn("[voice] the saved decision-model key file does not parse; treating it as empty");
+    // Parser diagnostics can include the contents of the credential file.
+    throw new Error("Invalid saved decision-model key file");
+  }
+}
+
+/** Routing and source reports can fall through when saved keys are unavailable. */
+export function savedDecisionKeys(path = decisionKeyPath()): SavedKeys {
+  try {
+    return readKeys(path);
+  } catch {
+    console.warn("[voice] the saved decision-model keys could not be read");
     return {};
   }
 }
@@ -70,12 +75,12 @@ function writeKeys(keys: SavedKeys, path: string): void {
 
 /** Save one provider's key. The other provider's saved key stays as it was. */
 export function saveDecisionKey(provider: VoiceKeyProvider, key: string, path = decisionKeyPath()): void {
-  writeKeys({ ...savedDecisionKeys(path), [provider]: key }, path);
+  writeKeys({ ...readKeys(path), [provider]: key }, path);
 }
 
 /** Remove one provider's saved key. The other provider's stays; with none left the file goes. */
 export function removeDecisionKey(provider: VoiceKeyProvider, path = decisionKeyPath()): void {
-  const keys = savedDecisionKeys(path);
+  const keys = readKeys(path);
   if (!(provider in keys)) return;
   delete keys[provider];
   writeKeys(keys, path);

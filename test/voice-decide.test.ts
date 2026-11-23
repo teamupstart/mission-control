@@ -1,4 +1,4 @@
-import { voiceQuestionInstructions } from "../src/server/voice/decide-prompt.ts";
+import { parseVoiceRoutingReply, voiceQuestionInstructions } from "../src/server/voice/decide-prompt.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -29,7 +29,7 @@ const SPLIT: VoiceQuestion = { kind: "split", text: "Steve, check the build, and
 const OPENAI_ENV = "sk-env-openai-0000";
 const JEV_ENV = "ts-env-jev-0000";
 
-interface Call { url: string; auth: string | null; body: Record<string, unknown> }
+interface Call { url: string; auth: string | null; body: Record<string, unknown>; redirect?: RequestRedirect }
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -57,6 +57,7 @@ function rig(options: {
     fetch: (async (url: string, init: RequestInit) => {
       const call: Call = {
         url,
+        redirect: init.redirect,
         auth: new Headers(init.headers).get("authorization"),
         body: JSON.parse(String(init.body)) as Record<string, unknown>,
       };
@@ -252,6 +253,52 @@ test("an option answer maps back to the option's id", async () => {
     answers: { q1: { type: "choice", choice: "SQLite", confidence: 0.99, probabilities: {} } } }) });
   assert.deepEqual((await ask(["claude"], [option])).answers, [{ choice: "lite", confidence: 0.99 }]);
 });
+
+test("an internal ID is accepted only when its value was offered to the model", async () => {
+  const who: VoiceQuestion = { kind: "who", text: "Stevie, run it", candidates: [steve, alice] };
+  const option: VoiceQuestion = { kind: "option", text: "the embedded one", prompt: "Which database?",
+    options: [{ id: "lite", label: "SQLite", detail: "embedded" }] };
+  for (const [question, id, label] of [[who, steve.id, steve.label], [option, "lite", "SQLite"]] as const) {
+    for (const choice of [id, label]) {
+      const answer = { type: "choice", choice, confidence: 1 };
+      const expected = [{ choice: choice === label ? id : null, confidence: 1 }];
+      for (const provider of ["openai", "jev"] as const) {
+        const { ask } = rig({ saved: { [provider]: "fixture-key" },
+          reply: () => json({ answers: provider === "openai" ? [answer] : { q1: answer } }) });
+        assert.deepEqual((await ask(["codex"], [question])).answers, expected, provider);
+      }
+      assert.deepEqual(parseVoiceRoutingReply({ answers: { q1: answer } }, [question]), expected, "job");
+    }
+  }
+});
+
+for (const provider of ["openai", "jev"] as const) {
+  test(`${provider} malformed answers fall through to Luna and explicit uncertainty stops`, async () => {
+    for (const answer of [{ type: "choice", choice: "split" }, { type: "choice", choice: "split", confidence: "high" },
+      { type: "choice", choice: true, confidence: 1 }, { type: "choice", choice: "split", confidence: 2 },
+      { type: "choice", choice: "not sure", confidence: 1 }]) {
+      const { ask, jobs } = rig({ saved: { [provider]: "fixture-key" },
+        reply: () => json({ answers: provider === "openai" ? [answer] : { q1: answer } }) });
+      const result = await ask(["codex"]);
+      if (answer.choice === "not sure") {
+        assert.equal(result.rung, provider);
+        assert.equal(result.answers[0]?.choice, null);
+        assert.equal(jobs.length, 0);
+      } else {
+        assert.equal(result.rung, "job");
+        assert.equal(result.answers[0]?.choice, "mention");
+        assert.deepEqual(jobs.map(j => j.runner), ["codex"]);
+      }
+    }
+  });
+
+  test(`${provider} requests reject redirects at the fetch boundary`, async () => {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" }, reply: () => { throw new TypeError("redirect refused"); } });
+    const result = await ask(["codex"]);
+    assert.deepEqual(calls.map(c => c.redirect), ["error"]);
+    assert.equal(result.rung, "job");
+  });
+}
 
 test("the job runs on the candidates' provider, or the background-job provider for a mixed roster; a disabled rung is not run", async () => {
   assert.equal(voiceRoutingRunner(["claude", "claude"], "codex"), "claude");
@@ -513,3 +560,45 @@ test("a quick step publishes no resolving card", async () => {
   assert.deepEqual(cards.map((c) => c.state), ["pending"]);
   router.reset();
 });
+
+for (const choice of ["split", null]) {
+  test(`model completion preserves cancel order when it becomes ${choice ? "pending" : "unsure"}`, async (t) => {
+    let finish!: (result: VoiceDecisionResult) => void;
+    const { router, cards, delivered } = routerRig(() => new Promise(resolve => { finish = resolve; }));
+    t.after(() => router.reset());
+    const accept = (id: string, text: string) => router.accept(VoiceUtteranceSchema.parse({
+      id, text, capturedAt: 100, backend: "fluidaudio",
+    }));
+    await accept("older", SPLIT.text);
+    const original = router.pendingVoiceActions[0];
+    await accept("newer", "Will, check the queue");
+    finish(answered(choice));
+    await router.resolution("older");
+    assert.equal(cards.at(-1)?.state, choice ? "pending" : "unsure");
+    await accept("cancel", "cancel");
+    assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["newer", "cancelled"]);
+    assert.equal(router.pendingVoiceActions[0], original);
+    assert.equal(await router.sendNow("newer"), false);
+    assert.deepEqual(delivered, []);
+  });
+}
+
+for (const replaced of ["Steve", "Alice"]) {
+  test(`a manual split pick stays unsure if ${replaced}'s captured session was replaced`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const { router, delivered, say } = routerRig(() => answered(null), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "pick");
+    const target = roster.find(agent => agent.name === replaced)!;
+    const original = target.sessionId;
+    target.sessionId = "replacement";
+    assert.equal(await router.pick("pick", "task:Alice"), false);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(await router.sendNow("pick"), false);
+    assert.deepEqual(delivered, []);
+    target.sessionId = original;
+    assert.equal(await router.pick("pick", "task:Alice"), true);
+    assert.equal(await router.sendNow("pick"), true);
+    assert.deepEqual(delivered, [["Steve", "check the build", "pick"], ["Alice", "review the PR", "pick#2"]]);
+  });
+}

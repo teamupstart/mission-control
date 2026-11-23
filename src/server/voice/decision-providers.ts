@@ -78,11 +78,6 @@ function choicesFor(question: VoiceQuestion): { value: string; description: stri
   ];
 }
 
-function mapChoice(question: VoiceQuestion, value: unknown): string | null {
-  if (typeof value !== "string" || value === VOICE_NOT_SURE) return null;
-  return voiceChoiceId(question, value);
-}
-
 async function post(
   provider: VoiceKeyProvider,
   path: string,
@@ -94,6 +89,7 @@ async function post(
   try {
     response = await doFetch(`${decisionProviderBaseUrl(provider)}${path}`, {
       method: "POST",
+      redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${call.key}` },
       body: JSON.stringify(body),
       signal: call.signal,
@@ -115,19 +111,21 @@ async function post(
 
 const ChoiceAnswerSchema = z.object({
   type: z.literal("choice"),
-  choice: z.union([z.string(), z.boolean()]),
-  confidence: z.number(),
+  choice: z.string(),
+  confidence: z.number().min(0).max(1),
 }).loose();
 const RefusalAnswerSchema = z.object({ type: z.literal("refusal") }).loose();
 const OpenAiAnswerSchema = z.union([ChoiceAnswerSchema, RefusalAnswerSchema]);
-const OpenAiReplySchema = z.object({ answers: z.array(z.unknown()) }).loose();
-const JevReplySchema = z.object({ answers: z.record(z.string(), z.unknown()) }).loose();
+const OpenAiReplySchema = z.object({ answers: z.array(OpenAiAnswerSchema) }).loose();
+const JevReplySchema = z.object({ answers: z.record(z.string(), ChoiceAnswerSchema) }).loose();
 
-function readChoice(question: VoiceQuestion, raw: unknown): { choice: string | null; confidence: number } {
-  const parsed = OpenAiAnswerSchema.safeParse(raw);
-  if (!parsed.success || parsed.data.type !== "choice") return { choice: null, confidence: 0 };
-  const answer = parsed.data as z.infer<typeof ChoiceAnswerSchema>;
-  return { choice: mapChoice(question, answer.choice), confidence: answer.confidence };
+function readChoice(provider: VoiceKeyProvider, question: VoiceQuestion, answer: z.infer<typeof OpenAiAnswerSchema>) {
+  if (answer.type === "refusal") return { choice: null, confidence: 0 };
+  const choice = voiceChoiceId(question, answer.choice);
+  if (choice === null && answer.choice !== VOICE_NOT_SURE) {
+    throw new DecisionProviderError(provider, "the reply contains an unlisted choice");
+  }
+  return { choice, confidence: answer.confidence };
 }
 
 export const openAiDecisions: DecisionProviderAdapter = {
@@ -147,7 +145,7 @@ export const openAiDecisions: DecisionProviderAdapter = {
     if (!parsed.success || parsed.data.answers.length !== questions.length) {
       throw new DecisionProviderError("openai", "the reply does not answer every question");
     }
-    return questions.map((question, index) => readChoice(question, parsed.data.answers[index]));
+    return questions.map((question, index) => readChoice("openai", question, parsed.data.answers[index]!));
   },
 };
 
@@ -168,7 +166,7 @@ export const jevDecisions: DecisionProviderAdapter = {
     if (!answers || questions.some((_, index) => !(voiceQuestionName(index) in answers))) {
       throw new DecisionProviderError("jev", "the reply does not answer every question");
     }
-    return questions.map((question, index) => readChoice(question, answers[voiceQuestionName(index)]));
+    return questions.map((question, index) => readChoice("jev", question, answers[voiceQuestionName(index)]!));
   },
 };
 

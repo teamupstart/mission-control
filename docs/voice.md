@@ -95,9 +95,9 @@ that was not on the card a confidence of 1.0.
 1. **A decision model**, when one is in use (see [Faster routing](#faster-routing)): one HTTPS
    request to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
    (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying every question the sentence
-   needs as a typed choice. It may take up to two seconds. Neither API can abstain, so an answer
-   below 0.98 confidence counts as “not sure”. An error or timeout falls to the next rung; an
-   answer it was not sure of does not.
+   needs as a typed choice. It may take up to two seconds. A valid “not sure”, a refusal, or
+   confidence below 0.98 leaves routing unsure. An error, timeout, malformed reply, or choice
+   outside the offered values falls to the next rung with the time remaining.
 2. **The `voice-routing` job**, with thinking off and its own short system prompt, on the time
    left. It runs on Codex (Luna, `gpt-6-luna`, floor 0.98) when every agent involved is a Codex
    session, on Claude (Haiku) when every one is a Claude session, and otherwise on the provider
@@ -110,8 +110,9 @@ that was not on the card a confidence of 1.0.
 
 The daemon opens the card at once and puts it in the cancel order, so “cancel” stops it while the
 step runs. It is published as `resolving` only once the step has taken a second. When the step
-answers, the card becomes `pending` (one target, or two parts for a split, with the ordinary
-cancel window) or `unsure`. An answer that comes after the budget, or after the card was
+answers, the card keeps its place in the cancel order and becomes `pending` (one target, or
+two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
+both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
 cancelled, is dropped: nothing is ever sent late. A split delivers each part in order and the
 card carries the worse of the two outcomes. Recently heard's `detail` says which rung answered
 and what it decided, for example `job on codex answered: split`.

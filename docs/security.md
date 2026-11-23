@@ -55,7 +55,8 @@ task title), and nothing else: no transcript, no file, no audio. Audio never lea
   step, which is how an organization enables it with one variable. Settings names the provider in
   use and says what is sent to it, so a key picked up from the environment is not hidden. Choose
   **Off** there to stop it; nothing is sent to either provider while it is Off, whatever keys
-  exist. A provider chosen by name is only ever sent its own key.
+  exist. A provider chosen by name is only ever sent its own key. The daemon rejects HTTP
+  redirects from the provider or its configured gateway.
 - **The `voice-routing` job** runs on the provider the agents use, through the CLI already logged
   in on this machine, the same way every background job does, with tools disabled.
 
@@ -65,7 +66,8 @@ The daemon stores keys saved in Voice settings in `<state home>/voice/decision-k
 The file has mode `0600` and its directory has mode `0700`. The keys stay outside SQLite
 and are excluded from both database and settings backups. The daemon never logs a key or
 returns it in a response, including when it rejects a key. It discards provider error bodies.
-Removing a saved key deletes that provider's entry from the file.
+Removing a saved key deletes that provider's entry from the file. If the existing file cannot
+be read or parsed, saving and removing keys both fail and preserve its contents.
 
 ## Public product issue reporting
 

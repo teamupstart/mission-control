@@ -42,9 +42,9 @@ export function voiceChoiceValues(question: VoiceQuestion): { value: string; id:
   });
 }
 
-/** The id a model's answer stands for, or the answer itself when it is none of the choices. */
-export function voiceChoiceId(question: VoiceQuestion, value: string): string {
-  return voiceChoiceValues(question).find((entry) => entry.value === value)?.id ?? value;
+/** Translate only the exact public choice value offered for this question. */
+export function voiceChoiceId(question: VoiceQuestion, value: string): string | null {
+  return voiceChoiceValues(question).find((entry) => entry.value === value)?.id ?? null;
 }
 
 function oneLine(text: string, max: number): string {
@@ -167,8 +167,7 @@ export function voiceRoutingSchema(questions: readonly VoiceQuestion[]): Record<
 
 /**
  * Read a job reply into one raw answer per question, each choice mapped back to its id. Null
- * when the reply is not the schema's shape at all. A choice that is not one of the question's
- * stays as written, so membership refuses it rather than this guessing what was meant.
+ * when the reply is not the schema's shape at all. An unlisted choice has no matching id.
  */
 export function parseVoiceRoutingReply(
   raw: unknown,

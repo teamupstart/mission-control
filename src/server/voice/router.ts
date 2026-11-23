@@ -43,6 +43,7 @@ interface OpenCard {
   card: VoiceCard;
   entry: HeardEntry;
   message: string;
+  pickTargets?: readonly SpokenName[];
   splitPicks?: Map<string, VoiceSplitPoint>;
   command?: VoiceAddressedCommand;
   timer?: ReturnType<typeof setTimeout>;
@@ -57,6 +58,10 @@ const NO_DECIDER: VoiceDecider = {
 
 function choiceOf(name: SpokenName): VoiceChoice {
   return { id: name.key, label: name.name, detail: name.role };
+}
+
+function selectedSession(roster: readonly SpokenName[], selected: SpokenName) {
+  return roster.find(name => name.key === selected.key && name.sessionId === selected.sessionId);
 }
 
 /** The first target's roster id keeps the message whole. Repeated targets need a boundary id. */
@@ -236,7 +241,7 @@ export class VoiceRouter {
         result = { rung: "none", answers: [], detail: error instanceof Error ? error.message : String(error) };
       }
       if (this.open.get(id) !== item) return;
-      this.take(item);
+      clearTimeout(item.timer);
       const resolved = resolveVoiceDecision(decision, result);
       const verdict = resolved.state === "unsure" ? "not sure" : resolved.reason;
       entry.detail = `${result.detail}: ${verdict}`;
@@ -250,7 +255,7 @@ export class VoiceRouter {
             card.candidates.push({ kind: "agent", id, title: target.name, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
           }
         }
-        await this.openCard({ ...item, timer: undefined, card }, utterance.capturedAt);
+        await this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, utterance.capturedAt);
         return;
       }
       if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
@@ -269,8 +274,11 @@ export class VoiceRouter {
         this.cancel(unsure[0]!.id, "Replaced by a newer unsure card.");
       }
     }
+    // A resolving card already has its place in capture order, including ties.
+    if (!this.open.has(card.id)) {
+      this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt, cancel: () => this.cancel(card.id) });
+    }
     this.open.set(card.id, item);
-    this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt, cancel: () => this.cancel(card.id) });
     entry.outcome = card.state;
     if (card.state === "pending") {
       const window = this.window();
@@ -306,14 +314,15 @@ export class VoiceRouter {
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     const roster = this.state().roster;
     const split = item.splitPicks?.get(candidateId);
-    const target = roster.find((c) => c.key === (split?.target.key ?? candidateId));
+    const target = split?.target ?? item.pickTargets?.find(c => c.key === candidateId);
     if (!target) return false;
-    let parts = [{ target: { ...target }, text: item.message }];
+    let parts = [{ target, text: item.message }];
     if (split) {
-      const first = roster.find((c) => c.key === item.card.parts[0]?.target?.key);
+      const first = item.card.parts[0]?.target;
       if (!first) return false;
-      parts = [{ target: { ...first }, text: split.head }, { target: { ...target }, text: split.tail }];
+      parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
+    if (parts.some(part => !selectedSession(roster, part.target))) return false;
     this.take(item);
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
@@ -335,7 +344,7 @@ export class VoiceRouter {
       const state = this.state();
       if (this.delivering.get(id) !== item || state.mode === "off") return true;
       const selected = part.target;
-      const target = selected && state.roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
+      const target = selected && selectedSession(state.roster, selected);
       let result: DeliveryResult = "not-running";
       try {
         if (target) result = await this.deliverer.deliver(target, part.text, index === 0 ? id : `${id}#${index + 1}`, item.command);

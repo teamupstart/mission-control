@@ -183,6 +183,47 @@ test("an unreadable key file reads as none saved and says nothing about its cont
   assert.ok(!logged.some((line) => line.includes(OPENAI_KEY)));
 });
 
+for (const operation of ["save", "remove"] as const) {
+  test(`a key-file read error prevents ${operation} from replacing existing credentials`, async (t) => {
+    const path = decisionKeyPath();
+    assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "openai", key: OPENAI_KEY })).status, 200);
+    const contents = readFileSync(path);
+    const read = fs.readFileSync;
+    const fault = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+      if (args[0] === path) throw Object.assign(new Error("read denied"), { code: "EACCES" });
+      return read(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const response = operation === "save" ? await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY })
+        : await report("/api/voice/decision-key?provider=openai", "DELETE");
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error, "save_failed");
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(readFileSync(path), contents);
+    assert.equal((await report()).body.keys.openai.source, "settings");
+  });
+}
+
+test("malformed key-file contents survive both mutations without disclosure", async () => {
+  const path = decisionKeyPath();
+  assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "openai", key: OPENAI_KEY })).status, 200);
+  for (const contents of [OPENAI_KEY, "null", "[]", JSON.stringify({ openai: OPENAI_KEY, jev: false })]) {
+    writeFileSync(path, contents);
+    for (const response of [await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY }),
+      await report("/api/voice/decision-key?provider=openai", "DELETE")]) {
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error, "save_failed");
+      assert.ok(!response.text.includes(OPENAI_KEY));
+    }
+    assert.equal(readFileSync(path, "utf8"), contents);
+  }
+  assert.ok(logged.every(line => !line.includes(OPENAI_KEY) && !line.includes(JEV_KEY)));
+});
+
 test("every key route answers 404 with the voice flag off", async () => {
   flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
   assert.equal((await request("/api/voice/decision-key")).status, 404);

@@ -78,8 +78,14 @@ export function descriptor(manifest: Manifest, digest: string, objectView: strin
     if (layer.some(e => e.kind === "submodule" && e.blob !== null && e.blob.length !== view.worktreeTree.length))
       unavailable();
   }
+  const indexed = new Set(view.index.map(entry => entry.path));
   const worktree = view.worktree.filter(e => e.blob !== null || !e.classifications.includes("deleted") ||
-    checkoutDeletion(e.classifications));
+    checkoutDeletion(e.classifications)).map(e => {
+    // Older writers omitted the staged deletion when a working file occupied the path again.
+    if (e.blob && e.classifications.includes("staged") && !indexed.has(e.path) && !e.classifications.includes("deleted"))
+      return { ...e, classifications: [...e.classifications, "deleted" as const] };
+    return e;
+  });
   const listed = new Set(worktree.map(entry => entry.path));
   const statusDeletions = [];
   for (const entry of manifest.paths) {

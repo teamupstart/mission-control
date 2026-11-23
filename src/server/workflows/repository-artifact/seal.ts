@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile, lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  MAX_REPOSITORY_VIEW_ENTRIES,
   REPOSITORY_HISTORY_POLICY_V1 as policy,
   type RepositoryViewDescriptor,
 } from "@shared/repository-access.ts";
@@ -78,7 +79,22 @@ export async function sampleCheckoutBoundary(checkout: string, signal: AbortSign
   return checkoutBoundary(state, work);
 }
 
-export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal) {
+const treeExpansionLimit = { entries: MAX_REPOSITORY_VIEW_ENTRIES, pathBytes: 64 * 1024 * 1024 };
+
+function chargePath(budget: typeof treeExpansionLimit, pathBytes: number) {
+  if (budget.entries >= 1 && budget.pathBytes >= pathBytes) {
+    budget.entries--;
+    budget.pathBytes -= pathBytes;
+    return true;
+  }
+  return false;
+}
+
+export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal, limits = treeExpansionLimit) {
+  const expansionBudget = () => ({
+    entries: Math.min(limits.entries, treeExpansionLimit.entries),
+    pathBytes: Math.min(limits.pathBytes, treeExpansionLimit.pathBytes),
+  });
   const git = await locateExecutable("git");
   if (!git) return unavailable();
   const state = await sample(git.path, input.checkout, signal);
@@ -126,6 +142,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   const denied = new Set<string>();
   const needed = new Set<string>();
   const sizes = new Map<string, number>();
+  const capturedPaths = new Set<string>();
+  const historyExpansion = expansionBudget();
 
   const hash = (data: Buffer) => createHash(format).update(data).digest("hex");
   async function save(type: ObjectRecord["type"], body: Buffer, expected?: string) {
@@ -161,7 +179,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return { data, record: { id, tree, parents } };
   }
 
-  async function scanTree(id: string, prefix: Buffer, layer: Layer) {
+  async function scanTree(id: string, prefix: Buffer, layer: Layer, budget: typeof treeExpansionLimit, incremental: boolean) {
     const { data } = await reader.get(id, "tree");
     if (createHash(format).update(`tree ${data.length}\0`).update(data).digest("hex") !== id) unavailable();
     const directories: { id: string; prefix: Buffer }[] = [];
@@ -171,6 +189,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (space < pos || nul <= space + 1 || end > data.length) unavailable();
       const name = data.subarray(space + 1, nul);
       if (name.includes(47)) unavailable();
+      const pathBytes = prefix.length + name.length;
+      if (!chargePath(budget, pathBytes)) return null;
       const path = Buffer.concat([prefix, name]);
       const key = validPath(path);
       const child = data.toString("hex", nul + 1, end);
@@ -178,6 +198,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (mode === "40000") directories.push({ id: child, prefix: Buffer.concat([path, Buffer.from("/")]) });
       else {
         if (!/^(100644|100755|120000|160000)$/.test(mode) || layer.has(key)) unavailable();
+        if (incremental && !capturedPaths.has(key) && !chargePath(historyExpansion, pathBytes)) return null;
         layer.set(key, { mode, id: child });
       }
       pos = end;
@@ -198,18 +219,22 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
 
   const includedTrees = new Set<string>();
   async function flatten(tree: string, incremental = false) {
+    const budget = expansionBudget();
     const layer: Layer = new Map();
     const treeIds = new Set<string>();
     async function visit(id: string, prefix: Buffer): Promise<boolean> {
       signal.throwIfAborted();
       const location = id + ":" + prefix.toString("hex");
       if (incremental && includedTrees.has(location)) return true;
+      if (incremental && prefix.length && !chargePath(historyExpansion, prefix.length - 1)) return false;
       if (incremental && !treeIds.has(id) && !await fitsHistoryMetadata(id, "tree")) return false;
       // Traversal stops altogether at the first overflow, so rejected subtrees cannot
       // influence the selection of any later revision.
       includedTrees.add(location);
       treeIds.add(id);
-      for (const directory of await scanTree(id, prefix, layer)) {
+      const directories = await scanTree(id, prefix, layer, budget, incremental);
+      if (!directories) return false;
+      for (const directory of directories) {
         if (!await visit(directory.id, directory.prefix)) return false;
       }
       return true;
@@ -248,7 +273,6 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return write(top);
   }
 
-  const capturedPaths = new Set<string>();
   function collect(layer: Layer) {
     for (const [key, e] of layer) {
       capturedPaths.add(key);
@@ -271,7 +295,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;
       const revision = await commit(anchor);
-      const { layer, treeIds } = await flatten(revision.record.tree);
+      const { layer, treeIds, complete } = await flatten(revision.record.tree);
+      if (!complete) throw Object.assign(new Error("Required Git tree exceeds path expansion limit"), { code: "tree_expansion_limit" });
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
     }
@@ -347,7 +372,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (!equal(staged, committed)) classes.push("staged");
       if (staged && !equal(staged, working)) classes.push("unstaged");
       if (working && !staged) classes.push(intent.has(key) ? "unstaged" : "untracked");
-      if (!working && (staged || committed)) classes.push("deleted");
+      if ((committed && !staged) || (staged && !working)) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
       const path = decodedPath(key);
       if (path && RepositoryPathSchema.safeParse(path).success) {
@@ -380,6 +405,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (
         !path ||
         !RepositoryPathSchema.safeParse(path).success ||
+        live.has(path) ||
         dirs.has(path) ||
         path.split("/").some((_, i, parts) => live.has(parts.slice(0, i).join("/")))
       )

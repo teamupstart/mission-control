@@ -65,7 +65,9 @@ Files present on disk supply their actual contents, including edits outside a sp
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
 Status compares HEAD, the index and the worktree. A deletion already committed between
-the selected base and HEAD appears in the base-to-HEAD diff. When a directory replaces a file
+the selected base and HEAD appears in the base-to-HEAD diff. Staging a deletion and
+recreating the path reports both the deletion and the new working file. The reader can
+read the recreated bytes. When a directory replaces a file
 or a file replaces a directory, the reader gets the missing deletion records from the
 verified path manifest. They appear in `git_status` alongside the replacement files and
 grant no content access. This also covers previously sealed v1 artifacts.
@@ -83,6 +85,12 @@ boundary commits to the same breadth-first prefix. Traversal stops before the fi
 omitted parent, including at a merge, and records the original parent IDs in the frontier.
 Missing objects inside the selected prefix fail sealing. Changing the source's shallow
 boundary also changes the stable capture fingerprint.
+
+Each tree walk can expand up to 200,000 entries and 64 MiB of raw path names. A
+subtree mounted at two paths contributes both sets of names. Across history the same
+limits apply to newly retained leaf paths and tree locations. Editing a known file
+can reuse its path. An oversized HEAD or selected base fails capture. An oversized
+historical revision ends the retained prefix before any of its new paths are published.
 
 During traversal the daemon retains revision metadata and tree IDs. It writes accepted
 commit payloads to the candidate and rereads newly selected trees by ID, verifying their

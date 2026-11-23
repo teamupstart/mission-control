@@ -155,6 +155,7 @@ const entry = z.strictObject({
     )
     .max(6),
 });
+export const MAX_REPOSITORY_VIEW_ENTRIES = 200_000;
 export const RepositoryViewFieldsSchema = z
   .strictObject({
     version: z.literal(1),
@@ -182,15 +183,15 @@ export const RepositoryViewFieldsSchema = z
       .max(2048),
     retainedCommitCount: count.max(2048),
     retainedBlobBytes: count.max(536870912),
-    worktree: z.array(entry).max(200000),
-    index: z.array(entry).max(200000),
+    worktree: z.array(entry).max(MAX_REPOSITORY_VIEW_ENTRIES),
+    index: z.array(entry).max(MAX_REPOSITORY_VIEW_ENTRIES),
   });
 export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.extend({
   // A deletion may be an ancestor or descendant of a live leaf. It only describes status.
   statusDeletions: z.array(z.strictObject({
     path: RepositoryPathSchema,
     classifications: entry.shape.classifications.refine(values => values.includes("deleted")),
-  })).max(200000).optional(),
+  })).max(MAX_REPOSITORY_VIEW_ENTRIES).optional(),
 }).superRefine((v, ctx) => {
     const ids = new Set(v.retainedRevisions.map((r) => r.id));
     if (

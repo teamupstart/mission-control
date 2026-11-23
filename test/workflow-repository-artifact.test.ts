@@ -27,6 +27,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
+import { seal } from "../src/server/workflows/repository-artifact/seal.ts";
 import { descriptor, manifestSchema, MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
@@ -1294,6 +1295,55 @@ test("2,048-commit breadth-first merge prefix survives source deletion with shal
   await f.service.reconcile();
 });
 
+for (const limit of [{ entries: 4, pathBytes: 100 }, { entries: 100, pathBytes: 12 }]) {
+  test(`tree expansion bounds ${limit.entries === 4 ? "entry count" : "path bytes"} across shared subtrees`, async (t) => {
+    const f = fixture(t);
+    const { write, commit } = objects(f.checkout);
+    const empty = write("tree", Buffer.alloc(0));
+    const blob = write("blob", Buffer.from("old"));
+    const leaf = write("tree", Buffer.concat([Buffer.from("100644 f\0"), Buffer.from(blob, "hex")]));
+    const subtree = (names: string[]) => write("tree", Buffer.concat(names.map(name =>
+      Buffer.concat([Buffer.from("40000 " + name + "\0"), Buffer.from(leaf, "hex")]))));
+    const excluded = commit(subtree(["aa", "bb", "cc"]), [], "three subtrees");
+    const accepted = commit(subtree(["aa", "bb"]), [excluded], "two subtrees");
+    const head = commit(empty, [accepted], "empty head");
+    f.git("update-ref", "HEAD", head);
+    const pending = join(f.root, "walk");
+    mkdirSync(pending, { recursive: true });
+    await seal({ checkout: f.checkout, sourceBase: null }, pending, signal, limit);
+    const artifact = join(pending, "artifact");
+    const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")));
+    assert.deepEqual(manifest.view.retainedRevisions.map(r => r.id), [head, accepted]);
+    assert.deepEqual(manifest.view.frontier, [{ revision: accepted, omittedParents: [excluded] }]);
+    assert.deepEqual(manifest.paths.map(p => Buffer.from(p.bytes, "hex").toString()), ["aa/f", "bb/f"]);
+    assert.equal(existsSync(join(artifact, excluded)), false);
+    const required = join(f.root, "required");
+    mkdirSync(required);
+    await assert.rejects(seal({ checkout: f.checkout, sourceBase: excluded }, required, signal, limit),
+      { code: "tree_expansion_limit" });
+    assert.equal(existsSync(join(required, "artifact", "manifest.json")), false);
+  });
+}
+
+test("tree expansion bounds cumulative historical paths while allowing edits to an already retained path", async (t) => {
+  const f = fixture(t);
+  const { write, commit } = objects(f.checkout);
+  const revisions: string[] = [];
+  for (const [i, name] of ["more", "past", "file", "file", "file"].entries()) {
+    const blob = write("blob", Buffer.from(String(i)));
+    const tree = write("tree", Buffer.concat([Buffer.from("100644 " + name + "\0"), Buffer.from(blob, "hex")]));
+    revisions.push(commit(tree, revisions.slice(-1), name));
+  }
+  f.git("update-ref", "HEAD", revisions.at(-1)!);
+  const pending = join(f.root, "walk");
+  mkdirSync(pending, { recursive: true });
+  await seal({ checkout: f.checkout, sourceBase: null }, pending, signal, { entries: 1, pathBytes: 4 });
+  const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(pending, "artifact", "manifest.json"), "utf8")));
+  assert.deepEqual(manifest.view.retainedRevisions.map(r => r.id), revisions.slice(1).reverse());
+  assert.deepEqual(manifest.view.frontier, [{ revision: revisions[1], omittedParents: [revisions[0]] }]);
+  assert.deepEqual(manifest.paths.map(p => Buffer.from(p.bytes, "hex").toString()), ["file", "past"]);
+});
+
 for (const overflow of ["commit", "tree"]) {
   test(`64 MiB history metadata budget counts shared trees once and stops before an overflowing ${overflow}`, async (t) => {
     const f = fixture(t);
@@ -1708,6 +1758,37 @@ test("unaddressable historical filename bytes retain their exact tree identity a
     { bytes: "ff", allowed: false, classifications: ["committed", "staged", "deleted", "sensitive_denied"] },
   ]);
   assert.deepEqual(m.view.worktree, []);
+  await f.service.release(s.submissionId);
+  await f.service.reconcile();
+});
+
+test("a staged deletion and a recreated working file retain both statuses and their separate contents", async (t) => {
+  const f = fixture(t);
+  f.write("file", "original\n");
+  f.git("add", "file");
+  f.git("commit", "-qm", "original");
+  f.git("rm", "-q", "file");
+  f.write("file", "recreated\n");
+  assert.equal(f.git("status", "--porcelain"), "D  file\n?? file");
+  const s = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(s);
+  const request = f.request(s);
+  const lease = await f.service.materialize(request, signal);
+  const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+    gitBinary: "git", workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {} });
+  const status = await reader.query("git_status", {});
+  assert.deepEqual(status.items.map(e => [e.path, e.metadata?.classifications]),
+    [["file", ["committed", "staged", "untracked", "deleted"]]]);
+  assert.equal((await reader.query("read", { path: "file" })).items[0]?.text, "recreated");
+  assert.deepEqual(lease.descriptor.index, []);
+  assert.match((await reader.query("git_diff", { pair: "head_index" })).items[0]?.text ?? "", /-original/);
+  assert.match((await reader.query("git_diff", { pair: "index_worktree" })).items[0]?.text ?? "", /\+recreated/);
+  const legacy = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "digests", s.digest, "manifest.json"), "utf8")));
+  for (const entry of [...legacy.view.worktree, ...legacy.paths])
+    entry.classifications = entry.classifications.filter(c => c !== "deleted");
+  const oldView = descriptor(legacy, s.digest, "legacy");
+  assert.deepEqual(oldView.worktree, lease.descriptor.worktree);
+  await lease.release();
   await f.service.release(s.submissionId);
   await f.service.reconcile();
 });

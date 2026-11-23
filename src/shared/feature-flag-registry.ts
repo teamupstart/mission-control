@@ -3,6 +3,8 @@ import { INBOX_FLAG } from "./inbox.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+/** The one owner of the session-awaiting flag id: the daemon gates and the dashboard import it. */
+export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 /**
@@ -107,6 +109,15 @@ export const FEATURE_FLAGS = [
       "id. A switch takes effect at each agent's next start.",
     stage: "preview",
     keywords: ["work unit", "WORK_UNIT_ID", "x-work-unit-id", "mcp", "trace", "telemetry"],
+  },
+  {
+    id: SESSION_AWAITING_FLAG_ID,
+    label: "Awaiting background work",
+    description: "Let a session declare, with report_awaiting, that it is idle on purpose while a background process "
+      + "such as CI checks finishes. Its card shows what it waits for and when it is due, and idle automation leaves it "
+      + "alone until that deadline.",
+    stage: "preview",
+    keywords: ["awaiting", "report_awaiting", "background", "ci", "idle", "deadline", "overdue"],
   },
   {
     id: INBOX_FLAG,

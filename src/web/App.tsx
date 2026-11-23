@@ -3,6 +3,9 @@ import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useNow } from "./useNow.ts";
+import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
@@ -2668,6 +2671,19 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
+  // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
+  // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
+  // even in the tick a deadline passes.
+  const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
+  const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
+  // The same Set object while its members are unchanged, so a tick that moves no wait across
+  // its deadline does not rerun the fleet ordering below or redraw its cards.
+  const awaitingIdsRef = useRef<ReadonlySet<string>>(NO_AWAITING_SESSIONS);
+  const awaitingIds = useMemo(() => {
+    awaitingIdsRef.current = keepAwaitingIds(awaitingIdsRef.current, awaitingSessionIds(sessions, awaitingEnabled, awaitingNow));
+    return awaitingIdsRef.current;
+  }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
@@ -2676,8 +2692,9 @@ export function App(): React.JSX.Element {
     const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
+  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -3513,6 +3530,7 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    awaitingIds,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
@@ -3935,6 +3953,34 @@ export function App(): React.JSX.Element {
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // A session awaiting a background process draws its band's controls (Open, Clear,
+        // Details) in the Conversation pane, which the tab strip walk below would skip: without
+        // this a hold could only be ended with a pointer. Tab order inside the reader is
+        // therefore body, then the band's controls, then the tab strip; Shift+Tab walks back to
+        // the body. Only while a band is drawn, so every other reader tabs exactly as before.
+        if ((chord === "Tab" || chord === "shift+Tab") && inReader) {
+          const band = target?.closest(".awaiting-band") ?? null;
+          const onBody = Boolean(target?.matches(".detail-body"));
+          const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          // A collapsed Details keeps its Markdown in the DOM, hidden: a link or button in it cannot
+          // take focus, and stepping onto one would leave the keyboard stuck on the summary. Only
+          // controls a person can see are on the path, so a closed Details offers its summary alone.
+          const controls = scope
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")].filter((el) => {
+                const closed = el.closest("details:not([open])");
+                return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+              })
+            : [];
+          if (controls.length > 0) {
+            const at = band ? controls.indexOf(target as HTMLElement) : -1;
+            const next = controls[at + (chord === "Tab" ? 1 : -1)];
+            e.preventDefault();
+            if (next) next.focus({ preventScroll: true });
+            else if (chord === "Tab") readerTabbers.current.get(readerSession.id)?.(1);
+            else focusReaderBody();
+            return;
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {

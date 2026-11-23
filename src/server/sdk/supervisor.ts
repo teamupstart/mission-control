@@ -1879,7 +1879,18 @@ export class SdkSupervisor {
       // substitution the record exists to prevent, still reachable through its own path. The
       // reservation closes that window; the release below gives it back when the driver is
       // known to have taken nothing.
-      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      // A reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) recorded nothing: the continuation is not sent, and nothing
+      // is released, since a release would give back an earlier reservation of the same text.
+      try {
+        reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      } catch (err) {
+        console.error(
+          `[sdk] could not continue interrupted turn for ${row.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
@@ -2148,7 +2159,20 @@ export class SdkSupervisor {
     if (this.handles.get(id) !== handle || this.shuttingDown) return;
     // Harness-authored, like the restart continuation: the agent's prompt echo must not be
     // captured as the operator's Goal or read back to a workflow as their words.
-    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    // A reservation refused because its attribution could not be stored
+    // (`AutomatedAttributionError`) recorded nothing: the retry is not sent and is settled as one
+    // that could not be delivered, and nothing is released, since a release would give back an
+    // earlier reservation of the same text.
+    try {
+      reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    } catch (err) {
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
     const busy = new Error("the driver was already running a turn");
     try {
       // Asked again at send time: the send waits its turn on the session's chain, and a pause can

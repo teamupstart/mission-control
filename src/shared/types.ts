@@ -612,6 +612,58 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/**
+ * How a session that declared a wait expects to be woken: a background command's completion
+ * notification, a monitor, a scheduled wakeup it set for itself, or something else. Recorded so
+ * the dashboard and residents can judge whether the wait is plausible.
+ */
+export const SESSION_AWAITING_WAKE_SOURCES = ["command", "monitor", "wakeup", "other"] as const;
+export type SessionAwaitingWakeSource = (typeof SESSION_AWAITING_WAKE_SOURCES)[number];
+
+/** Field limits a declared wait is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_AWAITING_LIMITS = {
+  what: 160,
+  details: 4000,
+  url: 2048,
+  resolution: 200,
+  /**
+   * How far past the declaration `expectedBy` may be, in minutes. A wait silences the
+   * stuck-session alerts, so it must be bounded: a dead watcher must not hide a stalled session
+   * for longer than this. The other bound is the present: `expectedBy` must be in the future.
+   */
+  maxMinutes: 240,
+} as const;
+
+/**
+ * A session idle on purpose: it handed work to a background process (CI checks, a long build,
+ * a monitor, a scheduled wakeup) and will resume on its own when that process reports back.
+ *
+ * Durable session state keyed by the note key, like `SessionBlocker`, but deliberately not a
+ * blocker kind: nobody is asked to do anything. It ends on the session's own next turn, on a
+ * clear, when its task reaches a terminal status, or when the agent process exits. While it
+ * stands and `expectedBy` is in the future, idle-triggered automation holds the session
+ * (`isAwaiting` in `session.ts`). Past `expectedBy` the hold lifts and the session reads as
+ * overdue until it wakes or is cleared.
+ */
+export interface SessionAwaiting {
+  /**
+   * This declaration's identity: a new one for every declaration, re-declarations included, so
+   * a Clear sent from a view of an earlier one (an older reason or deadline) is refused.
+   */
+  id: string;
+  /** One line: what the session is waiting for, for example "CI checks on PR #1612". */
+  what: string;
+  wakeSource: SessionAwaitingWakeSource;
+  /** Epoch ms: when the session said the process should be done. The safety net. */
+  expectedBy: number;
+  referenceUrl: string | null;
+  details: string | null;
+  /** First declaration; kept across re-declarations. */
+  startedAt: number;
+  /** Last declaration. */
+  updatedAt: number;
+}
+
 /** A session's pending ask for Control other sessions, as the dashboard card draws it. */
 export interface SessionControlRequestView {
   id: string;
@@ -932,6 +984,12 @@ export interface Session {
    * the session alone (`hasBlocker` in `session.ts`).
    */
   blocker: SessionBlocker | null;
+  /**
+   * The wait this session declared on a background process, or null. Denormalized like
+   * `blocker` and keyed on the same note key. While it stands and is not overdue every
+   * idle-triggered automation leaves the session alone (`isAwaiting` in `session.ts`).
+   */
+  awaiting: SessionAwaiting | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**

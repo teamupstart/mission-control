@@ -37,7 +37,6 @@ async function shoot(page: Page, target: Locator): Promise<void> {
     path: `${EVIDENCE}sol-dispatch-fallback.png`,
     animations: "disabled",
   });
-  // oxlint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/codex-model-catalog/sol-dispatch-fallback.png");
 }
 

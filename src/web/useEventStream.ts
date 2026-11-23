@@ -1,4 +1,4 @@
-import type { ReportItem } from "@shared/reports.ts";
+import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
@@ -91,6 +91,11 @@ export interface MissionState {
    * inbox can show. A session's full history is read from `GET /api/sessions/:id/reports`.
    */
   reports: ReportItem[];
+  /**
+   * Muted report authors: the snapshot's, replaced whole by `report_mutes`. `reports` still holds
+   * a muted author's reports; the fold leaves them out, so Unmute brings them straight back.
+   */
+  reportMutes: ReportMute[];
   tasks: Task[];
   personas: PersonaView[];
   /** The SessionAction catalog, archived rows included so a node can always name its source. */
@@ -290,6 +295,7 @@ export function useEventStream(): MissionState {
   );
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [reports, setReports] = useState<ReadonlyMap<string, ReportItem>>(new Map());
+  const [reportMutes, setReportMutes] = useState<ReportMute[]>([]);
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
@@ -419,6 +425,7 @@ export function useEventStream(): MissionState {
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
           // Absent while the `inbox` flag is off, which is no reports at all.
           setReports(new Map((msg.reports ?? []).map((report) => [report.id, report])));
+          setReportMutes(msg.reportMutes ?? []);
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
           setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
@@ -553,6 +560,9 @@ export function useEventStream(): MissionState {
           break;
         case "report_upsert":
           setReports((prev) => withReportUpserted(prev, msg.report));
+          break;
+        case "report_mutes":
+          setReportMutes(msg.mutes);
           break;
         case "task_upsert":
           setTasks((prev) => new Map(prev).set(msg.task.id, msg.task));
@@ -877,6 +887,7 @@ export function useEventStream(): MissionState {
     restoringSessions: restoringSessionsList,
     reviews: reviewsList,
     reports: reportsList,
+    reportMutes,
     tasks: tasksList,
     personas: personasList,
     sessionActions: sessionActionsList,

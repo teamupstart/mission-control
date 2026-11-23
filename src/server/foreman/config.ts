@@ -146,7 +146,7 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
     ...cur,
     ...patch,
     ...pinRoleProviders(cur, patch),
-    backlogDefaultModel: { ...cur.backlogDefaultModel, ...(patch.backlogDefaultModel ?? {}) },
+    backlogDefaultModel: { ...cur.backlogDefaultModel, ...patch.backlogDefaultModel },
   });
   setAppConfig(CONFIG_ENTRY, next);
   return next;

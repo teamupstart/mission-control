@@ -25,7 +25,6 @@ async function capture(target: Locator | Page, name: string, page: Page): Promis
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/request-input-remind-later/${name}.png`);
 }
 

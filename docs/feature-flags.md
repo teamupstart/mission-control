@@ -1,7 +1,7 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
-**Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
@@ -41,11 +41,6 @@ searchable list; filter by name, description, keyword or id. Every click applies
 in every open window, with no Save button or restart. A refused write rolls back and shows an
 inline error. Preview features are off until enabled individually or through the master switch.
 With no preview declared the panel shows its empty state instead of a list.
-
-**Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
-Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing
-runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
-**Pinned at launch** when the preview is off.
 
 **Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
 a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
@@ -184,17 +179,16 @@ gates, not by resolving an unknown id as on.
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
-| `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
-| `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
-| `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section and the top bar's to read figure), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
-| `voice` | preview | `/api/voice/config`, `/api/voice/mute`, `/voice/listener/hello` and `/voice/shell-report`, the `voice_state` event and snapshot field, the Settings > Voice category and the Setup panel's Voice family. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
+| `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state` event and snapshot field, the speech model manager, the Settings > Voice category and the Setup panel's Voice family. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
@@ -213,6 +207,10 @@ flag off.
 Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
+`e2e/specs/reports-noise-controls.spec.ts` checks the report noise controls: guidance saved in
+Settings > Reports is what the guidance route answers, a muted agent's row and to read count go
+and its next report raises no notification, Unmute brings the row back, Mark all read clears what
+was listed, and a notification raised before a mute still opens its report.
 `e2e/specs/voice-flag-and-settings.spec.ts` checks the `voice` row, its Settings category and Setup
 family, and the voice state reaching the mode line.
 

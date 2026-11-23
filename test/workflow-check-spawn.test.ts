@@ -373,7 +373,7 @@ test('a killed owner cannot orphan the shim or its running command', async (t) =
   owner.kill('SIGKILL');
   const {execFileSync} = await import('node:child_process');
   const alive = (p: number) => {
-    try { return !/^Z/.test(execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim()); }
+    try { return !execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim().startsWith('Z'); }
     catch { return false; }
   };
   await wait(() => !alive(pid) && !alive(commandPid));

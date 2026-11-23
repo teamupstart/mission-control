@@ -163,7 +163,6 @@ test("an idle SDK session remains idle on the Board and outside the working coun
       fullPage: true,
     });
     await evidence.close();
-    // eslint-disable-next-line no-console
     console.log(
       "CAPTURED e2e/.artifacts/sdk-idle-restore/restored-idle-board-and-sitrep.png",
     );

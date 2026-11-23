@@ -220,13 +220,11 @@ test("a completed run lists its reviewers, and its tiles select their worklist d
 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // eslint-disable-next-line no-console
     console.log("OBSERVED a completed reviewer tile selected that reviewer's full worklist data");
     await dashboard.screenshot({
       path: `${EVIDENCE}workflow-run-reviewer-verdicts.png`,
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-run-reviewer-verdicts/workflow-run-reviewer-verdicts.png");
   }
 });

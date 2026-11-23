@@ -149,6 +149,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
   ],
+  "src/server/workflows/persona-workload/git.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "injected locator-resolved Git reads closed argv against a verified sparse view through a private bare wrapper" },
+  ],
+  "src/server/workflows/persona-workload/providers.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "injected locator-resolved provider CLI verifies its build and isolated MCP inventory before one SDK workload" },
+  ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
   ],

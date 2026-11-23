@@ -195,7 +195,7 @@ for its own grant. Asking and accepting are separate authorities:
 - **The ask.** `POST /mcp/session-control/requests` requires the machine token and the signed
   Registry session credential, so the asker is always the verified caller and never a body id.
   It records one pending ask per session, bound to the same identity the grant binds, and draws
-  it on that session. It grants nothing, and a long-poll route answers only the session that
+  it in the attention inbox. It grants nothing, and a long-poll route answers only the session that
   asked.
 - **Why it is not a review.** A review settles through `POST /api/reviews/:id/resolve`, which any
   loopback caller can reach with a body-asserted `by: "human"`, and which Foreman and a session
@@ -291,12 +291,14 @@ delegated sessions from approving a change, not arbitrary shell code running as 
 
 An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
 session; it never names another session. Taking a report out of **to read** is the operator's:
-`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply` and
-`POST /api/reports/:id/follow-up` refuse the machine token, a signed agent credential, and a
-request attributed to an agent or to Foreman. That is the same single-user local trust boundary
-that review answers rely on. It keeps Mission Control's own agents, Foreman and delegated sessions
-from marking a report read, from sending a message in the operator's name, and from filing and
-dispatching a follow-up task; it does not verify that a header-less loopback
+`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply`,
+`POST /api/reports/:id/follow-up`, `POST /api/reports/read-all`, `PUT /api/reports/guidance`,
+`POST /api/reports/mutes` and `DELETE /api/reports/mutes/:authorKey` refuse the machine token, a
+signed agent credential, and a request attributed to an agent or to Foreman. That is the same
+single-user local trust boundary that review answers rely on. It keeps Mission Control's own
+agents, Foreman and delegated sessions from marking a report read, from sending a message in the
+operator's name, from filing and dispatching a follow-up task, and from muting an agent or
+rewriting the guidance every later session is given; it does not verify that a header-less loopback
 request came from the dashboard, so shell code running as the operator can still call these
 routes. An attached document is accepted only from inside the posting session's checkout, using
 the same containment rules as the Files viewer.
@@ -379,8 +381,8 @@ editor says arguments are stored and backed up as written.
 
 **All native sources puts native servers and connectors outside that boundary.** A Claude Code
 profile on [all native sources](residents.md#all-native-sources) launches without
-`strictMcpConfig` and without `disableClaudeAiConnectors`, which the operator confirms in the
-editor and Dispatch's summary states as `MCP: all native sources (not pinned)`. Mission Control's
+`strictMcpConfig` and includes claude.ai connectors unless the profile disables them.
+Dispatch shows this mode as `MCP: all native sources (not pinned)`. Mission Control's
 own server and the profile's selected custom servers keep the boundary: the custom servers are
 still snapshotted and still reach their own processes only through the scoped launcher, as above.
 Everything else - Claude Code's user, local, project and plugin servers and the account's
@@ -390,7 +392,18 @@ an autonomous, looping run. Mission Control holds no copy of those definitions, 
 which of their values reach the agent, and does not refuse a start when one of them fails or
 needs a login.
 
-For Codex, the same opt-in launches app-server on the normal Codex home, so Codex loads native
+The all-native default also applies to scripts and agents calling `POST /api/residents/profiles`.
+For a new Claude Code or Codex profile, omitting `settings.mcp` or sending `"mcp": {}` selects
+all native sources without an interactive confirmation. At launch the looping resident can use
+Claude Code's configured servers and account connectors or Codex's configured servers with their
+saved OAuth permissions. To fix the server set at launch, send `"mcp": {"nativeSources": "pinned"}`.
+A revision request that omits the mode keeps the mode from its expected revision.
+
+In the editor, a fresh draft follows the selected harness's default until its MCP settings are
+edited. Switching from pinned to all native sources asks for confirmation. Changing the harness
+also asks when a saved profile, a duplicate, or a draft with edited MCP settings uses all native sources.
+
+For Codex, native mode launches app-server on the normal Codex home, so Codex loads native
 MCP definitions and presents any OAuth logins it holds. Mission Control's server and custom
 servers are added through session flags. Before starting a thread, Mission Control refuses a
 custom name collision in the active layers or an external field that would alter its own

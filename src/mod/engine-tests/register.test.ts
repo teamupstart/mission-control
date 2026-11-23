@@ -20,7 +20,7 @@ const INBOX = JSON.stringify({
 })
 
 function world(on, { flag, minModApi = 1 }) {
-  const seen = { registrations: 0, inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
+  const seen = { registrations: 0, inbox: INBOX, flag, posts: [], urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
@@ -29,6 +29,11 @@ function world(on, { flag, minModApi = 1 }) {
   on('http.fetch', async (_, e) => {
     seen.urls.push(e.url)
     if (seen.holdFirstSessionsReply && e.url.endsWith('/dispatch/sessions') && !seen.heldOnce) { seen.heldOnce = true; await seen.holdFirstSessionsReply }
+    if (e.url.endsWith('/dispatch/answers')) {
+      const body = JSON.parse(e.init.body)
+      seen.posts.push(body)
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ reviewId: body.reviewId, taskId: body.taskId, sent: body.option ?? body.text, at: 1 }) } }
+    }
     const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi, ++seen.registrations) : seen.inbox)
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
@@ -71,13 +76,47 @@ test('flag on: registers, opens the pane, and draws the banner and the band with
   expect(button).toBeTruthy()
   // Pressing the rendered button reopens the pane on Needs you, with focus.
   const pane = await $.ui.mount(PANE)
-  expect((await pane.find({ type: 'Text', text: /not available in this build/ }))?.text).toMatch(/Mission Control pane/)
+  // The pane draws the two tabs, Needs you first, with the one waiting item open.
+  expect(await pane.find({ type: 'Button', key: 'tab-n Needs you' })).toBeTruthy()
+  expect(await pane.find({ type: 'Button', key: 'tab-t Tasks' })).toBeTruthy()
+  expect((await pane.find({ type: 'Text', text: /Keep\?/ }))?.text).toBe('Keep?')
   await pane.unmount()
   await ui.press({ key: 'open-needs-you' })
   await settle(() => seen.openArgs.length >= 2)
   expect(seen.openArgs.at(-1).focus).toBe(true)
   expect(seen.state.paneTab).toBe('needs-you')
   await ui.unmount()
+})
+
+test('the pane answers through the engine: Tasks tab, then an option press posts the answer', async ($, on) => {
+  const seen = world(on, { flag: true })
+  seen.inbox = JSON.stringify({ ...JSON.parse(INBOX), items: [{ ...JSON.parse(INBOX).items[0], pending: { reviewId: 'r1', kind: 'question', question: 'Keep?', options: ['Keep', 'Drop'], allowsText: true, dashboardOnly: false } }] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const inline = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'inline', bodyColumns: 100 } })
+  expect(await inline.find({ type: 'Input', key: 'answer-text' })).toBeTruthy()
+  await inline.press({ key: 'action-2 Drop' })
+  await settle(() => seen.posts.length > 0)
+  expect(seen.posts).toEqual([{ action: 'answer', sessionId: 's1', cwd: '/repo', taskId: 'mc-1', reviewId: 'r1', option: 'Drop' }])
+  await inline.unmount()
+  const pane = await $.ui.mount(PANE)
+  await pane.press({ key: 'tab-t Tasks' })
+  await pane.unmount()
+  const again = await $.ui.mount(PANE)
+  expect(await again.find({ type: 'Text', text: /Tasks · / })).toBeTruthy()
+  await again.unmount()
+})
+
+test('the pane carries typed text through the engine Input to the answer', async ($, on) => {
+  const seen = world(on, { flag: true })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const pane = await $.ui.mount(PANE)
+  await pane.input({ key: 'answer-text', text: 'Keep it, but trim', kind: 'change' })
+  await pane.input({ key: 'answer-text', text: 'Keep it, but trim' })
+  await settle(() => seen.posts.length > 0)
+  expect(seen.posts).toEqual([{ action: 'answer', sessionId: 's1', cwd: '/repo', taskId: 'mc-1', reviewId: 'r1', text: 'Keep it, but trim' }])
+  await pane.unmount()
 })
 
 test('flag off: nothing is opened, drawn or toasted', async ($, on) => {
@@ -90,7 +129,8 @@ test('flag off: nothing is opened, drawn or toasted', async ($, on) => {
   expect(seen.statuses).toEqual([])
   expect(seen.urls.every((u) => u.endsWith('/api/health'))).toBe(true)
   const pane = await $.ui.mount(PANE)
-  expect(await pane.find({ type: 'Text', text: /not available in this build/ })).toBe(undefined)
+  expect(await pane.find({ type: 'Button', key: 'tab-n Needs you' })).toBe(undefined)
+  expect(await pane.find({ type: 'Text', text: /Needs you ·/ })).toBe(undefined)
   await pane.unmount()
   const ui = await $.ui.mount(ABOVE)
   expect(await ui.find({ type: 'Text', text: /Dispatch, check on/ })).toBe(undefined)
@@ -106,7 +146,8 @@ test('modApi mismatch: the daemon is not polled and the pane and band draw nothi
   expect(seen.opened).toEqual([])
   expect(seen.statuses).toEqual([])
   const pane = await $.ui.mount(PANE)
-  expect(await pane.find({ type: 'Text', text: /not available in this build/ })).toBe(undefined)
+  expect(await pane.find({ type: 'Button', key: 'tab-n Needs you' })).toBe(undefined)
+  expect(await pane.find({ type: 'Text', text: /Needs you ·/ })).toBe(undefined)
   await pane.unmount()
   const ui = await $.ui.mount(ABOVE)
   expect(await ui.find({ type: 'Text', text: /Dispatch, check on/ })).toBe(undefined)

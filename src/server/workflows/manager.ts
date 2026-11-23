@@ -675,6 +675,7 @@ export class WorkflowManager {
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
+  private readonly pendingActionContinuations = new Map<string, Promise<void>>();
   /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
   private readonly publicationTrees = new Map<string, string>();
   private readonly publicationTreeRetryAt = new Map<string, number>();
@@ -5643,7 +5644,7 @@ export class WorkflowManager {
 
   /** Re-offer every packet a pause held for this session, now that it has resumed. */
   private offerResumedDeliveries(sessionId: string): void {
-    for (const id of [...this.pausedDeliveries]) {
+    for (const id of Array.from(this.pausedDeliveries)) {
       const delivery = this.store.getDelivery(id);
       if (delivery && delivery.sessionId !== sessionId) continue;
       this.pausedDeliveries.delete(id);
@@ -6588,6 +6589,20 @@ export class WorkflowManager {
     }
   }
 
+  // The capture lock serializes all captures for a conversation. Observers of the same
+  // action must share its capture, since queuing a second one behind it sees an inactive child.
+  private async captureSessionActionContinuation(attemptId: string, now: number): Promise<void> {
+    const pending = this.pendingActionContinuations.get(attemptId);
+    if (pending) return pending;
+    const capture = this.captureReservedActionContinuation(attemptId, now);
+    this.pendingActionContinuations.set(attemptId, capture);
+    try {
+      await capture;
+    } finally {
+      this.pendingActionContinuations.delete(attemptId);
+    }
+  }
+
   /**
    * Reserve, capture, and activate the child evidence segment one completed action earns.
    *
@@ -6596,7 +6611,7 @@ export class WorkflowManager {
    * row, and the attempt-plus-receipt commit happens in one more transaction. A crash at any
    * of the three boundaries resumes the same reservation rather than opening a second one.
    */
-  private async captureSessionActionContinuation(attemptId: string, now: number): Promise<void> {
+  private async captureReservedActionContinuation(attemptId: string, now: number): Promise<void> {
     const resolved = this.resolveSessionAction(attemptId);
     if (!resolved) return;
     const { attempt, snapshot, state, submission, binding, version, node } = resolved;
@@ -6826,7 +6841,6 @@ export class WorkflowManager {
     }
     return this.registry.promptResourceBlockerForSession(session.id);
   }
-
 
   /**
    * Hold a packet behind the sibling review currently using the conversation's turn.

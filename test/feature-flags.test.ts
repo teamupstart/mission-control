@@ -71,7 +71,7 @@ test("schemas bound keys and entries while accepting future ids", () => {
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
-    "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
     "WORK_UNIT_ID_FLAG_ID",
   ]);
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
@@ -80,6 +80,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     "the work unit id ships as a preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_AWAITING_FLAG_ID)?.stage, "preview",
     "awaiting background work ships as a preview");
+
   assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
     "resident active hours ships as a preview");
@@ -95,7 +96,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   });
   // Session control requests ships off until the operator opts in.
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "session-control-requests")?.stage, "preview");
-  assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
+  assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, ["codex-resident-native-mcp"]);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");

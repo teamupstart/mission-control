@@ -8,7 +8,7 @@ import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
 
 const test = base.extend<{ selectedNode: { path: string; version(value: string): Promise<void> } }>({
-  selectedNode: async ({}, use) => {
+  selectedNode: async ({ playwright: _playwright }, use) => {
     const dir = await mkdtemp(join(tmpdir(), "mission-setup-node-"));
     const path = join(dir, "node");
     const version = async (value: string) => {

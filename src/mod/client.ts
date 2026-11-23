@@ -1,8 +1,11 @@
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthCompatibility } from "@shared/daemon-protocol.ts";
 import {
   HomeDispatchInboxSchema,
+  HomeDispatchReceiptSchema,
   HomeSessionRegistrationAnswerSchema,
+  type HomeDispatchAnswerRequest,
   type HomeDispatchInbox,
+  type HomeDispatchReceipt,
   type HomeSessionRegistration,
   type HomeSessionRegistrationAnswer,
 } from "@shared/home-dispatch.ts";
@@ -23,6 +26,7 @@ type Fetcher = Pick<CoreHost, "fetch">;
 export const HEALTH_PATH = "/api/health";
 export const SESSIONS_PATH = "/dispatch/sessions";
 export const INBOX_PATH = "/dispatch/inbox";
+export const ANSWERS_PATH = "/dispatch/answers";
 
 export type DaemonResult<T> =
   | { kind: "ok"; value: T }
@@ -32,8 +36,8 @@ export type DaemonResult<T> =
   | { kind: "down" }
   /** The token was refused; the person's token file changed or is unreadable. */
   | { kind: "unauthorized" }
-  /** Any other reply, including one this build cannot read. */
-  | { kind: "error"; status: number };
+  /** Any other reply, including one this build cannot read. `message` is the daemon's own `error` text when it sent one. */
+  | { kind: "error"; status: number; message?: string };
 
 /** What `GET /api/health` says about the flag: the capability is listed only while it is on. */
 export async function checkHealth(host: Fetcher): Promise<DaemonResult<null>> {
@@ -65,6 +69,22 @@ export function isFlagOffAnswer(status: number, body: unknown): boolean {
   return status === 404 && body !== null && typeof body === "object" && (body as { feature?: unknown }).feature === "headless-mode";
 }
 
+/** The daemon's refusal text (`{ error }`), so a stale plan or a settled question can be told to the person. */
+function refusalMessage(text: string): { message?: string; featureOff?: true } {
+  try {
+    const body = JSON.parse(text) as { error?: unknown; feature?: unknown };
+    if (body.feature !== undefined) return { featureOff: true };
+    return typeof body.error === "string" && body.error ? { message: body.error } : {};
+  } catch {
+    return {};
+  }
+}
+
+function messageOf(text: string): { message?: string } {
+  const { message } = refusalMessage(text);
+  return message ? { message } : {};
+}
+
 async function call<T>(
   host: Fetcher,
   path: string,
@@ -83,10 +103,12 @@ async function call<T>(
   } catch {
     body = undefined;
   }
-  // Any other 404 (a route that is not there, a session the daemon forgot) is an error, not the flag being off.
-  if (reply.status === 404) return isFlagOffAnswer(reply.status, body) ? { kind: "off" } : { kind: "error", status: 404 };
+  // Any other 404 (a route that is not there, a session the daemon forgot) is an error, not the flag being
+  // off; the daemon's own refusal text, when it sent one, travels with it.
+  if (reply.status === 404) return isFlagOffAnswer(reply.status, body) ? { kind: "off" } : { kind: "error", status: 404, ...messageOf(reply.text) };
   if (reply.status === 401) return { kind: "unauthorized" };
-  if (reply.status !== 200 || body === undefined) return { kind: "error", status: reply.status };
+  if (reply.status !== 200) return { kind: "error", status: reply.status, ...messageOf(reply.text) };
+  if (body === undefined) return { kind: "error", status: reply.status };
   const value = parse(body);
   return value === null ? { kind: "error", status: reply.status } : { kind: "ok", value };
 }
@@ -110,6 +132,14 @@ export function fetchInbox(
   params.set("session", query.sessionId);
   return call(host, `${INBOX_PATH}?${params.toString()}`, { method: "GET" }, (v) => {
     const parsed = HomeDispatchInboxSchema.safeParse(v);
+    return parsed.success ? parsed.data : null;
+  });
+}
+
+/** `POST /dispatch/answers`: the person's answer, approval or request for changes (7.8). */
+export function postAnswer(host: Fetcher, body: HomeDispatchAnswerRequest): Promise<DaemonResult<HomeDispatchReceipt>> {
+  return call(host, ANSWERS_PATH, { method: "POST", body }, (v) => {
+    const parsed = HomeDispatchReceiptSchema.safeParse(v);
     return parsed.success ? parsed.data : null;
   });
 }

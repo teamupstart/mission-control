@@ -1,11 +1,12 @@
 import { dispatchIntentFor } from "@shared/home-dispatch.ts";
-import type { CoreHost, CoreStateKey, ModAskAnswer, ModAskQuestion, ModBand, ModHost, ModPaneOpen, ModState } from "./host.ts";
+import type { CoreHost, CoreStateKey, ModAskAnswer, ModAskQuestion, ModBand, ModHost, ModPaneOpen, ModPaneTab, ModState } from "./host.ts";
 import { createModCore, type ModCore } from "./core.ts";
-import { DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_PLACEHOLDER_TEXT, PANE_REQUEST_ID } from "./constants.ts";
+import { DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_REQUEST_ID } from "./constants.ts";
 import { FLOW_FAILED_TEXT, reportFlowFailure } from "./flows/failure.ts";
 import { FLOW_BUSY_TEXT, createFlowGate, type FlowGate } from "./flows/gate.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
+import { createPaneController, renderPane, type PaneController, type PaneNode, type PaneView } from "./pane/index.ts";
 import { runQueued } from "./write-queue.ts";
 
 /**
@@ -31,7 +32,7 @@ export function register(on: EngineOn, _options: unknown): void {
   let flowHost: FlowHostType | null = null;
   // One flow at a time for the session; a new session gets a new gate, so a stale flow never blocks it.
   let flowGate: FlowGate = createFlowGate();
-  const view: GlanceView = { banner: undefined, band: undefined, status: undefined };
+  const view: GlanceView = { banner: undefined, band: undefined, status: undefined, pane: null };
 
   // Each session start or end invalidates the work of the one before it: a startup still awaiting
   // the engine or the daemon checks its number again after every await and drops out when stale.
@@ -48,6 +49,7 @@ export function register(on: EngineOn, _options: unknown): void {
     core = null;
     flowSession = null;
     flowHost = null;
+    view.pane = null;
     wipeGlance($, view);
     // A draft left waiting for its description belongs to the session that made it: the next
     // session's text must start a new brief, not describe an orphaned draft.
@@ -80,6 +82,15 @@ export function register(on: EngineOn, _options: unknown): void {
       interactive: e.isInteractive,
     });
     core = started;
+    // The pane's own state (open item, typed text, receipt) lives and dies with the session.
+    view.pane = createPaneController({
+      host,
+      sessionId,
+      cwd: e.cwd,
+      getInbox: () => (mine === generation ? (started.inbox() ?? null) : null),
+      refresh: () => started.tick(),
+      redraw: () => $.ui.invalidate("ui.render"),
+    });
     // Not awaited past the first attempt: a daemon that is slow to answer must not hold the prompt.
     // Every expected failure is a value inside the controller, so a throw here is a defect: leave a
     // trace in the person's own log instead of looking like "flag off".
@@ -96,6 +107,7 @@ export function register(on: EngineOn, _options: unknown): void {
     core = null;
     flowSession = null;
     flowHost = null;
+    view.pane = null;
     wipeGlance($, view);
     await queuedStateSet($, pane, "draftId", null, () => mine === generation);
     return next(e);
@@ -135,13 +147,20 @@ export function register(on: EngineOn, _options: unknown): void {
     return Box({ flexDirection: "column", children: rows });
   });
 
-  // The pane (7.22). P12 replaces this body with `renderPane`; the open and close calls and the
-  // id stay as they are.
-  on("ui.render", { component: "Pane", requestId: "mission" }, async ($, e, next) => {
+  // The pane (7.22): two tabs, Needs you then Tasks. The open and close calls and the id are P8's.
+  on("ui.render", { component: "Pane", requestId: PANE_REQUEST_ID }, async ($, e, next) => {
     // Nothing is drawn unless the mod is connected: flag off, daemon down or a modApi mismatch.
-    if (core?.phase() !== "active") return next(e);
-    const { Box, Text } = $.ui.resolve(e);
-    return Box({ flexDirection: "column", children: [Text({ dimColor: true, children: PANE_PLACEHOLDER_TEXT })] });
+    const ctl = view.pane;
+    if (core?.phase() !== "active" || !ctl) return next(e);
+    const ui = $.ui.resolve(e);
+    const props = e.props ?? {};
+    const drawn = renderPane(ctl.host, {
+      placement: props.placement ?? "dock",
+      bodyColumns: props.bodyColumns ?? 60,
+      tab: ctl.view().tab,
+      ctl,
+    });
+    return ui.Box({ flexDirection: "column", children: drawNodes(ui, drawn) });
   });
 
   // Flows (P11) and pane tabs (P12) register here, one line each.
@@ -186,7 +205,7 @@ type FlowHostType = Pick<ModHost, "ask" | "notice" | "toast" | "fetch" | "fillPr
 
 // The pane and the flows are exported so the built `hooks/register.js` carries them: a later
 // phase's registration lines call them, and the build keeps whatever the entry point reaches.
-export { renderPane, PANE_TABS } from "./pane/index.ts";
+export { renderPane, PANE_TABS, createPaneController } from "./pane/index.ts";
 export { runDispatchCommand, runDispatchFlow, runLauncher, runStartDispatchTool } from "./flows/index.ts";
 
 /** What the render hooks draw: written by the host's `banner` and `band`, read by `ui.render`. */
@@ -195,6 +214,8 @@ interface GlanceView {
   band: ModBand | undefined;
   /** The status entry as last set, so a new session clears it only if one was shown. */
   status: string | undefined;
+  /** The session's pane controller; `null` between sessions. */
+  pane: PaneController | null;
 }
 
 /* ------------------------------------------------------------------ the engine surface used */
@@ -207,7 +228,7 @@ type EngineOn = {
   (event: "tool.run", matcher: { tool: string }, hook: Hook): void;
 };
 // The engine's events are richer; this is the part the mod reads.
-type EngineEvent = { cwd: string; isInteractive: boolean; props?: { hasSurvey?: boolean }; [field: string]: unknown };
+type EngineEvent = { cwd: string; isInteractive: boolean; props?: { hasSurvey?: boolean; placement?: "dock" | "inline" | "widget"; bodyColumns?: number }; [field: string]: unknown };
 interface Engine {
   session: { id: () => Promise<string> };
   env: { get: (name: string) => Promise<string | undefined> };
@@ -218,7 +239,7 @@ interface Engine {
   fs: { read: (path: string) => Promise<string> };
   clock: { every: (ms: number, fn: () => void) => { cancel: () => void } };
   ui: {
-    resolve: (e: EngineEvent) => Record<"Box" | "Text" | "Button", (props: Record<string, unknown>) => unknown>;
+    resolve: (e: EngineEvent) => Record<"Box" | "Text" | "Button" | "Input", (props: Record<string, unknown>) => unknown>;
     open: (pane: { id: string; title?: string; focus?: true }) => Promise<{ isPlaced: boolean }>;
     close: (pane: { id: string }) => Promise<void>;
     ask: (question: string, options: { options: readonly string[]; header?: string }) => Promise<unknown>;
@@ -478,6 +499,9 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     // layer, so it is dropped.
     paneState: {
       set: async <K extends keyof ModState>(key: K, value: ModState[K]) => {
+        // The band's `1` button asks for Needs you through this write; the pane follows it. (A stale
+        // session's write is dropped by the queue's guard below, and must not move the pane either.)
+        if (session.mine === session.current() && key === "paneTab") view.pane?.selectTab(value as ModPaneTab, { persist: false });
         // Queued behind every other session's writes; a stale session's write is dropped.
         if (isFlowStateKey(key)) await queuedStateSet($, session.pane, key, value, () => session.mine === session.current());
       },
@@ -489,4 +513,54 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       },
     },
   };
+}
+
+/** The engine elements for a pane view: the tab buttons share one row, the rest draw in order. */
+function drawNodes(ui: ReturnType<Engine["ui"]["resolve"]>, drawn: PaneView): unknown[] {
+  const out: unknown[] = [];
+  let tabs: unknown[] = [];
+  const flush = (): void => {
+    if (tabs.length > 0) out.push(ui.Box({ flexDirection: "row", gap: 2, children: tabs }));
+    tabs = [];
+  };
+  const button = (node: Extract<PaneNode, { kind: "button" }>): unknown =>
+    ui.Button({
+      key: `${node.button.group ?? "action"}-${node.button.label}`,
+      label: node.button.label,
+      ...(node.button.hotkey ? { hotkey: node.button.hotkey } : {}),
+      ...(node.button.autoFocus ? { autoFocus: true } : {}),
+      onPress: () => node.button.press(),
+    });
+  for (const node of drawn.nodes ?? []) {
+    if (node.kind === "button" && node.button.group === "tab") {
+      tabs.push(button(node));
+      continue;
+    }
+    flush();
+    if (node.kind === "button") out.push(button(node));
+    else if (node.kind === "input") {
+      out.push(
+        ui.Input({
+          key: node.input.key,
+          placeholder: node.input.placeholder,
+          value: node.input.value,
+          submitLabel: node.input.submitLabel,
+          onInput: (value: string) => node.input.onInput(value),
+          onSubmit: (value: string) => node.input.onSubmit(value),
+        }),
+      );
+    } else {
+      const { text, dim, bold, tone } = node.line;
+      out.push(
+        ui.Text({
+          children: text,
+          ...(dim ? { dimColor: true } : {}),
+          ...(bold ? { bold: true } : {}),
+          ...(tone ? { color: tone === "ok" ? "success" : "error" } : {}),
+        }),
+      );
+    }
+  }
+  flush();
+  return out;
 }

@@ -35,14 +35,16 @@ export type MultiplexerId = (typeof MULTIPLEXER_IDS)[number];
 
 /**
  * Terminal emulators we can drive - windows and tabs, with nothing that survives them
- * closing. (wezterm, Ghostty, iTerm2, kitty)
+ * closing. (WezTerm, Ghostty, iTerm2, macOS Terminal)
  *
  * Ordered like `MULTIPLEXER_IDS`, and ranked BELOW every multiplexer for naming: a tmux
  * pane lives inside a wezterm pane, so the multiplexer is the inner, more specific answer
  * to "what is this session's terminal home?". That is today's tmux-beats-wezterm precedence
  * stated once as a rule rather than open-coded as a branch.
  */
-export const EMULATOR_IDS = ["wezterm", "ghostty", "iterm"] as const;
+export const MACOS_TERMINAL_ID = "macos-terminal" as const;
+
+export const EMULATOR_IDS = ["wezterm", "ghostty", "iterm", MACOS_TERMINAL_ID] as const;
 
 export type EmulatorId = (typeof EMULATOR_IDS)[number];
 

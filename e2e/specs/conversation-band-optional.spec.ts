@@ -44,7 +44,6 @@ async function shoot(page: Page, target: Locator, name: string): Promise<void> {
   // would land on top of the pane being photographed.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/conversation-band-optional/${name}.png`);
 }
 
@@ -245,7 +244,6 @@ test("both band cells ship visible, switch off together, and give the conversati
   // different font stack. The relative check is what actually says "it grew"; the floor is
   // what stops a pane that grew for some unrelated reason from satisfying it.
   const after = await conversationShare(dashboard);
-  // eslint-disable-next-line no-console
   console.log(`conversation share: ${before.toFixed(3)} -> ${after.toFixed(3)}`);
   expect(after, "the conversation did not take the retired band's height").toBeGreaterThan(0.68);
   expect(after, "the conversation is no larger than it was with the band").toBeGreaterThan(before);

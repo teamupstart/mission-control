@@ -39,7 +39,6 @@ async function captureBoardShortcut(page: Page, name: string): Promise<void> {
   mkdirSync(SHORTCUT_EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${SHORTCUT_EVIDENCE}${name}.png`, fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-workflow-shortcut/${name}.png`);
 }
 
@@ -221,7 +220,6 @@ async function withDaemonLog<T>(daemon: DaemonHandle, run: () => Promise<T>): Pr
   try {
     return await run();
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
     throw caught;
   }

@@ -26,3 +26,22 @@ License:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The voice addressing preview downloads, at the operator's request, a speech
+model that is not distributed with this product. Its files are fetched from
+Hugging Face at pinned commits and kept in the state home:
+
+  NVIDIA Parakeet TDT 0.6B v2, Core ML conversion by FluidInference
+  https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml
+  (commit ee09c569f73759e6d44c9bd16766f477b2b36d39), based on
+  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+
+  NVIDIA Parakeet TDT-CTC 110M, Core ML conversion by FluidInference
+  https://huggingface.co/FluidInference/parakeet-ctc-110m-coreml
+  (commit accdafd8cf8a2ff1cabe3c11e54416b405d409aa), based on
+  https://huggingface.co/nvidia/parakeet-tdt_ctc-110m
+
+Both models are licensed under the Creative Commons Attribution 4.0
+International License (CC-BY-4.0), https://creativecommons.org/licenses/by/4.0/.
+The models were created by NVIDIA and converted to Core ML by FluidInference.
+Mission Control uses the files unmodified.

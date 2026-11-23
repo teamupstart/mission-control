@@ -50,6 +50,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "shaping", surface: "settings" },
   // Voice settings, edited in Settings > Voice. `muted` is operational and never restored.
   { id: "voice", surface: "settings" },
+  // Settings > Reports' guidance for when an agent posts a report (`inbox` flag). Added after
+  // format v1 shipped, so a snapshot without it leaves the guidance alone.
+  { id: "reports", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

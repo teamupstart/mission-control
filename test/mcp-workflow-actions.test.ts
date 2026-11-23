@@ -70,6 +70,9 @@ async function fixture(
     queues: new QueueManager(registry), reviews });
   const requests: Array<{ path: string; method: string; body: unknown; actor: string | null; surface: string | null }> = [];
   const server = serve({ hostname: "127.0.0.1", port, fetch: async (req) => {
+    // The MCP child reads the report guidance once as it starts (`post_report`'s description);
+    // these tests count the tool requests, so that startup read is answered and not recorded.
+    if (new URL(req.url).pathname === "/mcp/reports/guidance") return app.fetch(req);
     requests.push({ path: new URL(req.url).pathname, method: req.method,
       body: req.method === "POST" ? await req.clone().json() : null,
       actor: req.headers.get("x-mission-operation-actor"), surface: req.headers.get("x-mission-operation-surface") });

@@ -156,7 +156,7 @@ test("a test strategy runs two waves, the second pinned to the first wave's arti
 
   // Settle both wave-one members.
   const attempts = () => store.listAttempts(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = attempts().find((a) => a.taskId === dispatch.taskId)!.memberId;
     await activate(engine, gateway, run.id, dispatch.taskId);
     await submit(engine, run.id, memberId);
@@ -440,7 +440,7 @@ test("completing a run stops its submitted members' live agents while keeping th
   const { store, gateway, engine } = harness();
   const { run } = store.createRun(runInsert(singleWavePlan(2)));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
     await activate(engine, gateway, run.id, dispatch.taskId);
     await submit(engine, run.id, memberId);

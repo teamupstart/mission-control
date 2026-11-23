@@ -5,7 +5,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ForemanSettingsPanel } from "../src/web/components/ForemanSettingsPanel.tsx";
 import { candidateRepos } from "../src/web/lib/trust.ts";
 import { ForemanPopover } from "../src/web/components/ForemanBar.tsx";
-import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "../src/shared/foreman-models.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";

@@ -11,6 +11,7 @@ import { checkToken } from "../auth.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
+import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
 /**
@@ -32,6 +33,14 @@ const limitBody = bodyLimit({
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
  * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
  * - `POST /api/voice/mute { muted }` mutes or unmutes and returns `{ state }`.
+ * - `GET /api/voice/devices` returns `{ devices, listener }`: the input devices the live listener
+ *   listed in its hello, which Voice settings offers beside the built-in microphone and the
+ *   system default, and whether a listener is live at all.
+ * - `POST /api/voice/model/download` starts downloading the speech model (contract H) and answers
+ *   202 with `{ model }`, or 409 with the reason when there is no model to download. A download
+ *   already running, or a model already verified, is not started again.
+ * - `DELETE /api/voice/model/download` cancels a running download, removes what it wrote, and
+ *   returns `{ model }` as the disk now reads.
  *
  * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
  * cooperating local process posts to them, and the token is what separates it from any other.
@@ -40,7 +49,11 @@ const limitBody = bodyLimit({
  * - `POST /voice/shell-report` takes the shell's capabilities, microphone permission, call and
  *   push-to-talk readings and hotkey error, and returns `{ state }`.
  */
-export function registerVoiceRoutes(app: Hono, store: VoiceStateStore = voiceStateStore): void {
+export function registerVoiceRoutes(
+  app: Hono,
+  store: VoiceStateStore = voiceStateStore,
+  models: VoiceModelManager = voiceModelManager,
+): void {
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
 
@@ -56,6 +69,16 @@ export function registerVoiceRoutes(app: Hono, store: VoiceStateStore = voiceSta
     setVoiceConfig({ muted: parsed.data.muted });
     return c.json({ state: store.state() });
   });
+  app.get("/api/voice/devices", gate, (c) => {
+    const devices = store.listenerDevices();
+    return c.json({ devices: devices ?? [], listener: devices !== null });
+  });
+  app.post("/api/voice/model/download", gate, (c) => {
+    const result = models.download();
+    if (!result.ok) return c.json({ error: "model_unavailable", reason: result.reason, model: result.model }, 409);
+    return c.json({ model: result.model }, 202);
+  });
+  app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);

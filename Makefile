@@ -144,7 +144,7 @@ $(NPM_STAMP): package.json package-lock.json
 test: $(NPM_STAMP) ## Run the full test suite
 	npm test
 
-lint: $(NPM_STAMP) ## Lint src, hooks, test, scripts (oxlint)
+lint: $(NPM_STAMP) ## Lint correctness errors; React/hooks and accessibility warnings (src, hooks, test, scripts, e2e, integrations)
 	npm run lint
 
 check: $(NPM_STAMP) ## Typecheck

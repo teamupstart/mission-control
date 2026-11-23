@@ -17,6 +17,8 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 
+export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -24,13 +26,6 @@ export const FEATURE_FLAGS = [
     description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
     stage: "preview",
     keywords: ["backlog", "plan", "revision", "dependency"],
-  },
-  {
-    id: "codex-resident-native-mcp",
-    label: "Codex resident native MCP",
-    description: "Let Codex residents use their native MCP configuration and saved logins.",
-    stage: "preview",
-    keywords: ["residents", "oauth", "global servers"],
   },
   {
     id: "resident-active-hours",
@@ -79,7 +74,7 @@ export const FEATURE_FLAGS = [
     id: "session-control-requests",
     label: "Session control requests",
     description: "Let a session ask, through Mission Control's MCP tools, for permission to control other sessions. "
-      + "The request appears as a card on that session, and only your own click on Accept in the desktop app grants it.",
+      + "The request appears in the attention inbox, and only your own click on Accept in the desktop app grants it.",
     stage: "preview",
     keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
   },
@@ -131,9 +126,12 @@ export const FEATURE_FLAGS = [
       "Agents can post reports for you to read: a Reports section in the attention inbox and a to read " +
       "figure in the top bar. Stalled sessions get a Stuck section in the inbox with the fix on each row. " +
       "One rule names an agent in alert titles, the attention inbox, the review modal and question cards: " +
-      "its resident name in its board colour, else its task title, else its session name.",
+      "its resident name in its board colour, else its task title, else its session name. The alerts " +
+      "popover gains What notifies you switches, and a report notifies you when its agent is back or " +
+      "still working. Settings > Reports edits when agents post reports and lists muted agents, and the " +
+      "Reports section has Mark all read.",
     stage: "preview",
-    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall"],
+    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
     id: MCP_SCHEDULES_FLAG_ID,
@@ -152,7 +150,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
   },
+  {
+    id: MACOS_TERMINAL_FLAG_ID,
+    label: "macOS Terminal",
+    description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
+    stage: "preview",
+    keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */
-export const RETIRED_FEATURE_FLAG_IDS = [] as const;
+export const RETIRED_FEATURE_FLAG_IDS = ["codex-resident-native-mcp"] as const;

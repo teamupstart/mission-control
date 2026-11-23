@@ -24,6 +24,7 @@ export function mkReport(over: Partial<ReportItem> & { id: string }): ReportItem
     announcedAs: null,
     announcedAt: null,
     publishedArchiveKey: null,
+    countedInDigestAt: null,
     ...over,
   };
 }
@@ -32,11 +33,19 @@ export function mkReport(over: Partial<ReportItem> & { id: string }): ReportItem
  * Report controls for a rendered inbox, recording each call. `AttentionInbox` requires real
  * controls, so a render test passes these rather than an inert default.
  */
-export function mkReportControls(openReportId: string | null = null, target: ReplyTarget = { kind: "live", sessionId: "s1" }) {
+export function mkReportControls(
+  openReportId: string | null = null,
+  target: ReplyTarget = { kind: "live", sessionId: "s1" },
+  mutedAuthors: ReadonlySet<string> = new Set(),
+) {
   const calls: {
     toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[];
     openedDocument: string[]; published: string[]; openedArchive: string[];
-  } = { toggled: [], markedRead: [], replied: [], followedUp: [], openedDocument: [], published: [], openedArchive: [] };
+    muted: string[]; markedAllRead: string[][];
+  } = {
+    toggled: [], markedRead: [], replied: [], followedUp: [], openedDocument: [], published: [], openedArchive: [],
+    muted: [], markedAllRead: [],
+  };
   return {
     calls,
     controls: {
@@ -50,6 +59,9 @@ export function mkReportControls(openReportId: string | null = null, target: Rep
       onPublish: (report: ReportItem) => { calls.published.push(report.id); },
       publishStateFor: (_report: ReportItem) => ({ busy: false, refusal: null }),
       onOpenArchive: (report: ReportItem) => { calls.openedArchive.push(report.id); },
+      mutedAuthors,
+      onMute: async (report: ReportItem) => { calls.muted.push(report.author.key); return null; },
+      onMarkAllRead: async (ids: readonly string[]) => { calls.markedAllRead.push([...ids]); return null; },
     },
   };
 }

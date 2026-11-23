@@ -156,7 +156,6 @@ import type {
   WorkflowRun,
   WorkflowRunCriteria,
   WorkflowRunDetail,
-  WorkflowRunIntentSnapshot,
   WorkflowRunPage,
   WorkflowRunSummary,
   WorkflowSubmissionEvidenceImages,
@@ -6613,14 +6612,12 @@ export class WorkflowStore {
       artifactBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
         - ownArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
     };
-    const held = new Set([
-      ...(this.db.prepare(
-        `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
-         UNION
-         SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
-      ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
-        .map((row) => row.staging_id),
-    ]);
+    const held = new Set((this.db.prepare(
+      `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
+       UNION
+       SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
+    ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
+      .map((row) => row.staging_id));
     const nextOrdinal = Number((this.db.prepare(
       `SELECT COALESCE(MAX(ordinal), -1) + 1 AS next FROM (
          SELECT ordinal FROM workflow_submission_images WHERE submission_id = ?

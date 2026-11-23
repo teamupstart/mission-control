@@ -320,7 +320,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Reports** (preview, while the `inbox` flag is on), **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -362,6 +362,15 @@ search and the palette of every open window the moment the flag changes, with no
 lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
 on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
 budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
+
+**Reports** (`#/settings/reports`) sits after Standing instructions and exists only while the
+`inbox` preview flag is on, following it live the way Task shaping follows its own. It holds the
+two agent-report noise controls that are settings: **Report guidance**, the text that tells
+agents when to post a report, with **Save** and **Reset to default**, and **Muted agents**, every
+agent whose reports are muted, with **Unmute**. A saved guidance reaches sessions started
+afterwards. The guidance is the `reports` backup domain; muted agents are not backed up, since a
+snapshot restored onto another installation would name agents that never ran there. See
+[When reports get chatty](attention-and-alerts.md#when-reports-get-chatty).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
 (today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**

@@ -21,7 +21,6 @@ async function shoot(
   // where moving the pointer would move the marquee being photographed.
   if (!holdPointer) await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/backlog-bulk-edit/${name}.png`);
 }
 

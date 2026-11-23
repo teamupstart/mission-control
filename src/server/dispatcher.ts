@@ -1,6 +1,6 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
-import { workUnitEnv } from "./agent-work-unit.ts";
+import { withWorkUnit, workUnitEnv } from "./agent-work-unit.ts";
 import { launchWorkUnitId } from "./work-unit.ts";
 import {
   expectTerminalLaunchWorkUnit,
@@ -88,6 +88,7 @@ import {
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
 import { homeRecord, heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type HomeDeps, type SpawnedHome } from "./terminal/home.ts";
+import { configuredTerminalDeps } from "./terminals-config.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -1415,7 +1416,7 @@ export class Dispatcher {
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
       const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null, cur.terminalResourceId) : false
+        cur.homeName ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId) : false
       );
       if (alive !== false) {
         this.patch(taskId, {
@@ -2604,15 +2605,17 @@ export class Dispatcher {
             ],
             // What the agent's process holds: the terminal server's environment, which the
             // daemon started and so passed its own, overlaid with what the launch wrapper exports.
-            env: {
+            // The wrapper unsets any inherited `WORK_UNIT_ID` and exports only this launch's, so
+            // the budget counts exactly that one: a daemon started from an agent's shell must not
+            // be charged for a variable its launches never carry (`withWorkUnit`).
+            env: withWorkUnit({
               ...process.env,
               ...isolatedAgentEnvironment({
                 cwd: provisioned.worktreePath ?? provisioned.repoRoot,
                 stateHome: launch.terminal!.stateHome,
-                // As the terminal arm spawns it, the work unit included.
-                extraEnv: { ...launch.terminal!.advisorEnv, ...workUnitEnv(launch.workUnitId) },
+                extraEnv: { ...launch.terminal!.advisorEnv },
               }),
-            },
+            }, launch.workUnitId),
             argMax: await (this.deps.argMax ?? platformArgMax)(),
           })
         : null,
@@ -3351,7 +3354,7 @@ export async function teardownWorktree(
     if (!killed.ok) {
       // A refused close is harmless only when the recorded resource is proved absent.
       // Keep the checkout when the terminal is live or its identity cannot be checked.
-      const alive = await homeAlive(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+      const alive = await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null, task.terminalResourceId ?? null);
       if (alive !== false) {
         throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
       }

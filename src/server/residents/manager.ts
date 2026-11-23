@@ -48,6 +48,7 @@ import {
   type ResidentPersonaSnapshot,
   type ResidentProfile,
   type ResidentProfileRevision,
+  type ResidentProfileRevisionRequest,
   type ResidentRun,
 } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
@@ -80,6 +81,7 @@ import {
   recordResidentRunControlAuthorized,
   recordResidentRunControlGrant,
   reserveResidentRun,
+  residentProfileRevision,
   residentRunForTask,
   residentRunIdentityByRequest,
   updateResidentProfile,
@@ -331,7 +333,7 @@ export class ResidentManager {
     }
     this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    for (const runId of [...this.grantWatches.keys()]) this.dropGrantWatch(runId);
+    for (const runId of Array.from(this.grantWatches.keys())) this.dropGrantWatch(runId);
     await Promise.all(this.cleaningWorkspaces.values());
   }
 
@@ -423,8 +425,14 @@ export class ResidentManager {
   updateProfile(
     id: string,
     expectedRevision: number,
-    settings: ResidentProfileRevision,
+    request: ResidentProfileRevisionRequest,
   ): ResidentProfileOutcome {
+    // A client that omits the mode inherits it from the immutable revision it edited.
+    // The store rejects a missing or stale base before writing.
+    const nativeSources = request.mcp.nativeSources
+      ?? residentProfileRevision(id, expectedRevision)?.mcp.nativeSources
+      ?? "pinned";
+    const settings = { ...request, mcp: { ...request.mcp, nativeSources } };
     const problem = this.settingsProblem(settings);
     if (problem) return { ok: false, status: 400, error: problem };
     let write;

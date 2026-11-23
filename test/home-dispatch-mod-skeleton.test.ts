@@ -27,11 +27,12 @@ import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-test("each pane tab draws not implemented for every placement, and the fake records the view", () => {
+test("the later pane tabs draw not implemented for every placement, and the fake records the view", () => {
   const fake = createFakeModHost();
-  const tabs: ModPaneTab[] = ["needs-you", "tasks", "workflows", "residents"];
+  // Needs you and Tasks are real since P12 (test/home-dispatch-mod-pane.test.ts).
+  const tabs: ModPaneTab[] = ["workflows", "residents"];
   const placements: ModPanePlacement[] = ["dock", "inline", "widget"];
-  assert.deepEqual(Object.keys(PANE_TABS).sort(), [...tabs].sort());
+  assert.deepEqual(Object.keys(PANE_TABS).sort(), ["needs-you", "residents", "tasks", "workflows"]);
   for (const tab of tabs) {
     for (const placement of placements) {
       const props: PaneProps = { tab, placement, bodyColumns: 60 };
@@ -157,7 +158,7 @@ test("npm run build:mod's script writes an installable folder marketplace that c
     assert.deepEqual(Object.keys(built.PANE_TABS).sort(), ["needs-you", "residents", "tasks", "workflows"]);
     assert.equal(typeof built.runDispatchCommand, "function");
     const fake = createFakeModHost();
-    for (const tab of ["needs-you", "tasks", "workflows", "residents"] as const) {
+    for (const tab of ["workflows", "residents"] as const) {
       assert.deepEqual(
         built.renderPane(fake.host, { tab, placement: "dock", bodyColumns: 50 }).lines,
         [PANE_NOT_IMPLEMENTED],

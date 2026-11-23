@@ -27,7 +27,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | Active hours (preview) | The days and hours the loop may wake the resident; see [Active hours](#active-hours) | off: always awake |
-| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | pinned, inherit on, none selected |
+| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | all native sources, no custom servers selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
@@ -747,11 +747,11 @@ resident's card does not offer the memory retro.
 **MCP servers** in the profile editor decides which MCP servers a resident starts with, besides
 Mission Control's own, which every resident always has.
 
-- **Server set** chooses between **Pinned at launch** (the default) and, on Claude Code, **All
-  native sources (not pinned)**; see [All native sources](#all-native-sources). Codex offers only
-  the pinned set, so the choice is not shown for it, and a profile on Codex that makes it is
-  refused on save and at launch.
-- **Inherit harness defaults** (on by default) adds every global server the harness configures
+- **Server set** defaults to [All native sources (not pinned)](#all-native-sources) for new
+  Claude Code and Codex profiles. Choose **Pinned at launch** to fix the server set across
+  starts and resumes. Saved profiles keep their source mode, including older revisions that
+  predate this choice and use the pinned set.
+- In pinned mode, **Inherit harness defaults** (on by default) adds every global server the harness configures
   when the resident launches: the user-scope `mcpServers` in Claude Code's `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), or the `mcp_servers` in Codex's own `config.toml`.
 - **Add an MCP server** adds one of those global servers, or a [custom server](#custom-mcp-servers)
@@ -768,20 +768,21 @@ Mission Control's server and any custom server the profile selects.
 
 - **Claude Code** loads user, local, project and plugin servers and claude.ai connectors.
 - **Codex** loads its normal Codex home, trusted workspace configuration, system and managed
-  configuration, and enabled plugins. Enable **Codex resident native MCP** in **Settings >
-  Feature flags** to expose the option. For a server signed into through Codex OAuth, such as
-  Glean, select **All native sources (not pinned)** under **MCP servers**, confirm, save and
-  launch. If the login has expired, sign in again through Codex, for example with
-  `codex mcp login glean` when the server is named `glean`.
+  configuration, and enabled plugins. Codex presents its saved OAuth login to servers such as
+  Vercel. For a previously pinned profile, select **All native sources (not pinned)** under
+  **MCP servers**, confirm, save and launch. If a login has expired, sign in again through Codex.
 
-Confirmation covers the change in access. Native configuration is read again at each start or
+Switching a pinned profile to native sources asks for confirmation. Native configuration is read again at each start or
 resume, and the resident can use the permissions of the harness's saved logins. Mission Control
 requires its own server and the selected custom servers. The harness handles native startup and
 sign-in according to its own configuration. Custom servers are snapshotted at launch, with their
 secret values handled by the [scoped launcher](#custom-mcp-servers).
-Changing harnesses on an all-native profile asks for confirmation for the destination harness.
-Cancel keeps the current harness. If the destination cannot use all native sources, switching
-selects **Pinned at launch**.
+
+On a fresh profile, selecting a harness applies that harness's default directly. Once you edit
+the MCP settings, save the profile, or duplicate one, changing its all-native harness asks for
+confirmation for the destination harness. Cancel keeps the current harness. If the destination
+cannot use all native sources, switching selects **Pinned at launch**. API edits that omit
+`mcp.nativeSources` keep the source mode of the revision being edited.
 
 With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
 hidden because the harness loads its global servers itself. A global server already selected stays in the

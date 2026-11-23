@@ -161,7 +161,6 @@ test("the Workflows tab names the reviewers that approved a passed stage", async
   const ladder = dashboard.getByRole("region", { name: `${WORKFLOW} workflow stages` });
   await expect(ladder).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log("OBSERVED the Workflows tab rendered the ladder for the completed run");
   }
 
@@ -180,7 +179,6 @@ test("the Workflows tab names the reviewers that approved a passed stage", async
   }
   await expect(stage.locator("li.wf-ladder-member")).toHaveCount(2);
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log(`OBSERVED both ${REVIEWER.evidence} and ${REVIEWER.docs} named under the stage, unexpanded`);
   }
 
@@ -194,7 +192,6 @@ test("the Workflows tab names the reviewers that approved a passed stage", async
       path: `${EVIDENCE}workflow-ladder-members.png`,
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-ladder-members/workflow-ladder-members.png");
   }
 });

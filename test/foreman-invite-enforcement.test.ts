@@ -272,7 +272,7 @@ test("a review whose session is gone still resolves - there is no pane left to p
   // The deliberate narrowing: refused only on a POSITIVE answer (the session is here and
   // uninvited). An unresolvable owner makes this bookkeeping that settles a dangling row,
   // and refusing it would strand the review rather than protect anybody.
-  const { registry, reviews, app } = harness();
+  const { reviews, app } = harness();
   const review = reviews.create("proc:long-gone:1:0", "input", "Still there?", "?");
   const r = await post(app, `/api/reviews/${review.id}/resolve`, {
     action: "answer",

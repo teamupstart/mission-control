@@ -93,6 +93,28 @@ export const INBOX_ACTIONS = [
     spoken: { named: "{name}, follow up, ...", whileOpen: "reply, ..." },
     clickOnly: null,
   },
+  // A report's attached document, opened from the copy stored when it was posted. Drawn on the
+  // report card and its conversation entry, only when the report has a document.
+  {
+    id: "open-report",
+    label: "Open report",
+    spoken: { named: "{name}, open report", whileOpen: null },
+    clickOnly: null,
+  },
+  // Save that document to the scout archive. Only ever on the operator's press.
+  {
+    id: "publish-scout",
+    label: "Publish as scout",
+    spoken: { named: "{name}, publish as scout", whileOpen: null },
+    clickOnly: null,
+  },
+  // Once published, go to the archive. It only moves you to the Scouts page.
+  {
+    id: "open-archive",
+    label: "Open archive",
+    spoken: null,
+    clickOnly: "navigation",
+  },
   // The Stuck card's controls.
   { id: "nudge", label: "Nudge", spoken: { named: "{name}, nudge", whileOpen: null }, clickOnly: null },
   { id: "continue", label: "Continue", spoken: { named: "{name}, continue", whileOpen: null }, clickOnly: null },

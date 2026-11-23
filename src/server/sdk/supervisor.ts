@@ -394,8 +394,15 @@ export class SdkSupervisor {
         // projection is not yet a usable session, and the two must not share one count.
         noteSessionRestoring(row.id, row.taskId);
         const restoreStartedAt = Date.now();
+        // The restore's one work unit decision, made here so the launch and the span that
+        // reports this attempt carry the same value whether or not the agent comes back. Inside
+        // the `try`: the owner lookup reads SQLite, and a throw there must reach this row's
+        // failure handling rather than abort every row after it. A decision that could not be
+        // made is reported as none, never guessed.
+        let workUnitId: string | null = null;
         try {
-          await this.resume(row);
+          workUnitId = this.restoreWorkUnitId(row);
+          await this.resume(row, null, workUnitId);
           clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({
             sessionId: row.id,
@@ -412,6 +419,7 @@ export class SdkSupervisor {
             outcome: this.shuttingDown ? "interrupted" : "succeeded",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
@@ -437,6 +445,7 @@ export class SdkSupervisor {
             outcome: "failed",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
           if (deferred) {
             // Not a verdict on this session: keep it live for the next restore, which is the
@@ -1605,14 +1614,38 @@ export class SdkSupervisor {
   }
 
   /**
+   * The work unit decision for relaunching `row`. A restore or a wake is a start, so it decides
+   * again, once. The process it replaces has ended, so what that one carried no longer
+   * describes anything. Decided from the task that OWNS the session now, not from `row.taskId`,
+   * which is launch provenance: an agent started with no work unit may since have been assigned
+   * another unit's task, and the restored agent runs that task, so it must carry that task's id.
+   * With no current owner, the launch task is what the session last worked for. A hibernation
+   * wake names its task (`ownerTaskId`): hibernating cleared the task's session pointer, so the
+   * lookup would otherwise fall back to the launch task.
+   */
+  private restoreWorkUnitId(row: SdkSessionRow, ownerTaskId: string | null = null): string | null {
+    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
+    // The registry first, then SQLite: the registry may already have dropped a finished task.
+    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
+    return launchWorkUnitId(owner);
+  }
+
+  /**
    * Relaunch one persisted session, continuing the SAME conversation.
    *
    * `resume` is the harness-native id the driver reported when it bound, which is what
    * makes this a continuation rather than a new session wearing an old card: the note,
    * queue, goal and work episode are all keyed on it, and a fresh id would strand every one
    * of them. A row that never got that far has nothing to continue and is refused here.
+   *
+   * `workUnitId` is that relaunch's decision. The restore loop makes it first, so the span
+   * reporting the attempt carries the same value; a wake lets this make it.
    */
-  private async resume(row: SdkSessionRow, ownerTaskId: string | null = null): Promise<void> {
+  private async resume(
+    row: SdkSessionRow,
+    ownerTaskId: string | null = null,
+    workUnitId: string | null = this.restoreWorkUnitId(row, ownerTaskId),
+  ): Promise<void> {
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
@@ -1620,18 +1653,6 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
-    // A restore is a start, so it decides again, here and once. The process this replaces
-    // ended with the daemon, so what it carried no longer describes anything. Decided from the
-    // task that OWNS the session now, not from `row.taskId`, which is launch provenance: an
-    // agent started with no work unit may since have been assigned another unit's task, and the
-    // restored agent runs that task, so it must carry that task's id. With no current owner,
-    // the launch task is what the session last worked for.
-    // A hibernation wake names its task: hibernating cleared the task's session pointer, so the
-    // lookup would otherwise fall back to the launch task.
-    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
-    // The registry first, then SQLite: the registry may already have dropped a finished task.
-    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
-    const workUnitId = launchWorkUnitId(owner);
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;

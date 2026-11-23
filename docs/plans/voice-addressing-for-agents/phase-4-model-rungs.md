@@ -48,9 +48,13 @@ As of `2088bd522`:
    configures anything. `effectiveDecisionProvider(config, env)` decides, in this order:
    - `decisionProvider` is `off`: none, whatever keys exist. This is a person's opt-out;
    - `decisionProvider` is `openai` or `jev`: that provider, when it has a key;
-   - `decisionProvider` is null, the default, which means automatic: the provider of a saved
-     key; else OpenAI Decisions when `OPENAI_API_KEY` is in the daemon's environment; else Jev
-     when `TYPESAFE_API_KEY` is; else none.
+   - `decisionProvider` is null, the default, which means automatic: the first of these four
+     that exists decides, in this fixed order: a saved OpenAI Decisions key; a saved Jev key;
+     `OPENAI_API_KEY` in the daemon's environment (OpenAI Decisions); `TYPESAFE_API_KEY` in
+     it (Jev). With none of them the provider is none. So a saved key beats any environment
+     key, and within each source OpenAI Decisions comes before Jev. Saving a second key
+     replaces nothing: both stay stored, and the order picks. A person who wants the other
+     provider chooses it in Voice settings.
    A provider's key is its saved key, and otherwise its variable in the daemon's environment.
    A saved key overrides the environment on that machine. So with `OPENAI_API_KEY` set for
    other tools and nothing chosen in Voice settings, ambiguous sentences and the roster's
@@ -68,8 +72,10 @@ As of `2088bd522`:
    second, then resolves it: `pending` for one target, `pending` with two parts for a split,
    `unsure` with candidates otherwise. A mention sends the whole text to the first agent.
 7. **Settings.** In Voice settings, a "Faster routing" group: provider (Automatic, Off, OpenAI
-   Decisions, Jev), a key field, and a line saying where the key comes from ("From the
-   environment", "Saved on this Mac", or "Not set: routing uses Haiku or Luna"), with Remove.
+   Decisions, Jev) and one key row for each provider, since a key belongs to a provider. A row
+   has a key field, a line saying where that provider's key comes from ("From the
+   environment", "Saved on this Mac" or "Not set") and Remove for a saved key. With no
+   provider in use the group reads "Not set: routing uses Haiku or Luna".
    Automatic is the null value and Off stores `off`. While a provider is in use the group
    names it and says that ambiguous sentences and the roster's names and roles are sent to
    it, so a key picked up from the environment is shown as in use and not hidden.
@@ -88,13 +94,19 @@ or `jev`; Phase 1 stores null.
 - `test/voice-decide.test.ts` with fake providers: each rung, a timeout falling through, a low
   confidence, a split, a mention, no key, environment and saved key precedence. With
   `OPENAI_API_KEY` in the environment and `decisionProvider` null, OpenAI Decisions is called;
-  the same for `TYPESAFE_API_KEY` and Jev; with both, OpenAI Decisions. With `decisionProvider`
+  the same for `TYPESAFE_API_KEY` and Jev; with both, OpenAI Decisions. With keys saved for both
+  providers and `decisionProvider` null, OpenAI Decisions is called; with only a Jev key saved
+  and `OPENAI_API_KEY` in the environment, Jev is called, because a saved key comes first;
+  with both saved and `decisionProvider` `jev`, Jev is called. With `decisionProvider`
   `off` and a key in the environment, no HTTPS call is made and the job answers. With
   `decisionProvider` `jev` and only `OPENAI_API_KEY` present, no HTTPS call is made and that
   key is not sent to Jev.
-- `test/voice-decision-key-http.test.ts`: the key is not echoed, the file mode, removal.
+- `test/voice-decision-key-http.test.ts`: the key is not echoed, the file mode, a key saved and
+  removed for one provider leaves the other's, and the report of each provider's source.
 - Provider adapters are tested against recorded responses; no test calls a real provider.
-- `e2e/specs/voice-decision-key.spec.ts`: save a key, see "Saved on this Mac", remove it. With
+- `e2e/specs/voice-decision-key.spec.ts`: save an OpenAI Decisions key, see "Saved on this Mac"
+  on its row and the group naming OpenAI Decisions, remove it. Save keys on both rows with the
+  provider on Automatic: the group names OpenAI Decisions; choose Jev and it names Jev. With
   `OPENAI_API_KEY` in the daemon's environment and the provider on Automatic, the group names
   OpenAI Decisions, the line reads "From the environment" and the sentence about what is sent
   is shown; choose Off and the group reads "Not set: routing uses Haiku or Luna". The e2e
@@ -123,3 +135,6 @@ Phase 13 calls `ask` with `option` questions. Phase 6 draws `resolving` and two-
   an organization. Do not reintroduce a required selection. What the review did change: step
   3 now says outright what null means and which key wins, `off` is a person's opt-out, the
   settings group names the provider in use and what is sent, and the security doc says so.
+- Pull request review, ninth round: "the provider of a saved key" named no winner when keys
+  are saved for both providers. Automatic now follows one fixed order of four sources, saved
+  before environment and OpenAI Decisions before Jev, and the both-saved case is tested.

@@ -144,6 +144,14 @@ An eighth review raised one more, accepted.
   the first to register it. The keycap and each mention of the hotkey now appear only when
   the shell reports the `hotkey` capability and no `hotkeyError`.
 
+A ninth review raised two more, both accepted.
+
+- **Automatic with keys saved for both providers.** Phase 4 said "the provider of a saved
+  key" and could store one for each. Automatic now follows a fixed order: a saved OpenAI
+  Decisions key, a saved Jev key, then the two environment variables in the same order.
+- **"Both prerequisites" in a mock-up.** The setup mock-up's note said both where the plan
+  requires three previews. It now says all three.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -303,10 +311,12 @@ the decision again, and a spoken submit of a plan form, which is the confirmatio
 `option`, each answered with a choice and a confidence. Rungs in order: the effective decision
 provider, the `voice-routing` background job, none. `effectiveDecisionProvider(config, env)`
 names the provider: none when the setting is `off`; the one chosen in Voice settings; and with
-the setting null, the provider of whichever key is present, so a key in the environment alone
-switches it on (the operator's decision of 2026-11-23). Key routes `GET`, `PUT` and `DELETE
-/api/voice/decision-key`; `GET` reports the effective provider and the key's source
-(`settings`, `environment` or none), and does not return the key.
+the setting null, the first key present in a fixed order (saved OpenAI Decisions, saved Jev,
+`OPENAI_API_KEY`, `TYPESAFE_API_KEY`), so a key in the environment alone switches it on (the
+operator's decision of 2026-11-23). Key routes `GET`, `PUT` and `DELETE
+/api/voice/decision-key`, where `PUT` and `DELETE` name the provider whose key they change;
+`GET` reports the effective provider and, for each provider, its key's source (`settings`,
+`environment` or none), and does not return a key.
 
 **F. Spoken turns (Phase 5).** `VOICE_TURN_PREFIX`, `spokenMessageText(words, notes)` and
 `openQuestionsNote(asks)` in `src/shared/voice-delivery.ts`;

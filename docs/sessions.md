@@ -3225,10 +3225,18 @@ filing, exactly as a blocking one is, and the approval, **Approve all future bun
 covers the bundle with nothing else to ask still returns the approval as the tool result; with
 other decisions left, only those are filed, and the receipt says the bundle is already approved.
 
-Operator messages, typed or spoken, still reach an agent behind a filed form. The wait mode is
-fixed when the form is filed: switching either flag off sends new forms back to waiting inside the
-call, while a form already filed stays filed and keeps its hold. It can still be answered, and is
-listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+Operator messages, typed or spoken, still reach an agent behind a filed form. Switching a flag never
+changes a form that already exists: switching either flag off sends new forms back to waiting inside
+the call, while a form already filed stays filed and keeps its hold. It can still be answered, and
+is listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+
+One thing does turn a filed form into a blocking one. If an MCP child from an older build re-asks
+the same form word for word, it cannot read a receipt and waits in its call, so the form becomes a
+form that waits inside that call, like any call-mode plan form. Its session stays amber, it still
+blocks completion, and its answer becomes that call's result. It is no longer listed or
+withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
+being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
+as a message.
 
 ### The ask channel
 

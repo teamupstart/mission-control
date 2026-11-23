@@ -48,6 +48,14 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
   const text = args.trim();
   if (text === "") return runDispatchFlow(host, session, { entry: "first-message" });
 
+  // A draft waiting for its description takes the text word for word, even when it reads like a
+  // pane argument or a task id: the person is describing a task, not asking for the pane.
+  const waiting = await host.paneState.get("draftId");
+  if (waiting) {
+    const described = await describeDraft(host, session, waiting, text);
+    if (described) return described;
+  }
+
   const words = text.split(/\s+/);
   const first = words[0]!;
   const lowered = first.toLowerCase();
@@ -58,13 +66,6 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
     if (await listedTask(host, first)) return openPane(host, { taskId: first });
   } else if (words.length === 2 && lowered === "check" && (await listedTask(host, words[1]!))) {
     return openPane(host, { taskId: words[1]! });
-  }
-
-  // A draft waiting for its description takes the text word for word.
-  const waiting = await host.paneState.get("draftId");
-  if (waiting) {
-    const described = await describeDraft(host, session, waiting, text);
-    if (described) return described;
   }
 
   // The fast path: a kind and the description, so the dialogs start at After work.

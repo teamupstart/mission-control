@@ -46,6 +46,7 @@ export interface DispatchInput {
 /** The line for a call that did not reach a daemon that answers, or the daemon's own refusal. */
 export function unreachableLine(outcome: Failed): string {
   if (outcome.kind === "refused") return outcome.error;
+  if (outcome.kind === "ended") return CANCELLED_NOTICE;
   if (outcome.kind === "down") return DAEMON_DOWN_NOTICE;
   if (outcome.kind === "off") return FLOW_OFF_NOTICE;
   return TOKEN_REFUSED_NOTICE;
@@ -59,6 +60,8 @@ function tell(host: FlowHost, line: string): void {
 
 /** Shows what went wrong as written and ends the flow. */
 export function fail(host: FlowHost, outcome: Failed): FlowResult {
+  // The session ended under an open dialog: nothing was filed, and there is no one to tell.
+  if (outcome.kind === "ended") return { outcome: "cancelled", line: CANCELLED_LINE };
   const line = outcome.kind === "refused" && outcome.status === 404 && outcome.error === "no such draft"
     ? EXPIRED_NOTICE
     : unreachableLine(outcome);

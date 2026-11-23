@@ -24,7 +24,7 @@ import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts
 export function register(on: EngineOn, _options: unknown): void {
   let core: ModCore | null = null;
   // What the flows need to speak for this session (7.11): set at session start, cleared at its end.
-  let flowSession: { sessionId: string; cwd: string } | null = null;
+  let flowSession: { sessionId: string; cwd: string; live: () => boolean } | null = null;
   let flowHost: FlowHostType | null = null;
   const view: GlanceView = { banner: undefined, band: undefined, status: undefined };
 
@@ -47,7 +47,7 @@ export function register(on: EngineOn, _options: unknown): void {
     const entrypoint = await $.env.get("CLAUDE_CODE_ENTRYPOINT");
     if (mine !== generation) return next(e);
     flowHost = host;
-    flowSession = { sessionId, cwd: e.cwd };
+    flowSession = { sessionId, cwd: e.cwd, live: () => mine === generation };
     // The command and the tool are always registered: with the flag off they answer that it is off.
     await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch(() => undefined);
     await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch(() => undefined);

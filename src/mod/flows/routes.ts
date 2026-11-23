@@ -20,16 +20,31 @@ import type { ModHost } from "../host.ts";
 export interface FlowSession {
   sessionId: string;
   cwd: string;
+  /**
+   * Whether the Claude session that started this flow is still the current one. A flow whose
+   * session has ended (a dialog left open across `session.end`) makes no further daemon call
+   * that would file or change a task; cancelling a draft is still sent. Absent means always live.
+   */
+  live?: () => boolean;
 }
 
 export type Outcome<T> =
   | { ok: true; value: T }
-  | { ok: false; kind: "down" | "off" | "unauthorized" }
+  | { ok: false; kind: "down" | "off" | "unauthorized" | "ended" }
   | { ok: false; kind: "refused"; status: number; error: string; body: Record<string, unknown> };
 
 type Fetcher = Pick<ModHost, "fetch">;
 
-async function send<T>(host: Fetcher, path: string, body: unknown, schema: ZodType<T>, unreadable: string): Promise<Outcome<T>> {
+async function send<T>(
+  host: Fetcher,
+  session: FlowSession,
+  path: string,
+  body: unknown,
+  schema: ZodType<T>,
+  unreadable: string,
+  allowWhenEnded = false,
+): Promise<Outcome<T>> {
+  if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
   let reply;
   try {
     reply = await host.fetch(path, { method: "POST", body });
@@ -63,7 +78,7 @@ export function fetchOptions(
   const body: HomeDispatchOptionsRequest = { sessionId: session.sessionId, cwd: session.cwd, entry: query.entry };
   if (query.kind !== undefined) body.kind = query.kind;
   if (query.brief !== undefined) body.brief = query.brief;
-  return send(host, "/dispatch/dispatch-options", body, HomeDispatchOptionsResponseSchema, "Mission Control sent dialog pages this build cannot read.");
+  return send(host, session, "/dispatch/dispatch-options", body, HomeDispatchOptionsResponseSchema, "Mission Control sent dialog pages this build cannot read.");
 }
 
 export function createDraft(
@@ -71,7 +86,7 @@ export function createDraft(
   session: FlowSession,
   fields: Omit<HomeDispatchDraftCreate, "sessionId" | "cwd">,
 ): Promise<Outcome<HomeDispatchDraftSummary>> {
-  return send(host, "/dispatch/drafts", { sessionId: session.sessionId, cwd: session.cwd, ...fields }, HomeDispatchDraftSummarySchema, "Mission Control sent a draft this build cannot read.");
+  return send(host, session, "/dispatch/drafts", { sessionId: session.sessionId, cwd: session.cwd, ...fields }, HomeDispatchDraftSummarySchema, "Mission Control sent a draft this build cannot read.");
 }
 
 export interface DraftChange {
@@ -88,7 +103,7 @@ export function updateDraft(
   draftId: string,
   change: DraftChange,
 ): Promise<Outcome<HomeDispatchDraftSummary>> {
-  return send(host, `/dispatch/drafts/${encodeURIComponent(draftId)}`, { sessionId: session.sessionId, cwd: session.cwd, ...change }, HomeDispatchDraftSummarySchema, "Mission Control sent a draft this build cannot read.");
+  return send(host, session, `/dispatch/drafts/${encodeURIComponent(draftId)}`, { sessionId: session.sessionId, cwd: session.cwd, ...change }, HomeDispatchDraftSummarySchema, "Mission Control sent a draft this build cannot read.");
 }
 
 export function confirmDraft(
@@ -97,5 +112,5 @@ export function confirmDraft(
   draftId: string,
   choice: "start" | "backlog" | "cancel",
 ): Promise<Outcome<HomeDispatchConfirmResult>> {
-  return send(host, `/dispatch/drafts/${encodeURIComponent(draftId)}/confirm`, { sessionId: session.sessionId, cwd: session.cwd, choice }, HomeDispatchConfirmResultSchema, "Mission Control sent a result this build cannot read.");
+  return send(host, session, `/dispatch/drafts/${encodeURIComponent(draftId)}/confirm`, { sessionId: session.sessionId, cwd: session.cwd, choice }, HomeDispatchConfirmResultSchema, "Mission Control sent a result this build cannot read.", choice === "cancel");
 }

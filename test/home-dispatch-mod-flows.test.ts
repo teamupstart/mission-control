@@ -187,6 +187,48 @@ test("bare /mission-dispatch asks Start, then the description arrives in the pro
   assert.equal(await fake.host.paneState.get("draftId"), null);
 });
 
+test("a waiting draft takes pane words and a listed task id as its description, and no pane opens", async () => {
+  for (const description of ["inbox", "check", "pane", "mc-91c2", "check mc-91c2"]) {
+    const { daemon, fake, filed } = world({ host: { initialState: { inbox: CANNED_INBOX as never } } });
+    const waiting = await runDispatchCommand(fake.host, SESSION, "");
+    assert.equal(waiting.outcome, "waiting", description);
+    await runDispatchCommand(fake.host, SESSION, description);
+    const update = daemon.requests.find((r) => r.pattern === "/dispatch/drafts/:id" && (r.body as { words?: string }).words !== undefined)!;
+    assert.equal((update.body as { words: string }).words, description);
+    assert.deepEqual(fake.paneOpens, [], description);
+    assert.deepEqual(filed.map((f) => f.choice), ["start"], description);
+  }
+});
+
+test("a dispatch whose session ends under an open dialog files nothing", async () => {
+  let ended = false;
+  const { daemon, fake, filed } = world({
+    host: {
+      answers: (q) => {
+        if (q.header === "Confirm") {
+          // The session ends while the confirm is open; the person then answers Start now.
+          ended = true;
+          return { kind: "pick", label: "Start now" };
+        }
+        return { kind: "pick", label: q.options[0]!.label };
+      },
+    },
+  });
+  const session = { ...SESSION, live: () => !ended };
+  const result = await runDispatchCommand(fake.host, session, "ship add retries");
+  assert.equal(result.outcome, "cancelled");
+  assert.deepEqual(filed, []);
+  assert.ok(daemon.requests.every((r) => !r.path.endsWith("/confirm")));
+  assert.ok(fake.notices.every((n) => !n.startsWith("Started")));
+});
+
+test("a session that ended before a draft is made creates none, and the tool answers cancelled", async () => {
+  const { daemon, fake } = world();
+  const gone = { ...SESSION, live: () => false };
+  assert.equal(await runStartDispatchTool(fake.host, gone, { brief: "add retries" }), "cancelled");
+  assert.equal(daemon.requests.length, 0);
+});
+
 test("a description for a draft that has gone is treated as a new brief", async () => {
   const { fake, drafts } = world();
   await fake.host.paneState.set("draftId", "draft-gone");

@@ -10,7 +10,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Stall, StallFacts } from "../src/shared/stall.ts";
 import type { Session } from "../src/shared/types.ts";
-import { parkedStep, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
+import { interruptDone, parkedStep, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 function stall(facts: StallFacts, reason = "idle 21m with work unfinished"): Stall {
@@ -154,4 +154,15 @@ test("a parked run's step is decided once, from its status, source and commits",
   assert.equal(parkedStep({ ...base, status: "waiting_for_new_head" }), "next-turn");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", externalSource: "ensemble", unpushedCommits: 2 }), "source");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", unpushedCommits: 2 }), "next-turn");
+});
+
+test("Interrupt reports what the daemon actually did, and its tooltip says queued messages are dropped", () => {
+  assert.equal(interruptDone({ ok: true, stoppedTurn: true, droppedQueued: 0 }), "Interrupted.");
+  assert.equal(interruptDone({ ok: true, stoppedTurn: true, droppedQueued: 2 }), "Stopped, and dropped 2 queued messages.");
+  assert.match(interruptDone({ ok: true, stoppedTurn: false }), /^That turn had already finished, so nothing was stopped/);
+  const html = draw(
+    stall({ kind: "silent-working", activity: null, quietSince: 0 }, "working but silent for 12m"),
+    mkSession({ id: "s1", state: "working" }),
+  );
+  assert.doesNotMatch(html, /Queued messages stay queued/);
 });

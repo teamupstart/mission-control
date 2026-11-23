@@ -161,8 +161,9 @@ inbox card.
 - **Mark done** completes the session's task, as the task's own Complete does. A row about a
   queue alone has no Mark done, because there is no task to complete; a queue's items are managed
   in the session.
-- **Interrupt** stops the turn the session is in. **Resubmit** opens the run's repair round, as the
-  Runs page's Resubmit does.
+- **Interrupt** stops the turn the session is in and drops the messages queued behind it, as the
+  session's own Interrupt does; if the turn had already ended, nothing is stopped and the row
+  says so. **Resubmit** opens the run's repair round, as the Runs page's Resubmit does.
 - The message box and the escalation's reply box send an ordinary message, as the session's own
   composer does. A successful send clears the box only if nothing was typed after it started,
   so a new draft typed while it was sending stays in the box, even one with the same words.

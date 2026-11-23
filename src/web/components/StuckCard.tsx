@@ -5,6 +5,7 @@ import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { Stall, StallFacts, StallKind } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
 import { api, type ActionResult } from "../lib/api.ts";
+import { interruptReport, type InterruptOutcome } from "../lib/interrupting.ts";
 import type { AgentNameView } from "../lib/agent-names.ts";
 import { AgentName, InboxActionButton } from "./AgentName.tsx";
 import { AgentDot } from "./session-bits.tsx";
@@ -45,6 +46,15 @@ const DONE: Record<string, string> = {
 };
 
 const MARK_DONE_OUTCOME = "Marked done from the inbox";
+
+/**
+ * What a completed Interrupt reports, in the words the session's own Interrupt uses
+ * (`interruptReport`): a turn that had already ended stopped nothing and kept the queue, and a
+ * stop that dropped queued messages says how many.
+ */
+export function interruptDone(result: InterruptOutcome): string {
+  return interruptReport(result).flash ?? "Interrupted.";
+}
 
 /**
  * A refused action's line under the row. A resubmission of an unchanged repository is refused
@@ -104,7 +114,12 @@ export function StuckCard({
   const name = subject.name;
   const messageable = canMessage(session) && session.state !== "exited";
 
-  const run = (action: string, go: () => Promise<ActionResult>, after?: () => void) => () => {
+  const run = (
+    action: string,
+    go: () => Promise<ActionResult>,
+    after?: () => void,
+    describe?: (result: ActionResult) => string,
+  ) => () => {
     const request = ++latest.current;
     const sentFor = identity;
     setBusy(action);
@@ -125,7 +140,7 @@ export function StuckCard({
         setError(refusalText(result));
         return;
       }
-      setDone(DONE[action] ?? null);
+      setDone(describe ? describe(result) : DONE[action] ?? null);
     });
   };
   const fixed = (kind: InboxMessageKind) => run(kind, () => api.sendInboxMessage(session.id, kind));
@@ -170,9 +185,9 @@ export function StuckCard({
           <InboxActionButton
             action="stop"
             name={name}
-            tooltip="Stop the turn it is in. Queued messages stay queued"
+            tooltip="Stop the turn it is in. Messages queued behind it are dropped"
             disabled={disabled}
-            onClick={run("stop", () => api.interrupt(session.id))}
+            onClick={run("stop", () => api.interrupt(session.id), undefined, interruptDone)}
           />
         )}
         {facts?.kind === "unfinished-work" && messageable && (

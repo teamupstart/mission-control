@@ -147,7 +147,10 @@ test("MCP recurring missions use the existing durable scheduler", async (t) => {
 test("stalled schedule requests time out without retrying and preserve unknown-outcome guidance", { timeout: 30_000 }, async (t) => {
   const requests: string[] = [];
   const server = createServer((req) => {
-    requests.push(`${req.method} ${req.url}`);
+    // The MCP child reads the report guidance once as it starts (`post_report`'s description) and
+    // falls back to the default when, as here, nothing answers; this test counts the schedule
+    // tools' requests, so that startup read is not recorded.
+    if (req.url !== "/mcp/reports/guidance") requests.push(`${req.method} ${req.url}`);
     req.resume(); // Accept the request, but deliberately never send a response.
   });
   const client = new Client({ name: "schedule-timeout-test", version: "1" });

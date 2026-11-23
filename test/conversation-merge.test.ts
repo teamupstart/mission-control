@@ -76,7 +76,8 @@ function order(rows: ConversationRow[]): string[] {
         : r.kind === "asked" ? `asked:${r.review.id}`
           : r.kind === "closed" ? `closed:${r.review.id}`
             : r.kind === "delivered" ? `delivered:${r.reviewId}`
-              : r.id,
+              : r.kind === "report" ? `report:${r.report.id}`
+                : r.id,
   );
 }
 

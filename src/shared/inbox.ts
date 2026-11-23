@@ -75,6 +75,21 @@ export const INBOX_ACTIONS = [
     spoken: { named: "{name}, mark read", whileOpen: null },
     clickOnly: null,
   },
+  // The report card's reply box, while its agent can take a message.
+  {
+    id: "reply",
+    label: "Send reply",
+    spoken: { named: "{name}, ...", whileOpen: "reply, ..." },
+    clickOnly: null,
+  },
+  // The report card once its agent is gone. One action under two labels: Start a follow-up
+  // task, and Retry after a dispatch that failed, which dispatches the task already created.
+  {
+    id: "follow-up",
+    label: "Start a follow-up task",
+    spoken: { named: "{name}, follow up, ...", whileOpen: "reply, ..." },
+    clickOnly: null,
+  },
 ] as const satisfies readonly InboxActionSpec[];
 
 export type InboxActionId = (typeof INBOX_ACTIONS)[number]["id"];

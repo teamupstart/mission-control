@@ -1,3 +1,4 @@
+import type { ReportItem } from "@shared/reports.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
@@ -2158,6 +2159,17 @@ export const api = {
    * which cannot say which options went untaken. The route attributes this to the human;
    * only the Foreman worker declares otherwise.
    */
+  /** Reply to an agent report: delivered as the operator's message, and marks it read. */
+  replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
+  /**
+   * Start a report's follow-up task, or dispatch the one an earlier press created. A failure
+   * after the task was created still names it (`taskId`).
+   */
+  followUpReport: (id: string, text: string) =>
+    post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
+  /** Every report a session posted, every version, read or not, for its conversation. */
+  sessionReports: (id: string) =>
+    readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",

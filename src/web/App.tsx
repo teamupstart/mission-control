@@ -7,6 +7,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { replyTarget } from "@shared/reports.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -492,7 +493,22 @@ export function App(): React.JSX.Element {
       setOpenReportId((current) => (current === report.id ? null : current));
       return null;
     },
-  }), [openReportId]);
+    // Read from the live sessions and resident runs, so a card changes what it offers the moment
+    // its agent exits or a resident is relaunched.
+    targetFor: (report) => replyTarget(report, sessions, residentRuns),
+    onReply: async (report, text) => {
+      const result = await api.replyToReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not send the reply";
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+    onFollowUp: async (report, text) => {
+      const result = await api.followUpReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+  }), [openReportId, sessions, residentRuns]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -3546,6 +3562,9 @@ export function App(): React.JSX.Element {
     // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
+    // Agent reports' conversation entries, behind the `inbox` flag like the inbox's section.
+    reports: inboxNames ? reports : [],
+    reportControls,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,

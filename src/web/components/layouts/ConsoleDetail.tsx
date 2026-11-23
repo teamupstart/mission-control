@@ -72,6 +72,8 @@ import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
+import { useSessionReports } from "../../lib/sessionReports.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
   ensembleSummaryFor,
@@ -283,6 +285,9 @@ export function ConsoleDetail({
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
+  // Agent reports this session posted, every version, where each was posted (`inbox` flag).
+  const reportsOn = useFeatureFlag(INBOX_FLAG) && view.reportControls !== undefined;
+  const sessionReports = useSessionReports(session.id, view.reports ?? [], reportsOn);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
     note: session.note,
@@ -968,6 +973,8 @@ export function ConsoleDetail({
               episodes={visibleEpisodes}
               reviews={timelineReviews.reviews}
               reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
+              reports={sessionReports}
+              reportControls={reportsOn ? view.reportControls : undefined}
               onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}

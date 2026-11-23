@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 434 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 436 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -37,9 +37,10 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /mcp/questions/list` and `POST /mcp/questions/:id/withdraw`, the three routes of
   // a session awaiting a background process (the flag-gated `POST /mcp/awaiting`, and
   // `POST /mcp/awaiting/clear` and the dashboard's `POST /api/sessions/:id/awaiting/clear`,
-  // which stay open so a wait can always end), and the four flag-gated agent report routes
+  // which stay open so a wait can always end), the four flag-gated agent report routes
   // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
-  // `GET /api/sessions/:id/reports`),
+  // `GET /api/sessions/:id/reports`), and the two flag-gated report answer routes
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`),
   // hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
@@ -47,11 +48,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
   // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
-  // the agent report routes, which answer 404 with the `inbox` flag off.
+  // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
+  // reply and follow-up routes, which answer 404 with it off too.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 434);
+  assert.equal(others.length, 436);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "14827a96acb0432cd55941321d07b55c0f832b70776835187f1a2c78fdd9f9fa");
+    "20b48c231c8729fe78e1ab1762250f2c187ab57107b26d289017371e2a2d5568");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -298,6 +299,44 @@ test("one service per root protects live candidates, provisional claims and leas
   await f.service.reconcile();
 });
 
+test("transient verification I/O errors preserve ready claims and both submissions can retry", async (t) => {
+  const f = fixture(t);
+  f.write("file", "shared bytes");
+  const first = await f.service.promote(await f.prepare(), f.submission());
+  const second = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(first);
+  f.store.commitRepositoryCaptureActivation(second);
+  assert.equal(first.digest, second.digest);
+  const manifest = realpathSync(join(f.root, "digests", first.digest, "manifest.json"));
+  const before = f.service.activeSnapshot(first.submissionId)!.artifact;
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  for (const code of ["EMFILE", "EIO", "ETIMEDOUT"]) {
+    const failRead = t.mock.method(fs, "open", (...args: Parameters<typeof open>) => {
+      if (String(args[0]) === manifest) throw Object.assign(new Error("read failed"), { code });
+      return open(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(f.service.verify(first, signal), { code: "artifact_unavailable" });
+    } finally {
+      failRead.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(f.service.activeSnapshot(first.submissionId)?.artifact, before);
+    assert.deepEqual(f.service.activeSnapshot(second.submissionId)?.artifact, before);
+  }
+  for (const snapshot of [second, first]) {
+    const lease = await f.service.materialize(f.request(snapshot), signal);
+    assert.equal(lease.identity.digest, first.digest);
+    await lease.release();
+    assert.equal((await f.service.verify(snapshot, signal)).digest, first.digest);
+    await f.service.release(snapshot.submissionId);
+  }
+  await f.service.reconcile();
+});
+
 test("artifact readiness guards first activation and a failed artifact permits later running transitions", async (t) => {
   const f = fixture(t);
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
@@ -310,6 +349,7 @@ test("artifact readiness guards first activation and a failed artifact permits l
   rmSync(join(f.root, "digests", snapshot.digest, "manifest.json"));
   await assert.rejects(f.service.materialize(f.request(snapshot), signal), { code: "artifact_unavailable" });
   await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
+  assert.equal(f.service.artifacts().find(artifact => artifact.digest === snapshot.digest)?.state, "failed");
   assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
     "[workflow] event=repository_verify error=TypeError",
     "[workflow] event=repository_materialize error=ENOENT",
@@ -358,7 +398,9 @@ test("activation rolls back both writes and corruption and namespace substitutio
   );
   chmodSync(obj, 0o600);
   writeFileSync(obj, "corrupt");
+  chmodSync(obj, 0o400);
   await assert.rejects(f.service.verify(s, signal));
+  assert.equal(f.service.artifacts().find(row => row.digest === s.digest)?.state, "failed");
   rmSync(obj);
   await assert.rejects(f.service.materialize(r, signal));
   assert.deepEqual(readdirSync(join(f.root, "leases")), []);

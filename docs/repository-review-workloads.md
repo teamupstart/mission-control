@@ -67,8 +67,9 @@ worktree once, outside the history budget. Missing required objects fail sealing
 `promote` publishes a verified candidate under its digest and attaches a provisional claim
 after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
 claim active and the submission running in one transaction. Multiple submissions can
-independently own the same bytes. Later verification failures block artifact reads while
-the submission can still resume or retry. Each lease reconstructs a private loose Git object store
+independently own the same bytes. Verification marks a missing or corrupt digest as failed
+for all its claims. A transient read error leaves the digest ready so any holder can retry.
+In either case the submission can still resume or retry. Each lease reconstructs a private loose Git object store
 from verified files, along with the layer descriptor used by the MCP. This works after both
 the checkout and its Git common directory have disappeared.
 

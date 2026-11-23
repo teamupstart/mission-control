@@ -24,6 +24,7 @@ import type {
 import type { WorkflowStore } from "../store.ts";
 import {
   descriptor,
+  isArtifactIntegrityFailure,
   RepositoryCaptureChanged,
   oid,
   digestSchema,
@@ -259,7 +260,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           snapshot.digest,
           signal,
         ).catch((error) => {
-          if (!signal.aborted) this.ownership.unavailable(snapshot.digest);
+          if (!signal.aborted && isArtifactIntegrityFailure(error)) this.ownership.unavailable(snapshot.digest);
           throw error;
         });
         this.checkClaim(snapshot);

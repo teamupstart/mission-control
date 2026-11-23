@@ -29,6 +29,14 @@ export const unavailable = (): never => {
   throw new RepositoryArtifactUnavailable();
 };
 
+/** Only a verification error that establishes missing or invalid bytes invalidates every claim. */
+export function isArtifactIntegrityFailure(error: unknown): boolean {
+  if (error instanceof RepositoryArtifactUnavailable || error instanceof SyntaxError || error instanceof z.ZodError)
+    return true;
+  return error instanceof Error && "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "ELOOP");
+}
+
 export const objectRecord = z.strictObject({
   id: oid,
   mode: z.literal(0o400),

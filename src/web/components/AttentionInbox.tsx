@@ -84,9 +84,6 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
  * (`openReportId` lives in App, so there is one answer to it), and the two things a card does.
  */
 export interface InboxReportControls extends ReportEntryControls {
-  /** What the operator has typed on this report's card, kept by chain across a replacement. */
-  draftFor: (report: ReportItem) => string;
-  onDraft: (report: ReportItem, text: string) => void;
   /** Where a reply to this report can go now (`replyTarget` over the live sessions and runs). */
   targetFor: (report: ReportItem) => ReplyTarget;
   /** Reply to it. Resolves to why the daemon refused, or null. */
@@ -629,8 +626,6 @@ function InboxItem({
               target={reports.targetFor(report)}
               onToggle={() => reports.onToggle(report)}
               onMarkRead={() => onMarkRead(report)}
-              draft={reports.draftFor(report)}
-              onDraft={(text) => reports.onDraft(report, text)}
               onReply={(text) => reports.onReply(report, text)}
               onFollowUp={(text) => reports.onFollowUp(report, text)}
               error={readRefused.get(report.id) ?? null}

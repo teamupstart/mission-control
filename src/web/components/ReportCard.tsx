@@ -2,6 +2,7 @@ import { useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
 import { relativeTime } from "../lib/format.ts";
 import { InboxActionButton } from "./AgentName.tsx";
+import { useReportDraft } from "../lib/reportDrafts.ts";
 import { PlanView } from "./PlanView.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -35,8 +36,6 @@ export function ReportCard({
   onMarkRead,
   onReply,
   onFollowUp,
-  draft,
-  onDraft,
   error = null,
   now,
 }: {
@@ -50,12 +49,6 @@ export function ReportCard({
   onReply: (text: string) => Promise<string | null>;
   /** Start, or retry, the follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (text: string) => Promise<string | null>;
-  /**
-   * What the operator has typed in the reply or follow-up box. Held by the dashboard by chain,
-   * not by this card, so a replacement report (a new card) keeps it.
-   */
-  draft: string;
-  onDraft: (text: string) => void;
   /** Why the last Mark read was refused, drawn beneath the card until it is tried again. */
   error?: string | null;
   /** Injectable so a render test can own the clock. */
@@ -96,7 +89,7 @@ export function ReportCard({
           {report.document && (
             <p className="inbox-line">Attached: {report.document.name}</p>
           )}
-          <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} draft={draft} onDraft={onDraft} />
+          <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} />
           <div className="agent-report-actions">
             <InboxActionButton
               action="mark-read"
@@ -124,17 +117,16 @@ function ReportAnswer({
   target,
   onReply,
   onFollowUp,
-  draft,
-  onDraft,
 }: {
   report: ReportItem;
   target: ReplyTarget;
   onReply: (text: string) => Promise<string | null>;
   onFollowUp: (text: string) => Promise<string | null>;
-  draft: string;
-  onDraft: (text: string) => void;
 }): React.JSX.Element {
   const name = report.author.name;
+  // Held by chain outside React state (`lib/reportDrafts.ts`): a replacement report keeps the
+  // words, and a keystroke re-renders this card alone.
+  const [draft, onDraft] = useReportDraft(report.rootId);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   // The dashboard clears the draft once a send is accepted; a refusal leaves it in the box.

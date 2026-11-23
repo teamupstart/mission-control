@@ -542,14 +542,14 @@ export class ReportManager {
     if (report.author.residentProfileId !== null) {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
-    // A task that was deleted or cancelled is normally forgotten the moment it happens
-    // (`forgetFollowUpTask`, from the task watcher). This catches one the watcher has not seen yet,
-    // the same way. Retry carries no words, and a follow-up task is only ever filed with the
-    // operator's instructions (below), so the report goes back to the instructions box rather
-    // than being re-filed from a Retry.
+    // A task that was deleted or cancelled is normally forgotten the moment it happens, by the
+    // task watcher (`forgetFollowUpTask`). This is the fallback for one it has not seen yet, and
+    // it follows the removal rule: a report the follow-up already answered stays answered (it was
+    // dispatched and may have done its work), so the call changes nothing and is refused; only a
+    // report still waiting forgets the task, and its card goes back to the instructions box.
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
-      // The operator is asking for a new follow-up, so whatever the old task did, it is replaced.
-      this.forgetFollowUpTask(report.followUpTaskId, "cancelled");
+      if (report.readBy === "follow-up") return refuse(409, "This report has already been read.", report);
+      this.forgetFollowUpTask(report.followUpTaskId, "removed");
       report = getRow(id)!;
       if (!words.trim()) {
         return refuse(409, "The follow-up task was deleted or cancelled. Write what the follow-up should do and start a new one.", report);

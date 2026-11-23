@@ -229,3 +229,42 @@ test("every version of every report is an entry where it was posted, among the t
   // With nothing to interleave the transcript is returned as it was.
   assert.equal(mergeConversation(rows, [], [], [], {}, []), rows);
 });
+
+test("a report card's draft is kept by chain outside React state, so a replacement keeps it", async () => {
+  const { reportDraft, setReportDraft, clearReportDraft } = await import("../src/web/lib/reportDrafts.ts");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { reportCardProps } = await import("./helpers/report-fixture.ts");
+  setReportDraft("r-1", "Add the index.");
+  assert.equal(reportDraft("r-1"), "Add the index.");
+  // The replacement (r-2 of chain r-1) reads the same draft in its box.
+  const replacement = mkReport({ id: "r-2", rootId: "r-1", version: 2, author: { key: "session:s1", name: "Steve", residentProfileId: null } });
+  const html = renderToStaticMarkup(createElement(ReportCard, { report: replacement, open: true, ...reportCardProps(), now: 1 }));
+  assert.match(html, /<textarea[^>]*>Add the index\.<\/textarea>/);
+  // Another chain is untouched, and clearing removes the entry.
+  assert.equal(reportDraft("r-9"), "");
+  clearReportDraft("r-1");
+  assert.equal(reportDraft("r-1"), "");
+});
+
+test("a draft store change notifies once, and an unchanged value notifies nobody", async () => {
+  const { setReportDraft, clearReportDraft, subscribeReportDrafts } = await import("../src/web/lib/reportDrafts.ts");
+  let notified = 0;
+  const stop = subscribeReportDrafts(() => { notified += 1; });
+  try {
+    setReportDraft("r-5", "first");
+    assert.equal(notified, 1);
+    setReportDraft("r-5", "first");
+    assert.equal(notified, 1, "the same value is no change");
+    clearReportDraft("r-5");
+    assert.equal(notified, 2);
+    clearReportDraft("r-5");
+    assert.equal(notified, 2, "clearing an absent draft is no change");
+  } finally {
+    stop();
+  }
+  setReportDraft("r-6", "after");
+  assert.equal(notified, 2, "an unsubscribed listener hears nothing");
+  clearReportDraft("r-6");
+});

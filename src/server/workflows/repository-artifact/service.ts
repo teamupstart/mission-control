@@ -34,6 +34,7 @@ import {
 } from "./format.ts";
 import { locatorFor, RepositoryOwnership } from "./ownership.ts";
 import { seal, sampleCheckoutBoundary, type RepositoryCaptureInput } from "./seal.ts";
+import { RepositoryCandidateStorage } from "./storage.ts";
 
 export interface WorkflowRepositoryArtifactCandidate {
   readonly boundary: string;
@@ -89,12 +90,12 @@ function removeMarkedDirectory(path: string) {
 
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
   private static readonly services = new Map<string, WorkflowRepositoryArtifactService>();
-  static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories")) {
+  static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories"), storage?: RepositoryCandidateStorage) {
     const path = resolve(root);
     const canonical = join(realpathSync(dirname(path)), basename(path));
     let service = this.services.get(canonical);
     if (!service) {
-      service = new WorkflowRepositoryArtifactService(store, canonical);
+      service = new WorkflowRepositoryArtifactService(store, canonical, storage);
       this.services.set(canonical, service);
     }
     return service;
@@ -109,7 +110,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   private failures = 0;
   private activeRequest?: ActiveRequestLookup;
 
-  private constructor(store: WorkflowStore, private readonly root: string) {
+  private constructor(store: WorkflowStore, private readonly root: string, private readonly storage = new RepositoryCandidateStorage()) {
     this.ownership = new RepositoryOwnership(store);
   }
 
@@ -187,7 +188,11 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   }
   private remove(kind: Marker["kind"], id: string, nonce: string) {
     this.forget(id);
-    removeMarkedDirectory(this.marked(kind, id, nonce));
+    this.removeDirectory(this.marked(kind, id, nonce));
+  }
+  private removeDirectory(path: string) {
+    removeMarkedDirectory(path);
+    this.storage.release(path);
   }
   private abandon(marker: Pick<Marker, "kind" | "id" | "nonce">) {
     try {
@@ -206,7 +211,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       signal.throwIfAborted();
       const { marker, path } = this.allocate("pending");
       try {
-        const { digest, boundary } = await seal(input, path, signal);
+        const { digest, boundary } = await seal(input, path, signal, { storage: this.storage });
         const candidate = Object.freeze({ id: marker.id, nonce: marker.nonce, digest, boundary });
         this.candidates.set(marker.id, candidate);
         this.checkouts.set(candidate, input.checkout);
@@ -289,7 +294,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       this.forget(candidate.id);
       const path = this.marked("pending", candidate.id, candidate.nonce);
       await this.recoverPromotion(path);
-      removeMarkedDirectory(path);
+      this.removeDirectory(path);
     });
   }
   promote(
@@ -401,7 +406,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           try {
             const path = this.marked(kind, id);
             if (kind === "pending") await this.recoverPromotion(path);
-            removeMarkedDirectory(path);
+            this.removeDirectory(path);
             deleted++;
           } catch (error) {
             workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });

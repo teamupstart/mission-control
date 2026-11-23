@@ -60,6 +60,12 @@ The daemon checks the open file's size before allocating its read buffer and ret
 capture if the file grows or shrinks during the read. For Git objects, it requests the
 type and size before requesting any payload, including objects needed only by the index,
 HEAD or source base. An oversized required payload fails the whole capture.
+All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
+storage allowance, including their Git headers. Capture checks the combined blob sizes
+before copying any blob. Pending candidates share a 2 GiB allowance for object files
+and manifests. Each write reserves its bytes before it starts, and a sealed candidate
+holds its share until publication or discard cleans its pending directory. Writes also
+leave 64 MiB free on the state volume and account for in-flight filesystem allocations.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
@@ -78,7 +84,8 @@ History starts at HEAD and visits all parents breadth-first in recorded order. T
 stops before the first revision that would exceed 2,048 commits or 512 MiB of additional
 unique allowed blob bytes. It counts objects already required by base, HEAD, index or
 worktree once, outside the history budget. Capture also caps additional unique commit
-and tree payloads at 64 MiB. Before copying a revision, it checks the sizes of the
+and tree payloads at 64 MiB. A history-only blob over the single-object limit ends the
+prefix before that revision. Before copying a revision, capture checks the sizes of the
 commit and its new trees. If they would exceed this budget, the preceding revision
 remains the end of the retained prefix. A shallow checkout contributes its declared
 boundary commits to the same breadth-first prefix. Traversal stops before the first

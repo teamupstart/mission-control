@@ -1,7 +1,7 @@
 import { locateExecutable } from "../../executables/locator.ts";
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile, lstat, realpath } from "node:fs/promises";
+import { mkdir, lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
   MAX_REPOSITORY_VIEW_ENTRIES,
@@ -17,10 +17,12 @@ import {
   type Layer,
 } from "./checkout.ts";
 import { checkoutGit, openObjectReader } from "./git.ts";
+import { RepositoryCandidateStorage } from "./storage.ts";
 import {
   decodedPath,
   descriptor,
   manifestSchema,
+  MAX_CAPTURE_OBJECT_BYTES,
   RepositoryCaptureChanged,
   objectBytes,
   oid,
@@ -48,7 +50,7 @@ async function scanWorking(
   executable: string,
   state: CheckoutState,
   signal: AbortSignal,
-  accept?: (id: string, bytes: Buffer) => Promise<void>,
+  accept?: (id: string, bytes: Buffer) => void | Promise<void>,
 ) {
   const layer: Layer = new Map();
   const embedded = new Set(state.embedded);
@@ -90,10 +92,12 @@ function chargePath(budget: typeof treeExpansionLimit, pathBytes: number) {
   return false;
 }
 
-export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal, limits = treeExpansionLimit) {
+type SealOptions = Partial<typeof treeExpansionLimit> & { storage?: RepositoryCandidateStorage };
+export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
+  { entries = treeExpansionLimit.entries, pathBytes = treeExpansionLimit.pathBytes, storage = new RepositoryCandidateStorage() }: SealOptions = {}) {
   const expansionBudget = () => ({
-    entries: Math.min(limits.entries, treeExpansionLimit.entries),
-    pathBytes: Math.min(limits.pathBytes, treeExpansionLimit.pathBytes),
+    entries: Math.min(entries, treeExpansionLimit.entries),
+    pathBytes: Math.min(pathBytes, treeExpansionLimit.pathBytes),
   });
   const git = await locateExecutable("git");
   if (!git) return unavailable();
@@ -146,12 +150,12 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   const historyExpansion = expansionBudget();
 
   const hash = (data: Buffer) => createHash(format).update(data).digest("hex");
-  async function save(type: ObjectRecord["type"], body: Buffer, expected?: string) {
+  async function save(type: ObjectRecord["type"], body: Buffer, expected?: string, required = true) {
     const bytes = objectBytes(type, body);
     const id = hash(bytes);
     if (expected && expected !== id) unavailable();
     if (!table.has(id)) {
-      await writeFile(join(output, id), bytes, { flag: "wx", mode: 0o400, signal });
+      await storage.write(pending, join(output, id), bytes, required, signal);
       table.set(id, { id, type, mode: 0o400, size: body.length, sha256: sha256(bytes) });
       if (type === "blob" && (body.includes(0) || !isUtf8(body))) binary.add(id);
     }
@@ -280,13 +284,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     }
   }
 
-  async function include(revision: Awaited<ReturnType<typeof commit>>, treeIds: Set<string>, layer: Layer) {
+  async function include(revision: Awaited<ReturnType<typeof commit>>, treeIds: Set<string>, layer: Layer, required = true) {
     collect(layer);
-    await save("commit", revision.data, revision.record.id);
+    await save("commit", revision.data, revision.record.id, required);
     // Selection can reject a revision. Copy each newly accepted tree by ID only after
     // that decision and let save verify its bytes against the same ID.
     for (const tree of treeIds) {
-      if (!table.has(tree)) await save("tree", (await reader.get(tree, "tree")).data, tree);
+      if (!table.has(tree)) await save("tree", (await reader.get(tree, "tree")).data, tree, required);
     }
   }
 
@@ -300,18 +304,25 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
     }
-    const worktree = await scanWorking(git.path, state, signal);
+    const worktree = await scanWorking(git.path, state, signal, (id, bytes) => { sizes.set(id, bytes.length); });
     collect(index);
     collect(worktree);
     const indexTree = await saveTree(index),
       worktreeTree = await saveTree(worktree);
+    const requiredBlobs = new Set(needed);
+    let requiredBlobBytes = 0;
+    for (const blob of requiredBlobs) {
+      const size = sizes.get(blob) ?? (await reader.get(blob, "blob", true)).size;
+      requiredBlobBytes += size + Buffer.byteLength(`blob ${size}\0`);
+      storage.checkRequired(pending, requiredBlobBytes);
+    }
     const retainedRevisions: RepositoryViewDescriptor["retainedRevisions"] = [];
     const queue = head ? [head] : [];
     const seen = new Set<string>();
     const shallow = new Set(state.shallow);
     const omittedParents = new Set<string>();
     let retainedBlobBytes = 0;
-    for (let pos = 0; pos < queue.length && retainedRevisions.length < policy.maxCommits; pos++) {
+    history: for (let pos = 0; pos < queue.length && retainedRevisions.length < policy.maxCommits; pos++) {
       const id = queue[pos]!;
       // The v1 descriptor is one breadth-first prefix. Stop before a source-shallow
       // parent, even when another branch in the queue has deeper history available.
@@ -332,12 +343,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       let bytes = 0;
       for (const blob of extra) {
         const size = sizes.get(blob) ?? (await reader.get(blob, "blob", true)).size;
+        if (size > MAX_CAPTURE_OBJECT_BYTES) break history;
         sizes.set(blob, size);
         bytes += size;
         if (retainedBlobBytes + bytes > policy.maxUniqueBlobBytes) break;
       }
       if (retainedBlobBytes + bytes > policy.maxUniqueBlobBytes) break;
-      await include(revision, treeIds, layer);
+      await include(revision, treeIds, layer, false);
       retainedBlobBytes += bytes;
       retainedRevisions.push(record);
       seen.add(id);
@@ -348,11 +360,11 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     // The canonical empty blob has no payload. Path policy still denies the sensitive name.
     for (const id of denied) if (id !== state.emptyBlob && needed.has(id)) unavailable();
     const finalWork = await scanWorking(git.path, state, signal, async (id, bytes) => {
-      if (needed.has(id) && !table.has(id)) await save("blob", bytes, id);
+      if (needed.has(id) && !table.has(id)) await save("blob", bytes, id, requiredBlobs.has(id));
     });
     if (JSON.stringify([...finalWork]) !== JSON.stringify([...worktree]))
       throw new RepositoryCaptureChanged();
-    for (const id of needed) if (!table.has(id)) await save("blob", (await reader.get(id, "blob")).data, id);
+    for (const id of needed) if (!table.has(id)) await save("blob", (await reader.get(id, "blob")).data, id, requiredBlobs.has(id));
     const after = await sample(git.path, input.checkout, signal);
     if (metadataBoundary(state) !== metadataBoundary(after)) throw new RepositoryCaptureChanged();
 
@@ -441,7 +453,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const json = JSON.stringify(manifestSchema.parse(manifest));
     const digest = sha256(json);
     descriptor(manifest, digest, "candidate");
-    await writeFile(join(output, "manifest.json"), json, { flag: "wx", signal, mode: 0o400 });
+    await storage.write(pending, join(output, "manifest.json"), json, false, signal);
     return { digest, boundary: checkoutBoundary(state, worktree) };
   } finally {
     reader.close();

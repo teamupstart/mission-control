@@ -28,6 +28,7 @@ import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
 import { seal } from "../src/server/workflows/repository-artifact/seal.ts";
+import { RepositoryCandidateStorage } from "../src/server/workflows/repository-artifact/storage.ts";
 import { descriptor, manifestSchema, MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
@@ -37,7 +38,7 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 ensureNativeStateLockAddon();
 const signal = new AbortController().signal;
-function fixture(t: TestContext, format = "sha1") {
+function fixture(t: TestContext, format = "sha1", storage?: RepositoryCandidateStorage) {
   const temp = mkdtempSync(join(tmpdir(), "artifact-fixture-")),
     checkout = join(temp, "source");
   const root = join(temp, "store");
@@ -56,7 +57,7 @@ function fixture(t: TestContext, format = "sha1") {
     db = openDb();
   const requests = new Map<string, RepositoryMaterializationRequest>();
   const lookup = (id: string) => requests.get(id) ?? null;
-  const service = WorkflowRepositoryArtifactService.forRoot(store, root);
+  const service = WorkflowRepositoryArtifactService.forRoot(store, root, storage);
   service.setActiveRequestLookup(lookup);
   const write = (name: string, value: string | Buffer) => writeFileSync(join(checkout, name), value);
   function submission() {
@@ -533,6 +534,99 @@ test("oversized required Git objects in the index, HEAD or base are rejected bef
     Array(3).fill("[workflow] event=repository_seal error=git_object_too_large"));
   assert.deepEqual(readdirSync(join(f.root, "pending")), []);
   assert.deepEqual(f.service.artifacts(), []);
+});
+
+test("aggregate required storage is checked across layers before copying any blobs", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryCandidateStorage(12_000, 100_000));
+  f.write("file", "a".repeat(5_000));
+  f.git("add", "file");
+  f.git("commit", "-qm", "first");
+  f.write("file", "b".repeat(5_000));
+  f.git("add", "file");
+  f.write("duplicate", "b".repeat(5_000));
+  f.write("extra", "c".repeat(4_000));
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const write = fs.writeFile;
+  let blobWrites = 0;
+  const writes = t.mock.method(fs, "writeFile", (...args: Parameters<typeof write>) => {
+    if (Buffer.isBuffer(args[1]) && args[1].toString("ascii", 0, 5) === "blob ") blobWrites++;
+    return write(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.equal(blobWrites, 0);
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+    rmSync(join(f.checkout, "extra"));
+    const candidate = await f.prepare();
+    assert.equal(blobWrites, 2);
+    await f.service.discard(candidate);
+  } finally {
+    writes.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("concurrent and sealed candidates retain their storage reservations until cleanup", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryCandidateStorage(128_000, 180_000));
+  f.write("file", Buffer.alloc(96_000, 0x61));
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const write = fs.writeFile;
+  let notifyWrite!: () => void, resumeWrite!: () => void;
+  const reached = new Promise<void>(resolve => { notifyWrite = resolve; });
+  const resumed = new Promise<void>(resolve => { resumeWrite = resolve; });
+  let blobWrites = 0;
+  const writes = t.mock.method(fs, "writeFile", async (...args: Parameters<typeof write>) => {
+    if (Buffer.isBuffer(args[1]) && args[1].toString("ascii", 0, 5) === "blob ") {
+      blobWrites++;
+      if (blobWrites === 1) {
+        notifyWrite();
+        await resumed;
+      }
+    }
+    return write(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const preparing = f.prepare();
+    await Promise.race([reached, preparing.then(() => assert.fail("expected a paused object write"))]);
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.equal(blobWrites, 1);
+    resumeWrite();
+    const candidate = await preparing;
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.equal(blobWrites, 1);
+    await f.service.discard(candidate);
+    const holder = await f.service.promote(await f.prepare(), f.submission());
+    await f.service.discard(await f.prepare());
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+    await f.service.release(holder.submissionId);
+    await f.service.reconcile();
+  } finally {
+    resumeWrite();
+    writes.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("capture leaves free space on the state volume and releases failed reservations", async (t) => {
+  const f = fixture(t);
+  f.write("file", "submitted");
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const observed = fs.statfsSync(f.checkout);
+  const disk = t.mock.method(fs, "statfsSync", () => ({ ...observed, bavail: 1 }));
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  } finally {
+    disk.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await f.service.discard(await f.prepare());
 });
 
 test("worktree growth after fstat retries without extending the read buffer", async (t) => {
@@ -1385,39 +1479,46 @@ for (const overflow of ["commit", "tree"]) {
   });
 }
 
-test("512 MiB history limit stops before a large first parent and leaves the later small parent outside", async (t) => {
-  const f = fixture(t);
-  f.write("a", "tip\n");
-  f.git("add", ".");
-  f.git("commit", "-qm", "base");
-  const base = f.git("rev-parse", "HEAD"),
-    tree = f.git("rev-parse", "HEAD^{tree}");
-  // A sparse local fixture makes the real byte ceiling testable without allocating it on heap.
-  f.write("large", "");
-  truncateSync(join(f.checkout, "large"), (512 << 20) + 1);
-  const big = f.git("hash-object", "-w", "--no-filters", "large");
-  rmSync(join(f.checkout, "large"));
-  const { commit, write } = objects(f.checkout);
-  const bigTree = write("tree", Buffer.concat([Buffer.from("100644 large\0"), Buffer.from(big, "hex")]));
-  const expensive = commit(bigTree, [base], "too large"),
-    cheap = commit(tree, [base], "small");
-  const head = commit(tree, [expensive, cheap], "merge");
-  f.git("update-ref", "HEAD", head);
-  const c = await f.prepare(base);
-  const s = await f.service.promote(c, f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
-  const lease = await f.service.materialize(f.request(s), signal);
-  assert.deepEqual(lease.descriptor.frontier, [{ revision: head, omittedParents: [expensive, cheap] }]);
-  assert.deepEqual(
-    lease.descriptor.retainedRevisions.map((r) => r.id),
-    [head],
-  );
-  for (const id of [big, bigTree, expensive, cheap])
-    assert.equal(existsSync(join(f.root, "digests", s.digest, id)), false);
-  await lease.release();
-  await f.service.release(s.submissionId);
-  await f.service.reconcile();
-});
+for (const limit of ["64 MiB per object", "512 MiB total"]) {
+  test(`history blob limit of ${limit} stops before a large first parent and leaves the later small parent outside`, async (t) => {
+    const f = fixture(t);
+    f.write("a", "tip\n");
+    f.git("add", ".");
+    f.git("commit", "-qm", "base");
+    const base = f.git("rev-parse", "HEAD"),
+      tree = f.git("rev-parse", "HEAD^{tree}");
+    const blobs: string[] = [];
+    const sizes = limit === "64 MiB per object" ? [MAX_CAPTURE_OBJECT_BYTES + 1]
+      : [...Array<number>(8).fill(MAX_CAPTURE_OBJECT_BYTES), 1];
+    for (const [i, size] of sizes.entries()) {
+      f.write("large", String(i));
+      truncateSync(join(f.checkout, "large"), size);
+      blobs.push(f.git("hash-object", "-w", "--no-filters", "large"));
+    }
+    rmSync(join(f.checkout, "large"));
+    const { commit, write } = objects(f.checkout);
+    const bigTree = write("tree", Buffer.concat(blobs.map((id, i) =>
+      Buffer.concat([Buffer.from("100644 large" + i + "\0"), Buffer.from(id, "hex")]))));
+    const expensive = commit(bigTree, [base], "too large"),
+      cheap = commit(tree, [base], "small");
+    const head = commit(tree, [expensive, cheap], "merge");
+    f.git("update-ref", "HEAD", head);
+    const c = await f.prepare(base);
+    const s = await f.service.promote(c, f.submission());
+    f.store.commitRepositoryCaptureActivation(s);
+    const lease = await f.service.materialize(f.request(s), signal);
+    assert.deepEqual(lease.descriptor.frontier, [{ revision: head, omittedParents: [expensive, cheap] }]);
+    assert.deepEqual(
+      lease.descriptor.retainedRevisions.map((r) => r.id),
+      [head],
+    );
+    for (const id of [...blobs, bigTree, expensive, cheap])
+      assert.equal(existsSync(join(f.root, "digests", s.digest, id)), false);
+    await lease.release();
+    await f.service.release(s.submissionId);
+    await f.service.reconcile();
+  });
+}
 
 test("publication intent recovers a rename without a committed row and refuses unowned digest directories", async (t) => {
   const f = fixture(t);

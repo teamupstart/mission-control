@@ -346,8 +346,10 @@ const HOOK_SCRIPT = new RegExp(
   `(?:^|${SEP})(?:${MISSION_HOOK_SCRIPTS.map((name) => name.split("/").map(escapeRe).join(SEP)).join("|")})$`,
 );
 
-// Bounded after, so a script or log beside the shim (`harness-hook.mjs`) is not taken for the shim itself.
-const SHIM_IN_COMMAND = new RegExp(`${MISSION_HOOK_SHIM.split("/").map(escapeRe).join(SEP)}(?=["'\\s\\\\]|$)`);
+// Bounded on both sides, so neither `harness-hook.mjs` beside the shim nor `other.mission-control/` is taken for it.
+const SHIM_IN_COMMAND = new RegExp(
+  `(?:^|[\\\\/"'\\s])${MISSION_HOOK_SHIM.split("/").map(escapeRe).join(SEP)}(?=["'\\s\\\\]|$)`,
+);
 
 /**
  * Whether a settings.json hook command is one an installer of ours wrote.

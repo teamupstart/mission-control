@@ -367,6 +367,9 @@ test("a user's hook that only mentions a file beside the shim is not ours to str
   assert.equal(isMissionHookCommand("my-hook >> /home/me/.mission-control/bin/harness-hook.log"), false);
   assert.equal(isMissionHookCommand(missionHookShimCommand("Stop")), true);
   assert.equal(isMissionHookCommand("C:\\Users\\me\\.mission-control\\bin\\harness-hook Stop"), true);
+  assert.equal(isMissionHookCommand('"/home/me/other.mission-control/bin/harness-hook" Stop'), false);
+  assert.equal(isMissionHookCommand(".mission-control/bin/harness-hook Stop"), true);
+  assert.equal(isMissionHookCommand("cd ~ && '.mission-control/bin/harness-hook' Stop"), true);
 });
 
 test("the shim's text escapes paths a shell would expand, and still yields the script", () => {

@@ -37,6 +37,7 @@ process.env.MISSION_HOME = home;
 const db = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { currentShaping } = await import("../src/shared/shaping.ts");
+const { taskShapingForReads } = await import("../src/server/shaping/reads.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 type TaskShaping = import("../src/shared/shaping.ts").TaskShaping;
@@ -45,7 +46,7 @@ after(() => { db.closeDb(); rmSync(home, { recursive: true, force: true }); });
 
 function record(sessionId: string, state: TaskShaping["state"] = "ok"): TaskShaping {
   return {
-    state, at: 1_700_000_000_000, sessionId, durationMs: 12, entries: state === "ok" ? 1 : 0, bytes: 40, truncated: false,
+    state, at: 1_700_000_000_000, sessionId, deliveryId: `delivery-${sessionId}-${state}`, durationMs: 12, entries: state === "ok" ? 1 : 0, bytes: 40, truncated: false,
     shapers: [{
       id: "acme", label: "Acme", stage: "select", origin: "registered", sha256: null,
       outcome: state === "ok" ? "ok" : "timed_out", reason: state === "ok" ? null : "Timed out after 5 s.",
@@ -410,141 +411,201 @@ test("turning the flag back on publishes every task and session card that has a 
   assert.equal((cards[0] as TaskShaping | undefined)?.sessionId, "sdk:republish");
 });
 
-test("a failed commit for the same session hides the record it was meant to replace", () => {
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "same-session", status: "running", sessionId: "kept" }));
-  registry.commitTaskShaping("same-session", "kept", record("kept"), "first text");
-  let calls = 0;
-  registry.shapingCommitter = (taskId, summary, text) => {
-    calls += 1;
-    // The handover's write fails; the clean-up that follows it succeeds.
-    if (calls === 1) throw new Error("disk full");
-    return db.commitTaskShaping(taskId, summary, text);
-  };
-  try {
-    assert.equal(registry.commitTaskShaping("same-session", "kept", record("kept", "degraded"), ""), false);
-  } finally {
-    registry.shapingCommitter = null;
-  }
-  assert.equal(registry.getTask("same-session")?.shaping, undefined, "the earlier delivery's context is not shown as this one's");
-  assert.equal(db.getTask("same-session")?.shaping, undefined, "and is cleared on disk");
-  assert.equal(db.getTaskShapingText("same-session"), null);
-});
-
-test("a failed unshaped commit to the same session hides that session's earlier record too", () => {
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "same-unshaped", status: "running", sessionId: "kept" }));
-  registry.commitTaskShaping("same-unshaped", "kept", record("kept"), "first text");
-  let cleanups = 0;
-  // A handover no shaper applied to: its clearing write fails, the clean-up that follows succeeds.
-  registry.shapingCommitter = () => { throw new Error("disk full"); };
-  registry.shapingClearer = (taskId, sessionId) => { cleanups += 1; return db.clearTaskShapingFor(taskId, sessionId); };
+/** Run `fn` with console warnings silenced: the commits below fail on purpose. */
+function quietly<T>(fn: () => T): T {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    assert.equal(registry.commitTaskShaping("same-unshaped", "kept", null, ""), false);
+    return fn();
   } finally {
     console.warn = warn;
-    registry.shapingCommitter = null;
-    registry.shapingClearer = null;
   }
-  assert.equal(cleanups, 1, "the clean-up ran although the launch carried no summary");
-  assert.equal(currentShaping(registry.getTask("same-unshaped")!), null, "the earlier delivery's context is not shown as this one's");
-  assert.equal(db.getTask("same-unshaped")?.shaping, undefined);
+}
+
+/** A task that ran on `sessionId` and holds that delivery's committed record, back in the backlog. */
+function ranBefore(registry: InstanceType<typeof Registry>, id: string, sessionId: string): TaskShaping {
+  registry.upsertTask(mkTask({ id, status: "backlog", sessionId: null }));
+  const bound = { ...registry.getTask(id)!, status: "running" as const, sessionId };
+  assert.equal(registry.commitTaskShaping(id, sessionId, record(sessionId), "earlier delivery's text", bound), true);
+  registry.upsertTask({ ...registry.getTask(id)!, status: "backlog", sessionId: null });
+  return registry.getTask(id)!.shaping!;
+}
+
+/** The handover's write: the task row naming the receiving session. */
+function handedTo(registry: InstanceType<typeof Registry>, id: string, sessionId: string) {
+  return { ...registry.getTask(id)!, status: "running" as const, sessionId, dispatchedAt: 5, updatedAt: 5 };
+}
+
+test("the reader rule shows a record only for the delivery its binding was written with", () => {
+  const shown = { ...record("s1"), deliveryId: "d1" };
+  assert.equal(currentShaping({ shaping: shown, sessionId: "s1", shapingDelivery: "d1" }), shown);
+  assert.equal(currentShaping({ shaping: shown, sessionId: "s1", shapingDelivery: "d2" }), null, "an earlier delivery to the same session");
+  assert.equal(currentShaping({ shaping: shown, sessionId: "s2", shapingDelivery: "d1" }), null, "another session");
+  assert.equal(currentShaping({ shaping: shown, sessionId: "s1", shapingDelivery: null }), null, "a binding with no delivery id");
+  assert.equal(currentShaping({ shaping: shown, sessionId: "s1" }), null);
+  const { deliveryId: _none, ...unstamped } = shown;
+  assert.equal(currentShaping({ shaping: unstamped, sessionId: "s1", shapingDelivery: "d1" }), null, "a record with no delivery id");
 });
 
-test("a clean-up that fails too is retried after the handover's own task write, so a restart reads nothing back", () => {
+test("a commit stamps its delivery id on the record and on the task's binding, in one write", () => {
   const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "double-fault", status: "backlog", sessionId: null }));
-  registry.upsertTask({ ...registry.getTask("double-fault")!, status: "running", sessionId: "kept" });
-  registry.commitTaskShaping("double-fault", "kept", record("kept"), "first text");
-  registry.upsertTask({ ...registry.getTask("double-fault")!, status: "backlog", sessionId: null });
-  let clearFails = true;
-  registry.shapingCommitter = () => { throw new Error("disk full"); };
-  registry.shapingClearer = (taskId, sessionId) => {
-    if (clearFails) throw new Error("still full");
-    return db.clearTaskShapingFor(taskId, sessionId);
-  };
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
-    // Handed back to the session it ran on: both the commit and its clean-up fail.
-    assert.equal(registry.commitTaskShaping("double-fault", "kept", null, ""), false);
-    assert.equal(db.getTask("double-fault")?.shaping?.sessionId, "kept", "the earlier record is still on disk");
-    clearFails = false;
-    // The handover's own write, which binds the task to that session again.
-    registry.upsertTask({ ...registry.getTask("double-fault")!, status: "running", sessionId: "kept" });
-  } finally {
-    console.warn = warn;
-    registry.shapingCommitter = null;
-    registry.shapingClearer = null;
-  }
-  assert.equal(db.getTask("double-fault")?.shaping, undefined, "the retry cleared it once writes succeeded");
-  assert.equal(db.getTaskShapingText("double-fault"), null);
-  assert.equal(currentShaping(new Registry().getTask("double-fault")!), null, "so a restart shows no earlier context");
+  registry.upsertTask(mkTask({ id: "stamped", status: "running", sessionId: "s1" }));
+  assert.equal(registry.commitTaskShaping("stamped", "s1", record("s1"), "text"), true);
+  const live = registry.getTask("stamped")!;
+  assert.ok(live.shaping?.deliveryId, "the record carries a delivery id");
+  assert.equal(live.shapingDelivery, live.shaping?.deliveryId, "and the binding the same one");
+  assert.deepEqual(db.taskShapingState("stamped"), { shaping: live.shaping, shapingDelivery: live.shapingDelivery }, "on disk too");
+  // A second delivery to the same session gets an id of its own.
+  assert.equal(registry.commitTaskShaping("stamped", "s1", record("s1", "degraded"), ""), true);
+  assert.notEqual(registry.getTask("stamped")!.shapingDelivery, live.shapingDelivery);
+  // A delivery that recorded nothing clears the record and still binds under its own new id.
+  const previous = registry.getTask("stamped")!.shapingDelivery;
+  assert.equal(registry.commitTaskShaping("stamped", "s1", null, ""), true);
+  const unshaped = db.taskShapingState("stamped");
+  assert.equal(unshaped.shaping, undefined);
+  assert.ok(unshaped.shapingDelivery, "the new id is persisted");
+  assert.notEqual(unshaped.shapingDelivery, previous);
+  assert.equal(registry.getTask("stamped")!.shapingDelivery, unshaped.shapingDelivery, "memory and disk agree");
+  // Reads carry the id only beside a record they show, so an unshaped task's payload is unchanged.
+  setFlag(true);
+  assert.equal("shapingDelivery" in taskShapingForReads(registry.getTask("stamped")!), false);
+  assert.equal("shapingDelivery" in taskShapingForReads(db.getTask("stamped")!), false);
 });
 
-test("a pending clean-up never removes a record a later commit wrote", () => {
+test("an ordinary task write never moves the delivery id, whatever copy of the task it writes", () => {
   const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "later-commit", status: "running", sessionId: "kept" }));
-  registry.commitTaskShaping("later-commit", "kept", record("kept"), "first text");
-  registry.shapingCommitter = () => { throw new Error("disk full"); };
-  registry.shapingClearer = () => { throw new Error("still full"); };
-  const warn = console.warn;
-  console.warn = () => {};
+  registry.upsertTask(mkTask({ id: "stale-copy", status: "running", sessionId: "s1" }));
+  registry.commitTaskShaping("stale-copy", "s1", record("s1"), "text");
+  const before = registry.getTask("stale-copy")!;
+  registry.commitTaskShaping("stale-copy", "s1", record("s1", "degraded"), "");
+  // A writer holding the copy read before the second commit.
+  registry.upsertTask({ ...before, priority: "high" });
+  db.upsertTask({ ...before, priority: "low" });
+  const after = db.getTask("stale-copy")!;
+  assert.equal(after.shaping?.state, "degraded");
+  assert.equal(after.shapingDelivery, registry.getTask("stale-copy")!.shapingDelivery);
+  assert.ok(currentShaping(after), "the later delivery's record still shows");
+});
+
+for (const [label, summary] of [["a shaped", record("kept", "degraded")], ["an unshaped", null]] as const) {
+  test(`${label} handover back to the same session whose commit fails never shows the earlier record, before or after a restart`, () => {
+    setFlag(true);
+    const registry = new Registry();
+    const earlier = ranBefore(registry, `same-session-${label.split(" ")[1]}`, "kept");
+    const id = `same-session-${label.split(" ")[1]}`;
+    // SQLite refuses the commit, and no clean-up of the earlier record is attempted or needed:
+    // only the handover's own binding write is accepted.
+    registry.shapingCommitter = () => { throw new Error("disk full"); };
+    try {
+      assert.equal(quietly(() => registry.commitTaskShaping(id, "kept", summary, "", handedTo(registry, id, "kept"))), false);
+    } finally {
+      registry.shapingCommitter = null;
+    }
+    const durable = db.getTask(id)!;
+    assert.equal(durable.status, "running", "the handover bound the task");
+    assert.equal(durable.sessionId, "kept");
+    assert.deepEqual(durable.shaping, earlier, "the earlier delivery's record is still on disk, naming this session");
+    assert.notEqual(durable.shapingDelivery, earlier.deliveryId, "but the binding carries this delivery's id");
+    assert.equal(currentShaping(registry.getTask(id)!), null, "live readers show nothing");
+    assert.equal(currentShaping(durable), null, "durable readers show nothing");
+    assert.equal(taskShapingForReads(durable).shaping, undefined, "MCP's task reads carry nothing");
+    // A restart: nothing in memory survives, and the row alone still says no.
+    const restarted = new Registry();
+    assert.equal(currentShaping(restarted.getTask(id)!), null, "a restarted daemon shows nothing");
+    assert.equal(taskShapingForReads(restarted.getTask(id)!).shaping, undefined);
+    // The next delivery to that session commits normally and shows its own record.
+    assert.equal(restarted.commitTaskShaping(id, "kept", record("kept"), "next", handedTo(restarted, id, "kept")), true);
+    assert.equal(currentShaping(db.getTask(id)!)?.state, "ok");
+  });
+}
+
+test("a stop between the handover's writes cannot leave the record without its binding", () => {
+  setFlag(true);
+  const registry = new Registry();
+  const earlier = ranBefore(registry, "torn", "kept");
+  // The process stops at the binding write: SQLite refuses the row naming the receiving session,
+  // after the record was written in the same transaction.
+  const d = db.openDb();
+  d.exec(`CREATE TRIGGER stop_at_binding BEFORE UPDATE OF session_id ON tasks WHEN NEW.id = 'torn'
+          BEGIN SELECT RAISE(ABORT, 'process stopped'); END;`);
   try {
-    assert.equal(registry.commitTaskShaping("later-commit", "kept", null, ""), false);
+    assert.throws(() => quietly(() => registry.commitTaskShaping("torn", "kept", record("kept", "degraded"), "new text", handedTo(registry, "torn", "kept"))), /process stopped/);
   } finally {
-    console.warn = warn;
-    registry.shapingCommitter = null;
-    registry.shapingClearer = null;
+    d.exec("DROP TRIGGER stop_at_binding");
   }
-  // The next delivery to the same session commits normally, then the task is written again.
-  assert.equal(registry.commitTaskShaping("later-commit", "kept", record("kept", "degraded"), ""), true);
-  registry.upsertTask({ ...registry.getTask("later-commit")!, priority: "high" });
-  assert.equal(db.getTask("later-commit")?.shaping?.state, "degraded", "the later delivery's record stands");
+  assert.equal(d.isTransaction, false);
+  // Neither half landed: the row is as the handover found it.
+  const durable = db.getTask("torn")!;
+  assert.equal(durable.status, "backlog");
+  assert.equal(durable.sessionId, null);
+  assert.deepEqual(durable.shaping, earlier, "the new record was rolled back with the binding");
+  assert.equal(db.getTaskShapingText("torn")?.text, "earlier delivery's text");
+  assert.equal(currentShaping(new Registry().getTask("torn")!), null, "and a restart shows no record for it");
+  // The live registry was not moved ahead of what landed: it agrees with the row.
+  const live = registry.getTask("torn")!;
+  assert.equal(live.shapingDelivery, durable.shapingDelivery, "live and durable carry the same delivery id");
+  assert.deepEqual(live.shaping, durable.shaping);
+  // A later handover to the same session that does land shows only its own record.
+  const after = new Registry();
+  assert.equal(after.commitTaskShaping("torn", "kept", record("kept", "degraded"), "new text", handedTo(after, "torn", "kept")), true);
+  const bound = db.getTask("torn")!;
+  assert.equal(bound.sessionId, "kept");
+  assert.equal(currentShaping(bound)?.state, "degraded");
+  assert.notEqual(currentShaping(bound)?.deliveryId, earlier.deliveryId);
+});
+
+test("a delivery none of whose writes land leaves live readers showing exactly what durable readers show", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "all-refused", status: "running", sessionId: "kept" }));
+  assert.equal(registry.commitTaskShaping("all-refused", "kept", record("kept"), "shown text"), true);
+  const shown = currentShaping(registry.getTask("all-refused")!);
+  assert.ok(shown, "the current delivery's record shows");
+  // SQLite refuses every write to the row: the shaping transaction and the binding's own write.
+  const d = db.openDb();
+  d.exec(`CREATE TRIGGER refuse_all_refused BEFORE UPDATE ON tasks WHEN NEW.id = 'all-refused'
+          BEGIN SELECT RAISE(ABORT, 'disk refused'); END;`);
+  try {
+    assert.throws(() => quietly(() => registry.commitTaskShaping("all-refused", "kept", record("kept", "degraded"), "")), /disk refused/);
+  } finally {
+    d.exec("DROP TRIGGER refuse_all_refused");
+  }
+  const durable = db.getTask("all-refused")!;
+  const live = registry.getTask("all-refused")!;
+  assert.deepEqual(currentShaping(durable), shown, "the row still shows the delivery it is bound to");
+  assert.deepEqual(currentShaping(live), currentShaping(durable), "and live readers show the same, not a delivery that never landed");
+  assert.equal(live.shapingDelivery, durable.shapingDelivery);
+  assert.deepEqual(currentShaping(new Registry().getTask("all-refused")!), shown, "as does a restart");
 });
 
 test("a restart reads the record back with the task", () => {
   db.upsertTask(mkTask({ id: "restart", status: "running", sessionId: "live" }));
   db.commitTaskShaping("restart", record("live"), "text", 1);
   const registry = new Registry();
-  assert.equal(registry.getTask("restart")?.shaping?.sessionId, "live");
+  assert.equal(currentShaping(registry.getTask("restart")!)?.sessionId, "live");
 });
 
-test("a durable read hides a superseded record while its clean-up is pending", async () => {
-  const { taskShapingForReads } = await import("../src/server/shaping/reads.ts");
-  setFlag(true);
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "durable-pending", status: "running", sessionId: "kept" }));
-  registry.commitTaskShaping("durable-pending", "kept", record("kept"), "first text");
-  registry.shapingCommitter = () => { throw new Error("disk full"); };
-  registry.shapingClearer = () => { throw new Error("still full"); };
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
-    // Handed back to the same session: the commit and its clean-up both fail.
-    assert.equal(registry.commitTaskShaping("durable-pending", "kept", null, ""), false);
-    const durable = db.getTask("durable-pending")!;
-    assert.equal(durable.shaping?.sessionId, "kept", "the stale record is still on disk and names this session");
-    // What MCP's `get_task` and `list_tasks` project from that row.
-    assert.equal(taskShapingForReads(durable).shaping, undefined, "and no durable read presents it as current");
-  } finally {
-    console.warn = warn;
-    registry.shapingCommitter = null;
-    registry.shapingClearer = null;
-  }
-  // Once the clean-up succeeds, nothing is pending and nothing stale is left to hide.
-  registry.upsertTask({ ...registry.getTask("durable-pending")!, priority: "high" });
-  assert.equal(db.getTask("durable-pending")?.shaping, undefined);
-});
-
-test("deleting a task drops a clean-up still pending for it", async () => {
-  const reads = await import("../src/server/shaping/reads.ts");
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "deleted-pending", status: "backlog", sessionId: null }));
-  reads.noteSupersededShaping("deleted-pending", "kept");
-  assert.equal(reads.supersededShapingFor("deleted-pending"), "kept");
-  registry.removeTask("deleted-pending");
-  assert.equal(reads.supersededShapingFor("deleted-pending"), undefined, "nothing is left pending for a task that is gone");
+test("a schema 47 database stamps the record each task shows now, and leaves every other one hidden", () => {
+  db.upsertTask(mkTask({ id: "upgrade-current", status: "running", sessionId: "on-it" }));
+  db.upsertTask(mkTask({ id: "upgrade-stale", status: "running", sessionId: "moved-on" }));
+  db.closeDb();
+  const old = new DatabaseSync(dbPath);
+  old.exec("ALTER TABLE tasks DROP COLUMN shaping_delivery");
+  const legacy = (sessionId: string) => { const { deliveryId: _id, ...rest } = record(sessionId); return JSON.stringify(rest); };
+  old.prepare(`UPDATE tasks SET shaping = ? WHERE id = 'upgrade-current'`).run(legacy("on-it"));
+  old.prepare(`UPDATE tasks SET shaping = ? WHERE id = 'upgrade-stale'`).run(legacy("earlier"));
+  old.exec("PRAGMA user_version = 47");
+  old.close();
+  db.openDb();
+  const current = db.getTask("upgrade-current")!;
+  assert.ok(current.shaping?.deliveryId);
+  assert.equal(current.shapingDelivery, current.shaping?.deliveryId);
+  assert.equal(currentShaping(current)?.sessionId, "on-it", "what readers showed before the upgrade still shows");
+  const stale = db.getTask("upgrade-stale")!;
+  assert.ok(stale.shaping?.deliveryId, "every record gains an id");
+  assert.equal(stale.shapingDelivery, undefined, "that no binding carries");
+  assert.equal(currentShaping({ ...stale, sessionId: "earlier" }), null, "so it never shows, even bound to its session again");
+  db.closeDb();
+  db.openDb();
+  assert.equal(db.getTask("upgrade-current")?.shapingDelivery, current.shapingDelivery, "a second open changes nothing");
 });

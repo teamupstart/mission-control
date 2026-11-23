@@ -29,7 +29,10 @@ import { Tooltip } from "./Tooltip.tsx";
 export function sessionShaping(session: Pick<Session, "id" | "task">): TaskShaping | null {
   const record = session.task?.shaping;
   if (!record) return null;
-  return currentShaping({ shaping: record, sessionId: session.id });
+  // The card carries no binding of its own: the daemon put the record there only after the
+  // whole rule, its delivery id included, admitted it against the task (`taskSummaryFor`). What
+  // is left to check here is that it names the session being drawn.
+  return currentShaping({ shaping: record, sessionId: session.id, shapingDelivery: record.deliveryId ?? null });
 }
 
 function entriesLabel(entries: number): string {

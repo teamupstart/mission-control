@@ -20,13 +20,18 @@ const off: FeatureFlagsConfig = { enableAll: false, overrides: {} };
 
 function record(sessionId: string, state: TaskShaping["state"], entries = 2): TaskShaping {
   return {
-    state, at: 1, sessionId, durationMs: 40, entries, bytes: 120, truncated: false,
+    state, at: 1, sessionId, deliveryId: `d-${sessionId}`, durationMs: 40, entries, bytes: 120, truncated: false,
     shapers: [{
       id: "acme", label: "Acme guidance", stage: "select", origin: "registered", sha256: null,
       outcome: state === "ok" ? "ok" : "timed_out", reason: state === "ok" ? null : "Timed out after 5 s.",
       durationMs: 40, entries, bytes: 120, truncated: false, redacted: false, version: "v1.4.0",
     }],
   };
+}
+
+/** A task bound to `sessionId` under the delivery `record(sessionId, …)` describes. */
+function bound(sessionId: string): { sessionId: string; shapingDelivery: string } {
+  return { sessionId, shapingDelivery: `d-${sessionId}` };
 }
 
 function session(shaping: TaskShaping | undefined, id = "s1"): Session {
@@ -37,34 +42,36 @@ function render(flags: FeatureFlagsConfig, element: React.ReactElement): string 
   return renderToStaticMarkup(createElement(FeatureFlagsContext.Provider, { value: flags }, element));
 }
 
-test("currentShaping shows a record only while it names the task's current session", () => {
-  assert.deepEqual(currentShaping({ shaping: record("s1", "ok"), sessionId: "s1" }), record("s1", "ok"));
-  assert.equal(currentShaping({ shaping: record("s0", "degraded"), sessionId: "s1" }), null, "an earlier launch's record");
+test("currentShaping shows a record only while it describes the task's current session and delivery", () => {
+  assert.deepEqual(currentShaping({ shaping: record("s1", "ok"), ...bound("s1") }), record("s1", "ok"));
+  assert.equal(currentShaping({ shaping: record("s0", "degraded"), ...bound("s1") }), null, "an earlier launch's record");
   assert.equal(currentShaping({ shaping: record("s1", "ok"), sessionId: null }), null, "no current session");
-  assert.equal(currentShaping({ shaping: { ...record("s1", "ok"), sessionId: undefined }, sessionId: "s1" }), null, "an unstamped record");
-  assert.equal(currentShaping({ shaping: null, sessionId: "s1" }), null);
+  assert.equal(currentShaping({ shaping: { ...record("s1", "ok"), sessionId: undefined }, ...bound("s1") }), null, "an unstamped record");
+  assert.equal(currentShaping({ shaping: record("s1", "ok"), sessionId: "s1", shapingDelivery: "d-later" }), null,
+    "an earlier delivery to the same session");
+  assert.equal(currentShaping({ shaping: null, ...bound("s1") }), null);
 });
 
 test("shapingView reports shaping while the mark is set, and the current record otherwise", () => {
   assert.deepEqual(shapingView({ sessionId: null, shapingContext: { startedAt: 7 } }), { state: "shaping", startedAt: 7 });
   // The wait wins over an earlier launch's record, which is what the launch in progress replaces.
-  assert.equal(shapingView({ sessionId: "s1", shaping: record("s1", "ok"), shapingContext: { startedAt: 7 } })?.state, "shaping");
-  assert.deepEqual(shapingView({ sessionId: "s1", shaping: record("s1", "degraded") }), record("s1", "degraded"));
-  assert.equal(shapingView({ sessionId: "s1", shaping: record("s0", "degraded") }), null, "never another session's record");
+  assert.equal(shapingView({ ...bound("s1"), shaping: record("s1", "ok"), shapingContext: { startedAt: 7 } })?.state, "shaping");
+  assert.deepEqual(shapingView({ ...bound("s1"), shaping: record("s1", "degraded") }), record("s1", "degraded"));
+  assert.equal(shapingView({ ...bound("s1"), shaping: record("s0", "degraded") }), null, "never another session's record");
   assert.equal(shapingView({ sessionId: "s1", shapingContext: null }), null);
 });
 
 test("task reads drop a record that names another session and keep the current one", () => {
-  const stale = withCurrentShaping({ id: "t", sessionId: "s1", shaping: record("s0", "degraded") });
+  const stale = withCurrentShaping({ id: "t", ...bound("s1"), shaping: record("s0", "degraded") });
   assert.equal("shaping" in stale, false);
-  const kept = withCurrentShaping({ id: "t", sessionId: "s1", shaping: record("s1", "ok") });
+  const kept = withCurrentShaping({ id: "t", ...bound("s1"), shaping: record("s1", "ok") });
   assert.deepEqual(kept.shaping, record("s1", "ok"));
   const plain = { id: "t", sessionId: "s1" };
   assert.equal(withCurrentShaping(plain), plain, "an unshaped task is returned untouched");
-  assert.deepEqual(taskShapingRead({ sessionId: "s1", shaping: record("s1", "degraded") }), {
+  assert.deepEqual(taskShapingRead({ ...bound("s1"), shaping: record("s1", "degraded") }), {
     state: "degraded", sessionId: "s1", summary: "degraded: acme timed out; 2 entries",
   });
-  assert.equal(taskShapingRead({ sessionId: "s1", shaping: record("s0", "degraded") }), null);
+  assert.equal(taskShapingRead({ ...bound("s1"), shaping: record("s0", "degraded") }), null);
 });
 
 test("the chip reads Context: N entries, or an amber Context degraded", () => {

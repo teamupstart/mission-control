@@ -6,6 +6,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { handOver, hasTmux, PANE_AGENT_DAEMON, paneSession, sessionIdle, startPaneAgent } from "../fixtures/pane-agent.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -308,6 +309,79 @@ test.describe("handed over to a running agent", () => {
         const read = await shaping();
         return read.afterWork && read.afterWork.createdAt >= second.at ? read.afterWork.state : null;
       }, { timeout: 30_000 }).toBe("delivered");
+    } finally {
+      pane.cleanup();
+    }
+  });
+
+  test("a handover back to the same agent whose record cannot be written shows no earlier context, even after a restart", async ({ dashboard, daemon }) => {
+    await registerShapers(daemon, [
+      { id: "guidance-service", label: "Guidance service", stage: "select", args: ["ok"] },
+    ]);
+    await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+    const pane = startPaneAgent(daemon, { prefix: "mc-e2e-stale-record", turns: true });
+    try {
+      const sessionId = await paneSession(daemon, pane);
+      // A title no other spec's agent carries: discovery sees every tmux pane on the machine, and
+      // a handover renames the session after its task.
+      const title = "Refuse a stale handover record";
+      const task = await api<{ id: string }>(daemon, "/api/tasks", {
+        repoRoot: daemon.repo, title, intent: "Keep the ledger retry quiet.", kind: "ship", agent: "claude", workflowId: null, backlog: true,
+      });
+      const shapingRoute = async () => (await fetch(`${daemon.baseURL}/api/tasks/${task.id}/shaping`)).status;
+      const taskRead = async () => (await api<Array<{ id: string; sessionId: string | null; shaping?: unknown }>>(daemon, "/api/tasks"))
+        .find((entry) => entry.id === task.id);
+      const detail = dashboard.locator(".console-detail");
+      const contextChip = detail.getByRole("button", { name: /^Context/ });
+      const openSession = async () => {
+        await dashboard.reload();
+        await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
+        await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: title }).click();
+        await expect(detail).toContainText(title, { timeout: 30_000 });
+      };
+
+      // The first handover's context chip is shown for the session it reached. A pane paste whose
+      // submit the fake agent does not confirm is recorded as unconfirmed, so it reads degraded.
+      await handOver(daemon, task.id, sessionId);
+      await expect.poll(shapingRoute, { timeout: 30_000 }).toBe(200);
+      await openSession();
+      await expect(contextChip).toBeVisible({ timeout: 30_000 });
+      await shoot(dashboard, "same-session-handover-before", detail);
+
+      // Back to the backlog, then handed to the SAME agent while SQLite refuses the new record.
+      await api(daemon, `/api/tasks/${task.id}/requeue`, {});
+      await sessionIdle(daemon, sessionId);
+      withDaemonDb(daemon, (db) => db.exec(
+        `CREATE TRIGGER e2e_refuse_shaping BEFORE UPDATE OF shaping ON tasks WHEN NEW.id = '${task.id}'
+         BEGIN SELECT RAISE(ABORT, 'disk refused the shaping record'); END;`,
+      ));
+      await handOver(daemon, task.id, sessionId);
+      // The earlier delivery's record is still on disk, naming this same session, under an id the
+      // binding no longer carries. Nothing has cleared it.
+      const row = withDaemonDb(daemon, (db) => db.prepare(
+        `SELECT session_id, shaping_delivery, json_extract(shaping, '$.sessionId') AS recordSession,
+                json_extract(shaping, '$.deliveryId') AS recordDelivery FROM tasks WHERE id = ?`,
+      ).get(task.id) as { session_id: string; shaping_delivery: string; recordSession: string; recordDelivery: string });
+      expect(row.session_id).toBe(sessionId);
+      expect(row.recordSession, "the earlier record still names this session").toBe(sessionId);
+      expect(row.shaping_delivery, "but the binding carries this delivery's id").not.toBe(row.recordDelivery);
+      expect(await shapingRoute()).toBe(404);
+      expect((await taskRead())?.shaping).toBeUndefined();
+      await openSession();
+      await expect(contextChip).toHaveCount(0);
+
+      // The daemon restarts with nothing in memory and nothing left to retry.
+      await daemon.crash();
+      withDaemonDb(daemon, (db) => db.exec("DROP TRIGGER e2e_refuse_shaping"));
+      await daemon.restart();
+      await expect.poll(async () => (await api<Array<{ id: string }>>(daemon, "/api/sessions")).some((session) => session.id === sessionId),
+        { timeout: 60_000 }).toBe(true);
+      expect((await taskRead())?.sessionId).toBe(sessionId);
+      expect(await shapingRoute(), "the route serves no earlier delivery's text").toBe(404);
+      expect((await taskRead())?.shaping, "task reads carry no earlier record").toBeUndefined();
+      await openSession();
+      await expect(contextChip, "the session shows no earlier context chip").toHaveCount(0);
+      await shoot(dashboard, "same-session-handover-after-restart", detail);
     } finally {
       pane.cleanup();
     }

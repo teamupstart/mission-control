@@ -67,6 +67,23 @@ write wins and every operation, and the board, ends up with the same id.
 - `create_task` takes `workUnit: "inherit" | "new"`. Omit it to let the calling session's
   task kind decide.
 
+## Telemetry
+
+Every span Mission Control exports for a session that emits a work unit carries the attribute
+`work_unit_id`, so one trace query on it returns the session spans of a plan and all its
+phases: `span.work_unit_id = "wu_..."` in Tempo, `@work_unit_id:wu_...` in Datadog.
+
+- **Unhashed, and the same in every lane.** Every other exported id is a per-destination hash.
+  This one is the documented exception, so it matches across the local, operator and product
+  lanes and the value the agent sends on its own MCP calls.
+- **Which value.** The work unit the session's agent was started with, read from the
+  [launch record](#the-launch-record), never the preview flag.
+- **Never a metric label.** No instrument gains a series per piece of work.
+
+Which spans carry it, which value a launch attempt or a late task outcome carries, when it is
+absent, and the limits on late outcomes are owned by
+[Work unit id](observability.md#work-unit-id).
+
 ## The launch environment
 
 Behind the **MCP call attribution** preview (`work-unit-id`, Settings > Feature flags; its label

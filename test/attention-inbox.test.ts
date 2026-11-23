@@ -29,7 +29,7 @@ import { attentionDismissalKeys, foldAttention, foldWhileDismissalsUnknown, ense
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
 import type { Stall } from "../src/shared/stall.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
-import { mkReport, mkReportControls } from "./helpers/report-fixture.ts";
+import { mkReport, mkReportControls, reportCardProps } from "./helpers/report-fixture.ts";
 import {
   mkEnsembleLink,
   mkEnsembleSummary,
@@ -809,8 +809,7 @@ test("an open report shows its body, its link and Mark read", async () => {
     report: mkReport({ id: "r-1", body: "The **cache** was stale.", url: "https://github.com/o/r/pull/1",
       document: { name: "report.html", kind: "html" } }),
     open: true,
-    onToggle: () => {},
-    onMarkRead: () => {},
+    ...reportCardProps(),
     now: 1,
   }));
   assert.match(html, /aria-expanded="true"/);

@@ -137,7 +137,7 @@ test("opened and read are the operator's alone, and idempotent", async () => {
     ] as Record<string, string>[]) {
       const refused = await call(path, {}, headers);
       assert.equal(refused.status, 403, `${path} refuses ${JSON.stringify(headers)}`);
-      assert.equal(refused.body.error, "Only the operator can open or mark a report read");
+      assert.equal(refused.body.error, "Only the operator can open, mark read, reply to, follow up or publish a report");
     }
   }
   // None of those refusals opened or read it.

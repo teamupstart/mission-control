@@ -216,7 +216,7 @@ export function collectHits(
       }
       continue;
     }
-    if (row.kind === "episode" || row.kind === "review" || row.kind === "asked" || row.kind === "closed" || row.kind === "delivered") continue;
+    if (row.kind === "episode" || row.kind === "review" || row.kind === "asked" || row.kind === "closed" || row.kind === "delivered" || row.kind === "report") continue;
 
     if (row.kind === "turn") {
       const who = turnWho(row.message, agentLabel);

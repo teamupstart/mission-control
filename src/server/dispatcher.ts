@@ -483,7 +483,8 @@ export class Dispatcher {
     let resolution: DispatchResolution | null = null;
     // This launch's one work unit decision, made here where the launch begins and never again:
     // the agent's environment, the launch record the registry installs when the agent
-    // appears, and the shaping run all take this value, so a switch of the preview while this
+    // appears, the shaping run and this attempt's `mission.dispatch` span (whatever its
+    // outcome) all take this value, so a switch of the preview while this
     // launch is in flight cannot give them different answers. `TaskManager.dispatch` has
     // already given an older row its id, so its first dispatch decides with it.
     const workUnitId = launchWorkUnitId(task);
@@ -525,6 +526,7 @@ export class Dispatcher {
         // rather than inventing a ladder that never ran.
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(null, task),
           outcome: "launched",
           sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
@@ -1022,6 +1024,7 @@ export class Dispatcher {
         this.commitShaping(taskId, attempt, shaping, embeddedSession);
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(resolution),
           outcome: "launched",
           sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
@@ -1302,6 +1305,7 @@ export class Dispatcher {
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
       observeDispatchFinished({
         taskId,
+        workUnitId,
         ...dispatchFacts(resolution),
         outcome: "launched",
         sessionId: deliverySession.id,
@@ -1327,6 +1331,7 @@ export class Dispatcher {
         // launch on the only chart that answers "do dispatches work".
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(resolution, task),
           outcome: "superseded",
         });
@@ -1337,6 +1342,7 @@ export class Dispatcher {
       }
       observeDispatchFinished({
         taskId,
+        workUnitId,
         ...dispatchFacts(resolution, task),
         outcome: "failed",
       });

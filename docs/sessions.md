@@ -3481,8 +3481,47 @@ anything urgent or needing your decision is a `request_input` question.
 - **A report outlives its session.** It keeps the author's name, task, repository and resident
   profile from when it was posted. `GET /api/sessions/:id/reports` lists every report the session
   posted, every version, read or not, after the session has gone.
-- **Flag off.** The tool is refused with a message saying where to turn the flag on. A session on
-  an MCP bundle older than this build does not have the tool.
+- **In the conversation.** Each report is an entry in its session's conversation at the moment it
+  was posted, marked **Report**, with its title (click it to show the body and link), its id, its
+  version when it replaced an earlier report, and how it stands: **Waiting to be read** with
+  **Mark read**, **Replaced by a later version**, or how you cleared it (**Read**, **Replied to**,
+  or **Followed up in a new task**). Every version keeps its entry, so a replaced report stays
+  here after the inbox shows only its successor. Entries come from the history route and update
+  live as reports are posted, read and replaced. Opening an entry opens the same report in the
+  inbox: there is one open report on screen.
+- **Replying and following up.** From the report's inbox card you reply to a running agent, or
+  start a follow-up task for a session that has ended; see
+  [Answering a report](attention-and-alerts.md#answering-a-report). Who may call
+  `POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up` is set out in
+  [Agent reports](security.md#agent-reports) in the security guide. A reply is delivered as an
+  ordinary operator message, but its text is built from the report: a line naming it, the report
+  restated, then your words (see the format in
+  [Answering a report](attention-and-alerts.md#answering-a-report)).
+  Messages you type in the composer are unchanged: nothing is added to them.
+- **Open report.** A report with an attached document offers **Open report** on its inbox card
+  and its conversation entry. It reads the copy stored under `<state home>/reports/<id>/`
+  through `GET /api/reports/:id/document`, never the checkout, so it opens after the worktree is
+  gone and shows what was posted even if the checkout file changed since. An HTML document is
+  drawn in the dashboard's sandboxed preview frame, which runs none of its scripts and fetches
+  nothing; a Markdown document is drawn by the dashboard's Markdown renderer. The route serves
+  the stored copy as an attachment with `nosniff` and a `default-src 'none'; sandbox` policy, as
+  an archived page is served. A stored copy that has gone missing is a 404 whose message the
+  reader shows; one that is there but cannot be opened (a permission or I/O error) is a 500
+  naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
+  not mark it read.
+- **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
+  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
+  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
+  on the card and publishes nothing. Pressing it again returns the same archive. If that archive
+  is deleted or leaves the library, the card offers **Publish as scout** again; see
+  [How a report produces one](archives.md#how-a-report-produces-one). It does not mark the
+  report read. `POST /api/reports/:id/publish` is the operator's alone and takes nothing but
+  the report id: a request that carries a page or a path is refused. A report with no document
+  cannot be published.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply,
+  follow-up, document and publish routes refuse, and no conversation entry is drawn. A session on an MCP bundle
+  older than this build does not have the tool.
 
 ### Scout reports from a session
 

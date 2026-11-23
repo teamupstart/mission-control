@@ -129,6 +129,8 @@ Tempo trace shows immutable event-time context, bounded reason/error fields and 
 references. It contains no prompts, feedback prose, paths, repository URLs or credentials.
 Trace limits/sampling never supply cohort denominators. Use Explore for narrower TraceQL searches,
 including `span.mission.verdict = "fail"`, reviewer model and opaque persona/stage references.
+`span.work_unit_id = "wu_..."` finds every session span of one piece of work: it is the one
+reference exported unhashed ([Work unit id](observability.md#work-unit-id)).
 
 ## Storage and delivery limits
 

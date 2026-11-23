@@ -1208,6 +1208,32 @@ export const McpPostReportSchema = PostReportBodySchema.extend({
   cwd: z.string().nullable().optional().default(null),
 });
 
+/**
+ * `POST /api/reports/:id/reply`: the operator's words, delivered as a message that names and
+ * restates the report. The cap leaves room for the restated report inside one message.
+ */
+export const ReportReplySchema = z.object({
+  text: z.string().trim().min(1, "a reply needs words")
+    .max(REPORT_LIMITS.body, `a reply can be at most ${REPORT_LIMITS.body} characters`),
+});
+
+/**
+ * `POST /api/reports/:id/follow-up`: the operator's words for the new task. Optional, because a
+ * retry dispatches the task the first call created and reads no words.
+ */
+export const ReportFollowUpSchema = z.object({
+  text: z.string().trim()
+    .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
+    .optional().default(""),
+});
+
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),

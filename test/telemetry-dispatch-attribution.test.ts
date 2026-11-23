@@ -41,6 +41,8 @@ const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts")
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 
 // Scout launch must pass its real MCP preflight before reaching the injected spawn failure.
 // CI runs these source tests before build, so never inherit a developer's dist/ bundle.
@@ -413,4 +415,37 @@ test("a failure after resolution carries the model that launch resolved", async 
   assert.equal(JSON.parse(later.facts_json).origin, "discovered");
   assert.equal(JSON.parse(later.refs_json).task_id, undefined);
   detach();
+});
+
+test("a failed launch's dispatch span carries that launch's work unit decision, and none with the preview off", async (t) => {
+  const WU = "wu_01JD00000000000000000000DD";
+  const repo = seedRepo("failed-work-unit");
+  const registry = new Registry();
+  const detach = attachSessionTelemetry(registry);
+  t.after(() => {
+    detach();
+    applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled: false });
+  });
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "terminal",
+    ...MISSION_TEST_MCP_DEPS,
+    // Thrown at the spawn: no agent ever starts, and the attempt is still reported.
+    spawn: async () => {
+      throw new Error("no terminal backend could start a session");
+    },
+  });
+  for (const [id, enabled] of [["task-wu-on", true], ["task-wu-off", false]] as const) {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled }).ok, true);
+    registry.upsertTask(mkTask({
+      id, workUnitId: WU, status: "dispatching", repoRoot: repo, title: "Work unit", intent: "fail at spawn",
+      agent: "claude", kind: "scout",
+    }));
+    await dispatcher.dispatch(id);
+    assert.equal(registry.getTask(id)?.status, "failed");
+  }
+  const failed = dispatches().map(({ facts, refs }) => [refs.task_id, facts.outcome, refs.work_unit_id ?? null]);
+  assert.deepEqual(failed, [
+    ["task-wu-on", "failed", WU],
+    ["task-wu-off", "failed", null],
+  ]);
 });

@@ -1,5 +1,5 @@
 import type { CodeRabbitComparison, CodeRabbitConfigSnapshot, CodeRabbitTuning, WorkflowCommandView } from "@shared/workflow.ts";
-import { checkBlockedReason, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
+import { checkBlockedReason, codeRabbitReviewArgv, CODERABBIT_REVIEW_COMMAND, DEFAULT_CODERABBIT_COMMAND, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { run, type RunResult } from "../util/exec.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
@@ -123,6 +123,7 @@ export async function resolveCodeRabbitComparison(input: {
   const rule = input.command.overrides.find((r) => r.repoRoot === input.repoRoot)?.review;
   const tuning: CodeRabbitTuning = rule ?? { kind: "coderabbit", baseRef: null, severity: "major" };
   const result: CodeRabbitComparison = { interpreterVersion: 1, yaml: input.yaml, severity: tuning.severity,
+    command: [...(tuning.command ?? input.command.defaultCommand ?? DEFAULT_CODERABBIT_COMMAND)],
     ruleRevision: input.command.revision, baseRef: tuning.baseRef, baseTip: null, mergeBase: null, head: null, empty: false,
     timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command), maxRuns: input.command.maxRuns, error: null };
   const git = async (args: string[]) => {
@@ -231,7 +232,8 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     failureStage = "readiness";
     const ready = await (deps.codeRabbitProbe ?? probeCodeRabbit)();
     if (ready.error || !("command" in ready)) return block(ready.error ?? "CodeRabbit is unavailable");
-    const command = [ready.command, "review", "--agent", "--gate", comparison.severity, "--committed", "--base-commit", comparison.mergeBase];
+    const argv = codeRabbitReviewArgv(comparison.command ?? CODERABBIT_REVIEW_COMMAND, comparison.severity, comparison.mergeBase);
+    const command = [ready.command, ...argv.slice(1)];
     // An executor that throws cannot prove that the review never started. Keep its claim
     // unless a completed runtime result explicitly reports a pre-start refusal.
     started = true;

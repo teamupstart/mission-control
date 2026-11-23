@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { displayItemsHiding } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { shellWords } from "../../src/server/terminal/shell.ts";
 import { WORK_UNIT_REUSE_REFUSAL } from "../../src/shared/work-unit.ts";
@@ -170,6 +171,29 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await expect(after).not.toContainText(claude.workUnitId!);
   await expect(after).not.toContainText(/work unit/i);
   await shoot(after.locator("dl.detail-sub"), "07-preview-switched-off-still-hidden", page);
+
+  // The empty side of the band's content check. The id no longer keeps the band open, and this
+  // task has no install warnings, so with the path and branch cells hidden, the task chip silent
+  // (the session is named after its task) and no pull requests, there is no band at all - not an
+  // empty bar of chrome.
+  // Asserted present first, so a fixture that stops attaching the task fails here rather than
+  // passing these preconditions vacuously.
+  const runningTask = running?.task;
+  expect(runningTask, "the running session still carries its task").toBeDefined();
+  // `claimWarnings` is absent, never empty, when a task has none.
+  expect(runningTask!.claimWarnings ?? [], "no install warnings to keep the band open").toEqual([]);
+  expect(runningTask!.repoPrs, "no pull requests to keep the band open").toEqual([]);
+  const hidden = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hiddenDisplayItems: displayItemsHiding("detailPath", "detailBranch") }),
+  });
+  expect(hidden.ok).toBe(true);
+  await page.reload();
+  const empty = await openSession(page, claude.title);
+  await expect(empty.locator("dl.detail-sub")).toHaveCount(0);
+  await expect(empty).not.toContainText(claude.workUnitId!);
+  await shoot(empty, "08-empty-band-absent", page);
 });
 
 test("with the preview off, a launch carries no variable and the detail shows no row", async ({ dashboard: page, daemon }) => {

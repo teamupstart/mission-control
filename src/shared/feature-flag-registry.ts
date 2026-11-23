@@ -14,6 +14,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
  */
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
+export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -133,6 +135,13 @@ export const FEATURE_FLAGS = [
       "still working.",
     stage: "preview",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you"],
+  },
+  {
+    id: MCP_SCHEDULES_FLAG_ID,
+    label: "Recurring missions through MCP",
+    description: "Let sessions preview and create recurring missions through MCP, and read the saved mission catalog.",
+    stage: "preview",
+    keywords: ["schedule", "recurring", "mission", "mcp", "create_schedule"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

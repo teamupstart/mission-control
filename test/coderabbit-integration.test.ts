@@ -25,7 +25,7 @@ const { openDb }=await import("../src/server/db.ts");
 const { ensureToken }=await import("../src/shared/harness-runtime.mjs");
 const { WorkflowCheckOutcomeSchema }=await import("../src/shared/protocol.ts");
 const enabled=parseCodeRabbitConfig(Buffer.from('reviews: {auto_review: {enabled: true}}'));
-const comparison:CodeRabbitComparison={interpreterVersion:1,yaml:enabled,head:"a".repeat(40),baseTip:"b".repeat(40),mergeBase:"c".repeat(40),baseRef:"main",severity:"major",maxRuns:10,timeoutMs:2700000,ruleRevision:1,empty:false,error:null};
+const comparison:CodeRabbitComparison={interpreterVersion:1,yaml:enabled,head:"a".repeat(40),baseTip:"b".repeat(40),mergeBase:"c".repeat(40),baseRef:"main",severity:"major",maxRuns:10,timeoutMs:2700000,ruleRevision:1,empty:false,error:null,command:["coderabbit","review","--deep"]};
 const summary={comparison,status:"complete" as const,counts:{critical:0,major:0,minor:1,trivial:0,info:0,none:0},titles:["minor advisory"],diagnostic:"Complete review"};
 const input=():RunCheckInput=>({slot:"coderabbit",command:emptyWorkflowCommandView("coderabbit"),policy:{checksEnabled:true,repoAllowlist:["/repo"]},reserveRun:()=>({granted:true,spent:0}),cwd:"/repo",repoRoot:"/repo",headSha:comparison.head,coderabbit:{yaml:enabled,dirty:false,comparison:async()=>comparison}});
 const deps=():CheckRunDeps=>({codeRabbitProbe:async()=>({command:"/fake/coderabbit",env:{HOME:home},error:null}),execute:async()=>({kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary})});
@@ -68,7 +68,7 @@ console.log(process.argv[2]==='--version'?'0.9.1':JSON.stringify({type:'status',
 });
 test("YAML true needs no catalog override and defaults to ten runs and 45 minutes",async()=>{
  const i=input();assert.equal(i.command!.maxRuns,10);assert.equal(i.command!.overrides.length,0);
- const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
+ const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--deep","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
 });
 test("eight long finding titles still produce a schema-valid outcome for Persona evidence",async()=>{
@@ -155,6 +155,7 @@ test("observed default base and full head resolve in correct repo; retries freez
  for(const f of [first,second]) {
   const command=emptyWorkflowCommandView("coderabbit");const c=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:f.git("rev-parse","--short","HEAD"),yaml:enabled,command});
   assert.equal(c.head,f.git("rev-parse","HEAD"));assert.equal(c.baseTip,f.base);assert.equal(c.mergeBase,f.base);assert.equal(c.empty,false);
+  assert.deepEqual(c.command, ["coderabbit", "review", "--deep"]);
   // The engine regression separately pins durable retries; this boundary resolves new submissions.
   f.git("update-ref","refs/remotes/origin/main",c.head!);assert.equal(c.baseTip,f.base);
   const refreshed=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:c.head,yaml:enabled,command});assert.equal(refreshed.empty,true);
@@ -195,14 +196,28 @@ test("missing origin/HEAD requires explicit base tuning and resolves its tip and
  assert.equal(resolved.baseTip,baseTip);assert.equal(resolved.mergeBase,f.base);
  assert.equal(resolved.head,head);assert.equal(resolved.severity,"minor");assert.equal(resolved.empty,false);
 });
-test("typed CAS tuning survives reload and legacy writes, removal returns to defaults; reject argv/subdirectory",()=>{
+test("CodeRabbit command tuning persists and resolves repository override, global default, then built-in default", async () => {
  const f=repo("catalog");const manager=new WorkflowCommandManager(new Registry());let view=manager.get("coderabbit")!;
- const saved=manager.replace("coderabbit",{expectedRevision:view.revision,defaultCommand:null,overrides:[{repoRoot:f.root,command:[],review:{kind:"coderabbit",baseRef:"main",severity:"minor"}}],maxRuns:10,timeoutMs:null,onUnavailable:"skip",onBudgetExhausted:"block"});assert.ok(saved.ok);
+ const defaultCommand = ["coderabbit", "review", "--fresh"];
+ const repoCommand = ["coderabbit", "review", "--deep", "Review transaction boundaries"];
+ const saved=manager.replace("coderabbit",{expectedRevision:view.revision,defaultCommand,overrides:[{repoRoot:f.root,command:[],review:{kind:"coderabbit",baseRef:"main",severity:"minor",command:repoCommand}}],maxRuns:10,timeoutMs:null,onUnavailable:"skip",onBudgetExhausted:"block"});assert.ok(saved.ok);
  view=manager.get("coderabbit")!;assert.equal(view.overrides[0]!.review!.severity,"minor");assert.equal(view.onUnavailable,"block");assert.equal(view.onBudgetExhausted,"skip");
  manager.saveLegacyConfig([],()=>{});assert.deepEqual(manager.get("coderabbit"),view);
- assert.equal(manager.replace("coderabbit",{...view,expectedRevision:view.revision,defaultCommand:["danger"]}).ok,false);
+ const resolve = (command: typeof view) => resolveCodeRabbitComparison({ repoRoot: f.root, headSha: f.git("rev-parse", "HEAD"), yaml: enabled, command });
+ assert.deepEqual((await resolve(view)).command, repoCommand);
+ for (const invalid of [["danger"], ["coderabbit", "review", "--base", "main"], ["coderabbit", "review", "--use-credits"]]) {
+  assert.equal(manager.replace("coderabbit", {...view, expectedRevision: view.revision, defaultCommand: invalid}).ok, false);
+  const rule = view.overrides[0]!;
+  assert.equal(manager.replace("coderabbit", {...view, expectedRevision: view.revision,
+   overrides: [{ ...rule, review: { ...rule.review!, command: invalid } }]}).ok, false);
+ }
  mkdirSync(join(f.root,"nested"));assert.equal(manager.replace("coderabbit",{...view,expectedRevision:view.revision,overrides:[{...view.overrides[0]!,repoRoot:join(f.root,"nested")}]}).ok,false);
- assert.ok(manager.replace("coderabbit",{...view,expectedRevision:view.revision,overrides:[]}).ok);assert.equal(manager.get("coderabbit")!.overrides.length,0);
+ assert.ok(manager.replace("coderabbit",{...view,expectedRevision:view.revision,overrides:[]}).ok);
+ view=manager.get("coderabbit")!;
+ assert.equal(view.overrides.length,0);
+ assert.deepEqual((await resolve(view)).command, defaultCommand);
+ assert.ok(manager.replace("coderabbit", {...view, expectedRevision: view.revision, defaultCommand: null}).ok);
+ assert.deepEqual((await resolve(manager.get("coderabbit")!)).command, ["coderabbit", "review", "--deep"]);
 });
 test("normalized findings use the existing quota and authenticated reader; raw clipping loses no semantic body",()=>{
  const service=new WorkflowCommandArtifactService(openDb(),join(home,"bodies"));const input={runId:"run",submissionId:"sub",attemptId:"attempt"};

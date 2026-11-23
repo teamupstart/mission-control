@@ -26,6 +26,13 @@ This release also adds raw `planInputs` and `dependencies` edits to MCP `update_
 of this flag. Those edits remain subject to authentication and existing task, repository, and
 dependency validation. The dashboard task-update endpoint already supported these raw atomic edits.
 
+**Recurring missions through MCP** (`mcp-schedules`) enables `create_schedule`,
+`preview_schedule` and `list_schedules`. The daemon gates their authenticated `/mcp/schedules`
+entry points on every request. Turning it off does not pause saved missions or change the
+existing dashboard API. See [Recurring missions](recurring-missions.md#creating-missions-from-a-session-through-mcp).
+`test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
+creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one

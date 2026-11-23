@@ -8,7 +8,9 @@ import {
 import {
   normalizePersonaVerdict,
   parsePersonaVerdict,
+  parsePersonaVerdictReply,
 } from "../src/server/workflows/verdict.ts";
+import { ModelReplyMiss } from "../src/server/llm/structured.ts";
 import { buildPersonaPrompt } from "../src/server/workflows/prompt.ts";
 import { WorkflowRequestedChangeSchema } from "../src/shared/protocol.ts";
 import { WORKFLOW_FINDING_REASONS } from "../src/shared/workflow-reasons.ts";
@@ -315,4 +317,91 @@ test("Persona prompts expose immutable Check outcomes and exact text artifacts a
   });
   assert.equal(parsePersonaVerdict(cited, new Set(), new Set(["txt_focused"]))?.verdict, "pass");
   assert.equal(parsePersonaVerdict(cited, new Set(), new Set())?.verdict, undefined);
+});
+
+// Synthetic fixtures only: models routinely send `"path": null` on evidence that has no
+// path, and a null optional must read as absent rather than discard the whole reply.
+const nullPathEvidence = [
+  { kind: "transcript", quote: "The author ran the focused suite", path: null, line: null },
+  { kind: "decision", quote: "The operator chose null-as-absent", path: null },
+  { kind: "check", quote: "ok 3 - focused regression", path: "attempt-check-1" },
+];
+const nullPathAttempts = new Set(["attempt-check-1"]);
+const expectedEvidence = [
+  { kind: "transcript", quote: "The author ran the focused suite" },
+  { kind: "decision", quote: "The operator chose null-as-absent" },
+  { kind: "check", quote: "ok 3 - focused regression", path: "attempt-check-1" },
+];
+
+test("a pass verdict whose transcript and decision evidence carry a null path is accepted", () => {
+  const verdict = parsePersonaVerdict(JSON.stringify({
+    verdict: "pass",
+    summary: "Meets the bar",
+    approvalDetails: { reason: "Every criterion has evidence", evidence: nullPathEvidence },
+    confidence: 0.9,
+  }), new Set(), new Set(), nullPathAttempts);
+  assert.deepEqual(verdict, {
+    verdict: "pass",
+    summary: "Meets the bar",
+    approvalDetails: { reason: "Every criterion has evidence", evidence: expectedEvidence },
+    confidence: 0.9,
+  });
+});
+
+test("a fail verdict whose evidence and change carry null optionals is accepted", () => {
+  const verdict = parsePersonaVerdict(JSON.stringify({
+    verdict: "fail",
+    summary: "Needs a test",
+    requestedChanges: [{
+      title: "Add a regression test",
+      rationale: "The fix is unproven",
+      basis: "substantive",
+      evidence: nullPathEvidence,
+      path: null,
+      line: null,
+    }],
+    confidence: 0.8,
+  }), new Set(), new Set(), nullPathAttempts);
+  assert.deepEqual(verdict, {
+    verdict: "fail",
+    summary: "Needs a test",
+    requestedChanges: [{
+      basis: "substantive",
+      title: "Add a regression test",
+      rationale: "The fix is unproven",
+      evidence: expectedEvidence,
+    }],
+    confidence: 0.8,
+  });
+});
+
+test("a null path still cannot stand in for a required Check attempt id", () => {
+  const reply = JSON.stringify({
+    verdict: "pass",
+    summary: "Meets the bar",
+    approvalDetails: { reason: "r", evidence: [{ kind: "check", quote: "ok", path: null }] },
+    confidence: 1,
+  });
+  assert.equal(parsePersonaVerdict(reply, new Set(), new Set(), nullPathAttempts), null);
+  const miss = parsePersonaVerdictReply(reply, new Set(), new Set(), nullPathAttempts);
+  assert.ok(miss instanceof ModelReplyMiss);
+  assert.equal(miss.kind, "schema");
+  assert.match(miss.issues[0]!, /check reference must set path to a Check attemptId/);
+});
+
+test("a rejected Persona reply names the failing field without quoting the reply", () => {
+  const miss = parsePersonaVerdictReply(JSON.stringify({
+    verdict: "pass",
+    summary: "Meets the bar",
+    approvalDetails: { reason: "r", evidence: [{ kind: "SECRET-KIND", quote: "q" }] },
+    confidence: "high",
+  }));
+  assert.ok(miss instanceof ModelReplyMiss);
+  assert.equal(miss.kind, "schema");
+  assert.ok(miss.issues.some((issue) => issue.startsWith("approvalDetails.evidence.0.kind: Expected one of")));
+  assert.ok(miss.issues.includes("confidence: Expected number, received string"));
+  assert.ok(miss.issues.every((issue) => !issue.includes("SECRET-KIND")));
+  const notJson = parsePersonaVerdictReply("I approve this change.");
+  assert.ok(notJson instanceof ModelReplyMiss);
+  assert.equal(notJson.kind, "json");
 });

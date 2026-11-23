@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 441 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 444 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -56,11 +56,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
   // then for the report document and Publish as scout routes, which answer 404 with it off, and
   // then for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you"
-  // switches in `alerts`, all on.
+  // switches in `alerts`, all on. The recurring-mission MCP routes add GET/POST /mcp/schedules
+  // and POST /mcp/schedules/preview, all answering 401 without a daemon token.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 441);
+  assert.equal(others.length, 444);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "5a972651bfbe51441a1bf60c3ebb4b384f399911ff6174832c458dc9b2d60259");
+    "418962abeed0dd37c3a8104c8a6100622a5de45cc2353b3f73a84e592fc28c4b");
 });
 
 function sourceFiles(dir: string): string[] {

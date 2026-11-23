@@ -2,7 +2,7 @@ import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -61,7 +61,7 @@ export async function reviewSession(
   const r = await runStructured<typeof VerdictSchema>(
     (p) => llmRunner(runnerId).run(p, { model, role: "foreman:review" }),
     buildReviewPrompt(input),
-    extractVerdict,
+    (raw) => parseModelReply(raw, VerdictSchema),
     "Foreman review",
   );
   return r.kind === "ok" ? { kind: "verdict", verdict: r.value } : { kind: "failed", reason: r.reason };

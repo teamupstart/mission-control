@@ -353,6 +353,26 @@ test("a reply being written survives the agent replacing its report, and the new
   expect(stale.status).toBe(409);
   expect((await stale.json() as { error: string }).error).toBe(`This report was replaced by ${second.id}. Reply to that version instead.`);
 
+  // The older version can still be read from its conversation entry while the newer one waits:
+  // opening it on purpose keeps it open, rather than jumping to its replacement.
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = page.locator(".console-detail");
+  const olderEntry = detail.getByRole("note", { name: "Report: Slow query found" });
+  await expect(olderEntry).toContainText("Replaced by a later version", { timeout: 30_000 });
+  await olderEntry.getByRole("button", { name: "Slow query found" }).click();
+  await expect(olderEntry.getByText("The orders join scans every row.")).toBeVisible();
+  // Long enough for any redirect to the successor to have happened; none may.
+  await page.waitForTimeout(1_500);
+  await expect(olderEntry.getByRole("button", { name: "Slow query found" })).toHaveAttribute("aria-expanded", "true");
+  await expect(olderEntry.getByText("The orders join scans every row.")).toBeVisible();
+
+  // Back in the inbox, the newer card still holds the words typed before the replacement.
+  await openInbox(page);
+  await replaced.getByRole("button", { name: "Slow query fixed" }).click();
+  await expect(replaced.getByRole("textbox", { name: `Reply to ${title}` })).toHaveValue(draft);
+
   // Sent from the card, it answers the new version and the draft is cleared.
   await replaced.getByRole("button", { name: "Send reply" }).click();
   await expect(toRead(page)).toHaveCount(0, { timeout: 30_000 });

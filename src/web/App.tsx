@@ -477,8 +477,23 @@ export function App(): React.JSX.Element {
   // The chain (`rootId`) of the open report, so that when the agent replaces it the replacement
   // takes its place on screen rather than the card closing under the operator.
   const openReportRoot = useRef<string | null>(null);
+  // Whether the open report has been seen waiting to be read since it was opened. Only a report
+  // that was live and has just left the live list was replaced under the operator; an older
+  // version opened on purpose from its conversation entry was never live, and stays open.
+  const openReportLive = useRef<{ id: string | null; live: boolean }>({ id: null, live: false });
   useEffect(() => {
-    if (openReportId === null || reports.some((report) => report.id === openReportId)) return;
+    const live = openReportId !== null && reports.some((report) => report.id === openReportId);
+    const seen = openReportLive.current;
+    if (seen.id !== openReportId) {
+      openReportLive.current = { id: openReportId, live };
+      return;
+    }
+    if (live) {
+      seen.live = true;
+      return;
+    }
+    if (openReportId === null || !seen.live) return;
+    seen.live = false;
     const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
     if (successor) setOpenReportId(successor.id);
   }, [reports, openReportId]);

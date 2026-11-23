@@ -569,6 +569,25 @@ test("a follow-up task removed while the daemon was down is treated as removed a
   assert.equal(restarted.get(held.id)!.readAt, null);
 });
 
+test("a follow-up for a replaced or already-read report is refused, and files nothing", async () => {
+  const f = setup();
+  const repo = f.inRepo(mkRepo());
+  serial += 1;
+  const gone = mkSession({ id: `gone-${serial}`, runtime: "sdk", terminals: [], task: null, repoRoot: repo });
+  const first = await f.reports.post(gone, { title: "First version", body: "Wrong." });
+  const second = await f.reports.post(gone, { title: "Second version", body: "Right.", replaces: first.id });
+  const replaced = await f.followUp(first.id, "Act on the first");
+  assert.equal(replaced.status, 409);
+  assert.equal(replaced.body.error, `This report was replaced by ${second.id}. Follow up that version instead.`);
+  f.reports.markRead(second.id, "mark-read");
+  const read = await f.followUp(second.id, "Act anyway");
+  assert.equal(read.status, 409);
+  assert.equal(read.body.error, "This report has already been read.");
+  assert.equal(f.followUpTasks().length, 0);
+  assert.deepEqual(f.dispatched, []);
+  assert.equal(f.reports.get(second.id)!.readBy, "mark-read", "it keeps how it was cleared");
+});
+
 test("only the operator starts a follow-up", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });

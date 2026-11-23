@@ -169,8 +169,6 @@ inbox card.
 - The message box and the escalation's reply box send an ordinary message, as the session's own
   composer does. A successful send clears the box only if nothing was typed after it started,
   so a new draft typed while it was sending stays in the box, even one with the same words.
-  While a row's message box is open, that session's own Send box gives way to it, as it does to
-  the conversation's reply box, so a session has one compose box at a time.
 
 A failed action shows its error under the row. It stays until another action on the row starts,
 including a retry of the same one, or until the row reports a different stall. A row leaves on its

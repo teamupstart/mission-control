@@ -24,3 +24,17 @@ export const MOD_VERSION: string = typeof __MOD_VERSION__ === "string" ? __MOD_V
 
 /** What the pane shows until P12 draws its tabs. */
 export const PANE_PLACEHOLDER_TEXT = "The Mission Control pane is not available in this build yet.";
+
+/** The command the mod registers (spec 7.11). */
+export const DISPATCH_COMMAND = "mission-dispatch";
+
+/** The tool the mod registers (spec 7.20). Claude Code names a plugin's tool `mcp__{plugin}__{tool}`. */
+export const DISPATCH_TOOL = "start_dispatch";
+export const DISPATCH_TOOL_ID = `mcp__${MOD_NAME}__${DISPATCH_TOOL}`;
+
+/**
+ * Whether the launcher (the Start dialog offered as a session opens, spec 7.4) may run. Its gate
+ * is spike S10 or S11, answered by the owner in Commonroom; no answer was recorded when P11 was
+ * built, so it is off. Turning it on is this one value plus the call in `register.ts`.
+ */
+export const LAUNCHER_ENABLED = false;

@@ -1,6 +1,8 @@
-import type { CoreHost, CoreStateKey, ModBand, ModPaneOpen } from "./host.ts";
+import { dispatchIntentFor } from "@shared/home-dispatch.ts";
+import type { CoreHost, CoreStateKey, ModAskAnswer, ModAskQuestion, ModBand, ModHost, ModPaneOpen, ModState } from "./host.ts";
 import { createModCore, type ModCore } from "./core.ts";
-import { MOD_VERSION, PANE_PLACEHOLDER_TEXT, PANE_REQUEST_ID } from "./constants.ts";
+import { DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_PLACEHOLDER_TEXT, PANE_REQUEST_ID } from "./constants.ts";
+import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
 
 /**
@@ -21,6 +23,9 @@ import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts
  */
 export function register(on: EngineOn, _options: unknown): void {
   let core: ModCore | null = null;
+  // What the flows need to speak for this session (7.11): set at session start, cleared at its end.
+  let flowSession: { sessionId: string; cwd: string } | null = null;
+  let flowHost: FlowHostType | null = null;
   const view: GlanceView = { banner: undefined, band: undefined, status: undefined };
 
   // Each session start or end invalidates the work of the one before it: a startup still awaiting
@@ -33,11 +38,19 @@ export function register(on: EngineOn, _options: unknown): void {
     generation += 1;
     core?.stop();
     core = null;
+    flowSession = null;
+    flowHost = null;
     wipeGlance($, view);
     const mine = generation;
     const host = await createHost($, view, { pane, mine, current: () => generation });
     const sessionId = await $.session.id();
     const entrypoint = await $.env.get("CLAUDE_CODE_ENTRYPOINT");
+    if (mine !== generation) return next(e);
+    flowHost = host;
+    flowSession = { sessionId, cwd: e.cwd };
+    // The command and the tool are always registered: with the flag off they answer that it is off.
+    await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch(() => undefined);
+    await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch(() => undefined);
     if (mine !== generation) return next(e);
     const started = createModCore(host, {
       sessionId,
@@ -57,13 +70,19 @@ export function register(on: EngineOn, _options: unknown): void {
     generation += 1;
     core?.stop();
     core = null;
+    flowSession = null;
+    flowHost = null;
     wipeGlance($, view);
     return next(e);
   });
 
   on("prompt.submit", async ($, e, next) => {
     core?.promptSubmitted();
-    return next(e);
+    // The intent nudge (7.20): one line of context, only in an active home session, and only
+    // when the prompt names Mission Control with a run or schedule word. The tool works without it.
+    const intent = core?.phase() === "active" && typeof e.text === "string" ? dispatchIntentFor(e.text) : null;
+    if (!intent) return next(e);
+    return next({ ...e, context: [...(Array.isArray(e.context) ? e.context : []), intentNudge(intent)] });
   });
 
   // The banner and the band, above the prompt (7.12, 7.21): nothing while neither is set.
@@ -101,12 +120,29 @@ export function register(on: EngineOn, _options: unknown): void {
   });
 
   // Flows (P11) and pane tabs (P12) register here, one line each.
+  on("command.run", { command: DISPATCH_COMMAND }, async (_$, e) => {
+    if (!flowHost || !flowSession || core?.phase() !== "active") return { text: FLOW_UNAVAILABLE_TEXT };
+    // The dialogs outlive the hook (as the S10 spike ran them), and every line the person needs
+    // is a notice, so the command itself answers nothing.
+    const host = flowHost;
+    void runDispatchCommand(host, flowSession, typeof e.args === "string" ? e.args : "").catch(() => host.notice(FLOW_FAILED_TEXT));
+    return { text: "" };
+  });
+  on("tool.run", { tool: DISPATCH_TOOL_ID }, async (_$, e) => {
+    if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
+    return { result: await runStartDispatchTool(flowHost, flowSession, e as Record<string, unknown>) };
+  });
 }
+
+/** What the command and the tool say when headless mode is not connected (flag off, daemon down, modApi mismatch). */
+const FLOW_FAILED_TEXT = "Mission Control could not finish that dispatch. Run /mission-dispatch again.";
+const FLOW_UNAVAILABLE_TEXT = "Mission Control headless mode is not available in this session.";
+type FlowHostType = Pick<ModHost, "ask" | "notice" | "toast" | "fetch" | "fillPrompt" | "paneOpen" | "paneState">;
 
 // The pane and the flows are exported so the built `hooks/register.js` carries them: a later
 // phase's registration lines call them, and the build keeps whatever the entry point reaches.
 export { renderPane, PANE_TABS } from "./pane/index.ts";
-export { runDispatchCommand, runDispatchFlow, runStartDispatchTool } from "./flows/index.ts";
+export { runDispatchCommand, runDispatchFlow, runLauncher, runStartDispatchTool } from "./flows/index.ts";
 
 /** What the render hooks draw: written by the host's `banner` and `band`, read by `ui.render`. */
 interface GlanceView {
@@ -122,12 +158,17 @@ type Hook = ($: Engine, e: EngineEvent, next: (e: EngineEvent) => Promise<unknow
 type EngineOn = {
   (event: "session.start" | "session.end" | "prompt.submit", hook: Hook): void;
   (event: "ui.render", matcher: { component: string; requestId?: string }, hook: Hook): void;
+  (event: "command.run", matcher: { command: string }, hook: Hook): void;
+  (event: "tool.run", matcher: { tool: string }, hook: Hook): void;
 };
 // The engine's events are richer; this is the part the mod reads.
 type EngineEvent = { cwd: string; isInteractive: boolean; props?: { hasSurvey?: boolean }; [field: string]: unknown };
 interface Engine {
   session: { id: () => Promise<string> };
   env: { get: (name: string) => Promise<string | undefined> };
+  command: { register: (spec: { name: string; description: string; argumentHint?: string }) => Promise<unknown> };
+  tool: { register: (spec: { name: string; description: string; inputSchema: unknown }) => Promise<unknown> };
+  prompt: { fill: (input: { text: string; mode?: "replace" }) => Promise<{ isFilled?: boolean }> };
   http: { fetch: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; text: string }> };
   fs: { read: (path: string) => Promise<string> };
   clock: { every: (ms: number, fn: () => void) => { cancel: () => void } };
@@ -135,20 +176,27 @@ interface Engine {
     resolve: (e: EngineEvent) => Record<"Box" | "Text" | "Button", (props: Record<string, unknown>) => unknown>;
     open: (pane: { id: string; title?: string; focus?: true }) => Promise<{ isPlaced: boolean }>;
     close: (pane: { id: string }) => Promise<void>;
+    ask: (question: string, options: { options: readonly string[]; header?: string }) => Promise<unknown>;
     toast: (text: string) => void;
     status: (text: string | undefined) => void;
     invalidate: (event: "ui.render") => void;
     log: (text: string) => void;
   };
-  state: { set: (ref: { plugin: "mission-control"; key: CoreStateKey }, value: unknown) => Promise<unknown> };
+  state: {
+    set: (ref: { plugin: "mission-control"; key: FlowStateKey }, value: unknown) => Promise<unknown>;
+    get: (ref: { plugin: "mission-control"; key: FlowStateKey }) => Promise<{ value?: unknown } | undefined>;
+  };
 }
+
+/** The pane values the mod writes: the controller's three, and the draft waiting for its description. */
+type FlowStateKey = CoreStateKey | "draftId";
 
 /**
  * `$.state` takes its plugin and key as literals written at the call (or in a const of this
  * file), so `claude plugin validate` can list them. A computed reference is refused, hence one
- * case per key. Only the keys the controller writes are here; P12 adds its own with its pane.
+ * case per key. Only the keys the mod writes and reads are here; P12 adds its own with its pane.
  */
-async function stateSet($: Engine, key: CoreStateKey, value: unknown): Promise<void> {
+async function stateSet($: Engine, key: FlowStateKey, value: unknown): Promise<void> {
   switch (key) {
     case "registration":
       await $.state.set({ plugin: "mission-control", key: "registration" }, value);
@@ -159,7 +207,37 @@ async function stateSet($: Engine, key: CoreStateKey, value: unknown): Promise<v
     case "paneTab":
       await $.state.set({ plugin: "mission-control", key: "paneTab" }, value);
       return;
+    case "draftId":
+      await $.state.set({ plugin: "mission-control", key: "draftId" }, value);
+      return;
   }
+}
+
+async function stateGet($: Engine, key: FlowStateKey): Promise<unknown> {
+  switch (key) {
+    case "registration":
+      return (await $.state.get({ plugin: "mission-control", key: "registration" }))?.value;
+    case "inbox":
+      return (await $.state.get({ plugin: "mission-control", key: "inbox" }))?.value;
+    case "paneTab":
+      return (await $.state.get({ plugin: "mission-control", key: "paneTab" }))?.value;
+    case "draftId":
+      return (await $.state.get({ plugin: "mission-control", key: "draftId" }))?.value;
+  }
+}
+
+const isFlowStateKey = (key: string): key is FlowStateKey => key === "registration" || key === "inbox" || key === "paneTab" || key === "draftId";
+
+/** `$.ui.ask` answers the label picked, or the text typed under Other; a dismissed dialog rejects or answers nothing. */
+async function askDialog($: Engine, question: ModAskQuestion): Promise<ModAskAnswer> {
+  let answer: unknown;
+  try {
+    answer = await $.ui.ask(question.question, { options: question.options.map((option) => option.label), header: question.header });
+  } catch {
+    return { kind: "dismissed" };
+  }
+  if (typeof answer !== "string" || answer === "") return { kind: "dismissed" };
+  return question.options.some((option) => option.label === answer) ? { kind: "pick", label: answer } : { kind: "other", text: answer };
 }
 
 /** The environment the daemon link reads, each name a literal in source for `claude plugin validate`. */
@@ -216,7 +294,7 @@ interface HostSession {
   current: () => number;
 }
 
-async function createHost($: Engine, view: GlanceView, session: HostSession): Promise<CoreHost> {
+async function createHost($: Engine, view: GlanceView, session: HostSession): Promise<CoreHost & FlowHostType> {
   const env = await readEnv($);
   const baseUrl = daemonBaseUrl(env);
   const redraw = (): void => $.ui.invalidate("ui.render");
@@ -226,6 +304,16 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       $.ui.log(text);
     },
     toast: (text) => $.ui.toast(text),
+    ask: (question) => askDialog($, question),
+    // Fire and forget: the prompt box is a convenience, and a refusal tells the person what to type.
+    fillPrompt: (text) => {
+      void $.prompt.fill({ text, mode: "replace" }).then(
+        (filled) => {
+          if (filled?.isFilled === false) $.ui.log("Type /mission-dispatch followed by what the task should do.");
+        },
+        () => $.ui.log("Type /mission-dispatch followed by what the task should do."),
+      );
+    },
     status: (text) => {
       view.status = text;
       $.ui.status(text);
@@ -269,7 +357,16 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     // The pane's values are a convenience for drawing: a refused write never stops the glance
     // layer, so it is dropped.
     paneState: {
-      set: async (key, value) => void (await stateSet($, key, value).catch(() => undefined)),
+      set: async <K extends keyof ModState>(key: K, value: ModState[K]) => {
+        if (isFlowStateKey(key)) await stateSet($, key, value).catch(() => undefined);
+      },
+      get: async <K extends keyof ModState>(key: K) =>
+        (isFlowStateKey(key) ? await stateGet($, key).catch(() => undefined) : undefined) as ModState[K] | undefined,
+      update: async <K extends keyof ModState>(key: K, fn: (value: ModState[K] | undefined) => ModState[K]) => {
+        if (!isFlowStateKey(key)) return;
+        const current = (await stateGet($, key).catch(() => undefined)) as ModState[K] | undefined;
+        await stateSet($, key, fn(current)).catch(() => undefined);
+      },
     },
   };
 }

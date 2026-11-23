@@ -14,8 +14,6 @@ import type {
   MissionControlResident,
 } from "claude-code";
 import { MOD_API, MOD_NAME } from "../src/mod/constants.ts";
-import { FLOW_NOT_IMPLEMENTED } from "../src/mod/flows/command.ts";
-import { runDispatchCommand, runDispatchFlow, runStartDispatchTool } from "../src/mod/flows/index.ts";
 import { PANE_TABS, renderPane } from "../src/mod/pane/index.ts";
 import { PANE_NOT_IMPLEMENTED, type PaneProps } from "../src/mod/pane/types.ts";
 import type { ModPaneTab, ModPanePlacement } from "../src/mod/host.ts";
@@ -27,16 +25,6 @@ import type {
 import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-
-test("every flow is a stub that tells the person it is not implemented", async () => {
-  const fake = createFakeModHost();
-  await runDispatchCommand(fake.host, "");
-  await runDispatchFlow(fake.host, { kind: "ship", words: "x" });
-  await runStartDispatchTool(fake.host, { brief: "x" });
-  assert.deepEqual(fake.notices, [FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED]);
-  // A stub never asks, fetches, opens the pane or writes to the model.
-  assert.deepEqual(fake.calls.map((c) => c.type), ["notice", "notice", "notice"]);
-});
 
 test("each pane tab draws not implemented for every placement, and the fake records the view", () => {
   const fake = createFakeModHost();

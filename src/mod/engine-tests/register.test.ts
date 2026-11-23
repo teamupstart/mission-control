@@ -219,3 +219,61 @@ test('the glance layer as drawn: banner, band with its 1 button, status, pane, a
   expect(frame.toasts).toEqual(['Mission Control: "flaky test" asks a question'])
   expect(frame.bannerAfter.join(' ')).toMatch(/2 tasks need you/)
 })
+
+// ---------------------------------------------------------------- P11: the command, the tool, the nudge
+// Dialogs (`$.ui.ask`) ride the engine's AskUserQuestion tool call, which this kit answers only
+// through a `tool.call` hook; the flows' dialogs are covered with the fake host in
+// `test/home-dispatch-mod-flows.test.ts`. This proves the registration and the hooks reach them.
+
+function dispatchWorld(on) {
+  const seen = world(on, { flag: true })
+  seen.registered = []
+  seen.tools = []
+  on('command.register', (_, e) => { seen.registered.push(e.name); return { value: { command: e.name } } })
+  on('tool.register', (_, e) => { seen.tools.push(e.name); return { value: { tool: `mcp__mission-control__${e.name}` } } })
+  return seen
+}
+
+const COMMAND = (args) => ({ command: 'mission-dispatch', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 180 } })
+
+test('the command and the tool are registered, and the inbox argument opens the pane on Needs you', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  expect(seen.registered).toEqual(['mission-dispatch'])
+  expect(seen.tools).toEqual(['start_dispatch'])
+
+  const before = seen.openArgs.length
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => seen.openArgs.length > before)
+  expect(seen.openArgs.at(-1).focus).toBe(true)
+})
+
+test('the tool refuses a call with no brief', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const empty = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: ' ' })
+  expect(JSON.stringify(empty)).toMatch(/needs a brief/)
+})
+
+test('the tool says headless mode is not available while the flag is off', async ($, on) => {
+  const seen = dispatchWorld(on)
+  seen.flag = false
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.urls.length >= 1)
+  const refused = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'x' })
+  expect(JSON.stringify(refused)).toMatch(/not available in this session/)
+})
+
+test('the intent nudge is attached only when the prompt names Mission Control with a verb', async ($, on) => {
+  const seen = dispatchWorld(on)
+  // The engine's own end of the prompt: it echoes what entered, as core does.
+  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const nudged = await $.prompt.submit({ text: 'run this in mission control', origin: { kind: 'composer' } })
+  expect(JSON.stringify(nudged)).toContain('Call start_dispatch with intent now')
+  const plain = await $.prompt.submit({ text: 'rename the helper', origin: { kind: 'composer' } })
+  expect(JSON.stringify(plain)).not.toContain('start_dispatch')
+})

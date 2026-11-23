@@ -39,7 +39,8 @@ Inspector judge.
    tools and the same number of rounds. Local rounds are what make that thoroughness
    affordable, so the two belong in one plan. For the Inspector judge it is a requirement, not
    an option: the Local Inspector always reads the whole submitted worktree, from Phase 1
-   (requirement R1). Persona judges get read access in a fourth phase (decision D4).
+   (requirement R1). Every other Persona-based reviewer can be given it too (goal R2), and
+   decision D4 is only about the route.
 
 ## The problem, measured
 
@@ -177,11 +178,12 @@ stage before it.
 Run the real Inspector review as a workflow stage before the Pull Request action, and let a
 setting tell the GitHub worker to skip heads that stage already reviewed. Design below.
 
-- Gains: the same reviewer, brief, model setting and fingerprints, moved in front of the push.
-  Each round costs one model call and no CI. One push, one CI run, for a converged change.
-- Costs: three phases, four with read access for Persona judges. A new owned Command slot, an
-  engine seam for an in-daemon review inside the Command runtime, a setting, a new built-in
-  version, and gate and Shipping changes.
+- Gains: the same reviewer, brief and fingerprints, moved in front of the push and reading the
+  whole worktree (R1). Each round costs one model call and no CI. One push, one CI run, for a
+  converged change.
+- Costs: four phases, and more if Codex reviewers are to have repository access too (D4). A
+  new owned Command slot, an engine seam for an in-daemon review inside the Command runtime, a
+  setting, a new built-in version, and gate and Shipping changes.
 - Does not by itself reduce the number of rounds. See D3.
 
 ### Option B: an Inspector Persona, no new runtime
@@ -441,16 +443,23 @@ confirms that it read the worktree.
 
 ### Two ways to give Persona judges read access (decision D4)
 
-**Slim path (proposed): one phase, Claude only.** A Persona node gains an optional
-`repositoryAccess: "read"` flag, set in the node's Routing panel and frozen at publish beside
-`executionOverride` and `recheckAfterRepair`. An absent flag keeps today's prompt-only
-behavior, so no stored graph changes. A flagged node runs with the Inspector's read grant
-(`Read`, `Grep`, `Glob`, the same deny paths) in the worktree pinned to the review snapshot
-commit, through the lease seam Phase 1 builds. Its prompt, registered evidence, transcript and
-verdict are otherwise unchanged. A flagged node routed to a provider that cannot sandbox the
-grant is a publish diagnostic, never a silent prompt-only fallback. It ships behind its own
-preview flag and is proven in a duplicated workflow. Built-in versions change only after the
-measurements below, as a separate decision.
+**Goal R2, stated by the operator on 2026-11-23: repository access should be available to
+every Persona-based reviewer in workflows, not only the Local Inspector.** So Persona read
+access is part of this plan, not an optional extra, and leaving the Persona judges prompt-only
+is no longer an option. D4 now decides only the route. The switch stays per reviewer, because
+a review that reads files is slower and costs more, so a workflow turns it on for the
+reviewers that need it.
+
+**Slim path (proposed as the first step): one phase, Claude only.** A Persona node gains an
+optional `repositoryAccess: "read"` flag, set in the node's Routing panel and frozen at
+publish beside `executionOverride` and `recheckAfterRepair`. An absent flag keeps today's
+prompt-only behavior, so no stored graph changes. A flagged node runs with the Inspector's
+read grant (`Read`, `Grep`, `Glob`, the same deny paths) in the worktree pinned to the review
+snapshot commit, through the lease seam Phase 1 builds. Its prompt, registered evidence,
+transcript and verdict are otherwise unchanged. A flagged node routed to a provider that
+cannot sandbox the grant is a publish diagnostic, never a silent prompt-only fallback. It
+ships behind its own preview flag and is proven in a duplicated workflow. Built-in versions
+change only after the measurements below, as a separate decision.
 
 This path departs from the approved repository-access plan in three stated ways: Claude only
 rather than provider parity, a clean snapshot commit rather than a layered exact-state
@@ -458,14 +467,17 @@ artifact, and the choice stored on the workflow node rather than on the Persona.
 supersedes those requirements for this work. The approved plan stays the route to Codex parity
 later, replacing the executor under the same node flag.
 
-**Full path: the approved plan, three phases.** Both providers through a local repository MCP
-server, an exact-state artifact, per-operation audit events. It is independent of Option A,
-and it is what would let the Local Inspector run on Codex under requirement R1. It is three
-phases before any Persona judge reads a file, against a gain the ledger suggests is real but
-modest.
+**Full path (proposed as the second step): the approved plan, three phases.** Both providers
+through a local repository MCP server, an exact-state artifact, per-operation audit events. It
+extends the same per-reviewer switch to Codex, which is where every built-in judge runs today,
+and it is what lets the Local Inspector run on Codex under requirement R1. Taken alone it is
+three phases before any Persona judge reads a file.
 
-**Neither.** Persona judges stay prompt-only. Only the Inspector judge reads, as R1 requires,
-and it runs only on Claude.
+**Proposed route: both, in that order.** The slim path makes repository access available to
+any Persona reviewer routed to Claude within one phase. The full path then makes it available
+to Codex reviewers under the same switch. Choosing only the slim path leaves Codex reviewers
+without access. Choosing only the full path delays the first read-enabled Persona review by
+three phases.
 
 Suggested first judges for the duplicated workflow: Code Design Reviewer, Test Coverage Judge,
 Documentation Steward, Code Risk Reviewer and Code Quality Judge.
@@ -477,9 +489,11 @@ Documentation Steward, Code Risk Reviewer and Code Quality Judge.
 | 1. Local Inspector Command | Review core extraction, the `inspector` slot and interpreter, worktree read access on every review with no diff-only mode (requirement R1), the Local Inspector's own provider and model row, findings retention and repair packet, the `localReview` setting gating only whether the stage runs, the Library row and run card, preview flag, docs | The stage works in a duplicated workflow while GitHub Inspector still gates, and no local review runs without worktree read access. The ledger then shows how many GitHub rounds remain after a local pass, against the 4.3 baseline |
 | 2. Local review replaces the GitHub round | No-Mistakes version 23, the gate accepting a matching local pass, the worker skipping matched heads, Settings control copy, Completion tab and chip states | A converged change reaches GitHub with one push and one CI run, and completes with no GitHub review |
 | 3. Shipping on local provenance (if D2 says so) | The `local` posture in the merge predicate, merge queue reasons, Trust and Prerequisites copy | YOLO merges a locally reviewed head and holds any head that is not |
-| 4. Read access for Persona judges (if D4 says slim) | The node flag and Routing control, the engine path with the grant in the shared pinned tree, the `repository` evidence kind, the publish diagnostic, its preview flag, docs | In a duplicated workflow, read-enabled judges against their prompt-only twins: findings per round, findings later withdrawn, time and spend per review |
+| 4. Read access for Persona reviewers, on Claude (goal R2, slim path) | The node flag and Routing control, the engine path with the grant in the shared pinned tree, the `repository` evidence kind, the publish diagnostic, its preview flag, docs | In a duplicated workflow, read-enabled judges against their prompt-only twins: findings per round, findings later withdrawn, time and spend per review |
+| 5. Repository access for Codex reviewers (goal R2, full path, if D4 keeps the second step) | The approved repository-access plan's repository MCP server and exact-state artifact, in that plan's own three phases, wired to the same per-reviewer switch and to the Local Inspector | A Codex Persona reviewer and a Codex Local Inspector read the worktree under the same limits and denials as Claude |
 
-Phases 2 and 4 each depend on Phase 1 only. Phase 3 depends on Phase 2.
+Phases 2 and 4 each depend on Phase 1 only. Phase 3 depends on Phase 2. Phase 5 depends on
+Phase 4.
 
 Phase 1 is deliberately useful alone: it is the proving period. If GitHub rounds after a local
 pass stay near zero, Phase 2 is safe. If they do not, the gap is measurable before anything
@@ -526,21 +540,25 @@ remote is switched off.
 - Persona read tests (Phase 4): an unflagged node is byte-identical to today, a flagged node
   receives the grant in the pinned tree, a flagged Codex node is refused at publish, a
   `repository` evidence reference validates.
+- Codex repository access (Phase 5): the verification the approved repository-access plan
+  specifies, plus a Codex Local Inspector review that reads through it.
 - Playwright specs for every surface above. Typecheck, lint, build, smoke.
 
 ## Decisions
 
 Decisions D1 to D4, the follow-up and approval are open. For those, each row is the proposed
 choice, not an adopted one. A choice is adopted only when the operator selects it and approves
-the exact revision that records it. R1 is a requirement the operator set directly.
+the exact revision that records it. R1 is a requirement and R2 a goal, both set directly by
+the operator.
 
 | Id | Decision | Proposed choice | State |
 | --- | --- | --- | --- |
 | R1 | Whether the Local Inspector may review from the diff alone | No. It always has read access to the whole submitted worktree | Required by the operator, 2026-11-23 |
+| R2 | Whether repository access stops at the Local Inspector | No. It should be available to every Persona-based reviewer in workflows | Goal stated by the operator, 2026-11-23 |
 | D1 | Which option | A, Local Inspector stage | Open, in discussion |
 | D2 | Whether Shipping accepts a matching local review as merge provenance | Yes, as Phase 3 | Open, in discussion |
 | D3 | Which findings block the local stage | Tunable in Library > Commands, default major and above | Open, in discussion |
-| D4 | How Persona judges get read access | Slim path, as Phase 4 | Open, in discussion |
+| D4 | Which route gives Persona reviewers repository access | Slim path first (Phase 4), then the full path for Codex (Phase 5) | Open, in discussion |
 | Follow-up | Phase and schedule this plan, or stop | None proposed. Nothing is scheduled without the operator's selection | Open, in discussion |
 | Approval | Approve the exact plan bundle | Not given for any revision | Open |
 
@@ -569,6 +587,12 @@ the exact revision that records it. R1 is a requirement the operator set directl
   limited to the diff like the Persona stages. Revision 5 records it as requirement R1 and
   carries it through design item 1, the stage outcomes, "The Inspector judge", Phase 1, the
   risks and the verification list. Decisions D1 to D4, the follow-up and approval remain open.
+- 2026-11-23, third line comment. The operator said the best solution also makes repository
+  access possible for all other Persona-based reviewers in workflows. Revision 6 records that
+  as goal R2, removes the option of leaving Persona judges prompt-only, proposes the slim path
+  followed by the full path, adds Phase 5, and corrects the Option A bullet that still
+  described a shared model setting. D4 now decides only the route and stays open with D1 to
+  D3, the follow-up and approval.
 - No phased implementation plan exists and no implementation task is scheduled.
 
 ## Evidence

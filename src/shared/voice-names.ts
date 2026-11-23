@@ -13,7 +13,7 @@
 
 import { z } from "zod";
 import type { ResidentMarkerColorId } from "./residents.ts";
-import type { AgentType } from "./types.ts";
+import type { AgentType, TaskKind } from "./types.ts";
 import { VOICE_COMMON_WORDS } from "./voice-common-words.ts";
 
 /** The longest call sign or reference name, in characters, after trimming. */
@@ -89,6 +89,20 @@ export function residentSpokenNameKey(profileId: string): string {
 export function taskSpokenNameKey(taskId: string): string {
   return `task:${taskId}`;
 }
+
+/**
+ * Whether a task of this kind can carry a call sign. A resident is addressed by its profile's
+ * reference name or name, so its task cannot: the roster would leave the call sign out while the
+ * agent's card printed it, naming the agent something the operator cannot say. The roster, the
+ * card's name and the edit that would set one all ask this.
+ */
+export function taskKindTakesCallSign(kind: TaskKind): boolean {
+  return kind !== "resident";
+}
+
+/** Why an edit that gives a resident's task a call sign is refused. */
+export const RESIDENT_CALL_SIGN_REFUSAL =
+  "A resident is addressed by the reference name on its profile, so its task takes no call sign.";
 
 /** A name as it is compared: trimmed, whitespace collapsed, lowercase. */
 export function normalizeSpokenName(name: string): string {

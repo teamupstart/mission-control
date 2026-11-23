@@ -209,7 +209,8 @@ warnings explain and never block; **Dispatch** stays enabled whatever they say. 
 summary names the call sign beside the Persona.
 
 A call sign is not the title and changes nothing the launch provisions. It is annotation, like
-priority: an update may set or clear it while the agent runs, and with the
+priority: an update may set or clear it while the agent runs (a resident's task takes none; see
+[Call signs](voice.md#call-signs)), and with the
 [inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
 modal, question cards and alerts print for the session.
 

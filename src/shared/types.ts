@@ -2636,7 +2636,8 @@ export interface Task {
    * (`@shared/voice-names.ts`), or null for none. Absent on a row read before the column existed,
    * which means the same. A spoken name, not a launch setting: nothing is provisioned from it, so
    * it may change while the agent runs (`isAnnotationOnlyUpdate`). It is also the first rank of
-   * `agentDisplayName`.
+   * `agentDisplayName`. A resident's task takes none (`taskKindTakesCallSign`): a resident is
+   * addressed by its profile's names.
    */
   callSign?: string | null;
   /**

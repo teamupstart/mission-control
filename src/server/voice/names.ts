@@ -5,6 +5,7 @@ import { canonicalVoiceRoster } from "@shared/voice.ts";
 import {
   normalizeSpokenName,
   residentSpokenNameKey,
+  taskKindTakesCallSign,
   taskSpokenNameKey,
   type SpokenName,
   type SpokenNameState,
@@ -76,7 +77,7 @@ function oneLine(text: string): string {
  * least once, and it is not a resident's task, which answers to its profile's name instead.
  */
 export function taskHasSpokenName(task: Task): boolean {
-  if (!task.callSign || task.kind === "resident" || task.status === "backlog") return false;
+  if (!task.callSign || !taskKindTakesCallSign(task.kind) || task.status === "backlog") return false;
   return !isTerminalTask(task.status) || task.dispatchedAt !== null;
 }
 

@@ -23,6 +23,7 @@ const {
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { getTask } = await import("../src/server/db.ts");
+const { RESIDENT_CALL_SIGN_REFUSAL } = await import("../src/shared/voice-names.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -87,4 +88,19 @@ test("an edit that does not name the call sign leaves it alone", async () => {
   const result = await tasks.update("t-keep", { priority: "high" });
   assert.equal(result.ok, true, result.error);
   assert.equal(result.task?.callSign, "Alice");
+});
+
+test("a resident's task takes no call sign: it is addressed by its profile's names", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(mkTask({ id: "t-resident", kind: "resident", status: "running", dispatchedAt: 5 }));
+  const named = await tasks.update("t-resident", { callSign: "Will" });
+  assert.equal(named.ok, false, "the roster would leave it out while the card printed it");
+  assert.equal(named.error, RESIDENT_CALL_SIGN_REFUSAL);
+  assert.equal(getTask("t-resident")?.callSign ?? null, null, "nothing was stored");
+  assert.equal((await tasks.update("t-resident", { callSign: "Will", priority: "high" })).ok, false, "not even beside other annotation");
+  const cleared = await tasks.update("t-resident", { callSign: null });
+  assert.equal(cleared.ok, true, cleared.error);
+  const priority = await tasks.update("t-resident", { priority: "high" });
+  assert.equal(priority.ok, true, priority.error);
 });

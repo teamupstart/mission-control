@@ -245,6 +245,7 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
 import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
+import { RESIDENT_CALL_SIGN_REFUSAL, taskKindTakesCallSign } from "@shared/voice-names.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -4569,6 +4570,10 @@ export class TaskManager {
     }
     if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
+    }
+    // Checked here because only the stored row knows its kind. Taking one off stays allowed.
+    if (patch.callSign && !taskKindTakesCallSign(patch.kind ?? t.kind)) {
+      return { ok: false, error: RESIDENT_CALL_SIGN_REFUSAL };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();

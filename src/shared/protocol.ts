@@ -1943,7 +1943,7 @@ const UpdateTaskFieldsSchema = z
      * nothing the launch provisioned, so it may change while the agent runs.
      */
     callSign: SpokenNameSchema.nullable().optional().describe(
-      "Call sign: a short spoken name (1 to 40 characters) the operator can say to address this task's session by voice. Not the title. Null takes it off",
+      "Call sign: a short spoken name (1 to 40 characters) the operator can say to address this task's session by voice. Not the title. Null takes it off. A resident's task takes none",
     ),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,

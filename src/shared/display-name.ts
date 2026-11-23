@@ -6,6 +6,7 @@
 
 import { residentMarkerColor, type ResidentMarkerColorId, type ResidentRunSummary } from "./residents.ts";
 import type { Session } from "./types.ts";
+import { taskKindTakesCallSign } from "./voice-names.ts";
 
 /**
  * What an agent might be called, highest rank first:
@@ -115,16 +116,19 @@ export function withCurrentReferenceNames(
  * `spokenNames` is the `voice` flag. Call signs and reference names are voice's names, so they
  * name an agent only while it is on: off, a saved one is kept but the ranks below it answer, as
  * they did before voice. Off by default, so a caller that does not say reads as before voice.
+ *
+ * A resident's task never names it by a call sign (`taskKindTakesCallSign`), the rule the voice
+ * roster applies: the card prints a name the operator can say, its reference or profile name.
  */
 export function sessionDisplayNameInput(
-  session: Pick<Session, "name"> & { task?: Pick<NonNullable<Session["task"]>, "id" | "title" | "callSign"> | null },
+  session: Pick<Session, "name"> & { task?: Pick<NonNullable<Session["task"]>, "id" | "title" | "kind" | "callSign"> | null },
   runs: readonly ResidentNameSource[],
   spokenNames = false,
 ): AgentDisplayNameInput {
   const taskId = session.task?.id;
   const run = taskId ? runs.find((candidate) => candidate.taskId === taskId) : undefined;
   return {
-    callSign: spokenNames ? session.task?.callSign ?? null : null,
+    callSign: spokenNames && session.task && taskKindTakesCallSign(session.task.kind) ? session.task.callSign ?? null : null,
     resident: run
       ? {
           referenceName: spokenNames ? run.settings.identity.referenceName ?? null : null,

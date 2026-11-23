@@ -936,7 +936,7 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, callSign (a short spoken name; null clears it), " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, callSign (a short spoken name; null clears it; a resident's task takes none), " +
       "dependencies, planInputs, " +
       "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
       "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +

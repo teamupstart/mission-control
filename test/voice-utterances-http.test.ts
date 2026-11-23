@@ -415,6 +415,20 @@ test("a sixth unsure card cancels the oldest unsure card and preserves pending d
   assert.equal((await act("unsure-0", "pick", { id: "task:Will" })).status, 409);
 });
 
+test("out-of-order unsure captures keep the five newest choices, including when the incoming card is oldest", async () => {
+  const postUnsure = (id: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture("Steven ask Will", id), capturedAt }, token);
+  for (const time of [30, 10, 50, 20, 40]) await postUnsure(String(time), time);
+  await postUnsure("stale", 5);
+  assert.deepEqual(cards.filter((card) => card.id === "stale").map((card) => card.state), ["cancelled"]);
+  assert.equal((await act("stale", "pick", { id: "task:Will" })).status, 409);
+  await postUnsure("tie", 10);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.id), ["30", "50", "20", "40", "tie"]);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["30", "50", "20", "40", "tie"]);
+  const cancelled = (await readHeard()).filter((entry) => entry.outcome === "cancelled");
+  assert.deepEqual(cancelled.map((entry) => entry.id), ["10", "stale"]);
+});
+
 test("Recently heard keeps the refusal reasons from the queue and interrupt adapters", async (t) => {
   t.mock.method(pending, "submit", () => ({ ok: false, error: "Queue full." }));
   await say("Steve send this", "queue-refusal");

@@ -114,7 +114,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                 let words = try await recognizer.transcribe(segment, boosting: boosting)
                                 try Task.checkCancellation()
                                 if let words {
-                                    _ = try await daemon.request("voice/utterances", body: JSONEncoder().encode(words))
+                                    _ = try await daemon.request("voice/utterances", revision: next.revision, body: JSONEncoder().encode(words))
                                 }
                             } catch {
                                 if Task.isCancelled { return }

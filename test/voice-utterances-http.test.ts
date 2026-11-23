@@ -35,7 +35,8 @@ const post = (path: string, body: unknown = {}, auth?: string) => app.request(pa
   headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth } : {}) },
   body: JSON.stringify(body) });
 const capture = (text: string, id = String(randomUUID())) => ({ id, text, backend: "fluidaudio", capturedAt: Date.now() });
-const say = (text: string, id?: string) => post("/voice/utterances", capture(text, id), token);
+const utterancePath = (revision: string) => "/voice/utterances?revision=" + encodeURIComponent(revision);
+const say = (text: string, id?: string) => post(utterancePath(voiceStateStore.directive().revision), capture(text, id), token);
 const readHeard = async () => (await (await app.request("/api/voice/heard", { headers: { host: "localhost" } })).json() as { entries: HeardEntry[] }).entries;
 const act = (id: string, action: string, body?: unknown) => post(`/api/voice/cards/${id}/${action}`, body);
 const name = (name: string): SpokenName => ({ key: "task:" + name, name, kind: "session", taskId: name,
@@ -77,6 +78,28 @@ test("turning voice off clears pending actions and gates every contract D route"
   for (const response of [await say("hello"), await act("disabled", "pick"), await act("disabled", "cancel"),
     await act("disabled", "send-now"), ...await Promise.all(["GET", "DELETE"].map((method) =>
       app.request("/api/voice/heard", { method, headers: { host: "localhost" } })))]) assert.equal(response.status, 404);
+});
+
+test("a delayed capture from before mute cannot reach Recently heard, cards or the queue after unmute", async () => {
+  await post("/voice/shell-report", { callActive: false, pushToTalk: false }, token);
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const beforeMute = voiceStateStore.directive();
+  const stale = capture("Steve pre-mute message");
+  const beforeQueue = queued("Steve");
+  await post("/api/voice/mute", { muted: true });
+  assert.equal(voiceStateStore.state().mode, "muted");
+  await post("/api/voice/mute", { muted: false });
+
+  assert.equal(voiceStateStore.state().mode, "listening");
+  assert.deepEqual(await (await post(utterancePath(beforeMute.revision), stale, token)).json(), { accepted: false });
+  assert.deepEqual(await (await post("/voice/utterances", stale, token)).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(cards, []);
+  assert.deepEqual(queued("Steve"), beforeQueue);
+
+  assert.deepEqual(await (await say("Steve post-mute message")).json(), { accepted: true });
+  assert.deepEqual(queued("Steve"), [...beforeQueue, "post-mute message"]);
 });
 
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {

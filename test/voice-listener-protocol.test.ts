@@ -32,12 +32,12 @@ test("token-gated directives reflect capture, device and spoken roster changes, 
   const initial = await listener.poll();
   assert.deepEqual(initial, { revision: initial.revision, capture: true, inputDevice: "built-in", roster: [], pauseMs: null });
   const words = [{ text: "hello", startMs: 0, endMs: 320 }];
-  assert.deepEqual(await (await listener.utterance("hello", words)).json(), { accepted: true });
+  assert.deepEqual(await (await listener.utterance("hello", words, initial.revision)).json(), { accepted: true });
   const pending = listener.poll(initial.revision);
   await app.request("/api/voice/mute", { method: "POST", headers: { "Content-Type": "application/json" }, body: '{"muted":true}' });
   const muted = await pending;
   assert.equal(muted.capture, false);
-  assert.deepEqual(await (await listener.utterance("hello", words)).json(), { accepted: false });
+  assert.deepEqual(await (await listener.utterance("hello", words, muted.revision)).json(), { accepted: false });
   setVoiceConfig({ muted: false });
   assert.notEqual((await listener.poll(initial.revision)).revision, initial.revision);
 

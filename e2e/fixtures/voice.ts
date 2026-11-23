@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import {
   VOICE_LISTENER_PROTOCOL_VERSION,
+  type VoiceListenerDirective,
   type VoiceListenerHello,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
@@ -84,14 +85,18 @@ export async function say(daemon: VoiceDaemon, text: string, options: Partial<Om
   const backend = options.backend ?? LISTENER_HELLO.backend;
   const listener = await beListener(daemon, { backend });
   try {
+    const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon) };
+    const directive = await fetch(`${daemon.baseURL}/voice/listener/directive`, { headers });
+    if (!directive.ok) return directive;
+    const { revision } = await directive.json() as VoiceListenerDirective;
     const utterance: VoiceUtterance = {
       id: crypto.randomUUID(), text, capturedAt: Date.now(), backend,
       words: text.trim().split(/\s+/).map((word, i) => ({ text: word, startMs: 100 * i, endMs: 100 * (i + 1) })),
       ...options,
     };
-    return await fetch(`${daemon.baseURL}/voice/utterances`, {
+    return await fetch(`${daemon.baseURL}/voice/utterances?revision=${encodeURIComponent(revision)}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      headers,
       body: JSON.stringify(utterance),
     });
   } finally {

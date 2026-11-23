@@ -30,7 +30,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
 
   async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200 } = {}) {
     const events: string[] = [];
-    const posted: string[] = [];
+    const posted: { text: string; revision: string | null }[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
       const url = new URL(req.url!, "http://localhost");
@@ -42,7 +42,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
       for await (const chunk of req) body += chunk;
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (posted.length === 0) res.statusCode = firstPostStatus;
-        posted.push(JSON.parse(body).text);
+        posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
       }
       res.end("{}");
     });
@@ -92,7 +92,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
       events.includes("released fresh"), "old and new segments to finish processing");
     assert.deepEqual(events.filter(e => e.startsWith("opened ")), ["opened 1", "opened 2"]);
     assert.deepEqual(events.filter(e => e.startsWith("decode ")), ["decode in-flight", "decode fresh"]);
-    assert.deepEqual(posted, ["fresh"]);
+    assert.deepEqual(posted, [{ text: "fresh", revision: "resumed" }]);
   });
 
   it("primes the recognizer with the replacement roster while capture stays enabled", async (t) => {
@@ -110,7 +110,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const { events, posted, child } = await launch(t, { inputDevice: "two-segments" });
     await until(() => events.includes("released next"), "second segment to finish");
     assert.deepEqual(events.filter(e => e.startsWith("decode ")), ["decode undecodable", "decode next"]);
-    assert.deepEqual(posted, ["next"]);
+    assert.deepEqual(posted, [{ text: "next", revision: "first" }]);
     assert.deepEqual(events.filter(e => /^(opened|stopped|released microphone) /.test(e)), ["opened 1"]);
     assert.equal(child.exitCode, null);
   });
@@ -118,7 +118,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   it("posts the next utterance on the same active microphone after the daemon rejects the first POST", async (t) => {
     const { events, posted, child } = await launch(t, { inputDevice: "two-utterances", firstPostStatus: 503 });
     await until(() => events.includes("released second"), "listener to finish the second delivery");
-    assert.deepEqual(posted, ["first", "second"]);
+    assert.deepEqual(posted, [{ text: "first", revision: "first" }, { text: "second", revision: "first" }]);
     assert.deepEqual(events.filter(e => /^(opened|stopped|released microphone) /.test(e)), ["opened 1"]);
     assert.equal(child.exitCode, null);
   });

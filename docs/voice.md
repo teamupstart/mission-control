@@ -62,8 +62,11 @@ transcripts and logs no recognized words.
 
 ## Routing a text utterance
 
-A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh id per capture and epoch milliseconds for `capturedAt`.
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...` with
+`x-harness-token`. Send the directive revision under which the segment was captured. The daemon
+returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
+Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
+Use a fresh id per capture and epoch milliseconds for `capturedAt`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 

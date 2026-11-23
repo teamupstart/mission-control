@@ -26,8 +26,9 @@ export class FakeVoiceListener {
     return await response.json() as VoiceListenerDirective;
   }
 
-  utterance(text: string, words: VoiceUtterance["words"]) {
-    return this.request("/voice/utterances", { text, words, id: crypto.randomUUID(), capturedAt: Date.now(), backend: "fluidaudio" });
+  utterance(text: string, words: VoiceUtterance["words"], revision: string) {
+    return this.request("/voice/utterances?revision=" + encodeURIComponent(revision),
+      { text, words, id: crypto.randomUUID(), capturedAt: Date.now(), backend: "fluidaudio" });
   }
 }
 

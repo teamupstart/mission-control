@@ -42,7 +42,8 @@ for the merge.
    provenance only when all of these hold: the Inspector's current posture is `live`,
    `localReview` is on, the recorded head is the observed head, the manager still reports the
    match, and the reviewed base is the pull request's base. Otherwise refuse with a new
-   appended reason for a missing local review.
+   appended reason for a missing local review. A later commit with the same tree is recorded
+   as `local` by the worker on its next sweep and merges only after that.
 3. Leave every other gate in its place and order. The current-posture gate stays first, so
    while the Inspector is off, in Dry run, or the repository is not on its list, nothing
    merges, a matching local pass included, and the refusal is the existing `inspector-off`,
@@ -62,13 +63,17 @@ for the merge.
 - With `localReview` off, the predicate behaves exactly as before this phase.
 - Dry run stays dry. A matching local pass cannot merge while the Inspector is in Dry run:
   Phase 5 never records it as `local`, and the current-posture gate refuses first.
-- A push after the local pass changes the head, so the recorded posture no longer applies and
-  the head needs a GitHub review, as any "other head" does.
+- A push after the local pass that changes the tree no longer matches, so the head needs a
+  GitHub review, as any "other head" does. A later commit with the same tree and base still
+  matches: the worker records the new head as `local` on its next sweep, and until then the
+  predicate refuses it because the recorded head is not the observed head.
 
 ## 7. Tests and verification
 
 - Predicate tests in `test/shipping-merge.test.ts`: a matched local head merges once the other
-  gates pass; an unreviewed, amended or later-pushed head is refused; `localReview` off
+  gates pass; an unreviewed head and a later push that changes the tree are refused; a later
+  commit with the same tree merges once the worker has recorded it and is refused before
+  that; `localReview` off
   refuses a `local` posture; a base change is refused; a matching local pass while the
   Inspector is in Dry run is refused as `inspector-dry-run`, whether the head is recorded as
   `dry-run` or, defensively, as `local`.
@@ -97,3 +102,5 @@ Nothing depends on this phase. It completes the plan.
   dry for the merge. Both hold.
 - 2026-11-23: Plan Validation review. Steps 2 and 3 now say where Dry run is checked for a
   locally reviewed head, and the tests cover a matching local pass in Dry run.
+- 2026-11-23: Plan Validation review, second round. Section 6 and the tests use the plan's
+  tree-based match for a later push: the same tree still matches, a changed tree does not.

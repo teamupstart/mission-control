@@ -41,7 +41,9 @@ No change to Personas, to the slot, or to what Phase 4 records.
    policy is version 22's.
 2. In the workflow manager, add the single owner of "does this head match a passed local
    review": the run's latest submission has a passed, not skipped, Local Inspector attempt,
-   and the head's Git tree equals that submission's publication tree. Until Phase 6 the
+   and the head's Git tree equals that submission's publication tree. The match is by tree
+   and base branch, not by commit: a later commit with the same tree still matches, and the
+   worker records the new head on its next sweep. Until Phase 6 the
    answer is always no for a repository holding the merge grant, so the gate and the worker
    keep the GitHub review for every head there.
 3. In `evaluateInspectorGate`, when `localReview` is on and the submission has a passed local
@@ -73,15 +75,22 @@ No change to Personas, to the slot, or to what Phase 4 records.
 - Until Phase 6, a repository holding the merge grant keeps the GitHub review for every head.
 - A `local` posture is only ever recorded under a Live Inspector. Dry run records `dry-run`
   for a matched head, so the merge predicate's existing checks keep Dry run dry.
+- A later commit with the same tree and base still matches. Only a push that changes the tree
+  is an "other head".
+- A run whose repair budget ends while the Local Inspector still fails stops before the Pull
+  Request action. The gate is never reached and no GitHub review starts for it.
 
 ## 7. Tests and verification
 
-- Gate tests in `test/workflow-inspector-gate.test.ts`: a matching tree completes, a moved head
-  does not, a skipped stage falls back, a repository holding the merge grant falls back, a
-  restart keeps the recorded path.
+- Gate tests in `test/workflow-inspector-gate.test.ts`: a matching tree completes, a later
+  commit with the same tree still completes, a head with a different tree does not, a skipped
+  stage falls back, a repository holding the merge grant falls back, a restart keeps the
+  recorded path.
 - Worker tests: a matched head gets no review, reply or post, and observation continues. A
   matched head in Dry run is recorded as `dry-run`, and as `local` after a switch to Live.
 - Built-in catalog tests for version 23 and for unchanged earlier versions.
+- A version 23 run that spends its repair rounds on the Local Inspector blocks at `round_limit`
+  and opens no pull request.
 - Playwright: the version 23 pipeline, the Completion tab's local state and the chip.
 - Run `npm run typecheck`, `npm run lint`, the focused tests, `npm run build`,
   `npm run smoke` and `npm run test:e2e`.
@@ -90,7 +99,8 @@ No change to Personas, to the slot, or to what Phase 4 records.
 
 - A converged change on version 23 reaches GitHub with one push and one CI run and completes
   with no GitHub review and no comment.
-- A later push with different content is reviewed on GitHub as today.
+- A later push with different content is reviewed on GitHub as today. A later commit with the
+  same tree and base still matches and gets no GitHub review.
 - Shipping still refuses a `local` posture, and no repository holding the merge grant records
   one.
 - With the Inspector in Dry run, a matched head gets no GitHub review and is never recorded as
@@ -114,3 +124,6 @@ owner of the match. It removes the merge-grant exception.
 - 2026-11-23: reconciled with the source plan's rule that Dry run means dry for the merge. The
   `local` posture is recorded only under a Live Inspector, and Phase 6 keeps the merge
   predicate's current-posture gate first.
+- 2026-11-23: later reviews. The match is stated as by tree and base branch, so a later commit
+  with the same tree still matches, and a run that spends its repair budget on the Local
+  Inspector never reaches this phase's gate.

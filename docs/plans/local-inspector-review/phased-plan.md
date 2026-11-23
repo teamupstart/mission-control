@@ -1,14 +1,14 @@
 # Local Inspector review - phased implementation
 
 Source plan: `docs/plans/local-inspector-review/plan.md`. The operator approved its design and
-decisions on 2026-11-23 as managed plan revision 7. The text beside this index is later:
-revisions 8 and 9 added this index and the phase files, revision 10 changed the wording of one
-rule after review of the pull request (the spent-allowance rule in design item 2), revision 11
-changed only this paragraph, and revision 12 states where Dry run is checked for a locally
-reviewed head (design item 7, Phases 5 and 6). None changed a decision. Mission Control
-records the approval of each exact revision. Revisions 9 to 11 were approved on 2026-11-23
-under the operator's standing approval for this plan, and the source plan's review record
-lists every change to it.
+decisions on 2026-11-23 as managed plan revision 7. The text beside this index is a later
+revision. Revisions 8 and 9 added this index and the phase files, and later revisions corrected
+wording after review. None changed a decision, and the source plan's review record lists what
+each correction changed. Approval: the operator set a standing approval for this plan on
+2026-11-23, so every revision from 9 on was approved when it was filed, the merged one
+included. Revision 8 was replaced by revision 9 before approval was requested. Mission Control
+holds the record for each exact revision, and the pull request description names the revision
+being merged.
 
 Six serial merge units. Phases 1 to 3 are the three phases of the approved repository-access
 plan and keep their existing phase files. Phases 4 to 6 are new and have phase files beside
@@ -148,7 +148,8 @@ until the Phase 4 measurement is in.
 ### Established by Phase 5, consumed by Phase 6
 
 - The workflow manager is the single owner of the question "does this pull request head match
-  a passed local review". The Inspector worker asks it through the existing gate seam.
+  a passed local review". The Inspector worker asks it through the existing gate seam. The
+  match is by Git tree and base branch, so a later commit with the same tree still matches.
 - The posture value `local` is appended to `INSPECTOR_POSTURES` in Phase 5, because the worker
   and the chip need it. Until Phase 6 the merge predicate keeps refusing it.
 - Until Phase 6, a repository holding the merge grant is never treated as locally reviewed:
@@ -168,5 +169,5 @@ until the Phase 4 measurement is in.
 - After Phase 5: a converged change produces one push and one CI run and completes with no
   GitHub review. A binding pinned to version 22 behaves as before. A repository
   holding the merge grant still gets a GitHub review for every head.
-- After Phase 6: a locally reviewed head merges under YOLO, and an amended head does not. In
-  Dry run nothing merges.
+- After Phase 6: a locally reviewed head merges under YOLO, and a head whose tree changed
+  after the pass does not. In Dry run nothing merges.

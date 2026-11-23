@@ -256,6 +256,12 @@ findings are reported without blocking).
   packet.
 - **A spent allowance follows the slot's exhaustion policy.** The default, Block, blocks for
   the operator. Skip skips the stage with a note, and a skipped stage keeps the GitHub review.
+- **A spent repair budget blocks the run.** The stage's rounds also draw on the run's repair
+  rounds (default 5), which with the defaults run out before the allowance of 10. The run then
+  blocks at the existing `round_limit` phase, as it does for any reviewer that still fails:
+  nothing is pushed, no pull request opens, and the GitHub review is not a fallback. The
+  operator grants more repair rounds or takes over. The allowance matters once more rounds are
+  granted.
 
 Findings are retained as the attempt's normalized findings, read through the existing Load
 findings control and `read_workflow_command_output`.
@@ -307,6 +313,10 @@ With Local review on, the Inspector completion gate is satisfied when both hold:
 1. the submission's Local Inspector attempt **passed** (not skipped) on publication tree T; and
 2. the adopted, open pull request's head has Git tree T, the comparison the gate and the Pull
    Request action already make.
+
+The match is by Git tree and base branch, not by commit. A later commit with the same tree on
+the same base, such as a reworded or re-created commit, still matches. A commit whose tree
+differs does not.
 
 No remote model call and no comment. The step stays for two reasons:
 
@@ -516,10 +526,11 @@ is switched off.
   (R1).
 - Engine tests: stage ordering before the Pull Request action, the repair loop on fresh
   evidence, allowance and exhaustion policy, skip reasons, restart recovery.
-- Gate tests: a matching tree completes, a moved head does not, a skipped stage falls back.
+- Gate tests: a matching tree completes, a later commit with the same tree still completes, a
+  head with a different tree does not, a skipped stage falls back.
 - Worker tests: no review, reply or post for a matched head. Observation continues.
-- Shipping tests (Phase 6): refusal for an unreviewed, amended or later-pushed head, and for a
-  matching local pass while the Inspector is in Dry run.
+- Shipping tests (Phase 6): refusal for an unreviewed head, for a later push that changes the
+  tree, and for a matching local pass while the Inspector is in Dry run.
 - A Codex Local Inspector review that reads the worktree through the repository workload
   (Phase 4).
 - Playwright specs for every surface above. Typecheck, lint, build, smoke.
@@ -564,6 +575,10 @@ against the exact revision, not in this file.
 - 2026-11-23, Plan Validation review. Design item 7 did not say where Dry run is checked for a
   locally reviewed head. Revision 12 states it: the merge predicate's current-posture gate,
   and the worker recording `local` only under Live.
+- 2026-11-23, later reviews. Revision 13 states three things: a later commit with the same tree
+  still matches a local pass (design item 5), what happens when the run's repair budget ends
+  the loop before the stage allowance (design item 2), and, in the phased index, how each
+  revision was approved. Revision 11 had reworded that index paragraph once before.
 
 ## Evidence
 

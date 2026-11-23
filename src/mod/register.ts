@@ -73,7 +73,7 @@ export function register(on: EngineOn, _options: unknown): void {
     });
     core = started;
     // Not awaited past the first attempt: a daemon that is slow to answer must not hold the prompt.
-    void started.start().catch(() => {});
+    void started.start().catch((error: unknown) => logBackgroundFailure($, "first connection", error));
     return next(e);
   });
 
@@ -158,6 +158,12 @@ export function register(on: EngineOn, _options: unknown): void {
       return { result: FLOW_FAILED_TEXT };
     }
   });
+}
+
+/** Background work the person never asked for just now (the first connection, a scheduled poll) has no caller to tell, so a failure goes on the debug channel. */
+function logBackgroundFailure($: Engine, what: "first connection" | "poll", error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error);
+  $.ui.log(`mission-control: the ${what} failed: ${detail}`, { to: "debug" });
 }
 
 /** A command or tool the engine refused to register simply stops existing; this leaves a line on the debug channel to say why. */
@@ -410,7 +416,8 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       return { status: reply.status, text: reply.text };
     },
     clockEvery: (ms, tick) => {
-      const timer = $.clock.every(ms, () => void tick());
+      // A tick that throws (a refused pane open on a reconnect, say) is logged, not left unhandled.
+      const timer = $.clock.every(ms, () => void Promise.resolve(tick()).catch((error: unknown) => logBackgroundFailure($, "poll", error)));
       return () => timer.cancel();
     },
     paneOpen: async (opts: ModPaneOpen) => {

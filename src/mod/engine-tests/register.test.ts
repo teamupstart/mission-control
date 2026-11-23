@@ -503,3 +503,28 @@ test('a refused pane open from the band button is logged, not left unhandled', a
   expect(logs.some((t) => /could not open the pane: /.test(t))).toBe(true)
   await ui.unmount()
 })
+
+test('a scheduled reconnect whose pane open is refused is logged, not left unhandled', async ($, on) => {
+  const seen = dispatchWorld(on)
+  seen.flag = false
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.urls.length >= 1)
+  // The flag comes on later; the next scheduled poll reconnects and its pane open is refused.
+  seen.flag = true
+  seen.failOpen = true
+  await seen.clock.advance(5000)
+  await settle(() => logs.some((t) => /the poll failed: /.test(t)))
+  expect(logs.some((t) => /the poll failed: /.test(t))).toBe(true)
+})
+
+test('a first connection whose pane open is refused is logged too', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  seen.failOpen = true
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => logs.some((t) => /the first connection failed: /.test(t)))
+  expect(logs.some((t) => /the first connection failed: /.test(t))).toBe(true)
+})

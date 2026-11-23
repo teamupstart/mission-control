@@ -426,6 +426,7 @@ export function App(): React.JSX.Element {
   const stalls = useStalls();
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
+  const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
   const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
   const alertScope = useMemo(
     () => ({
@@ -3067,7 +3068,7 @@ export function App(): React.JSX.Element {
   // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
   // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
   // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
-  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
+  // and control requests have no dismissal action, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
   // contract, which the session detail reads so its send composer gives way to that box.
@@ -3078,9 +3079,10 @@ export function App(): React.JSX.Element {
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
+        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined, sessionControlRequestsEnabled ? sessions : [])
         : foldAttention({
             sessions,
+            sessionControlRequestsEnabled,
             reviews: answerableReviews,
             residentRuns,
             ensembles: ensembleSummaries,
@@ -3098,6 +3100,7 @@ export function App(): React.JSX.Element {
       sessions,
       answerableReviews,
       inboxNames,
+      sessionControlRequestsEnabled,
       stalls,
       ensembleSummaries,
       pipelineRuns,
@@ -3105,7 +3108,6 @@ export function App(): React.JSX.Element {
       tasks,
       residentRuns,
       attentionDismissals.dismissed,
-      inboxNames,
       reports,
     ],
   );

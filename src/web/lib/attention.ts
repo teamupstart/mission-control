@@ -1,6 +1,6 @@
 import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, type ResidentRunSummary } from "@shared/residents.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
-import type { ReviewItem, Session, Task } from "@shared/types.ts";
+import type { ReviewItem, Session, SessionControlRequestView, Task } from "@shared/types.ts";
 import {
   pipelineCommissionAttention,
   pipelineCommissionAttentionEntries,
@@ -73,6 +73,7 @@ function isSettling(session: Session): boolean {
 
 /** One thing to act on. Ordered by SECTION first (see `foldAttention`), never interleaved. */
 export type AttentionItem =
+  | { kind: "session_control_request"; id: string; session: Session; request: SessionControlRequestView }
   | {
       kind: "pipeline_commission";
       id: string;
@@ -204,6 +205,7 @@ export type AttentionItem =
 export const INBOX_SECTION_ORDER = [
   "ensemble_decision",
   "session_reviews",
+  "session_control_request",
   "session_dialog",
   "pipeline_commission",
   "pipeline_halt",
@@ -272,6 +274,7 @@ export function ensembleRunContext(
 }
 
 export interface AttentionInput {
+  sessionControlRequestsEnabled?: boolean;
   residentRuns?: readonly ResidentRunSummary[];
   sessions: readonly Session[];
   /**
@@ -365,6 +368,9 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       return [{ itemId: item.id, occurrence: occurrenceOf(item.session.state, item.activity) }];
     case "parked_finalization":
       return [{ itemId: item.id, occurrence: occurrenceOf(item.error) }];
+    case "session_control_request":
+      // The inbox is the only answer surface. Decline settles the waiting MCP call.
+      return [];
     case "agent_reports":
       // Mark read is a report row's dismissal; there is nothing to dismiss without reading.
       return [];
@@ -525,6 +531,13 @@ export function foldAttention(input: AttentionInput): AttentionFold {
       reviews: group.reviews,
       context: contextFor(group.session),
     });
+  }
+
+  if (input.sessionControlRequestsEnabled) {
+    for (const item of controlRequestItems(input.sessions)) {
+      represented.add(item.session.id);
+      items.push(item);
+    }
   }
 
   // (3) Any session parked on a TUI/driver menu. A deep link, not an answer surface: a pane
@@ -704,15 +717,24 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   return { items: visible, total, toRead };
 }
 
+function controlRequestItems(sessions: readonly Session[]) {
+  return sessions.flatMap((session) => {
+    const ask = session.sessionControlRequest;
+    if (!ask || session.sessionControlEnabled || isSettling(session)) return [];
+    return [{ kind: "session_control_request" as const, id: `control-request:${ask.id}`, session, request: ask }];
+  }).sort((a, b) => a.request.requestedAt - b.request.requestedAt || a.id.localeCompare(b.id));
+}
+
 const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();
 
 /**
  * The fold while the operator's dismissals are unknown: still loading, or unreadable for as long
  * as the read keeps failing. Every row that can be dismissed is held back, because drawing one
- * over "nothing dismissed" would bring back rows the operator hid. A report row is never
- * dismissed (Mark read is how it leaves), so reports fold exactly as they always do: the Reports
- * section and the to read figure do not wait on a read they do not depend on.
+ * over "nothing dismissed" would bring back rows the operator hid. Session control requests and reports have their
+ * own resolution actions and stay available while dismissals load.
  */
-export function foldWhileDismissalsUnknown(reports?: readonly ReportItem[]): AttentionFold {
-  return foldAttention({ sessions: [], reviews: [], ensembles: [], ...(reports ? { reports } : {}) });
+export function foldWhileDismissalsUnknown(reports?: readonly ReportItem[], controlRequestSessions: readonly Session[] = []): AttentionFold {
+  const reportFold = foldAttention({ sessions: [], reviews: [], ensembles: [], ...(reports ? { reports } : {}) });
+  const requests = controlRequestItems(controlRequestSessions);
+  return { ...reportFold, items: [...requests, ...reportFold.items], total: requests.length };
 }

@@ -63,7 +63,6 @@ async function shoot(target: Page | Locator, page: Page, name: string): Promise<
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-stall-chip/${name}.png`);
 }
 

@@ -143,7 +143,6 @@ async function shoot(page: Page, name = "dispatch-over-comments.png"): Promise<v
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/file-comment-dispatch-performance/${name}`);
 }
 
@@ -373,7 +372,6 @@ test("comment index keeps renderer CPU and Dispatch responsiveness near the clos
   };
   // This line is the retained measurement artifact. It reports renderer main-thread CPU,
   // not wall time, so host scheduling noise cannot manufacture or hide the redraw spike.
-  // eslint-disable-next-line no-console
   console.log(`FILE_COMMENT_DISPATCH_PROFILE ${JSON.stringify(result)}`);
 
   expect(

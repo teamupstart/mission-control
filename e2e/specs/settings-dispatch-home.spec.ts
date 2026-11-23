@@ -75,7 +75,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // `Tooltip` opens on hover and portals a bubble over whatever is being photographed.
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-dispatch-home/${name}.png`);
 }
 

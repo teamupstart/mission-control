@@ -25,7 +25,6 @@ const EVIDENCE = artifactsDir("effort-next-turn");
  */
 function note(message: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`    · ${message}`);
 }
 

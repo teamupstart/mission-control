@@ -140,7 +140,9 @@ derived from its matrix. The shared unit steps live in `.github/actions/run-unit
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns
 CI red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
-block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer dmg on
+block. See the [contributor lint guidance](CONTRIBUTING.md#commands) for what lint enforces.
+
+The one macOS job, `package (macOS arm64)`, builds an unsigned developer dmg on
 `workflow_dispatch` only, pinned to the same image as the signing producer in
 `distribution.yml`. It never runs on a push, because a tag push run that does not conclude
 `success` gets no signed binary. `.github/workflows/ci.yml` documents the runner and worker policy.

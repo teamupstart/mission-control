@@ -1793,7 +1793,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
   // work at all - so there are no gaps to send back and none are recorded.
   const decision = (stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted")[0]?.body as {
     decision?: { outcome: string; gaps: unknown[] };
-  }).decision;
+  })?.decision;
   assert.equal(decision?.outcome, "verification_failed", out);
   assert.deepEqual(decision?.gaps ?? [], [], out);
 });
@@ -2742,7 +2742,6 @@ process.stdin.on("end", () => {
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
 });
 
-
 test("a held plan whose foreman_complete workflow waits on the claim receives its gaps in the same pass", async () => {
   // The reported stall: Plan Validation starts only from Foreman's completion claim, so a
   // held plan verdict used to spend that cycle silently - no run, no message, no next turn.
@@ -2935,7 +2934,6 @@ process.stdin.on("end", () => {
   assert.match(decisions[0]!, /summary="phase 3 has no dependency on phase 2"$/);
   assert.doesNotMatch(decisions[0]!, /reads the reports table/, "gap details stay out of the log");
 });
-
 
 test("capture timestamps and unrelated episodes do not invalidate registered proof", async () => {
   const original = registeredCommandEvidence();

@@ -1129,7 +1129,7 @@ export function forgetCachedRepos(): void {
   lastRepos = null;
   announcedIdentity = null;
   repoCacheGeneration += 1;
-  for (const listener of [...repoListDropListeners]) listener();
+  for (const listener of Array.from(repoListDropListeners)) listener();
 }
 
 /**
@@ -1900,7 +1900,7 @@ export type ArchiveRead<T> =
  */
 async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
-    const res = await actionFetch(path, { ...(signal ? { signal } : {}) });
+    const res = await actionFetch(path, signal ? { signal } : {});
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
@@ -2692,7 +2692,7 @@ export const api = {
     try {
       const res = await actionFetch(
         `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
-        { ...(signal ? { signal } : {}) },
+        signal ? { signal } : {},
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };

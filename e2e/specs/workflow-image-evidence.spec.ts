@@ -191,7 +191,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   } else {
     await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
   }
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-image-evidence/${name}.png`);
 }
 

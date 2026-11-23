@@ -78,7 +78,6 @@ async function withDaemonLog<T>(daemon: DaemonHandle, run: () => Promise<T>): Pr
   try {
     return await run();
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
     throw caught;
   }
@@ -292,7 +291,6 @@ test("a carried stage names the round it passed in, and goes there in one press"
   await expect(actionRow.locator(".wf-pipeline-status")).toHaveText("Complete");
   await expect(actionRow.locator(".wf-pipeline-status")).not.toHaveClass(/workflow-stopped/);
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log(`OBSERVED the carried stage reads "Not re-run" in ${"Round 1 · evidence 2"}, neutral rather than green`);
   }
 
@@ -305,14 +303,12 @@ test("a carried stage names the round it passed in, and goes there in one press"
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: `${EVIDENCE}01-carried-stage-run-view.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-carried-stage/01-carried-stage-run-view.png");
     // The strip on its own, at the scale the chip and the provenance line are actually read.
     // The full page above proves the placement; this is the frame a reviewer can judge the
     // treatment on - grey chip, dimmed card, one green tick.
     await dashboard.locator(".wf-pipeline-strip")
       .screenshot({ path: `${EVIDENCE}01a-carried-stage-strip.png` });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-carried-stage/01a-carried-stage-strip.png");
   }
 
@@ -335,7 +331,6 @@ test("a carried stage names the round it passed in, and goes there in one press"
   await expect(carriedStage.getByRole("button", { name: /Show that round/ })).toHaveCount(0);
   if (process.env.MC_E2E_EVIDENCE) {
     await dashboard.screenshot({ path: `${EVIDENCE}02-source-round-proof.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/workflow-carried-stage/02-source-round-proof.png`);
   }
 });
@@ -377,7 +372,6 @@ test("the Board card shows what was carried and still points at the active stage
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: `${EVIDENCE}03-board-card-carried.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-carried-stage/03-board-card-carried.png");
   }
 });

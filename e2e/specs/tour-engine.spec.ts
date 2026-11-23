@@ -40,7 +40,6 @@ async function shoot(target: Page): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}fresh-profile-tour.png`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/startup-tour-picker/fresh-profile-tour.png");
 }
 

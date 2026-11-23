@@ -133,7 +133,6 @@ test.describe("a cmux that is running and refusing", () => {
       await page.mouse.move(1, 1);
       await cmux.scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(evidence, "cmux-row-refused.png") });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/cmux-socket-control/cmux-row-refused.png");
     }
   });

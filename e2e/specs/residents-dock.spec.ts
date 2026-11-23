@@ -24,7 +24,6 @@ async function capture(target: Page | Locator, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   if ("mouse" in target) await target.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/residents-dock/${name}.png`);
 }
 

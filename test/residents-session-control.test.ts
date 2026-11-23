@@ -732,7 +732,7 @@ class EverySweepRegistry extends Registry {
   }
   override applyDiscovery(...args: Parameters<Registry["applyDiscovery"]>): void {
     super.applyDiscovery(...args);
-    for (const fn of [...this.observers]) fn();
+    for (const fn of Array.from(this.observers)) fn();
   }
 }
 

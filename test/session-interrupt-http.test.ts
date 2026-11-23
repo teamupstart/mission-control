@@ -38,8 +38,7 @@ type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
-type Session = import("../src/shared/types.ts").Session;
-type SessionState = import("../src/shared/types.ts").SessionState;
+
 type Registry = import("../src/server/registry.ts").Registry;
 type PaneDeps = import("../src/server/actions.ts").PaneDeps;
 type TerminalExec = import("../src/server/terminal/exec.ts").TerminalExec;

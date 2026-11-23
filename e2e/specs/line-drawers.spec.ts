@@ -38,7 +38,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // strip is six adjacent buttons.
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-drawers/${name}.png`);
 }
 

@@ -93,7 +93,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     path: `${EVIDENCE}${name}.png`,
     ...(box ? { clip: { x: 0, y: box.y - 8, width: 1280, height: bottom - box.y + 16 } } : {}),
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }
 
@@ -108,7 +107,6 @@ async function shootPage(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }
 

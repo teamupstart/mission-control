@@ -486,12 +486,10 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // eslint-disable-next-line no-console
     console.log('OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path');
     await card.screenshot({
       path: `${EVIDENCE}ship-it-review-control.png`,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-control.png");
   }
 
@@ -511,7 +509,6 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String), evidence: [] });
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // eslint-disable-next-line no-console
     console.log("OBSERVED POST /api/sessions/:id/workflow-review with a requestId");
   }
 
@@ -544,7 +541,6 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await expect(dashboard.locator(".wf-run-reader")).toContainText("No-Mistakes Review");
 
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log(
       `OBSERVED Runs monitor selected the created No-Mistakes Review v${runVersion} run`,
     );
@@ -552,7 +548,6 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       path: `${EVIDENCE}ship-it-review-run.png`,
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-run.png");
   }
 });
@@ -911,11 +906,8 @@ test("Foreman recovers one settled pre-PR ship turn, records it, and stops at th
     await expect(recoveryRecord).toBeHidden();
     await expect(openPrLink).toBeVisible();
     await detail.screenshot({ path: join(EVIDENCE, "pre-pr-open-pr-boundary.png") });
-    // eslint-disable-next-line no-console
     console.log("OBSERVED one delivered pre-PR recovery in the session ledger and open PR #27");
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/pre-pr-ship-recovery.png");
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/pre-pr-open-pr-boundary.png");
   }
 });

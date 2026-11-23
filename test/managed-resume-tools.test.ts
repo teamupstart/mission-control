@@ -486,7 +486,7 @@ fi
 });
 
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
-  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async () => {
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async (t) => {
   const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
   const p = await prepareTerminalResume(session(nativeId), context);
@@ -528,27 +528,7 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   let stderr = "";
   guard.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => guard.once("exit", resolve));
-  try {
-    if (signal) {
-      const readyDeadline = Date.now() + 15_000;
-      while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
-      assert.ok(existsSync(marker), stderr);
-      process.kill(-guard.pid!, signal);
-    }
-    assert.equal(await exited, signal ? 1 : 0, stderr);
-    assert.ok(existsSync(marker), "the descendant started before its parents exited");
-    const observed = JSON.parse(readFileSync(marker, "utf8"));
-    process.kill(observed.pid, 0);
-    assert.equal(observed.home, p.stateHome);
-    assert.ok(existsSync(configPath), "agent exit must not remove a detached descendant's environment");
-    assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
-    reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
-    assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
-    await assert.rejects(prepareTerminalResume(session(nativeId), context), /unresolved|already|still/i);
-    writeFileSync(check, "check credentials after guard exit");
-    for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
-    assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");
-  } finally {
+  t.after(async () => {
     writeFileSync(stop, "stop");
     if (guard.exitCode === null) guard.kill("SIGTERM");
     await exited;
@@ -563,7 +543,26 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
         await delay(30);
       }
     }
+  });
+  if (signal) {
+    const readyDeadline = Date.now() + 15_000;
+    while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
+    assert.ok(existsSync(marker), stderr);
+    process.kill(-guard.pid!, signal);
   }
+  assert.equal(await exited, signal ? 1 : 0, stderr);
+  assert.ok(existsSync(marker), "the descendant started before its parents exited");
+  const observed = JSON.parse(readFileSync(marker, "utf8"));
+  process.kill(observed.pid, 0);
+  assert.equal(observed.home, p.stateHome);
+  assert.ok(existsSync(configPath), "agent exit must not remove a detached descendant's environment");
+  assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
+  reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
+  assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
+  await assert.rejects(prepareTerminalResume(session(nativeId), context), /unresolved|already|still/i);
+  writeFileSync(check, "check credentials after guard exit");
+  for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
+  assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");
 });
 
 test("symlinks, foreign locators and corrupt records cannot authorize deletion", () => {

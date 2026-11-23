@@ -331,7 +331,7 @@ export class ResidentManager {
     }
     this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    for (const runId of [...this.grantWatches.keys()]) this.dropGrantWatch(runId);
+    for (const runId of Array.from(this.grantWatches.keys())) this.dropGrantWatch(runId);
     await Promise.all(this.cleaningWorkspaces.values());
   }
 

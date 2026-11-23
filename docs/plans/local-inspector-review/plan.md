@@ -1,7 +1,7 @@
 # Run Inspector rounds locally, before the pull request
 
-Status: Proposed for approval (revision 2). Decisions D1 to D4 each carry a proposed choice.
-Approving this revision adopts those choices unless the review selects otherwise.
+Status: In review, not approved (revision 3). Decisions D1 to D4 each carry a proposed choice.
+None is adopted until the operator selects it and approves the exact revision.
 
 This is an analysis and options plan. Nothing in it is implemented.
 Measured on 2026-11-20 and 2026-11-21 against `main` at `9f4db6308` and this machine's
@@ -29,10 +29,11 @@ Inspector judge.
    the problem changes what a review starts from (the local snapshot, before the push), not
    where its output goes.
 4. **Recommendation: Option A, a Local Inspector stage.** Run the same Inspector review (same
-   brief, prompt, model setting and finding fingerprints) as a workflow stage before the Pull
-   Request action, on the Command-stage machinery that the Local CodeRabbit Command already
-   established. One new Inspector setting turns it on. The GitHub worker then skips every head
-   the local stage already reviewed. That stage is the new Inspector judge.
+   brief, prompt, model setting and finding fingerprints) as a new workflow stage placed
+   before the Pull Request action, on the Command-stage machinery that the Local CodeRabbit
+   Command already established. One new Inspector setting turns it on. The review moves: the
+   step after the pull request stops reviewing and only checks that what was pushed is what
+   was reviewed. That new stage is the Inspector judge.
 5. **Read access is worth adding, as a separate lever.** It makes judges more thorough. It does
    not make rounds fewer: the one comparison the ledger holds shows more findings with read
    tools and the same number of rounds. Local rounds are what make that thoroughness
@@ -151,6 +152,22 @@ flowchart LR
   G --> O[Inspector worker observes, posts nothing]
   O -->|head tree equals reviewed tree| C[Workflow complete]
 ```
+
+### Stage order, before and after
+
+The Inspector review does not stay where it is. It moves from after the pull request to a new
+stage before it.
+
+| Order | No-Mistakes version 22, today | Version 23, proposed |
+| --- | --- | --- |
+| 1 | Typecheck, test, lint | Same |
+| 2 | CodeRabbit, when the repository enables it | Same |
+| 3 | Intent Conformance, Test Coverage | Same |
+| 4 | Code Risk, Code Quality, Code Design | Same |
+| 5 | Test Evidence, Documentation, Slop Filter | Same |
+| 6 | Pull Request action: push | **Local Inspector, a new stage.** It reviews the local snapshot. Findings return to the session, which repairs and resubmits without pushing. Every Inspector round happens here |
+| 7 | After the pull request: GitHub Inspector reviews the pushed head. Each finding means repair, push, CI, and another review | Pull Request action: one push, one CI run |
+| 8 | None | After the pull request: no review. A check confirms that the pushed content is the content stage 6 passed |
 
 ## Options
 
@@ -271,15 +288,19 @@ pull request silently loses review and no in-flight run is stranded when the set
 The whole feature sits behind a preview feature flag, per `docs/feature-flags.md`. With the
 flag off the control is hidden and the stored value reads as off.
 
-### 4. A new built-in version
+### 4. A new built-in version, with the review moved before the pull request
 
 No-Mistakes Review version 23 is version 22 plus one evaluation stage holding the Local
 Inspector, placed last before the Pull Request action, so it reviews content every other
-reviewer has already accepted. The completion policy is unchanged. With Local review off the
-stage skips with a note and version 23 behaves exactly as version 22, so it is safe as the
-current version for every installation. Existing bindings keep their pinned version.
+reviewer has already accepted. See "Stage order, before and after".
 
-### 5. The completion gate accepts a local review
+With Local review on, the review no longer happens after the pull request. Version 23 keeps
+the `inspector` completion policy for two reasons only: so the step after the pull request can
+run the check in item 5, and so that with Local review off the new stage skips with a note and
+version 23 behaves exactly as version 22. That makes it safe as the current version for every
+installation. Existing bindings keep their pinned version.
+
+### 5. After the pull request: a check, not a review
 
 With Local review on, the Inspector completion gate is satisfied when both hold:
 
@@ -287,8 +308,17 @@ With Local review on, the Inspector completion gate is satisfied when both hold:
 2. the adopted, open pull request's head has Git tree T, the comparison the gate and the Pull
    Request action already make.
 
-No remote model call and no comment. A run whose stage was skipped or whose pinned version has
-no stage keeps the GitHub review path, and the gate says which path it is on.
+No remote model call and no comment. The step stays for two reasons:
+
+- **Proof of what was pushed.** It catches a session that commits something different between
+  the local pass and the push.
+- **Fallback.** A run whose stage was skipped, or whose pinned version has no stage, keeps the
+  GitHub review path it has today, and the gate says which path it is on.
+
+Alternative, not proposed: give version 23 no step after the pull request at all
+(`completionPolicy: none`, as versions 9 to 17 had). The run would then complete when the pull
+request opens. Nothing would confirm that the pushed content is the reviewed content, and with
+Local review off the version would lose the GitHub gate version 22 has.
 
 ### 6. The GitHub worker skips what was reviewed locally
 
@@ -472,26 +502,35 @@ remote is switched off.
 
 ## Decisions
 
-Each row is the proposed choice. Approving this revision adopts it unless the review selects
-another option, in which case the plan is revised and approved again.
+Every decision is open. Each row is the proposed choice, not an adopted one. A choice is
+adopted only when the operator selects it and approves the exact revision that records it.
 
-| Id | Decision | Proposed choice |
-| --- | --- | --- |
-| D1 | Which option | A, Local Inspector stage |
-| D2 | Whether Shipping accepts a matching local review as merge provenance | Yes, as Phase 3 |
-| D3 | Which findings block the local stage | Tunable in Library > Commands, default major and above |
-| D4 | How Persona judges get read access | Slim path, as Phase 4 |
-| Follow-up | Phase and schedule this plan, or stop | Selected in review. Nothing is scheduled without that selection |
+| Id | Decision | Proposed choice | State |
+| --- | --- | --- | --- |
+| D1 | Which option | A, Local Inspector stage | Open, in discussion |
+| D2 | Whether Shipping accepts a matching local review as merge provenance | Yes, as Phase 3 | Open, in discussion |
+| D3 | Which findings block the local stage | Tunable in Library > Commands, default major and above | Open, in discussion |
+| D4 | How Persona judges get read access | Slim path, as Phase 4 | Open, in discussion |
+| Follow-up | Phase and schedule this plan, or stop | None proposed. Nothing is scheduled without the operator's selection | Open, in discussion |
+| Approval | Approve the exact plan bundle | Not given for any revision | Open |
 
 ## Review record
 
 - 2026-11-21, revision 1. The operator moved every decision to discussion and asked how to
   include worktree read access for the Persona judges and a new Inspector judge, with the
   tradeoffs and the expected benefit. No option was selected and the revision was not approved.
-- Revision 2 answers that in "Read access for the judges", adds decision D4 and Phase 4, and
-  restates each decision as a proposed choice. Two questions from the discussion remain the
-  operator's and are carried by D4: whether read-enabled judges may run on Claude, and which
-  judges to start with.
+- 2026-11-23, revision 2. It answered that in "Read access for the judges" and added decision
+  D4 and Phase 4. The operator again moved every decision, the phased follow-up and the
+  approval to discussion. No option was selected and the revision was not approved. The
+  operator then asked how a local round can exist "in the existing place", since in
+  No-Mistakes the Inspector runs after the pull request and would need to become a stage
+  before it.
+- Revision 3 answers that. It adds "Stage order, before and after", rewrites design items 4
+  and 5 to say the review moves before the pull request and the step after it becomes a check,
+  and records the alternative of having no step after the pull request. It changes no proposed
+  choice. Two questions from the discussion remain the operator's and are carried by D4:
+  whether read-enabled judges may run on Claude, and which judges to start with.
+- No phased implementation plan exists and no implementation task is scheduled.
 
 ## Evidence
 

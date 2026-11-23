@@ -9,7 +9,8 @@ const WordTiming = z.object({
 }).strict().refine((word) => word.endMs >= word.startMs);
 
 export const VoiceUtteranceSchema = z.object({
-  id: z.string().min(1).max(128),
+  id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._~-]+$/u, "Use URL-unreserved characters for the capture ID.")
+    .refine((id) => id !== "." && id !== "..", "A capture ID cannot be a dot segment."),
   text: z.string().min(1).max(16_384).refine((text) => text.trim().length > 0),
   words: z.array(WordTiming).max(4096).default([]),
   capturedAt: z.number().int().nonnegative(),

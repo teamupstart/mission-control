@@ -15,7 +15,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-schema-commits-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+const { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -64,4 +64,47 @@ test("a CREATE that fails leaves no part of the schema behind and reports SQLite
   const names = d.prepare("SELECT name FROM sqlite_schema").all() as Array<{ name: string }>;
   d.close();
   assert.deepEqual(names.map((row) => row.name), ["file_comment_messages"]);
+});
+
+test("a failed schema upgrade preserves saved settings across reopen and can be retried", () => {
+  const { d, path } = freshDatabase();
+  const inspector = JSON.stringify({ enabled: false, mode: "dry-run" });
+  const schemaSql = "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name";
+  let originalSchema;
+  try {
+    // Unlike the empty-database failure case, this models an older install with operator
+    // settings. The late CREATE failure must not change its durable schema or version.
+    d.exec(`
+      CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      PRAGMA user_version = 35;
+      CREATE VIEW file_comment_messages AS SELECT 1 AS thread_id, 1 AS created_at;
+    `);
+    d.prepare("INSERT INTO app_config (key, value) VALUES ('inspector', ?)").run(inspector);
+    originalSchema = d.prepare(schemaSql).all();
+
+    assert.throws(() => upgradeDatabaseToCurrentSchema(d), /views may not be indexed/);
+    assert.equal(d.isTransaction, false);
+  } finally {
+    d.close();
+  }
+
+  const reopened = new DatabaseSync(path);
+  try {
+    assert.deepEqual(reopened.prepare(schemaSql).all(), originalSchema);
+    assert.equal(reopened.prepare("PRAGMA user_version").get()?.user_version, 35);
+    assert.equal(reopened.prepare("SELECT value FROM app_config WHERE key = 'inspector'").get()?.value, inspector);
+
+    // Once the conflicting object is removed, the same database must still be upgradeable,
+    // without treating its existing settings as a fresh install's default.
+    reopened.exec("DROP VIEW file_comment_messages;");
+    upgradeDatabaseToCurrentSchema(reopened);
+    assert.equal(reopened.isTransaction, false);
+    assert.equal(reopened.prepare("PRAGMA user_version").get()?.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+    assert.equal(reopened.prepare("SELECT type FROM sqlite_schema WHERE name = 'file_comment_messages'").get()?.type, "table");
+    assert.equal(reopened.prepare("SELECT value FROM app_config WHERE key = 'inspector'").get()?.value, inspector);
+    assert.equal(reopened.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
+    assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
+  } finally {
+    reopened.close();
+  }
 });

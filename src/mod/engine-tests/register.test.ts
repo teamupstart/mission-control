@@ -27,7 +27,7 @@ function world(on, { flag, minModApi = 1 }) {
   on('fs.read', () => ({ value: 'a-token' }))
   on('http.fetch', (_, e) => {
     seen.urls.push(e.url)
-    const text = e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi) : seen.inbox
+    const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi) : seen.inbox)
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
@@ -276,4 +276,24 @@ test('the intent nudge is attached only when the prompt names Mission Control wi
   expect(JSON.stringify(nudged)).toContain('Call start_dispatch with intent now')
   const plain = await $.prompt.submit({ text: 'rename the helper', origin: { kind: 'composer' } })
   expect(JSON.stringify(plain)).not.toContain('start_dispatch')
+})
+
+test('when the engine refuses prompt.fill, the description is asked in a dialog, not left to a log line (S12)', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const asks = []
+  const fills = []
+  on('prompt.fill', (_, e) => { fills.push(e.text); return { isFilled: false } })
+  // `$.ui.ask` rides AskUserQuestion; dismissing it ends the flow, and the call itself is the proof.
+  on('tool.call', (_, e) => { if (e.tool === 'AskUserQuestion') asks.push(e); return { isError: true, result: 'dismissed', text: 'dismissed' } })
+  const draft = JSON.stringify({ draftId: 'd1', repoRoot: '/repo', kind: 'ship', kindLabel: 'ship', afterWork: 'None', afterWorkApplies: true, words: '', context: null, needs: ['description'], brief: '', text: 'Repo: /repo' })
+  seen.reply = (url) => url.endsWith('/dispatch/dispatch-options') ? JSON.stringify({ questions: [] })
+    : url.endsWith('/dispatch/drafts') ? draft
+    : url.endsWith('/confirm') ? JSON.stringify({ choice: 'cancel', taskId: null, started: false })
+    : undefined
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  await $.command.run(COMMAND('ship tidy logging'))
+  await settle(() => asks.length > 0)
+  expect(fills).toEqual(['/mission-dispatch '])
+  expect(JSON.stringify(asks[0])).toMatch(/What should this task do/)
 })

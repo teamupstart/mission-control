@@ -169,17 +169,29 @@ test("a description for a draft that has gone is treated as a new brief", async 
   assert.equal(fake.dialogs[0]!.header, "Kind");
 });
 
-test("when the prompt box cannot be filled, the description is asked in a dialog under Other (S12)", async () => {
+test("when the prompt box refuses the fill, the description is asked in a dialog under Other (S12)", async () => {
   const typed = "tidy the logging module";
   const { fake, filed } = world({
     host: {
       answers: (q) => q.header === "Task" ? { kind: "other", text: typed } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label },
     },
   });
-  fake.host.fillPrompt = () => { throw new Error("no prompt"); };
+  fake.host.fillPrompt = () => false;
   await runDispatchCommand(fake.host, SESSION, "");
   assert.ok(fake.dialogs.some((d) => d.header === "Task"));
   assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+});
+
+test("a fill that throws or rejects also falls back to the description dialog", async () => {
+  for (const refuse of [() => { throw new Error("no prompt"); }, () => Promise.reject(new Error("no prompt"))]) {
+    const { fake, filed } = world({
+      host: { answers: (q) => q.header === "Task" ? { kind: "other", text: "tidy logging" } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+    });
+    fake.host.fillPrompt = refuse;
+    await runDispatchCommand(fake.host, SESSION, "");
+    assert.ok(fake.dialogs.some((d) => d.header === "Task"));
+    assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+  }
 });
 
 test("a dismissed dialog counts as Cancel at every step, and nothing is filed", async () => {

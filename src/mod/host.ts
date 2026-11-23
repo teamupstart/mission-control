@@ -79,7 +79,11 @@ export interface ModHost {
   /** The start-up banner lines above the prompt (7.21); `undefined` removes them. */
   banner: (lines: readonly string[] | undefined) => void;
   /** Puts text in the prompt box without sending it (`$.prompt.fill`, spike S12). */
-  fillPrompt: (text: string) => void;
+  /**
+   * Resolves `false` (or throws) when the prompt box could not be filled, so the flow asks for
+   * the description in a dialog instead (S12). `void` means it was filled.
+   */
+  fillPrompt: (text: string) => void | boolean | Promise<void | boolean>;
   fetch: (path: string, init?: ModFetchInit) => Promise<ModFetchResult>;
   env: (name: string) => string | undefined;
   modelWrite: (write: ModModelWrite) => void;

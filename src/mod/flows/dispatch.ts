@@ -99,7 +99,7 @@ export async function createDraftAsking(
 async function requestDescription(host: FlowHost, session: FlowSession, summary: HomeDispatchDraftSummary): Promise<FlowResult> {
   let filled = true;
   try {
-    host.fillPrompt("/mission-dispatch ");
+    filled = (await host.fillPrompt("/mission-dispatch ")) !== false;
   } catch {
     filled = false;
   }

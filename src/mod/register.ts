@@ -305,14 +305,13 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     },
     toast: (text) => $.ui.toast(text),
     ask: (question) => askDialog($, question),
-    // Fire and forget: the prompt box is a convenience, and a refusal tells the person what to type.
-    fillPrompt: (text) => {
-      void $.prompt.fill({ text, mode: "replace" }).then(
-        (filled) => {
-          if (filled?.isFilled === false) $.ui.log("Type /mission-dispatch followed by what the task should do.");
-        },
-        () => $.ui.log("Type /mission-dispatch followed by what the task should do."),
-      );
+    // False when the engine refuses or rejects the fill, so the flow asks in a dialog (S12).
+    fillPrompt: async (text) => {
+      try {
+        return (await $.prompt.fill({ text, mode: "replace" }))?.isFilled !== false;
+      } catch {
+        return false;
+      }
     },
     status: (text) => {
       view.status = text;

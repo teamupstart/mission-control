@@ -57,6 +57,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/reports", "attention.report_post", "permissions"],
   ["POST", "/api/reports/:id/opened", "attention.report_open", "permissions"],
   ["POST", "/api/reports/:id/read", "attention.report_read", "permissions"],
+  ["POST", "/api/reports/:id/reply", "attention.report_reply", "permissions"],
+  ["POST", "/api/reports/:id/follow-up", "attention.report_follow_up", "permissions"],
   ["POST", "/api/sessions/:id/mode/cycle", "permission.mode_cycle", "permissions"],
   ["POST", "/api/sessions/:id/mode", "permission.mode_set", "permissions"],
   ["POST", "/api/sessions/:id/rename", "session.rename", "sessions"],

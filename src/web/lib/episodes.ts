@@ -1,6 +1,7 @@
 import type { ForemanEpisode, PendingTurn, ReviewItem } from "@shared/types.ts";
 import { isConversationResolvedReview } from "@shared/review-item.ts";
 import { isReviewMessageTurn, parseReviewEnvelope, type ReviewEnvelopeKind } from "@shared/review-message-envelope.ts";
+import type { ReportItem } from "@shared/reports.ts";
 import type { TranscriptRow } from "./tools.ts";
 
 /**
@@ -48,6 +49,11 @@ export type ConversationRow =
     }
   | { kind: "asked"; ts: number; review: ReviewItem }
   | { kind: "closed"; ts: number; review: ReviewItem }
+  /**
+   * An agent report (`inbox` flag), where it was posted. Every version is an entry: a report
+   * replaced later keeps its place here, saying it was replaced.
+   */
+  | { kind: "report"; ts: number; report: ReportItem }
   | {
       /**
        * A delivered review message naming a review this conversation cannot draw (one a database
@@ -211,6 +217,7 @@ export function mergeConversation(
   reviews: ReviewItem[] = [],
   pendingTurns: readonly PendingTurn[] = [],
   history: ReviewHistory = {},
+  reports: readonly ReportItem[] = [],
 ): ConversationRow[] {
   // A delivered review message is drawn at the turn the agent received it, and only there: an
   // answer's entry at `resolvedAt` and a snooze's at `snooze.at` give way to it. An answer
@@ -219,7 +226,7 @@ export function mergeConversation(
   // so a delivered turn is a card even in a conversation with no reviews to show.
   const delivered = { answer: new Set<string>(), "remind-later": new Set<string>() };
   const rows: ConversationRow[] = drawDeliveries(transcript, reviews, delivered, history);
-  if (episodes.length === 0 && reviews.length === 0) return rows;
+  if (episodes.length === 0 && reviews.length === 0 && reports.length === 0) return rows;
   const queued = queuedAnswerIds(pendingTurns);
 
   const dated: ConversationRow[] = [];
@@ -240,6 +247,9 @@ export function mergeConversation(
       }
       (entry.ts > 0 ? dated : undated).push(entry);
     }
+  }
+  for (const report of reports) {
+    (report.createdAt > 0 ? dated : undated).push({ kind: "report", ts: report.createdAt, report });
   }
   // The episodes API hands its rows back newest-first (the drawer's order) and the reviews
   // API oldest-first, and the two are now interleaved with each other as well as with the

@@ -13,8 +13,8 @@ const route = (text: string, names = ["Will", "Steve"], words: VoiceUtterance["w
 
 test("the exact first word addresses Will with absent, adjacent, paused or overlapping timings", () => {
   for (const gap of [null, 0, 250, -80]) {
-    const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: "you", startMs: 100 + gap, endMs: 400 }];
-    for (const [text, body] of [["Will you grab the door", "you grab the door"], ["“wILL,”  Grab   the door!", "Grab   the door!"]] as const) {
+    for (const [text, body, nextWord] of [["Will you grab the door", "you grab the door", "you"], ["“wILL,”  Grab   the door!", "Grab   the door!", "Grab"]] as const) {
+      const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: nextWord, startMs: 100 + gap, endMs: 400 }];
       assert.deepEqual(route(text, undefined, words), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: gap });
     }
   }
@@ -57,6 +57,8 @@ test("a split point keeps each message verbatim and drops only what joins them",
   assert.deepEqual(splits('“Steve,” "check the build", and “Alice,” "review the PR"'), [
     ["Alice", '"check the build"', '"review the PR"'],
   ]);
+  assert.deepEqual(splits("Steve, check the build, and Alice, ,,,"), [["Alice", "check the build", ",,,"]]);
+  assert.equal(splits("Steve, check the build, and Release, Captain needs help"), "addressed");
   assert.deepEqual(splits("Ezra, check the disk alerts. Also Ruby, vacuum the old tables"),
     [["Ruby", "check the disk alerts.", "vacuum the old tables"]]);
   assert.deepEqual(splits("Steve, ask Release Captain to cut it, then Alice, review"), [
@@ -81,6 +83,32 @@ test("two-word call signs and a subsequent agent name", () => {
   if (second.kind === "needs-model") {
     assert.equal(second.reason, "second-name");
     assert.deepEqual(second.candidates.map((a) => a.name), ["Steve", "Will"]);
+  }
+});
+
+test("a two-word call sign ends at the address comma for exact and phonetic matching", () => {
+  for (const text of ["Release, Captain needs help", "Release,Captain needs help", "Release , Captain needs help"]) {
+    assert.equal(route(text, ["Release Captain"]).kind, "ignored");
+    assert.deepEqual(route(text, ["Release Captain", "Release"]), {
+      kind: "addressed", target: agent("Release"), match: "exact", text: "Captain needs help", pauseMs: null,
+    });
+  }
+  assert.equal(route("Steven, Captain needs help", ["Steve Captain"]).kind, "ignored");
+  assert.equal(route("Steven Captain, run tests", ["Steve Captain"]).kind, "addressed");
+});
+
+test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
+  const names = ["Steve", "Steve Captain"];
+  for (const roster of [names, names.toReversed()]) {
+    assert.deepEqual(route("Steven Captain, run tests", roster), {
+      kind: "addressed", target: agent("Steve Captain"), match: "phonetic", text: "run tests", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven, Captain needs help", roster), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: "Captain needs help", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven Captain, run tests", [...roster, "Steven"]), {
+      kind: "addressed", target: agent("Steven"), match: "exact", text: "Captain, run tests", pauseMs: null,
+    });
   }
 });
 
@@ -109,6 +137,7 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will"!,"ship it"', '"ship it"'],
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ["“Will,”, ???", "???"],
     ['「“Will,”」"ship it"', '"ship it"'],
   ] as const) {
     assert.deepEqual(route(text), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: null });

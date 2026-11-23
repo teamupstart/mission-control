@@ -25,20 +25,27 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
-descriptive only. A two-word name can also match, and a phonetic match such as “Steven” or
-“Steve’s” can address Steve. The first name settles who the message is for, and nothing later
-changes that. When a roster name occurs later, or the first name is in doubt,
-the [model step](#the-model-step) decides what remains: whether the later name starts a message
-of its own, or which of two similar names was meant. A later name with nothing on one side of it
-(“Steve and Will, check the build”, “Steve, ping Will”) cannot start a message of its own, so the
-whole text goes to the first agent with no model call. A spelling near-miss is ignored even when several names are one edit away. A bare name selects a candidate when exactly one option across all open unsure cards matches.
-Multiple matches leave the cards open and record `ambiguous-pick` in Recently heard. If the
-selected candidate has left the roster, the card stays open and Recently heard records
-`candidate-unavailable`. A bare roster name with no matching option records `no-message`.
+descriptive only. Recently heard measures from the last address word to the first message word,
+skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
+A two-word call sign must fit before the address comma. “Release Captain, run tests” can address
+Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such
+as “Steven” or “Steve’s” can address Steve. If both Steve and Steve Captain sound like the
+start of the capture, “Steven Captain, run tests” selects the longer phonetic match.
+
+When a roster name occurs later, or the first name is in doubt, the [model step](#the-model-step)
+decides whether the later name starts its own message or which of two similar names was meant.
+A later name with nothing on one side of it (“Steve and Will, check the build”, “Steve, ping Will”)
+leaves the whole message with the first agent. A spelling near-miss is ignored even when several
+names are one edit away. A bare name selects a candidate when exactly one option across all open
+unsure cards matches. Multiple matches leave the cards open and record `ambiguous-pick` in
+Recently heard. If the selected candidate has left the roster, the card stays open and Recently
+heard records `candidate-unavailable`. A bare roster name with no matching option records
+`no-message`.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the running target receives the remaining text verbatim through the standard
-operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes.
+operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
+`Will, ???` queues `???`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest

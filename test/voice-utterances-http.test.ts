@@ -217,6 +217,23 @@ test("a quote immediately after the address comma survives the preview and queue
   assert.equal(queued("Will").at(-1), '"ship it"');
 });
 
+test("punctuation-only messages reach the named agent and leave an unsure card open", async () => {
+  await say("Steven ask Will about the build", "unsure");
+  for (const [id, text, body] of [
+    ["spaced", "Will, ???", "???"],
+    ["adjacent", "Will,!!!", "!!!"],
+    ["plain", "Will ...", "..."],
+    ["commas", "Will, ,,,", ",,,"],
+  ] as const) {
+    await say(text, id);
+    const card = cards.at(-1);
+    assert.deepEqual([card?.id, card?.state, card?.parts[0]?.text], [id, "pending", body]);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(queued("Will").at(-1), body);
+  }
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["unsure", "unsure"]]);
+});
+
 test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const will = name("Will");
@@ -283,6 +300,24 @@ test("ignored, pending and cancelled captures leave no transcript in the daemon 
   assert.ok(files.some((file) => file.name === "harness.db"));
   for (const file of files) {
     assert.equal(readFileSync(join(file.parentPath, file.name)).includes(marker), false, file.name);
+  }
+});
+
+test("Recently heard measures the pause between aligned words and leaves unclear timings empty", async (t) => {
+  voiceStateStore.useRoster(() => [name("Release"), name("Build Captain")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  for (const [text, labels, pause] of [
+    ["Release , run tests", ["Release", ",", "run", "tests"], 150],
+    ["Build Captain , run tests", ["Build", "Captain,", "run", "tests"], 50],
+    ["Release, run tests", ["Other", "run"], null],
+    ["Release, run tests", ["Release", ",", "tests"], null],
+    ["Build Captain, run tests", ["Other", "Captain", "run"], null],
+    ["Release, ???", ["Release", "???"], null],
+  ] as const) {
+    const words = labels.map((label, i) => ({ text: label, startMs: 100 * i, endMs: 100 * i + 50 }));
+    assert.equal((await post("/voice/utterances", { ...capture(text), words }, token)).status, 200);
+    const [entry] = await readHeard();
+    assert.deepEqual([entry?.outcome, entry?.pauseMs], ["pending", pause], text);
   }
 });
 

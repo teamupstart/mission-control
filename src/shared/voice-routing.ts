@@ -80,6 +80,21 @@ function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
 
+function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
+  let index = 0;
+  let previousEndMs = 0;
+  for (const word of words) {
+    const timedText = normalized(word.text);
+    if (!timedText) continue;
+    const token = tokens[index];
+    if (!token || normalized(token[0]) !== timedText) return null;
+    if (index === addressWords) return word.startMs - previousEndMs;
+    previousEndMs = word.endMs;
+    index++;
+  }
+  return null;
+}
+
 function closesWrapper(opener: string, closer: string): boolean {
   if (opener === '"' || opener === "'") return closer === opener;
   if (/\p{Ps}/u.test(opener)) return /\p{Pe}/u.test(closer);
@@ -88,7 +103,7 @@ function closesWrapper(opener: string, closer: string): boolean {
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, start: number, end: number): string {
-  let rest = text.slice(end);
+  let rest = text.slice(end).trimStart();
   if (rest.startsWith(",")) {
     rest = rest.replace(/^,+/u, "");
     const address = text.slice(start, end);
@@ -102,7 +117,9 @@ function messageAfterAddress(text: string, start: number, end: number): string {
       rest = rest.slice(closer.length);
     }
   }
-  return rest.replace(/^[,\s]+/u, "");
+  // An outer separator can follow the closing quote. Commas after the separating
+  // whitespace, as in "Will, ,,,", are part of the message.
+  return rest.replace(/^,+/u, "").trimStart();
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -110,7 +127,13 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   unsureCards?: readonly VoiceCard[];
 }): Decision {
   const { text, words } = utterance;
-  const phrase = normalized(text);
+  // Keep offsets into the original capture. Name matching ignores boundary punctuation,
+  // while a message made entirely of punctuation still has a body.
+  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
+  const [firstToken, secondToken] = tokens;
+  if (!firstToken) return { kind: "ignored", reason: "no-name" };
+  const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
+  const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
   if (phrase === "cancel") return { kind: "control", command: "cancel" };
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === phrase)
@@ -118,23 +141,21 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
-  // Compare whole tokens. Keep their offsets into the original so quoting, spacing and
-  // punctuation inside the message survive the comparison.
-  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
-  const first = normalized(tokens[0]?.[0] ?? "");
-  if (!first) return { kind: "ignored", reason: "no-name" };
-  const leading = (count: number) => tokens.slice(0, count).map((m) => normalized(m[0])).join(" ");
+  const first = normalized(firstToken[0]);
+  const leadingNames = [first];
+  if (secondToken && !text.slice(firstToken.index, secondToken.index).includes(",")) {
+    leadingNames.push(first + " " + normalized(secondToken[0]));
+  }
   let count = 1;
   let match: "exact" | "phonetic" = "exact";
   let candidates: SpokenName[] = [];
-  // An exact first word wins even if a longer call sign shares it.
+  // The first exact match wins. For phonetic matches, retain the longest matching name.
   for (const kind of ["exact", "phonetic"] as const) {
-    for (const length of [1, 2]) {
-      if (length > tokens.length) continue;
-      const heard = leading(length);
+    for (const [index, heard] of leadingNames.entries()) {
+      const length = index + 1;
       const heardKey = kind === "phonetic" ? phoneticKey(heard) : "";
-      candidates = names.filter(({ name }) => {
+      const matches = names.filter(({ name }) => {
         if (name.split(" ").length !== length) return false;
         if (kind === "exact") return heard === name;
         // Will and Willow can even have identical phonetic keys. A partial name is
@@ -145,10 +166,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
         if (name.startsWith(possessive) || (heardKey === nameKey && possessive.startsWith(name))) return false;
         return keysSoundAlike(heardKey, nameKey);
       }).map(({ target }) => target);
-      if (candidates.length) {
+      if (matches.length) {
+        candidates = matches;
         count = length;
         match = kind;
-        break;
+        if (kind === "exact") break;
       }
     }
     if (candidates.length) break;
@@ -159,12 +181,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
     return { kind: "ignored", reason: "near-miss" };
   }
-  const last = tokens[count - 1]!;
-  if (tokens.length === count) return { kind: "ignored", reason: "no-message" };
-  const body = messageAfterAddress(text, tokens[0]!.index, last.index + last[0].length);
-  const before = words[count - 1];
-  const after = words[count];
-  const pauseMs = before && after ? after.startMs - before.endMs : null;
+  const body = bodyAfter(tokens[count - 1]!);
+  if (!body) return { kind: "ignored", reason: "no-message" };
+  const pauseMs = observedPause(words, tokens, count);
   const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
@@ -176,13 +195,14 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   for (let i = count; i < tokens.length; i++) {
     for (const length of [2, 1]) {
       if (i + length > tokens.length) continue;
+      const at = tokens[i]!;
+      const end = tokens[i + length - 1]!;
+      if (length === 2 && text.slice(at.index, end.index).includes(",")) continue;
       const heard = tokens.slice(i, i + length).map((m) => normalized(m[0])).join(" ");
       const matches = names.filter(({ name }) => name === heard);
       if (!matches.length) continue;
-      const at = tokens[i]!;
-      const end = tokens[i + length - 1]!;
       const head = splitHead(text.slice(text.length - body.length, at.index));
-      const tail = messageAfterAddress(text, at.index, end.index + end[0].length).replace(/^[\s,;:–—-]+/u, "").trim();
+      const tail = messageAfterAddress(text, at.index, end.index + end[0].length).replace(/^[\s;:–—-]+/u, "").trim();
       if (head && tail) {
         for (const other of matches) {
           splits.push({ target: other.target, at: at.index, head, tail });

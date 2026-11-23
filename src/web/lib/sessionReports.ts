@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReportItem } from "@shared/reports.ts";
 import { api } from "./api.ts";
+import { historyRetryDelay } from "./timelineReviews.ts";
 
 /**
  * What a conversation entry for a report needs from the dashboard: which report is open on
@@ -37,11 +38,30 @@ export function useSessionReports(sessionId: string, live: readonly ReportItem[]
     // screen until the fresh read replaces them.
     setStored((current) => (current?.sessionId === sessionId ? current : null));
     if (!enabled) return;
-    void api.sessionReports(sessionId).then((read) => {
-      if (alive && read.ok) setStored({ sessionId, reports: read.value.reports });
-    });
+    // A failed read keeps the entries already on screen and is retried, backing off, for a
+    // bounded number of attempts (`historyRetryDelay`, the review history's own policy), so a
+    // transient failure never leaves a cleared report reading "Waiting to be read".
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    const load = (): void => {
+      void api.sessionReports(sessionId).then((read) => {
+        if (!alive) return;
+        if (read.ok) {
+          setStored({ sessionId, reports: read.value.reports });
+          return;
+        }
+        const wait = read.definite ? null : historyRetryDelay(attempt++);
+        if (wait === null) {
+          console.warn(`[reports] could not read the report history of session ${sessionId}`);
+          return;
+        }
+        retry = setTimeout(load, wait);
+      });
+    };
+    load();
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
     };
   }, [sessionId, enabled, liveKey]);
   if (!enabled) return [];

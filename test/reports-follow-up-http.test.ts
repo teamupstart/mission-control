@@ -29,6 +29,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ReportManager } = await import("../src/server/reports.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
+const { openDb } = await import("../src/server/db.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -77,11 +78,20 @@ function setup() {
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   };
+  /** A follow-up whose body is exactly `raw`, which need not be JSON. */
+  const followUpRaw = async (id: string, raw: string) => {
+    const res = await app.request(`/api/reports/${id}/follow-up`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: raw,
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
   // Every test files its report in a repository of its own, so its follow-ups are the tasks there.
   let repoUnderTest: string | null = null;
   const followUpTasks = () => registry.listTasks().filter((task) => task.repoRoot === repoUnderTest && task.title.startsWith("Follow up:"));
   return {
-    registry, tasks, reports, dispatched, followUp, followUpTasks,
+    registry, tasks, reports, dispatched, followUp, followUpRaw, followUpTasks,
     inRepo: (repo: string) => { repoUnderTest = repo; return repo; },
     failDispatches: (error: string | null) => { failDispatch = error; },
   };
@@ -362,6 +372,40 @@ test("a launch failure recorded while the daemon was down reopens the report at 
   after(() => restarted.stop());
   assert.equal(restarted.get(report.id)!.readAt, null);
   assert.equal(restarted.get(report.id)!.followUpTaskId, taskId);
+});
+
+test("a body that is not JSON is refused, and starts no task with empty instructions", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  const garbled = await f.followUpRaw(report.id, "{not json");
+  assert.equal(garbled.status, 400);
+  assert.equal(garbled.body.error, "the request body is not valid JSON");
+  assert.equal(f.followUpTasks().length, 0);
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
+  // An absent body still reads as {}, which is how a wordless call reaches the route.
+  const empty = await f.followUpRaw(report.id, "");
+  assert.equal(empty.status, 200, JSON.stringify(empty.body));
+  assert.equal(f.followUpTasks().length, 1);
+});
+
+test("a follow-up whose report stamp rolls back leaves no task in the registry and launches nothing", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  // Another follow-up is recorded on the report while this one's task row is being written, so
+  // the stamp beside it finds the report already taken and the transaction rolls back.
+  const creating = f.tasks.create.bind(f.tasks);
+  f.tasks.create = ((...args: Parameters<typeof f.tasks.create>) => {
+    openDb().prepare("UPDATE reports SET follow_up_task_id = 'elsewhere' WHERE id = ?").run(report.id);
+    return creating(...args);
+  }) as typeof f.tasks.create;
+  const events: string[] = [];
+  f.registry.subscribe((event) => { if (event.type === "task_upsert" || event.type === "task_remove") events.push(event.type); });
+  const refused = await f.followUp(report.id, "Fix it");
+  assert.equal(refused.status, 409);
+  assert.match(String(refused.body.error), /already started/);
+  assert.equal(f.followUpTasks().length, 0, "the published task was removed again");
+  assert.deepEqual(events, ["task_upsert", "task_remove"], "every window is told it is gone");
+  assert.deepEqual(f.dispatched, [], "nothing launched");
 });
 
 test("only the operator starts a follow-up", async () => {

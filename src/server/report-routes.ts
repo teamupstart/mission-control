@@ -107,7 +107,9 @@ export function registerReportRoutes(
     const refusal = operatorRefusal(c);
     if (refusal) return c.json({ error: refusal }, 403);
     if (!reports || !answers.submit) return unavailable(c);
-    const parsed = await parseBody(c, ReportReplySchema);
+    // Strict: a body that is present but not JSON is refused, never read as {} (for a follow-up,
+    // that would start a task with no instructions). An absent body still reads as {}.
+    const parsed = await parseBody(c, ReportReplySchema, { strict: true });
     if (!parsed.ok) return bodyRefusal(c, parsed.error);
     try {
       return c.json(reports.reply(c.req.param("id"), parsed.data.text, answers.submit));
@@ -122,7 +124,9 @@ export function registerReportRoutes(
     const refusal = operatorRefusal(c);
     if (refusal) return c.json({ error: refusal }, 403);
     if (!reports || !answers.followUpTasks) return unavailable(c);
-    const parsed = await parseBody(c, ReportFollowUpSchema);
+    // Strict: a body that is present but not JSON is refused, never read as {} (for a follow-up,
+    // that would start a task with no instructions). An absent body still reads as {}.
+    const parsed = await parseBody(c, ReportFollowUpSchema, { strict: true });
     if (!parsed.ok) return bodyRefusal(c, parsed.error);
     const id = c.req.param("id");
     let outcome: Awaited<ReturnType<ReportManager["followUp"]>>;

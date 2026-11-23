@@ -9397,15 +9397,39 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * refusals. The one path a route takes to file a task, so a report session or a retried chat
    * cannot become a task the form would have refused.
    */
+  /**
+   * `create` and `alongside` in one transaction. A rollback (a throw from `alongside`, or a
+   * failed COMMIT) leaves no registry entry: the task `create` published is removed, which also
+   * tells every window it is gone. The task is a backlog task, so nothing was launched.
+   */
+  function createWithin(create: () => Task, alongside: (task: Task) => void): Task {
+    let created: Task | null = null;
+    try {
+      return inTransaction(() => {
+        created = create();
+        alongside(created);
+        return created;
+      });
+    } catch (error) {
+      if (created) registry.removeTask((created as Task).id);
+      throw error;
+    }
+  }
+
   async function createTaskFromDispatch(
     data: TypeOf<typeof DispatchSchema>,
     workUnit?: TaskWorkUnitSource,
     /**
      * A write that must land with the task row or not at all: run inside the transaction that
-     * creates the task, and a throw from it rolls the task back.
+     * creates the task, and a throw from it rolls the task back. Only for a backlog task, so
+     * nothing is launched before the transaction commits; `tasks.create` does publish the task
+     * to the registry inside it, so a rolled-back creation removes that entry again.
      */
     alongside?: (task: Task) => void,
   ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    if (alongside && !data.backlog) {
+      throw new Error("createTaskFromDispatch: a write alongside the task row needs a backlog task, so nothing launches before it commits");
+    }
     const prepared = await prepareTaskRepositories({
       primary: data.repoRoot,
       extras: data.extraRepoRoots,
@@ -9457,13 +9481,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       );
       return {
         ok: true,
-        task: alongside
-          ? inTransaction(() => {
-            const task = create();
-            alongside(task);
-            return task;
-          })
-          : create(),
+        task: alongside ? createWithin(create, alongside) : create(),
       };
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {

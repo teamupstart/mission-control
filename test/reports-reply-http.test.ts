@@ -78,7 +78,11 @@ function setup({ outboxStarted = true }: { outboxStarted?: boolean } = {}) {
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   };
-  return { registry, session, reports, reply };
+  const replyRaw = async (id: string, raw: string) => {
+    const res = await app.request(`/api/reports/${id}/reply`, { method: "POST", headers: LOOPBACK, body: raw });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  return { registry, session, reports, reply, replyRaw };
 }
 
 async function post(f: ReturnType<typeof setup>, title: string): Promise<ReportItem> {
@@ -153,6 +157,10 @@ test("only the operator replies, and a reply needs words", async () => {
   assert.equal(tooLong.status, 400);
   assert.equal(tooLong.body.error, "a reply can be at most 4000 characters");
   assert.equal((await f.reply("r-999999", "x")).status, 404);
+  // A body that is present but not JSON is refused as such, not read as {}.
+  const garbled = await f.replyRaw(report.id, "{not json");
+  assert.equal(garbled.status, 400);
+  assert.equal(garbled.body.error, "the request body is not valid JSON");
   assert.equal(f.reports.get(report.id)!.readAt, null);
 });
 

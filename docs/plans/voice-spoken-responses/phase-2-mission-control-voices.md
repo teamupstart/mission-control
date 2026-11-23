@@ -71,8 +71,10 @@ manifest.
    helper as a child on the first `synthesize` or `warm`, restart it once on a crash, stop it
    after 10 minutes without work and on daemon shutdown, and fail a request that takes more than
    5 seconds. Keep the audio of the 32 most recent (text, voice) pairs in memory.
-5. **Warm-up.** Call `warm()` when a card enters `resolving` while `whenUnsure` is `ask` and the
-   resolved voice is neural, so the model is loaded before the question is needed.
+5. **Warm-up.** Call `warm()` when a card enters `resolving`, contract L's `askAloudPossible`
+   is true and the resolved voice is neural, so the model is loaded before the question is
+   needed. Those are the conditions under which Speech 1 would open an ask. While the operator
+   is muted or on a call, or nothing can speak, no card warms the helper.
 6. **Catalog.** Fill `catalog.neural` with the ten voices while the model is `ready`, and none
    otherwise, so `resolveSpeechVoice` starts choosing the Mission Control voice.
 7. **Attribution.** The model, its source and the OpenRAIL-M licence with a link to its use
@@ -99,6 +101,10 @@ catalog is empty and nothing changes for a system voice.
   a digest mismatch, cancel, and verification at start.
 - `test/voice-synthesizer.test.ts` with a fake helper: lazy start, one restart, the idle exit,
   the 5 second failure, the cache, and shutdown.
+- The same file, the warm-up: a card entering `resolving` starts the helper when
+  `askAloudPossible` is true and the voice is neural, and does not start it while muted, while
+  the mode is not `listening`, while `speech-output` is unavailable, with `whenUnsure` set to
+  `show`, or with a system voice resolved.
 - `test/voice-speech-http.test.ts` gains a case: with the model `ready`, a fake helper and a
   fake listener that plays, a sample job for a neural voice becomes `ready` with its length and
   Speech 1's audio route returns the helper's WAV to that listener, the job's holder.
@@ -125,5 +131,8 @@ Speech 4 draws the download row from `VoiceState.speech.model` and the routes he
 - If the addon does not load in the signed app, Phase 16 owns the fix, and this phase does not
   start until that phase has merged.
 - The CI change is the one the operator authorized on 2026-11-23, and no other.
+- Pull request review: the warm-up used to ignore the mode and `speech-output`, so a muted
+  operator's cards loaded the model for an ask that could not follow. Step 5 now uses the same
+  predicate as the ask.
 - Completion review: this phase adds no route for the listener. The index's phase table said
   it owned the audio route; Speech 1 does.

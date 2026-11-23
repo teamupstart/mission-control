@@ -147,6 +147,10 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   to use or the reason there is none.
 - `VOICE_SPEECH_DEFAULT_NEURAL`: `supertonic-3/F4`.
 - `askSentence(names)`: "A or B?" for two names, "A, B or C?" for three, null otherwise.
+- `askAloudPossible(config, state)`: true when `whenUnsure` is `ask`, the mode is `listening`
+  and `speech-output` is available. It is the one test of whether an ask could be spoken:
+  Speech 1 opens an ask only when it is true, and Speech 2 warms the synthesizer only when it
+  is true.
 - `VoiceSpeechJob { id, purpose, text, voice, cardId, state, durationMs, holder }`. `holder` is
   the listener instance the job was given to, set when the job becomes `ready` and never
   changed; it stays in the daemon and is not part of the published voice state. `purpose` is `ask`
@@ -199,24 +203,28 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
 - The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`,
   `{ id, kind: "system", voiceId, text }`, or `{ id, stop: true }`. While `speak` is set,
   `capture` is false.
-- Job ownership. A listener names its instance on every request about speech: the directive
-  poll takes `instance` as a query parameter, and so does the audio route; an events report
-  carries it in its body. The daemon computes the directive per request. When a job becomes
+- Job ownership. A listener names its instance on every request about speech, in the
+  `x-mission-voice-instance` header: on the directive poll, the audio fetch and each events
+  report. The id never travels in a URL, where an access log, an error message or a proxy
+  trace would keep it, and the routes read no instance from a query string. The hello and the
+  supervised-instances route carry it in the request body. The daemon computes the directive
+  per request. When a job becomes
   `ready`, its holder is the instance of the hello that makes `speech-output` available at that
   moment. Only a poll that names the holder gets a `speak` that names the job or its stop
   request. A poll that names another instance, or none, gets `speak` null, and `capture` false
   while any job is unresolved. The events route accepts `started` and `ended` for a job only
-  when the report's `instance` is the job's holder; any other report answers 409 and changes
+  when the report's header names the job's holder; any other report answers 409 and changes
   nothing. The audio route serves the job's audio only to its holder and answers 404 to anyone
   else. An instance id is at least 128 random bits, chosen by the supervisor, known to the
-  supervisor, the process it started and the daemon, and never written to the published voice
-  state, an event or a log, so one listener cannot present another's.
+  supervisor, the process it started and the daemon, and never written to a URL, the published
+  voice state, an event, a response body or a log, so one listener cannot present another's.
 - The listener's own rule: it does not open the microphone while it is playing or holds a job
   it has not ended, whatever `capture` says.
-- Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio?instance=`, which
-  serves the WAV the daemon holds for a `ready` or `speaking` job to its holder, and `POST
-  /voice/speech/jobs/:id/events { instance, type, outcome }`, where `type` is `started` or
-  `ended` and `outcome` is `finished`, `stopped` or `failed`.
+- Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio`, which serves the
+  WAV the daemon holds for a `ready` or `speaking` job to its holder, and `POST
+  /voice/speech/jobs/:id/events { type, outcome }`, where `type` is `started` or `ended` and
+  `outcome` is `finished`, `stopped` or `failed`. Both read the caller's instance from the
+  `x-mission-voice-instance` header.
 - Dashboard routes, both built by Speech 1: `POST /api/voice/speech/stop` and `POST
   /api/voice/speech/audition`.
 - `VoiceSynthesizer { synthesize(text, voice), warm(), stop() }` in the daemon. `synthesize`
@@ -286,6 +294,10 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After the review of the pull request: the instance id is in a header or a body wherever a
+  file names it, and in no URL, in `plan.md`, contract L, Speech 1 and Speech 3. The conditions
+  for warming the synthesizer and for opening an ask are one predicate, in contract L, Speech 1
+  and Speech 2.
 - After plan validation round 3: every sentence about a directive, an audio fetch or a start
   or end report says whose it is. `plan.md`, contract L, Speech 1 and Speech 3 agree that only
   the holder is told about a job and only the holder's reports count.
@@ -299,6 +311,25 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
+
+## Pull request review
+
+Two findings from the review of the pull request were accepted and applied.
+
+- **The instance id travelled in a URL.** Contract L put the id in the query string of the
+  directive poll and of the audio route, while relying on it staying secret. A request URL
+  reaches access logs, error messages and proxy traces, so the secret depended on every one of
+  those dropping one parameter. The listener now sends the id in the
+  `x-mission-voice-instance` header on the poll, the audio fetch and each report, beside the
+  token, and the routes read no instance from a query string. The events body lost its
+  `instance` field for the same reason: one place to read it. Speech 1 tests that no request
+  URL, response body or log line carries the id, and that an id sent in a query string is
+  treated as no id.
+- **The synthesizer warmed up when no ask could follow.** Speech 2 warmed the helper whenever
+  a card entered `resolving` with ask aloud on, including while muted or on a call, where
+  Speech 1 opens no ask. That loaded 516 to 539 MB for nothing and the idle timer kept it
+  loaded. Contract L gained `askAloudPossible`, the one test both phases use, so the helper
+  warms only when an ask could be spoken.
 
 ## Plan validation round 3
 

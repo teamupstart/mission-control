@@ -47,8 +47,9 @@ and on Linux (the Linux follow-on).
 ## 5. Implementation steps
 
 1. **Speak an audio job.** The helper names its instance, from
-   `MISSION_VOICE_LISTENER_INSTANCE`, on every directive poll, audio fetch and report, as
-   contract L's job ownership requires; the daemon tells only the holder about a job. When the
+   `MISSION_VOICE_LISTENER_INSTANCE`, in the `x-mission-voice-instance` header on every
+   directive poll, audio fetch and report, as contract L's job ownership requires, and puts it
+   in no URL and no log line; the daemon tells only the holder about a job. When the
    directive's `speak` is an audio job: stop audio input,
    fetch the WAV from the audio route with the token, play it with `AVAudioPlayerNode`, post
    `started` when playback begins, and post `ended` as `finished` from the completion callback
@@ -112,7 +113,8 @@ as unable to play. The protocol's major version does not change.
 ## 7. Tests and verification
 
 - Swift tests on macOS with a stub player and a stub synthesizer: the order stop, play, report,
-  resume; the instance id is on every poll, fetch and report; one `ended` on each path; a stop
+  resume; the instance id is in the header of every poll, fetch and report and in no request
+  URL; one `ended` on each path; a stop
   mid-speech, where `ended` is posted only after the
   stub player reports it has stopped; a stop before playback started, which never starts it; a
   stop for an unknown id, which is still answered; no resume while `capture` is false; no
@@ -152,6 +154,8 @@ Linux.
 
 - The audit note in Phase 12 about S9 moves here, and is stricter: a leak that pausing cannot
   stop leaves Ask aloud unavailable, where Phase 12 said off by default.
+- Pull request review: the helper sends its instance in a header, not in a URL, so the id
+  does not reach a request log. Step 1 and its test changed.
 - Plan validation round 3: the helper names its instance on every request, which is how the
   daemon gives a job to one helper and accepts reports only from it.
 - Plan validation round 2: a new helper saying hello no longer releases capture. The shell

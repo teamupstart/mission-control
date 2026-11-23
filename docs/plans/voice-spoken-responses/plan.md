@@ -244,12 +244,14 @@ helper synthesizes, and the listener plays.
   and is not given a job of its own. Capture is off for every listener while any job is
   unresolved.
 - **A job belongs to one listener, and only that listener can receive or end it.** Every
-  listener names its instance when it polls the directive, fetches audio or posts a report. The
+  listener names its instance, in a request header, when it polls the directive, fetches audio
+  or posts a report. The
   daemon builds each directive for the listener that asked: only the holder's directive names
   the job or its stop request, and any other listener sees no job and `capture` false. A start
   or end report, or an audio fetch, from any listener but the holder is refused and changes
   nothing. An instance id is a long random value known only to the supervisor, the process it
-  started and the daemon, so one listener cannot present another's.
+  started and the daemon. It travels in a request header or body and never in a URL, where an
+  access log or an error message would keep it, so one listener cannot present another's.
 - **What counts as proof of exit.** Every listener is started by a supervisor: the shell on a
   Mac, the development launcher, and on Linux the daemon's own supervisor. The supervisor gives
   the process an instance id, tells the daemon the id before starting it, and tells the daemon
@@ -288,8 +290,10 @@ set to `show`, and nothing is spoken.
 ### The synthesizer helper
 
 A standalone Node program the daemon starts as a child, on either platform. It starts when a
-sentence is first needed, and warms up when a card enters `resolving` with ask aloud on, so
-synthesis hides behind the model step. It exits after 10 minutes without work, which returns its
+sentence is first needed, and warms up when a card enters `resolving` and an ask could follow:
+ask aloud is on, the mode is `listening` and speech is available. Synthesis then hides behind
+the model step. While the operator is muted or on a call nothing warms it, because no ask
+would be spoken. It exits after 10 minutes without work, which returns its
 memory (516 to 539 MB measured). It keeps the audio of recent sentences in memory and writes
 none to disk. It is not started for a system voice. It touches no database.
 
@@ -303,8 +307,8 @@ none to disk. It is not started for a system voice. It touches no database.
 - The listener never opens the microphone while it is playing or holds a job it has not ended,
   whatever the directive's `capture` says. This is a second guard, in the process that owns
   both the microphone and the playback.
-- The listener names its instance on every directive poll, audio fetch and report, so the
-  daemon can tell which listener it is talking to.
+- The listener names its instance on every directive poll, audio fetch and report, in a
+  request header, so the daemon can tell which listener it is talking to.
 - The macOS helper plays audio with `AVAudioPlayerNode` and speaks system voices with
   `AVSpeechSynthesizer`. Both are in the operating system, so the helper gains no dependency.
 - The sherpa-onnx listener (Phase 16) gains nothing in this plan. The Linux follow-on adds its

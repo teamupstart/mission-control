@@ -30,13 +30,13 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, kind: "ship" | "resident") {
-  const resident = kind === "resident";
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared") {
+  const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
   process.env.MISSION_PI_BIN = join(dir, "pi");
   process.env.MISSION_RESUME_GUARD = join(dir, "guard.mjs");
-  const lookupMarker = join(dir, `${kind}-named-lookup`);
+  const lookupMarker = join(dir, `${scenario}-named-lookup`);
   process.env.MC_DISPATCH_LOOKUP_MARKER = lookupMarker;
   for (const key of ["MC_DISPATCH_LISTED", "MC_DISPATCH_UNLISTED", "MC_DISPATCH_MISSING"]) delete process.env[key];
   writeFileSync(process.env.SHELL, `#!/bin/sh
@@ -60,14 +60,18 @@ process.stdin.resume();
   const { Registry } = await import("../src/server/registry.ts");
   const { Dispatcher } = await import("../src/server/dispatcher.ts");
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
-  const { saveAgentEnvironment } = await import("../src/server/agent-environment.ts");
+  const { launchAgentEnvironment, saveAgentEnvironment } = await import("../src/server/agent-environment.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: true });
   saveAgentEnvironment(["MC_DISPATCH_LISTED", "MC_DISPATCH_MISSING"]);
+  if (scenario === "cleared") {
+    saveAgentEnvironment([]);
+    assert.equal(await launchAgentEnvironment(), undefined);
+  }
 
   const registry = new Registry();
-  const repo = join(dir, kind);
+  const repo = join(dir, scenario);
   seedGitRepo(repo, { branch: "main" });
-  const task = mkTask({ id: `fresh-terminal-${kind}`, kind, status: "dispatching", agent: "pi", repoRoot: repo });
+  const task = mkTask({ id: `fresh-terminal-${scenario}`, kind, status: "dispatching", agent: "pi", repoRoot: repo });
   const discoveredId = `proc:${task.id}`;
   registry.upsertTask(task);
 
@@ -107,14 +111,17 @@ process.stdin.resume();
   const launched = registry.getTask(task.id)!;
   assert.equal(launched.status, "running", launched.error ?? "fresh dispatch reached running");
   assert.equal(launched.sessionId, discoveredId);
-  assert.deepEqual(observedEnvironment, { listedPresent: !resident, listedMatches: !resident, unlistedPresent: false, missingPresent: false });
-  assert.equal(existsSync(lookupMarker), !resident, "only an ordinary launch should read the configured shell variable");
+  const passesNames = scenario === "ship";
+  assert.deepEqual(observedEnvironment, { listedPresent: passesNames, listedMatches: passesNames, unlistedPresent: false, missingPresent: false });
+  assert.equal(existsSync(lookupMarker), passesNames, "only a managed launch with configured names should probe them");
   const session = registry.getSession(discoveredId);
   assert.ok(session, "the registry retained the dispatched agent");
-  assert.deepEqual(session.missingEnvironment, resident ? undefined : ["MC_DISPATCH_MISSING"]);
+  assert.deepEqual(session.missingEnvironment, passesNames ? ["MC_DISPATCH_MISSING"] : undefined);
 }
 
 test("fresh terminal dispatch delivers the listed shell-only value, excludes the unlisted export and warns on the missing name",
   (t) => checkTerminalDispatch(t, "ship"));
 test("fresh resident terminal dispatch skips named shell lookups, variable injection and missing-name warnings",
   (t) => checkTerminalDispatch(t, "resident"));
+test("clearing the enabled list gives the next dispatched agent no named environment or missing-name warning",
+  (t) => checkTerminalDispatch(t, "cleared"));

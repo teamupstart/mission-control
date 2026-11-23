@@ -429,3 +429,18 @@ test('a command or tool the engine refuses to register is logged on the debug ch
   expect(logs.some((t) => /could not register the mission-dispatch command: /.test(t))).toBe(true)
   expect(logs.some((t) => /could not register the start_dispatch tool: /.test(t))).toBe(true)
 })
+
+test('a draft left waiting for its description does not outlive its session', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  seen.state.draftId = 'draft-from-this-session'
+  await $.session.end({ reason: 'other', sessionId: 's1' })
+  expect(seen.state.draftId).toBe(null)
+
+  // A leftover id from a session that never ended cleanly is dropped at the next start.
+  seen.state.draftId = 'draft-left-behind'
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.state.draftId === null)
+  expect(seen.state.draftId).toBe(null)
+})

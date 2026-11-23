@@ -45,6 +45,9 @@ export function register(on: EngineOn, _options: unknown): void {
     flowSession = null;
     flowHost = null;
     wipeGlance($, view);
+    // A draft left waiting for its description belongs to the session that made it: the next
+    // session's text must start a new brief, not describe an orphaned draft.
+    await stateSet($, "draftId", null).catch(() => undefined);
     const mine = generation;
     const host = await createHost($, view, { pane, mine, current: () => generation });
     const sessionId = await $.session.id();
@@ -78,6 +81,7 @@ export function register(on: EngineOn, _options: unknown): void {
     flowSession = null;
     flowHost = null;
     wipeGlance($, view);
+    await stateSet($, "draftId", null).catch(() => undefined);
     return next(e);
   });
 

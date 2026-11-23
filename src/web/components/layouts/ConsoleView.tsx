@@ -364,6 +364,7 @@ export function ConsoleView(props: SessionViewProps & {
             key={active.id}
             view={props}
             session={active}
+            stall={stalledHere.has(active.id) ? props.stalledById?.get(active.id) ?? null : null}
             // A folded rail has no head, so the Board drill-in's way back moves to the detail
             // head. Undefined in the Console layout, which has no board to go back to.
             onBack={railFolded ? props.onBackToBoard : undefined}

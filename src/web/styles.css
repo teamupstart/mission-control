@@ -30896,6 +30896,7 @@ span.line-run-prov {
    the reply box out of `.detail-body`; past the cap it scrolls on its own, and its row is
    sticky so the controls never scroll away with the details. */
 .detail-conv > .awaiting-band,
+.detail-conv > .stalled-band,
 .detail-conv > .blocker-band {
   flex: none;
   max-height: 40%;
@@ -34046,6 +34047,35 @@ span.line-run-prov {
 }
 .stalled-feedback.is-error {
   color: var(--danger);
+}
+/* The same facts and fixes as a band in the session detail (`StalledBand`), for the Console and
+   the Board's drill-in, where the rail row has room only for its mark. Drawn like the Awaiting
+   band beside it, in the Stalled yellow. */
+.stalled-band {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px 8px;
+  border: 1px solid color-mix(in oklab, var(--stalled) 38%, var(--border));
+  border-left: 3px solid var(--stalled);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--stalled) 6%, var(--panel));
+  font-size: 12.5px;
+}
+.stalled-band-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.stalled-band-flag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--stalled);
+}
+.stalled-band-rule {
+  color: var(--muted);
 }
 /* Board tiles mark sessions held by an open workflow run. */
 .tile-held {

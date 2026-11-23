@@ -198,3 +198,56 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   // Completing a worktree task closes its session, so the card leaves the board.
   await expect(card).toHaveCount(0, { timeout: 30_000 });
 });
+
+test("in the Console layout the stalled rail row's detail carries the facts, the fixes and Dismiss", async ({ dashboard: page, daemon }) => {
+  // The fixture's layout is Console. There the rail row has room only for a `stalled` mark, and the
+  // stall is no longer an inbox row, so the session detail beside the rail is where it is acted on.
+  test.setTimeout(180_000);
+  for (const id of ["inbox", "idle-stalled"]) {
+    const flags = await api<{ config: { overrides: Record<string, boolean> } }>(
+      daemon, "/api/feature-flags", { kind: "flag", id, enabled: true }, "PUT");
+    expect(flags.config.overrides[id]).toBe(true);
+  }
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: "Fix the parser", intent: "fix the parser", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  const facts: StallFacts = { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 0 };
+  await page.route("**/api/away/stalls", (route) => route.fulfill({ json: [{
+    sessionId: session.id, kind: "unfinished-work", forMs: 21 * 60_000, reason: "idle 21m with work unfinished",
+    facts, fingerprint: "console-open-task",
+  } satisfies Stall] }));
+  await expect(page.locator("main.board")).toHaveCount(0);
+
+  // The rail draws the Stalled rule and the row's mark, and the inbox owes nothing.
+  const row = page.locator("button.rail-row", { hasText: session.name });
+  await expect(row.locator(".rail-stalled")).toHaveText("stalled", { timeout: 15_000 });
+  await expect(page.locator(".fleet-section-stalled")).toBeVisible();
+  await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0);
+
+  // Selecting it opens the detail with the Stalled band: the facts and the fixes.
+  await row.click();
+  const band = page.getByRole("region", { name: "Session stalled" });
+  await expect(band).toContainText("Idle with work open");
+  await expect(band).toContainText("Fix the parser");
+  await expect(band.getByRole("button", { name: "Mark done", exact: true })).toBeVisible();
+  await capture(band, "03-console-stalled-band", page);
+
+  // Continue reaches the agent through the real outbox.
+  await band.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect.poll(() => heard(daemon, session.id, INBOX_MESSAGES.continue), { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => sessionState(daemon, session.id), { timeout: 30_000 }).toBe("idle");
+
+  // Dismiss returns the row to the rest of Idle: the mark and the band go, and nothing reaches the inbox.
+  await page.getByRole("region", { name: "Session stalled" })
+    .getByRole("button", { name: `Dismiss ${session.name} from Stalled` }).click({ timeout: 15_000 });
+  await expect(page.getByRole("region", { name: "Session stalled" })).toHaveCount(0);
+  await expect(row.locator(".rail-stalled")).toHaveCount(0);
+  await expect(page.locator(".fleet-section-stalled")).toHaveCount(0);
+  await page.waitForTimeout(6_000); // one stall poll, so a row that was coming would be drawn
+  await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0);
+});

@@ -1249,8 +1249,9 @@ available:
   It wins over a declared wait the same way: a stalled session leaves the Awaiting section for
   Stalled, and its card still draws the wait's deadline track. A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
   row. The section is not framed by repository or by run. The Console
-  rail marks the row **stalled** and names the rule in its tooltip; the fact sheet and fixes are
-  on the Board card. **Silent while working** and **Foreman escalation unanswered** stay inbox
+  rail marks the row **stalled** and names the rule in its tooltip, and selecting it shows the
+  same fact sheet, fixes and **Dismiss** as a **Stalled** band in the session detail, as does
+  opening a stalled card from the Board. **Silent while working** and **Foreman escalation unanswered** stay inbox
   rows, because neither describes a quiet idle session. With the preview off, nothing changes.
 - **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
   has an outline and soft glow in its profile's color and a short label chip, and, when its

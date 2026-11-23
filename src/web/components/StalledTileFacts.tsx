@@ -4,7 +4,7 @@ import type { Stall } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { InboxActionButton } from "./AgentName.tsx";
-import { parkedMissingStep, parkedStep, useStallActions } from "../lib/stall-actions.ts";
+import { parkedMissingStep, parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 
 /** What a task completed from a Stalled card records as its outcome. */
 const MARK_DONE_OUTCOME = "Marked done from the Stalled section";
@@ -148,5 +148,33 @@ export function StalledTileFacts({
       {error && <p className="stalled-feedback is-error" role="alert">{error}</p>}
       {done && !error && <p className="stalled-feedback" role="status">{done}</p>}
     </div>
+  );
+}
+
+/**
+ * The same fact sheet and fixes as a band in the session detail, for the Console layout and the
+ * Board's drill-in (`idle-stalled`). The rail row has room only for a mark, and an idle stall the
+ * Stalled section draws is no longer an inbox row, so without this an operator who works in the
+ * Console would see the mark with no way to act on it or dismiss it.
+ */
+export function StalledBand({
+  session,
+  stall,
+  onOpenRun,
+  onDismiss,
+}: {
+  session: Session;
+  stall: Stall;
+  onOpenRun?: (runId: string) => void;
+  onDismiss?: () => void;
+}): React.JSX.Element {
+  return (
+    <section className="stalled-band" aria-label="Session stalled">
+      <div className="stalled-band-top">
+        <span className="stalled-band-flag">Stalled</span>
+        <span className="stalled-band-rule">{STUCK_RULE_LABELS[stall.kind]}</span>
+      </div>
+      <StalledTileFacts session={session} stall={stall} onOpenRun={onOpenRun} onDismiss={onDismiss} />
+    </section>
   );
 }

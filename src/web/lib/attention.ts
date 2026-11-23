@@ -636,7 +636,9 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const visible =
     dismissed.size === 0
       ? items
-      : items.filter((item) => item.kind === "session_reviews" || !isDismissed(item, dismissed));
+      // Report rows are never dismissed: Mark read is how a report leaves, and their empty key
+      // list must never be read as "every key dismissed" by a later change to `isDismissed`.
+      : items.filter((item) => item.kind === "session_reviews" || item.kind === "agent_reports" || !isDismissed(item, dismissed));
   let total = 0;
   let toRead = 0;
   for (const item of visible) {

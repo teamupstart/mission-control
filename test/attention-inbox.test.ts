@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { foldAttention, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
+import { attentionDismissalKeys, foldAttention, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
 import { mkReport, mkReportControls } from "./helpers/report-fixture.ts";
@@ -583,6 +583,24 @@ test("agent_reports is the final fold kind, directly after parked_finalization",
   // Whether or not a later phase's `session_stuck` is present, nothing follows Reports in the
   // fold, so the inbox's own Snoozed heading is always the next one.
   assert.ok(!order.slice(order.indexOf("agent_reports") + 1).length);
+});
+
+test("a dismissal of an unrelated row leaves the Reports row and the to read figure in place", () => {
+  const amber = mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" });
+  const withoutDismissal = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })] });
+  const blocked = withoutDismissal.items.find((item) => item.kind === "session_blocked")!;
+  const dismissed = new Map(attentionDismissalKeys(blocked).map((key) => [key.itemId, key.occurrence]));
+  assert.ok(dismissed.size > 0, "precondition: a real, non-empty dismissal");
+  const result = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })], dismissed });
+  assert.deepEqual(result.items.map((item) => item.kind), ["agent_reports"], "the dismissed row left, the report stayed");
+  assert.equal(result.toRead, 1);
+  assert.equal(result.total, 0);
+  // Even a dismissal recorded under the report row's own id does not hide it: Mark read is how it leaves.
+  const ownId = foldAttention({
+    sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })],
+    dismissed: new Map([["agent-reports:session:s1", ""]]),
+  });
+  assert.equal(ownId.toRead, 1);
 });
 
 test("with no reports passed the fold is the one every older caller gets", () => {

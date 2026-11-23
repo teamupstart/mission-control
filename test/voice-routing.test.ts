@@ -13,8 +13,8 @@ const route = (text: string, names = ["Will", "Steve"], words: VoiceUtterance["w
 
 test("the exact first word addresses Will with absent, adjacent, paused or overlapping timings", () => {
   for (const gap of [null, 0, 250, -80]) {
-    const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: "you", startMs: 100 + gap, endMs: 400 }];
-    for (const [text, body] of [["Will you grab the door", "you grab the door"], ["“wILL,”  Grab   the door!", "Grab   the door!"]] as const) {
+    for (const [text, body, nextWord] of [["Will you grab the door", "you grab the door", "you"], ["“wILL,”  Grab   the door!", "Grab   the door!", "Grab"]] as const) {
+      const words = gap === null ? [] : [{ text: "Will", startMs: 0, endMs: 100 }, { text: nextWord, startMs: 100 + gap, endMs: 400 }];
       assert.deepEqual(route(text, undefined, words), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: gap });
     }
   }
@@ -62,6 +62,21 @@ test("a two-word call sign ends at the address comma for exact and phonetic matc
   }
   assert.equal(route("Steven, Captain needs help", ["Steve Captain"]).kind, "ignored");
   assert.equal(route("Steven Captain, run tests", ["Steve Captain"]).kind, "addressed");
+});
+
+test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
+  const names = ["Steve", "Steve Captain"];
+  for (const roster of [names, names.toReversed()]) {
+    assert.deepEqual(route("Steven Captain, run tests", roster), {
+      kind: "addressed", target: agent("Steve Captain"), match: "phonetic", text: "run tests", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven, Captain needs help", roster), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: "Captain needs help", pauseMs: null,
+    });
+    assert.deepEqual(route("Steven Captain, run tests", [...roster, "Steven"]), {
+      kind: "addressed", target: agent("Steven"), match: "exact", text: "Captain, run tests", pauseMs: null,
+    });
+  }
 });
 
 test("weak spelling matches are ignored even when two names are equally close", () => {

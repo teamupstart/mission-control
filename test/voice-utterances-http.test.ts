@@ -273,6 +273,24 @@ test("ignored, pending and cancelled captures leave no transcript in the daemon 
   }
 });
 
+test("Recently heard measures the pause between aligned words and leaves unclear timings empty", async (t) => {
+  voiceStateStore.useRoster(() => [name("Release"), name("Build Captain")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  for (const [text, labels, pause] of [
+    ["Release , run tests", ["Release", ",", "run", "tests"], 150],
+    ["Build Captain , run tests", ["Build", "Captain,", "run", "tests"], 50],
+    ["Release, run tests", ["Other", "run"], null],
+    ["Release, run tests", ["Release", ",", "tests"], null],
+    ["Build Captain, run tests", ["Other", "Captain", "run"], null],
+    ["Release, ???", ["Release", "???"], null],
+  ] as const) {
+    const words = labels.map((label, i) => ({ text: label, startMs: 100 * i, endMs: 100 * i + 50 }));
+    assert.equal((await post("/voice/utterances", { ...capture(text), words }, token)).status, 200);
+    const [entry] = await readHeard();
+    assert.deepEqual([entry?.outcome, entry?.pauseMs], ["pending", pause], text);
+  }
+});
+
 
 test("the downstream say fixture establishes a listener and posts contiguous or supplied word timings", async (t) => {
   const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");

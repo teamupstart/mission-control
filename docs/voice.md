@@ -24,9 +24,12 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
-descriptive only. A two-word call sign must fit before the address comma. “Release Captain, run tests”
+descriptive only. Recently heard measures from the last address word to the first message word,
+skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
+A two-word call sign must fit before the address comma. “Release Captain, run tests”
 can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
-“Steve’s” can address Steve. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
+“Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,
+“Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
 a candidate when exactly one option across all open unsure cards matches. Multiple matches

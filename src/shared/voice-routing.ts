@@ -52,6 +52,21 @@ function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
 
+function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
+  let index = 0;
+  let previousEndMs = 0;
+  for (const word of words) {
+    const timedText = normalized(word.text);
+    if (!timedText) continue;
+    const token = tokens[index];
+    if (!token || normalized(token[0]) !== timedText) return null;
+    if (index === addressWords) return word.startMs - previousEndMs;
+    previousEndMs = word.endMs;
+    index++;
+  }
+  return null;
+}
+
 function closesWrapper(opener: string, closer: string): boolean {
   if (opener === '"' || opener === "'") return closer === opener;
   if (/\p{Ps}/u.test(opener)) return /\p{Pe}/u.test(closer);
@@ -107,12 +122,12 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   let count = 1;
   let match: "exact" | "phonetic" = "exact";
   let candidates: SpokenName[] = [];
-  // An exact first word wins even if a longer call sign shares it.
+  // The first exact match wins. For phonetic matches, retain the longest matching name.
   for (const kind of ["exact", "phonetic"] as const) {
     for (const [index, heard] of leadingNames.entries()) {
       const length = index + 1;
       const heardKey = kind === "phonetic" ? phoneticKey(heard) : "";
-      candidates = names.filter(({ name }) => {
+      const matches = names.filter(({ name }) => {
         if (name.split(" ").length !== length) return false;
         if (kind === "exact") return heard === name;
         // Will and Willow can even have identical phonetic keys. A partial name is
@@ -123,10 +138,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
         if (name.startsWith(possessive) || (heardKey === nameKey && possessive.startsWith(name))) return false;
         return keysSoundAlike(heardKey, nameKey);
       }).map(({ target }) => target);
-      if (candidates.length) {
+      if (matches.length) {
+        candidates = matches;
         count = length;
         match = kind;
-        break;
+        if (kind === "exact") break;
       }
     }
     if (candidates.length) break;
@@ -139,9 +155,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   }
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
-  const before = words[count - 1];
-  const after = words[count];
-  const pauseMs = before && after ? after.startMs - before.endMs : null;
+  const pauseMs = observedPause(words, tokens, count);
   const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;

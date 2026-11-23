@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -209,6 +209,32 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   }, { timeout: 30_000 }).toBe("Release notes drafted");
   const notesPage = await fetch(`${daemon.baseURL}/api/archives/${notesKey}/artifacts/${notesArchive.artifacts[0]!.id}`);
   expect(await notesPage.text()).toContain("<table>");
+
+  // The library cannot be written (the producer namespace made read-only, so the final rename
+  // fails): the card says Mission Control failed, never that the document was refused, and the
+  // same press works once the library is writable again.
+  writeFileSync(join(session.cwd!, "unwritable.html"), DOCUMENT);
+  await report(daemon, session.cwd!, { title: "Library unwritable", body: "Publishes after a retry.", file: "unwritable.html" });
+  const namespace = join(daemon.home, "archives", producerId!);
+  inbox = await openInbox(page);
+  card = inbox.getByRole("article", { name: "Report: Library unwritable" });
+  await card.getByRole("button", { name: "Library unwritable" }).click();
+  chmodSync(namespace, 0o555);
+  try {
+    await card.getByRole("button", { name: "Publish as scout" }).click();
+    const failure = card.getByRole("alert");
+    await expect(failure).toContainText(
+      "Not published. Mission Control could not write the archive; nothing is wrong with the document. Try again:", { timeout: 30_000 });
+    await expect(failure).not.toContainText("refused");
+    await expect(failure.getByRole("listitem")).toContainText(/EACCES|permission denied/i);
+    await capture(card, "05b-card-publish-failed", page);
+  } finally {
+    chmodSync(namespace, 0o700);
+  }
+  await card.getByRole("button", { name: "Publish as scout" }).click();
+  await expect(card.getByRole("status").filter({ hasText: "Published" })).toBeVisible({ timeout: 30_000 });
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
 
   writeFileSync(join(session.cwd!, "gone.html"), "<html><body><p>Soon gone</p></body></html>");
   const gone = await report(daemon, session.cwd!, { title: "Copy removed", body: "Its stored copy goes missing.", file: "gone.html" });

@@ -22,6 +22,11 @@ export interface ReportEntryControls {
 export interface ReportPublishRefusal {
   error: string;
   problems: string[];
+  /**
+   * Mission Control itself failed (a 5xx, or no answer at all): the library could not be written
+   * or read. Nothing is wrong with the document, and the card must not say it was refused.
+   */
+  failed: boolean;
 }
 
 /**

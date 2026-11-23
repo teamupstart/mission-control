@@ -504,7 +504,11 @@ export function App(): React.JSX.Element {
       const result = await api.publishReport(report.id);
       if (result.ok) return null;
       const error = result.error ?? "Could not publish the report";
-      return { error, problems: result.problems?.length ? result.problems : [error] };
+      return {
+        error,
+        problems: result.problems?.length ? result.problems : [error],
+        failed: result.status === undefined || result.status >= 500,
+      };
     },
     onOpenArchive: (report) => {
       if (!report.publishedArchiveKey) return;

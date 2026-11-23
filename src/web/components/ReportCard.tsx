@@ -318,8 +318,10 @@ function ReportDocumentControls({
       </div>
       {refusal && !published && (
         <div className="inbox-line inbox-error" role="alert">
-          <p>{refusal.problems.length > 1 ? "Not published. The archive refused this document:" : `Not published. ${refusal.error}`}</p>
-          {refusal.problems.length > 1 && (
+          <p>{refusal.failed
+            ? "Not published. Mission Control could not write the archive; nothing is wrong with the document. Try again:"
+            : refusal.problems.length > 1 ? "Not published. The archive refused this document:" : `Not published. ${refusal.error}`}</p>
+          {(refusal.failed || refusal.problems.length > 1) && (
             <ul>
               {refusal.problems.map((problem) => <li key={problem}>{problem}</li>)}
             </ul>

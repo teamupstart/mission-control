@@ -1,6 +1,6 @@
-// One rule names an agent on every surface (`inbox` preview flag). These pin every rank, the
-// fallbacks between them, which ranks are spoken names, and the resident join the dashboard and
-// the alert engine share.
+// One rule names an agent on every surface (`inbox` preview flag). These pin every rank with
+// whether it is a spoken name, the fallbacks between them, and the resident join the dashboard
+// and the alert engine share.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -35,16 +35,6 @@ test("a blank value falls through to the next rank, and a kept one is trimmed", 
     { name: "s-1", source: "session-name", spoken: false },
   );
   assert.equal(agentDisplayName({ taskTitle: "  Fix the parser " }).name, "Fix the parser");
-});
-
-test("only a call sign, a reference name or a resident name is spoken", () => {
-  const spoken = (input: Parameters<typeof agentDisplayName>[0]) => agentDisplayName(input).spoken;
-  assert.equal(spoken({ callSign: "Echo" }), true);
-  assert.equal(spoken({ resident: { ...resident, referenceName: "Steve" } }), true);
-  assert.equal(spoken({ resident: { ...resident, referenceName: null } }), true);
-  assert.equal(spoken({ taskTitle: "Fix" }), false);
-  assert.equal(spoken({ sessionName: "fix" }), false);
-  assert.equal(spoken({}), false);
 });
 
 const runs: ResidentNameSource[] = [

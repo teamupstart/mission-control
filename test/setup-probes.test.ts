@@ -743,3 +743,33 @@ test("the Voice family is probed and listed only while the voice flag is on", as
   assert.equal(row?.status.state, "needs-setup");
   assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id === "voice-previews"), false);
 });
+
+test("a reading uses the flags as they were when it started, even if one switches while probes run", async () => {
+  // Voice is off when the reading starts and switches on while the repository index is read.
+  let voiceOn = false;
+  const view = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = true;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(voiceOn, true, "the switch happened mid-reading");
+  // One consistent reading: no Voice rows and no stamp, so the dashboard sees a mismatch with its
+  // live flags and reads again, rather than Voice rows missing under a Voice-on stamp.
+  assert.equal(view.rows.some((row) => row.family === "voice"), false);
+  assert.equal("flagsKey" in view, false);
+
+  // And the other way: Voice on at the start, off by the end, keeps its rows, its probe and its stamp.
+  voiceOn = true;
+  const on = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = false;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(on.rows.some((row) => row.family === "voice"), true);
+  assert.equal(on.flagsKey, "1000");
+  assert.equal(on.rows.find((row) => row.family === "voice")?.status.state, "needs-setup");
+});

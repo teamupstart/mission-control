@@ -22,6 +22,7 @@ import {
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   setupFamilyFlagOn,
+  SETUP_FLAG_INPUTS,
   setupReadingFlags,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
@@ -715,14 +716,24 @@ export function defaultSetupDeps(): SetupDeps {
   };
 }
 
+/** Every flag Setup reads (`SETUP_FLAG_INPUTS`), resolved now, as a reader that does not change. */
+function flagsAsOfNow(flagOn: (id: FeatureFlagId) => boolean): (id: FeatureFlagId) => boolean {
+  const resolved = new Map(SETUP_FLAG_INPUTS.map((id) => [id, flagOn(id)] as const));
+  return (id) => resolved.get(id) ?? flagOn(id);
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
-  const scoped: SetupDeps = { ...deps };
+  // The flags are read once, before anything is probed, and that one reading decides which
+  // families are listed, what the `voice-previews` probe reports and the stamp the reading
+  // carries. Read live at each of those, a switch made while the probes run could list no Voice
+  // rows under a stamp that says Voice is on, and the dashboard would never read it again.
+  const flagEnabled = flagsAsOfNow(deps.flagEnabled ?? featureEnabled);
+  const scoped: SetupDeps = { ...deps, flagEnabled };
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
   // A family that follows a preview flag (Voice) is neither probed nor listed while it is off.
-  const flagEnabled = deps.flagEnabled ?? featureEnabled;
   const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
     .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled));
   const [probed, targets, environment, repositories] = await Promise.all([

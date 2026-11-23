@@ -121,8 +121,8 @@ test("schema 45 adds the prompt table to an upgraded database, keyed by task and
   raw.exec("PRAGMA user_version = 44");
   raw.close();
   const upgraded = db.openDb();
-  assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 45);
-  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 45);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 45);
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
   const key = (upgraded.prepare("PRAGMA table_info(task_skill_prompts)").all() as Array<{ name: string; pk: number }>)
     .filter((column) => column.pk > 0).map((column) => column.name);
   assert.deepEqual(key, ["task_id", "session_id"]);

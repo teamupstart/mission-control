@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -121,8 +122,11 @@ export interface DaemonHandle {
   removeFakeGh(): void;
   /** Make the next daemon-side fetch from demo-repo's origin report Git's stale-ref race. */
   failNextGitFetchWithRefRace(): void;
-  /** Whether that armed race is still waiting for a fetch, so a spec can prove one met it. */
-  gitFetchRefRacePending(): boolean;
+  /**
+   * Every call to demo-repo's origin since the daemon started, in order: whether it met the
+   * armed race, and the command line of the `git` that made it.
+   */
+  gitFetchRefRaceCalls(): { consumed: boolean; caller: string }[];
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -293,6 +297,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
+  const gitFetchRefRaceCallsLog = join(home, "git-fetch-ref-race-calls.jsonl");
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
     copyFileSync(bins.codex, join(daemonPathBin, "codex"));
@@ -331,16 +336,29 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // PATH. A PATH fake sits in front of every git call the daemon makes, which slows a seed
     // `rev-parse` on a loaded runner and makes the spec about the fake instead of the race.
     // Git runs `remote.origin.uploadpack` only for a fetch or `ls-remote` against
-    // demo-repo's origin, and its stderr reaches the fetch's own.
+    // demo-repo's origin, and its stderr reaches the fetch's own. Upload-pack is started the
+    // same way for both, so each call logs the `git` above it: only that shows whether the
+    // dispatch's fetch, rather than an earlier `ls-remote`, met the race.
     const uploadPack = join(home, "ref-race-upload-pack");
     writeFileSync(
       uploadPack,
       [
         "#!/usr/bin/env node",
-        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { appendFileSync, existsSync, unlinkSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
         `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
-        "if (existsSync(marker)) {",
+        `const calls = ${JSON.stringify(gitFetchRefRaceCallsLog)};`,
+        "let caller = 'unknown';",
+        "for (let pid = process.ppid, depth = 0; pid > 1 && depth < 4; depth += 1) {",
+        "  const row = spawnSync('ps', ['-ww', '-o', 'ppid=', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).stdout ?? '';",
+        "  const parsed = /^\\s*(\\d+)\\s+(.*)$/s.exec(row.trim());",
+        "  if (!parsed) break;",
+        "  if (/\\bgit\\b.*\\s(fetch|ls-remote)\\b/.test(parsed[2])) { caller = parsed[2]; break; }",
+        "  pid = Number(parsed[1]);",
+        "}",
+        "const consumed = existsSync(marker);",
+        "appendFileSync(calls, JSON.stringify({ consumed, caller }) + '\\n');",
+        "if (consumed) {",
         "  unlinkSync(marker);",
         "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
         "  process.exit(1);",
@@ -415,7 +433,13 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     writeFileSync(gitFetchRefRaceMarker, "fail once\n");
   };
 
-  const gitFetchRefRacePending = (): boolean => existsSync(gitFetchRefRaceMarker);
+  const gitFetchRefRaceCalls = (): { consumed: boolean; caller: string }[] =>
+    existsSync(gitFetchRefRaceCallsLog)
+      ? readFileSync(gitFetchRefRaceCallsLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { consumed: boolean; caller: string })
+      : [];
 
   const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -846,7 +870,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     installFakeGh,
     removeFakeGh,
     failNextGitFetchWithRefRace,
-    gitFetchRefRacePending,
+    gitFetchRefRaceCalls,
     readLog: () => log,
     startForeman,
     crash,

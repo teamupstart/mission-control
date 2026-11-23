@@ -310,8 +310,15 @@ test.describe("transient Git ref contention", () => {
     await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
       "running",
     );
-    // Running alone would also be the outcome of a race that never fired.
-    expect(daemon.gitFetchRefRacePending(), "the dispatch's fetch never met the race").toBe(false);
+    // Running alone would also be the outcome of a race that never fired, or of one an
+    // earlier `ls-remote` used up before the dispatch fetched.
+    const calls = daemon.gitFetchRefRaceCalls();
+    const met = calls.findIndex((call) => call.consumed);
+    expect(calls[met]?.caller ?? "the race was never met", "a fetch met the race").toMatch(/\sfetch origin\b/);
+    expect(
+      calls.slice(met + 1).some((call) => /\sfetch origin\b/.test(call.caller)),
+      "the fetch that met the race was retried",
+    ).toBe(true);
     await captureRefRaceRecovery(dashboard);
   });
 });

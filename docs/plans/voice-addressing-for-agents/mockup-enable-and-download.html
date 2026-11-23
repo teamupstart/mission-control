@@ -176,7 +176,7 @@ body.mk {
 
 <header class="mk-top">
   <h1>Turning voice on</h1>
-  <p>Enabling the Voice preview offers to turn on the two previews it needs (<code>async-input</code>, shown as "Ask without stopping", and <code>inbox</code>, shown as "Reports and inbox upgrades"). macOS asks for the microphone. The Parakeet speech model is downloaded the first time, with progress, then its checksum is verified and it is kept in the state home. A missing or broken model is reported by the existing Setup checks.</p>
+  <p>Enabling the Voice preview offers to turn on the three previews it needs (<code>async-input</code>, shown as "Ask without stopping", <code>inbox</code>, shown as "Reports and inbox upgrades", and <code>filed-plan-decisions</code>, shown here as "Filed plan decisions"). macOS asks for the microphone. The Parakeet speech model is downloaded the first time, with progress, then its checksum is verified and it is kept in the state home. A missing or broken model is reported by the existing Setup checks.</p>
   <p class="mk-spec">Fixed in every variant: the flag is switched in the Feature flags list, the offer names both prerequisites and says which is already on, the download shows size, speed and Cancel, a failed checksum deletes the file and offers Retry, and Setup gains a "Voice speech model" check. What varies is <b>where the sequence runs</b> and <b>whether it blocks</b>. Each variant shows five moments: the offer, the microphone, the download, verified and ready, and failure. The 600 MB size is illustrative.</p>
   <nav class="mk-toc"><a href="#e"><b>E</b>Setup checks</a></nav>
 <p class="mk-spec"><b>Selected by the operator on 2026-11-22: variant E.</b> This page holds the selected design; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
@@ -199,9 +199,9 @@ body.mk {
         <div>
           <article class="setup-row setup-row-needs-setup"><div class="setup-row-main">
             <div class="setup-row-title"><span class="setup-dot setup-dot-gap" role="img" aria-label="Needs setup"></span><strong>Voice previews</strong><span class="setup-status setup-status-needs-setup">Needs setup</span></div>
-            <p class="setup-impact">Voice needs Ask without stopping and Reports and inbox upgrades.</p>
-            <p class="setup-why">Ask without stopping is on. Reports and inbox upgrades is off.</p>
-            <div class="setup-remedy-actions"><button class="btn btn-primary">Turn on Reports and inbox upgrades</button></div>
+            <p class="setup-impact">Voice needs Ask without stopping, Reports and inbox upgrades and Filed plan decisions.</p>
+            <p class="setup-why">Ask without stopping is on. Reports and inbox upgrades and Filed plan decisions are off.</p>
+            <div class="setup-remedy-actions"><button class="btn btn-primary">Turn on the two that are off</button></div>
           </div></article>
         </div>
       </div>
@@ -244,7 +244,7 @@ body.mk {
           <div class="setup-row-title"><span class="setup-dot setup-dot-ready" role="img" aria-label="Ready"></span><strong>Microphone access</strong></div></div></article>
         <article class="setup-row setup-row-satisfied"><div class="setup-row-main">
           <div class="setup-row-title"><span class="setup-dot setup-dot-ready" role="img" aria-label="Ready"></span><strong>Voice speech model</strong></div>
-          <p class="setup-evidence">~/.mission-control/voice/models/parakeet-tdt-0.6b-v3 · checksum verified</p>
+          <p class="setup-evidence">~/.mission-control/voice/models/&lt;backend&gt;/&lt;revision&gt; · checksum verified</p>
         </div></article>
       </div>
       <div class="en-tip">Voice is listening. Say a resident's name, pause, then the message.</div>

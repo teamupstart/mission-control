@@ -76,6 +76,15 @@ applied.
   digest mismatch and a wrong transcription fail it; a network outage can fail that one job on a
   cold cache and no unit shard.
 
+A second review raised two more, both accepted.
+
+- **Which pending item a bare "cancel" stops.** Phase 3 said the newest pending card and Phase
+  13 said "cancel" clears the pending answer, so an answer and a routed message inside one
+  window had two readings. Contract D now fixes one order: the newest pending voice action of
+  any kind. Phases 3, 13 and 14 name it, and Phase 13 tests the overlap in both orders.
+- **A mock-up path naming Parakeet v3.** The setup mock-up printed a v3 directory while the
+  plan pins v2. It now prints a placeholder path, since Phase 8 owns the real one.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -210,6 +219,15 @@ it while the mode is `listening` or `push-to-talk`. `routeUtterance(utterance, c
 a part is `{ target, text }` and a split has two. Event `voice_card`. Routes `POST
 /api/voice/cards/:id/cancel`, `/send-now` and `/pick`. The `VoiceDeliverer` interface. `GET` and
 `DELETE /api/voice/heard` with `HeardEntry`. `say` in `e2e/fixtures/voice.ts`.
+
+One cancel order. The router keeps every voice action still inside its cancel window in one
+list, `pendingVoiceActions`, in the order they opened; an entry is `{ id, kind, openedAt,
+cancel }`. A bare "cancel" stops the newest entry and nothing else, whatever its kind, and each
+further "cancel" stops the next newest. With the list empty it does nothing and is listed in
+Recently heard. Phase 3 registers pending cards, and a split is one entry. Phase 13 registers a
+pending voice answer, together with its companion card when it has one, as one entry. Phase
+14's inbox actions are pending cards, so they are entries already. A Cancel button stops its
+own entry, not the newest.
 
 **E. Model step (Phase 4).** `VoiceDecider.ask(questions)` with question kinds `who`, `split` and
 `option`, each answered with a choice and a confidence. Rungs in order: the configured decision

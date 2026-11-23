@@ -51,8 +51,10 @@ form for a control the inbox plan declares click-only.
    cards and inbox actions are unaffected.
 6. **Inbox actions.** Extend the open-cards report with report and Stuck cards. The router builds
    its action phrases from `INBOX_ACTIONS`: "<name>, <spoken form>". An action runs its action
-   function after the cancel window, shown as a voice card ("Steve: mark read"). "Mark read"
-   follows `resolveMarkReadTarget`; when it returns none the card says to open the report first.
+   function after the cancel window, shown as a voice card ("Steve: mark read"). That card is a
+   `pending` card, so it is an entry in `pendingVoiceActions` and a bare "cancel" stops it when
+   it is the newest pending voice action (contract D). "Mark read" follows
+   `resolveMarkReadTarget`; when it returns none the card says to open the report first.
    "Reply, ..." with a report or Stuck card open sends the words through that card's reply or
    message action. "<name>, stop" stays Phase 5's interrupt.
 7. **Foot lines.** `CardVoiceFoot` on report, Stuck and plan-form cards, listing that card's
@@ -69,7 +71,8 @@ was mirrored.
 - `test/voice-plan-form.test.ts`: ordinals with and without the approval decision, a refused
   submit, the setting off.
 - `test/voice-inbox-actions.test.ts`: a phrase for each spoken action in the registry, no phrase
-  for a click-only one, the mark-read target.
+  for a click-only one, the mark-read target, and "cancel" inside the window leaving the report
+  unread.
 - `e2e/specs/voice-plan-form.spec.ts`: a three-decision form; say "Steve, first one B, second one
   A"; two badges turn blue; "Steve, submit" is refused and the third is marked; fill it; submit;
   the form is answered. With the setting off, the same words arrive as a message.
@@ -90,3 +93,5 @@ None inside this plan.
 
 - The inbox plan's action table is the list of spoken forms; this phase adds none and changes
   none.
+- Pull request review: a pending inbox action is cancelled by the same rule as a routed message
+  and a voice answer, contract D's newest pending voice action.

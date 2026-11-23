@@ -318,6 +318,8 @@ from recorded audio. The rest is a follow-on plan.
 - The cancel window is on at 4 seconds and its length is a setting.
 - A message to an agent that is not running is not kept. The card says nothing was sent.
 - "Cancel" in a split stops both halves.
+- A bare "cancel" stops the newest pending voice action, whether it is a routed message, a
+  voice answer or an inbox action. A second "cancel" stops the one before it.
 - Control words a name is warned against: cancel, stop, reply, answer, submit, option, no.
 - A hotkey that cannot be registered keeps the previous one and shows a warning.
 - A cancelled utterance is listed in Recently heard. Nothing is listed while muted.

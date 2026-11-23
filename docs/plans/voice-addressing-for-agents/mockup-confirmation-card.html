@@ -112,6 +112,9 @@ body.mk {
 .cc-hud .cc-ring { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 10px var(--mono); color: var(--working); background: conic-gradient(var(--working) 0 68%, var(--border) 68% 100%); position: relative; }
 .cc-hud .cc-ring::before { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: var(--panel); }
 .cc-hud .cc-ring span { position: relative; }
+.cc-hud { max-width: calc(100% - 20px); }
+.cc-hud > span:not(.cc-ring):not(.cc-sent) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cc-hud .btn, .cc-hud .cc-ring, .cc-hud .cc-sent { flex: none; }
 .cc-hud-sub { position: absolute; left: 50%; top: 50px; transform: translateX(-50%); white-space: nowrap; }
 .cc-hud.is-sent { border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); }
 

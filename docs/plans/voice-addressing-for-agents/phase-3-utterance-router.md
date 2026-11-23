@@ -47,8 +47,13 @@ As of `2088bd522`:
    `VoiceRouter` while the mode is `listening` or `push-to-talk`; in another mode it is dropped.
 3. **Cards and the window.** For `addressed`, the router opens a `pending` card with a deadline
    from `cancelWindow` and delivers at the deadline; with the window off it delivers at once.
-   Cancel, Send now and pick routes act on a card. "Cancel" by voice cancels the newest pending
-   card. A `needs-model` decision opens an `unsure` card in this phase.
+   Cancel, Send now and pick routes act on a card. A pending card registers itself in
+   `pendingVoiceActions` (contract D) when it opens and leaves when it is delivered, sent now or
+   cancelled. "Cancel" by voice stops the newest entry in that list, and a second "cancel" the
+   next newest. The list takes any kind of entry, so Phases 13 and 14 add theirs without
+   changing the rule. With the list empty, "cancel" does nothing and is listed in Recently heard
+   with the reason `nothing-pending`. A `needs-model` decision opens an `unsure` card in this
+   phase.
 4. **Delivery seam.** `VoiceDeliverer.deliver(target, text, utteranceId)` returns an outcome. The
    default deliverer calls `submit` with the plain text for a running target and reports `sent`
    or `failed`; `stop` calls the interrupt path (`src/server/routes.ts:6889`).
@@ -72,7 +77,8 @@ No storage. The routes answer 404 with the flag off. `voice_card` is a new event
   door", Steven and Steve's, a second name, the pick rule.
 - `test/voice-utterances-http.test.ts`, with a hello sent first: the token check, the flag gate, a
   muted drop, a pending card that delivers at its deadline, cancel by route and by voice, Send
-  now, the window off.
+  now, the window off. Two cards pending: "cancel" stops the newer and the older still
+  delivers; a second "cancel" stops the older; a third is listed as `nothing-pending`.
 - `test/voice-heard.test.ts`: the ring bound, the reasons, clear.
 - Run `npm run typecheck`, `npm run lint` and the three tests.
 
@@ -92,3 +98,6 @@ not change.
 - After Phase 5: the default deliverer is removed there; `stop` keeps its path.
 - After Phase 13: answer forms ("option B", "answer:", "reply") are added to the router by that
   phase, ahead of the name rule, and do not change the rules above.
+- Pull request review: "the newest pending card" left open what a bare "cancel" stops once
+  Phase 13 adds pending answers. Step 3 now owns one ordered list for every kind of pending
+  voice action, and contract D states the rule.

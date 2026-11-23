@@ -58,10 +58,15 @@ As of `2088bd522`:
    With a card open, naming a different agent routes to that agent as usual.
 4. **Pending answer.** The daemon holds a `VoiceAnswer { reviewId, selections, text, deadline }`,
    emits `voice_answer`, and at the deadline resolves the review as the human through the resolve
-   path. "Cancel" clears it. "No, A" replaces the selection and restarts the deadline. With the
-   cancel window off it resolves at once. When no dashboard is showing that card, the router also
-   opens a `pending` voice card whose text is the answer, so the countdown and Cancel stay on
-   screen.
+   path. The answer registers in `pendingVoiceActions` (contract D) when it opens. A bare
+   "cancel" stops the newest pending voice action of any kind, so it clears this answer when the
+   answer is the newest, and stops a message routed after it when that is newer; a second
+   "cancel" then clears the answer. "No, A" acts on the newest pending voice answer, whatever
+   opened after it: it replaces the selection and restarts the deadline, and keeps the entry's
+   place in the order. With the cancel window off it resolves at once. When no dashboard is
+   showing that card, the router also opens a `pending` voice card whose text is the answer, so
+   the countdown and Cancel stay on screen. That card and the answer are one entry: stopping
+   either stops both.
 5. **Card.** On `voice_answer` the dashboard writes the selection or text into the review draft
    with a voice mark, and `ReviewCard` swaps its action row for the countdown footer: what will
    be sent, the seconds, Cancel and Submit now. A click on another option during the window
@@ -79,7 +84,12 @@ foot line or report exists.
 ## 7. Tests and verification
 
 - `test/voice-answer-routing.test.ts`: each form, the target rule, a second agent named, no name,
-  an explicit phrase with no card open, and plain speech with no card open.
+  an explicit phrase with no card open, and plain speech with no card open. The overlap, in both
+  orders: with an answer pending and then a message routed to another agent, "cancel" stops the
+  message and the answer still resolves, and a second "cancel" clears the answer; with the
+  message pending first and then the answer, "cancel" clears the answer and the message is
+  still delivered. "No, A" with a newer message pending switches the answer and leaves the
+  message alone. An answer with a companion card is cancelled as one entry.
 - `test/voice-answer-http.test.ts`: deadline resolve, cancel, switch, window off, a review that
   settles meanwhile.
 - `e2e/specs/voice-answer-card.spec.ts`: open Steve's question; say "Steve, option B"; B is ticked
@@ -104,3 +114,5 @@ Phase 14 extends the open-cards report with report and Stuck cards and reuses `C
 - After Phase 14: plan-decision reviews are excluded from step 3 here and handled there.
 - Plan validation round 1: V23 now states the two cases in which speech reaches a card, and step
   3 names them instead of restating a rule of its own.
+- Pull request review: step 4 said "cancel" clears the answer while Phase 3 said it cancels the
+  newest pending card. Both now follow contract D's one order, and the overlap is tested.

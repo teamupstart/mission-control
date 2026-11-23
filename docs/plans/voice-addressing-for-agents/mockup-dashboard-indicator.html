@@ -278,10 +278,10 @@ body.mk {
     <div class="mk-state">
       <span class="mk-cap"><b>2</b> The four states</span>
       <div class="di-states">
-        <span>Listening</span><span class="di-fabrow"><button type="button" class="di-fab di-s-listen"><svg class="mk-ico lg"><use href="#i-mic"/></svg></button></span>
-        <span>Muted</span><span class="di-fabrow"><button type="button" class="di-fab di-s-muted"><svg class="mk-ico lg"><use href="#i-mic-off"/></svg></button></span>
-        <span>Auto-muted for a call</span><span class="di-fabrow"><button type="button" class="di-fab di-s-call"><svg class="mk-ico lg"><use href="#i-phone"/></svg></button></span>
-        <span>Push-to-talk held</span><span class="di-fabrow"><button type="button" class="di-fab di-s-ptt"><svg class="mk-ico lg"><use href="#i-ptt"/></svg></button></span>
+        <span>Listening</span><span class="di-fabrow"><button type="button" class="di-fab di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico lg"><use href="#i-mic"/></svg></button></span>
+        <span>Muted</span><span class="di-fabrow"><button type="button" class="di-fab di-s-muted" aria-label="Voice: muted. Unmute"><svg class="mk-ico lg"><use href="#i-mic-off"/></svg></button></span>
+        <span>Auto-muted for a call</span><span class="di-fabrow"><button type="button" class="di-fab di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico lg"><use href="#i-phone"/></svg></button></span>
+        <span>Push-to-talk held</span><span class="di-fabrow"><button type="button" class="di-fab di-s-ptt" aria-label="Voice: push-to-talk is held"><svg class="mk-ico lg"><use href="#i-ptt"/></svg></button></span>
       </div>
     </div>
     <div class="mk-state">
@@ -360,16 +360,16 @@ body.mk {
     <div class="mk-state">
       <span class="mk-cap"><b>2</b> The four states</span>
       <div class="di-states">
-        <span>Listening</span><span class="di-microw"><button type="button" class="di-mic di-s-listen"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-fake">or say "Steve, …"</span></span>
-        <span>Muted</span><span class="di-microw"><button type="button" class="di-mic di-s-muted"><svg class="mk-ico"><use href="#i-mic-off"/></svg></button><span class="di-fake">Voice is muted</span></span>
-        <span>Auto-muted for a call</span><span class="di-microw"><button type="button" class="di-mic di-s-call"><svg class="mk-ico"><use href="#i-phone"/></svg></button><span class="di-fake">On a call · hold ⌃⌥M</span></span>
-        <span>Push-to-talk held</span><span class="di-microw"><button type="button" class="di-mic di-s-ptt"><svg class="mk-ico"><use href="#i-ptt"/></svg></button><span class="di-fake">Listening while held</span></span>
+        <span>Listening</span><span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-fake">or say "Steve, …"</span></span>
+        <span>Muted</span><span class="di-microw"><button type="button" class="di-mic di-s-muted" aria-label="Voice: muted. Unmute"><svg class="mk-ico"><use href="#i-mic-off"/></svg></button><span class="di-fake">Voice is muted</span></span>
+        <span>Auto-muted for a call</span><span class="di-microw"><button type="button" class="di-mic di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico"><use href="#i-phone"/></svg></button><span class="di-fake">On a call · hold ⌃⌥M</span></span>
+        <span>Push-to-talk held</span><span class="di-microw"><button type="button" class="di-mic di-s-ptt" aria-label="Voice: push-to-talk is held"><svg class="mk-ico"><use href="#i-ptt"/></svg></button><span class="di-fake">Listening while held</span></span>
       </div>
     </div>
     <div class="mk-state">
       <span class="mk-cap"><b>3</b> Click and hotkey</span>
       <div class="di-aff">
-        <span class="di-microw"><button type="button" class="di-mic di-s-listen" style="box-shadow:0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent)"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span></span>
+        <span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute" style="box-shadow:0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent)"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span></span>
         <span class="di-note">The button mutes Mission Control everywhere, not just for this session. It does not dictate into the box: speech is routed by name, as anywhere else.</span>
       </div>
     </div>

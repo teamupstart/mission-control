@@ -189,7 +189,7 @@ interface Engine {
 }
 
 /** The pane values the mod writes: the controller's three, and the draft waiting for its description. */
-type FlowStateKey = CoreStateKey | "draftId";
+type FlowStateKey = CoreStateKey | "draftId" | "selectedTaskId" | "paneView";
 
 /**
  * `$.state` takes its plugin and key as literals written at the call (or in a const of this
@@ -210,6 +210,12 @@ async function stateSet($: Engine, key: FlowStateKey, value: unknown): Promise<v
     case "draftId":
       await $.state.set({ plugin: "mission-control", key: "draftId" }, value);
       return;
+    case "selectedTaskId":
+      await $.state.set({ plugin: "mission-control", key: "selectedTaskId" }, value);
+      return;
+    case "paneView":
+      await $.state.set({ plugin: "mission-control", key: "paneView" }, value);
+      return;
   }
 }
 
@@ -223,10 +229,14 @@ async function stateGet($: Engine, key: FlowStateKey): Promise<unknown> {
       return (await $.state.get({ plugin: "mission-control", key: "paneTab" }))?.value;
     case "draftId":
       return (await $.state.get({ plugin: "mission-control", key: "draftId" }))?.value;
+    case "selectedTaskId":
+      return (await $.state.get({ plugin: "mission-control", key: "selectedTaskId" }))?.value;
+    case "paneView":
+      return (await $.state.get({ plugin: "mission-control", key: "paneView" }))?.value;
   }
 }
 
-const isFlowStateKey = (key: string): key is FlowStateKey => key === "registration" || key === "inbox" || key === "paneTab" || key === "draftId";
+const isFlowStateKey = (key: string): key is FlowStateKey => key === "registration" || key === "inbox" || key === "paneTab" || key === "draftId" || key === "selectedTaskId" || key === "paneView";
 
 /** `$.ui.ask` answers the label picked, or the text typed under Other; a dismissed dialog rejects or answers nothing. */
 async function askDialog($: Engine, question: ModAskQuestion): Promise<ModAskAnswer> {
@@ -327,6 +337,8 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     },
     fetch: async (path, init) => {
       const token = await readDaemonToken(env, (file) => $.fs.read(file));
+      // The token read above may have outlasted the session that asked: recheck as the request leaves.
+      if (init?.guard && !init.guard()) throw new Error("the session ended before the request was sent");
       const reply = await $.http.fetch(`${baseUrl}${path}`, {
         method: init?.method ?? "GET",
         headers: { "x-harness-token": token, "x-harness-surface": "mod", "content-type": "application/json" },
@@ -341,6 +353,18 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     paneOpen: async (opts: ModPaneOpen) => {
       // A close from the session before must finish first, or it could remove this open's pane.
       await session.pane.closing;
+      // The target the command asked for is stored before the pane opens, so the pane draws it
+      // (P12 reads these): a tab clears any selected task, a task id selects that task, and a
+      // bare open leaves the pane as it was.
+      if (opts.taskId !== undefined) {
+        await stateSet($, "paneTab", "tasks").catch(() => undefined);
+        await stateSet($, "selectedTaskId", opts.taskId).catch(() => undefined);
+        await stateSet($, "paneView", "item").catch(() => undefined);
+      } else if (opts.tab !== undefined) {
+        await stateSet($, "paneTab", opts.tab).catch(() => undefined);
+        await stateSet($, "selectedTaskId", null).catch(() => undefined);
+        await stateSet($, "paneView", "list").catch(() => undefined);
+      }
       const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
       // Only the current session takes the pane; a stopped one's late open leaves it unowned.
       if (session.mine === session.current()) session.pane.owner = session.mine;

@@ -15,6 +15,7 @@ import {
   type HomeDispatchDraftSummary,
 } from "../src/shared/home-dispatch.ts";
 import { TASK_KIND_INFO } from "../src/shared/task.ts";
+import { FAKE_NO_REPO_CWD } from "./helpers/home-dispatch-fakes-dispatch.ts";
 import {
   CANNED_INBOX,
   FAKE_REPO_ROOT,
@@ -227,6 +228,60 @@ test("a session that ended before a draft is made creates none, and the tool ans
   const gone = { ...SESSION, live: () => false };
   assert.equal(await runStartDispatchTool(fake.host, gone, { brief: "add retries" }), "cancelled");
   assert.equal(daemon.requests.length, 0);
+});
+
+test("a waiting draft's description keeps the spaces the person typed", async () => {
+  const { daemon, fake } = world();
+  await runDispatchCommand(fake.host, SESSION, "");
+  await runDispatchCommand(fake.host, SESSION, "  keep my edges  ");
+  const update = daemon.requests.find((r) => r.pattern === "/dispatch/drafts/:id" && (r.body as { words?: string }).words !== undefined)!;
+  assert.equal((update.body as { words: string }).words, "  keep my edges  ");
+});
+
+test("a repository named cancelled under Other is a repository, not a cancellation", async () => {
+  const { daemon, fake } = world({
+    host: { answers: (q) => q.header === "Repo" ? { kind: "other", text: "cancelled" } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  await runDispatchCommand(fake.host, { sessionId: FAKE_SESSION_ID, cwd: FAKE_NO_REPO_CWD }, "ship add retries");
+  assert.ok(fake.dialogs.some((d) => d.header === "Repo"));
+  assert.equal((createdDrafts(daemon)[0]!.body as { repo: string }).repo, "cancelled");
+});
+
+test("a request the host holds back because the session ended while it waited is never sent, and a cancel still goes", async () => {
+  let ended = false;
+  const { daemon, fake, filed } = world({
+    host: { answers: (q) => q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  const real = fake.host.fetch;
+  // As the real host does: the session ends during the token read, and the guard is read as the request leaves.
+  const guardedPaths: string[] = [];
+  fake.host.fetch = async (path, init) => {
+    if (init?.guard) guardedPaths.push(path);
+    if (path.endsWith("/confirm")) ended = true;
+    if (init?.guard && !init.guard()) throw new Error("the session ended before the request was sent");
+    return real(path, init);
+  };
+  const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "ship add retries");
+  assert.equal(result.outcome, "cancelled");
+  assert.deepEqual(filed, []);
+  assert.ok(daemon.requests.every((r) => !r.path.endsWith("/confirm")));
+  // Every filing call carries the guard; a cancel carries none, so it still reaches the daemon.
+  assert.deepEqual(guardedPaths.map((p) => p.replace(/\/draft-\d+/, "/:id")), ["/dispatch/dispatch-options", "/dispatch/drafts", "/dispatch/drafts/:id/confirm"]);
+});
+
+test("cancelling a draft after the session ended is still sent", async () => {
+  let ended = false;
+  const { daemon, fake, filed } = world({
+    host: { answers: (q) => { if (q.header === "Confirm") { ended = true; return { kind: "pick", label: "Cancel" }; } return { kind: "pick", label: q.options[0]!.label }; } },
+  });
+  const real = fake.host.fetch;
+  fake.host.fetch = async (path, init) => {
+    if (init?.guard && !init.guard()) throw new Error("ended");
+    return real(path, init);
+  };
+  await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "ship add retries");
+  assert.deepEqual(filed.map((f) => f.choice), ["cancel"]);
+  assert.ok(daemon.requests.some((r) => r.path.endsWith("/confirm")));
 });
 
 test("a description for a draft that has gone is treated as a new brief", async () => {

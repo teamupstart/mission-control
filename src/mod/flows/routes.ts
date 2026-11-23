@@ -47,8 +47,10 @@ async function send<T>(
   if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
   let reply;
   try {
-    reply = await host.fetch(path, { method: "POST", body });
+    reply = await host.fetch(path, { method: "POST", body, ...(allowWhenEnded || !session.live ? {} : { guard: session.live }) });
   } catch {
+    // A request the host held back because the session ended is not a daemon that is down.
+    if (!allowWhenEnded && session.live && !session.live()) return { ok: false, kind: "ended" };
     return { ok: false, kind: "down" };
   }
   let parsed: unknown;

@@ -52,7 +52,8 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
   // pane argument or a task id: the person is describing a task, not asking for the pane.
   const waiting = await host.paneState.get("draftId");
   if (waiting) {
-    const described = await describeDraft(host, session, waiting, text);
+    // The raw argument: spaces the person typed around the description are theirs.
+    const described = await describeDraft(host, session, waiting, args);
     if (described) return described;
   }
 

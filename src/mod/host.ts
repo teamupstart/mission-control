@@ -31,6 +31,12 @@ export interface ModBand {
 
 export interface ModFetchInit {
   method?: "GET" | "POST";
+  /**
+   * Checked by the host after any wait it makes (reading the token file) and immediately before
+   * the request leaves. When it answers false the request is not sent and the call rejects, so a
+   * flow whose session ended while the host waited cannot file or change a task.
+   */
+  guard?: () => boolean;
   /** A JSON-serialisable body; the host sends it as JSON. */
   body?: unknown;
 }

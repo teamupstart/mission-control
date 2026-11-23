@@ -21,10 +21,11 @@ const INBOX = JSON.stringify({
 
 function world(on, { flag, minModApi = 1 }) {
   const seen = { inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
-  mock.env(on, {})
+  // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
+  mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
   on('session.id', () => ({ value: 's1' }))
-  on('fs.read', () => ({ value: 'a-token' }))
+  on('fs.read', async () => { if (seen.holdRead) await seen.holdRead; return { value: 'a-token' } })
   on('http.fetch', (_, e) => {
     seen.urls.push(e.url)
     const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi) : seen.inbox)
@@ -296,4 +297,41 @@ test('when the engine refuses prompt.fill, the description is asked in a dialog,
   await settle(() => asks.length > 0)
   expect(fills).toEqual(['/mission-dispatch '])
   expect(JSON.stringify(asks[0])).toMatch(/What should this task do/)
+})
+
+test('the command stores the pane target before it opens the pane (tab, task row, or as it was)', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const run = async (args) => {
+    const before = seen.openArgs.length
+    await $.command.run(COMMAND(args))
+    await settle(() => seen.openArgs.length > before)
+  }
+  await run('check')
+  expect(seen.state.paneTab).toBe('tasks')
+  expect(seen.state.selectedTaskId).toBe(null)
+  await run('mc-1')
+  expect(seen.state.paneTab).toBe('tasks')
+  expect(seen.state.selectedTaskId).toBe('mc-1')
+  expect(seen.state.paneView).toBe('item')
+  await run('inbox')
+  expect(seen.state.paneTab).toBe('needs-you')
+  expect(seen.state.selectedTaskId).toBe(null)
+  expect(seen.state.paneView).toBe('list')
+})
+
+test('a request held by the token read is not sent when the session ends meanwhile', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let release
+  seen.holdRead = new Promise((resolve) => { release = resolve })
+  const before = seen.urls.length
+  await $.command.run(COMMAND('ship add retries'))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  await $.session.end({ reason: 'other', sessionId: 's1' })
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.urls.slice(before).some((u) => u.includes('/dispatch/dispatch-options'))).toBe(false)
 })

@@ -217,14 +217,18 @@ async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchD
   return fail(host, result);
 }
 
+/** What the Repo question came to: a tagged answer, so a repository named `cancelled` is not a cancel. */
+type RepoAnswer = { kind: "none" } | { kind: "cancelled" } | { kind: "repo"; value: string };
+
 /** Asks the Repo page, or the free-text question when the page's own Other is picked. */
-async function askRepo(host: FlowHost, pages: ReturnType<typeof pagesOf>): Promise<string | undefined | "cancelled"> {
-  if (pages.length === 0) return undefined;
+async function askRepo(host: FlowHost, pages: ReturnType<typeof pagesOf>): Promise<RepoAnswer> {
+  if (pages.length === 0) return { kind: "none" };
   const pick = await askPages(host, pages);
-  if (pick.kind === "dismissed") return "cancelled";
-  if (pick.kind === "other") return pick.text;
-  if (pick.value !== "other") return pick.value;
-  return (await askText(host, "Repo", NEEDS_REPO_QUESTION)) ?? "cancelled";
+  if (pick.kind === "dismissed") return { kind: "cancelled" };
+  if (pick.kind === "other") return { kind: "repo", value: pick.text };
+  if (pick.value !== "other") return { kind: "repo", value: pick.value };
+  const typed = await askText(host, "Repo", NEEDS_REPO_QUESTION);
+  return typed === undefined ? { kind: "cancelled" } : { kind: "repo", value: typed };
 }
 
 /**
@@ -296,8 +300,8 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   let repo = input.repo;
   if (repo === undefined) {
     const picked = await askRepo(host, pagesOf(next.value.questions, "repo"));
-    if (picked === "cancelled") return stop(host);
-    repo = picked;
+    if (picked.kind === "cancelled") return stop(host);
+    if (picked.kind === "repo") repo = picked.value;
   }
 
   const created = await createDraftAsking(host, session, {

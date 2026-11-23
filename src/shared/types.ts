@@ -879,12 +879,14 @@ export interface Session {
    */
   workCycle?: WorkCycleSummary;
   /**
-   * Count of pending review items this session's agent is waiting on inside a tool call
-   * (denormalized for the card). Excludes message-mode questions, which `openQuestions` counts.
+   * Count of pending review items this session's agent has stopped on (denormalized for the
+   * card): a review it waits on inside a tool call, or a filed plan form (`isFiledGate`), which
+   * is a gate though no call is held. Excludes message-mode questions, which `openQuestions`
+   * counts.
    */
   pendingReviews: number;
   /**
-   * Count of pending message-mode `request_input` questions (`ReviewItem.waitMode`): filed by an
+   * Count of pending message-mode `request_input` questions (`agentKeepsWorking`): filed by an
    * agent that kept working rather than waiting in the call. A snoozed question is in neither
    * count. A snapshot from an older daemon may lack it; read it as zero.
    */
@@ -3235,11 +3237,12 @@ export interface ReviewItem {
   /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
   snooze?: ReviewSnooze | null;
   /**
-   * How the agent waits for this question's answer. `"message"`: `request_input` returned at
-   * once with a receipt (the `async-input` preview flag) and the answer reaches the agent later
-   * as a message in its conversation. Absent: the agent waits inside its tool call, which is
-   * every other review and every question asked with the flag off. Persisted
-   * (`reviews.wait_mode`).
+   * How the agent waits for this review's answer. `"message"`: the tool returned at once with a
+   * receipt and the answer reaches the agent later as a message in its conversation - a
+   * `request_input` question (the `async-input` preview flag), which its agent works past, or a
+   * `request_plan_decisions` form (`filed-plan-decisions` as well), which is still a gate its
+   * agent stops on (`isFiledGate`). Absent: the agent waits inside its tool call, which is every
+   * other review and every ask made with the flags off. Persisted (`reviews.wait_mode`).
    */
   waitMode?: "message";
   /**

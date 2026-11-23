@@ -1,7 +1,7 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
 import { OpenQuestionLimitError } from "./reviews.ts";
-import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
@@ -57,6 +57,7 @@ import {
   reusableStandingApproval,
   standingBundleAnswer,
   STANDING_FOLLOW_UP_NOTE,
+  filedPlanIdentityNote,
 } from "./plans/publication.ts";
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
@@ -333,6 +334,7 @@ import type {
   InspectorStatus,
   LlmStatus,
   ReviewActor,
+  ReviewItem,
   Session,
   SessionBlocker,
   SkillsView,
@@ -1888,6 +1890,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   if (residentInstructions) {
     reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
   }
+  // A filed plan form's answer names the managed plan and revision it approved or did not.
+  reviews?.addContinuationAddendum?.(filedPlanIdentityNote);
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -5200,6 +5204,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
+    // How this ask waits, decided once here and said in the response (`async-input`, and
+    // `filed-plan-decisions` for a plan form: the one reader of that flag). Read per ask so either
+    // flag takes effect without a restart. `call` is today's long poll; `message` returns the
+    // receipt for the MCP child to hand the agent at once.
+    const wait = decideWaitMode({
+      flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+      gateFlagOn: featureEnabled(FILED_PLAN_DECISIONS_FLAG),
+      kind,
+      snoozable: snoozable === true,
+      asyncCapable: parsed.data.asyncCapable === true,
+      messageable: canMessage(session),
+    });
+    const waitOptions = {
+      ...(wait === "message" ? { waitMode: "message" as const } : {}),
+      callerPolls: parsed.data.asyncCapable !== true,
+    };
+    // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+    // answer names the row's own mode rather than the one this ask would have had.
+    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
+      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    };
     try {
       const target = parsed.data.managedPlan;
       if (target) {
@@ -5228,40 +5255,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             });
           }
           const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
-          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id });
+          // Born settled: said as `call` even to a capable child, whose one poll returns the
+          // recorded approval as the tool result. Nothing is filed, so nothing is waited on.
+          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id, wait: "call" });
           const followUp = reviews.create(session.id, kind, title,
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
-            remaining);
+            remaining, waitOptions);
           recordStandingFollowUp(followUp.id, approvedId);
-          return c.json({ id: followUp.id, sessionId: session.id });
+          return created(followUp, { bundleApproved: true });
         }
-        const review = reviews.create(session.id, kind, title, fullBody, allDecisions);
+        const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
         // Offer "approve all future bundles" only where the resolve route can keep it.
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
-        return c.json({ id: review.id, sessionId: session.id });
+        return created(review);
       }
-      // How this ask waits, decided here and said in the response (`async-input`). Read per ask
-      // so the flag takes effect without a restart. `call` is today's long poll; `message`
-      // returns the receipt for the MCP child to hand the agent at once.
-      const wait = decideWaitMode({
-        flagOn: featureEnabled(ASYNC_INPUT_FLAG),
-        kind,
-        snoozable: snoozable === true,
-        asyncCapable: parsed.data.asyncCapable === true,
-        messageable: canMessage(session),
-      });
       const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
         snoozable,
-        ...(wait === "message" ? { waitMode: "message" as const } : {}),
+        ...waitOptions,
         meanwhile: parsed.data.meanwhile || null,
-        callerPolls: parsed.data.asyncCapable !== true,
       });
-      // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
-      // answer names the row's own mode rather than the one this ask would have had.
-      return review.waitMode === "message"
-        ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
-        : c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      return created(review);
     } catch (error) {
       if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
@@ -5514,8 +5528,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { env, sessionId, cwd } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
-    return c.json({ questions: reviews.openQuestions(session.id).map(({ id, title, createdAt, meanwhile, status }) =>
-      ({ id, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+    // Filed plan forms too (`openAsks`), each with its kind so the agent can tell the two apart.
+    return c.json({ questions: reviews.openAsks(session.id).map(({ id, kind, title, createdAt, meanwhile, status }) =>
+      ({ id, kind, title, createdAt, meanwhile: meanwhile ?? null, status })) });
   });
 
   app.post("/mcp/questions/:id/withdraw", async (c) => {

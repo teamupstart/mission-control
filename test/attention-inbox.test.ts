@@ -834,6 +834,39 @@ test("the inbox draws Stuck finalizations, then Reports, then Snoozed", async ()
   assert.match(open, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
 });
 
+test("a report opened from a notification that no section lists is drawn alone above the sections", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const read = mkReport({ id: "r-9", title: "Old news", body: "Already **read**.", readAt: 5, readBy: "mark-read" });
+  const fold = foldAttention({ sessions: [], reviews: [], ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })] });
+  const draw = (pinned: Parameters<typeof AttentionInbox>[0]["pinned"], inbox = true) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls("r-9").controls,
+        pinned,
+      }))),
+  );
+  const html = draw({ status: "ready", report: read });
+  const headings = [...html.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  // Above every section, and outside the fold: no Reports heading, no to read figure.
+  assert.deepEqual(headings, ["Opened from a notification", "Stuck finalizations"]);
+  assert.match(html, /aria-label="Opened from a notification"/);
+  assert.match(html, /<strong>read<\/strong>/);
+  assert.doesNotMatch(html, /to read/);
+  // A read report has nothing left to mark.
+  assert.doesNotMatch(html, /data-inbox-action="mark-read"/);
+  assert.match(draw({ status: "failed" }), /role="alert">This report could not be loaded\.</);
+  assert.doesNotMatch(draw({ status: "ready", report: read }, false), /Opened from a notification/);
+});
+
 test("an open report shows its body, its link and Mark read", async () => {
   const { createElement } = await import("react");
   const { renderToStaticMarkup } = await import("react-dom/server");

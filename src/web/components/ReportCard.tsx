@@ -120,14 +120,19 @@ export function ReportCard({
           )}
           <ReportAnswer report={report} target={target} onReply={onReply} onFollowUp={onFollowUp} />
           <div className="agent-report-actions">
-            <InboxActionButton
-              action="mark-read"
-              name={name}
-              className="btn btn-ghost"
-              tooltip="Mark this report read. It leaves the inbox and the to read figure, and stays in its session"
-              cardOpen
-              onClick={onMarkRead}
-            />
+            {/* A report opened from its notification may already be read; there is nothing to mark. */}
+            {report.readAt === null ? (
+              <InboxActionButton
+                action="mark-read"
+                name={name}
+                className="btn btn-ghost"
+                tooltip="Mark this report read. It leaves the inbox and the to read figure, and stays in its session"
+                cardOpen
+                onClick={onMarkRead}
+              />
+            ) : (
+              <span className="dim">Read</span>
+            )}
           </div>
         </div>
       )}

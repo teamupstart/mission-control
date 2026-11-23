@@ -483,6 +483,15 @@ export interface HookSpec {
    */
   submittedPromptText(evt: HookIngest): string | null;
   /**
+   * Whether this event submits a non-empty prompt that is entirely the harness's own
+   * scaffolding, such as a lone Claude `<task-notification>`, so no person typed any of it.
+   *
+   * Not `promptText` returning null: that also drops text a person typed but that states no
+   * goal, and only a prompt nobody typed may skip the new-work rules after a merge. A harness
+   * with no such scaffolding answers false everywhere.
+   */
+  isScaffoldingOnlyPrompt(evt: HookIngest): boolean;
+  /**
    * What this event says about a TERMINAL session's background sub-agents, in the neutral
    * signals `hook-subagents.ts` reduces - or `[]` for the many events that say nothing.
    *

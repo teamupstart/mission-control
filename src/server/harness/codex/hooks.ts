@@ -93,5 +93,6 @@ export const codexHooks: HookSpec = {
   workCycleSignal,
   promptText: codexPromptText,
   submittedPromptText: codexPromptText,
+  isScaffoldingOnlyPrompt: () => false,
   subagentSignals,
 };

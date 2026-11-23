@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { substantivePrompt } from "../src/server/harness/claude/scaffolding.ts";
+import { scaffoldingOnly, substantivePrompt } from "../src/server/harness/claude/scaffolding.ts";
 import { clampPrompt } from "../src/server/util/prompt-text.ts";
 
 // Every fixture below is a real shape lifted from this machine's transcripts or from the
@@ -79,6 +79,22 @@ test("prose wrapped in scaffolding keeps only the prose", () => {
 test("Claude's own local-command echo is not a goal", () => {
   assert.equal(substantivePrompt("Set effort level to xhigh"), null);
   assert.equal(substantivePrompt("[Request interrupted by user for tool use]"), null);
+});
+
+test("only Claude Code's own blocks make a turn scaffolding-only", () => {
+  const notification =
+    "<task-notification>\n<task-id>bg-watch</task-id>\n<status>completed</status>\n</task-notification>";
+  assert.equal(scaffoldingOnly(notification), true);
+  assert.equal(scaffoldingOnly(`${notification}\n<system-reminder>Today's date is 2026-07-15.</system-reminder>`), true);
+  assert.equal(scaffoldingOnly("<task-notification>\n<task-id>bg-watch</task-id>"), true);
+  assert.equal(scaffoldingOnly(`${notification}\nnow do the follow-up`), false);
+});
+
+test("a typed echo or session command is not scaffolding, though it is not a goal either", () => {
+  for (const raw of ["Set model to opus and fix the failing tests", "Set effort level to xhigh", "/clear"]) {
+    assert.equal(substantivePrompt(raw), null, raw);
+    assert.equal(scaffoldingOnly(raw), false, raw);
+  }
 });
 
 test("an ordinary typed prompt passes through intact", () => {

@@ -556,20 +556,6 @@ interface LivePrObservation {
   checkDetails?: import("@shared/pr-check-details.ts").PrCheckDetails | null;
 }
 
-/**
- * Whether a submitted prompt carries text but none of it is anybody's ask - a Claude
- * `<task-notification>` reporting that a background watcher exited, say.
- *
- * Such a prompt is work on the current episode, never new work. Classed as new work, a
- * notification landing just after a merge rolls the episode over in
- * `reconcileWorkEpisodeMerge` and strands the task on a fresh, PR-less episode. Both halves
- * are needed: `promptText` is also null when there is no text at all, and an absent prompt
- * is no evidence of machinery, so it stays new work.
- */
-function isMachineOnlyPrompt(spec: HookSpec, evt: HookIngest): boolean {
-  return spec.submittedPromptText(evt) !== null && spec.promptText(evt) === null;
-}
-
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
 const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
@@ -3855,8 +3841,10 @@ export class Registry extends EventEmitter {
               }
             : evt.event === "SessionStart" || evt.event === "SessionEnd"
               ? { kind: "hook_identity" }
+              // As new work, a notification landing just after a merge would roll the PR's
+              // episode over in `reconcileWorkEpisodeMerge` and strand the task.
               : evt.event === "UserPromptSubmit"
-                ? isMachineOnlyPrompt(spec, evt) ? { kind: "hook_work" } : { kind: "new_work" }
+                ? spec.isScaffoldingOnlyPrompt(evt) ? { kind: "hook_work" } : { kind: "new_work" }
               : { kind: "hook_work" }
           : { kind: "none" },
       );

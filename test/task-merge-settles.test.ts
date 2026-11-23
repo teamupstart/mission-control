@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import type { HookIngest } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-merge-settles-"));
@@ -263,6 +264,31 @@ test("a notification with typed prose after a merge is still new work", () => {
   hook(f, "UserPromptSubmit", mergedAt + 1_500, `${NOTIFICATION}\nnow do the follow-up`);
   assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("typed prose that opens like a local-command echo after a merge is still new work", () => {
+  // No goal is captured from it, but a person typed it, so it is not scaffolding.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-echo-prose", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, "Set model to opus and fix the failing tests");
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("no harness treats an empty or whitespace-only prompt as scaffolding", async () => {
+  // Pi submits `""` verbatim while its goal reading is null, which is how the first cut of
+  // this exemption misread an empty Pi prompt as machine-only.
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  for (const [agent, harness] of Object.entries(HARNESSES)) {
+    if (!harness.hooks) continue;
+    for (const prompt of ["", "  \n "]) {
+      const evt = { agent, event: "UserPromptSubmit", sessionId: null, cwd: null, transcriptPath: null, env: {}, prompt } as HookIngest;
+      assert.equal(harness.hooks.isScaffoldingOnlyPrompt(evt), false, `${agent} ${JSON.stringify(prompt)}`);
+    }
+  }
 });
 
 test("a prompt event with no prompt text after a merge is still new work", () => {

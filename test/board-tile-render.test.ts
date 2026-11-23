@@ -447,3 +447,41 @@ test("Fleet action waits remain visible across multiple repositories and disappe
     })), "");
   }
 });
+
+test("an idle stall is drawn in Idle's Stalled section with what is open and the fix", () => {
+  // `idle-stalled`: App hands the views the idle stalls; a card in the section carries the tag,
+  // the fact sheet and its fixes, and the Idle head counts the section between free and held.
+  const stalled = mkSession({
+    id: "stalled", name: "amber-lynx", state: "idle", activity: "Ran npm test (2 failing)",
+    task: { ...mkSession().task!, id: "task-stalled", title: "Fix login redirect loop", status: "running" },
+  });
+  const free = mkSession({ id: "free", name: "quiet-otter", state: "idle", activity: null });
+  const stall = {
+    sessionId: stalled.id, kind: "unfinished-work" as const, forMs: 34 * 60_000,
+    reason: "idle 34m with work unfinished",
+    facts: { kind: "unfinished-work" as const, task: { id: "task-stalled", title: "Fix login redirect loop" }, queueOpen: 0 },
+    fingerprint: "fp",
+  };
+  const html = renderToStaticMarkup(createElement(BoardView, {
+    ...props([stalled, free]),
+    stalledById: new Map([[stalled.id, stall]]),
+    onDismissStall: () => {},
+  }));
+  assert.match(html, /board-col-n n-free"[^>]*>1 free/);
+  assert.match(html, /board-col-n n-stalled"[^>]*>1 stalled/);
+  assert.match(html, /fleet-section-stalled/);
+  assert.match(html, /class="tile [^"]*is-stalled/);
+  assert.match(html, /<span class="tile-stalled"[^>]*>stalled<\/span>/);
+  assert.match(html, /<dt>Task<\/dt><dd>Fix login redirect loop<\/dd>/);
+  assert.match(html, /<dt>Last<\/dt><dd class="is-muted">Ran npm test \(2 failing\)<\/dd>/);
+  assert.match(html, /data-inbox-action="continue"/);
+  assert.match(html, /data-inbox-action="mark-done"/);
+  assert.match(html, /aria-label="Dismiss amber-lynx from Stalled"/);
+  // Free comes first, then the Stalled rule, then the stalled card.
+  assert.ok(html.indexOf("quiet-otter") < html.indexOf("fleet-section-stalled"));
+  assert.ok(html.indexOf("fleet-section-stalled") < html.indexOf("amber-lynx"));
+
+  // Without the map (the flag off), nothing about the section is drawn.
+  const off = renderToStaticMarkup(createElement(BoardView, props([stalled, free])));
+  assert.doesNotMatch(off, /stalled/i);
+});

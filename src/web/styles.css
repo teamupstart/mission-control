@@ -67,6 +67,9 @@
      STATE, and `--tone-color` - the spine, the swatch, the column head - had no purple
      member before it. */
   --held: var(--purple);
+  /* Idle's Stalled section (`idle-stalled`): a yellow apart from Needs you's amber, because a
+     stalled session is something to act on, not a question waiting for an answer. */
+  --stalled: #e3b341;
 
   /* A session the operator paused (`Session.pause`). Slate, and each neighbour was ruled out
      for the reason `--held` gives: `--working` blue would read as an agent burning tokens,
@@ -29994,6 +29997,9 @@ span.line-run-prov {
 .rail-group-split .n-awaiting {
   color: var(--muted);
 }
+.rail-group-split .n-stalled {
+  color: var(--stalled);
+}
 /* An ensemble's siblings, gathered under one header inside their tone section. The frame
    is a left hairline rather than a box: the rail is a dense vertical list and a bordered
    card per run would turn five rows into five cards. Shared by the console rail and the
@@ -30221,6 +30227,23 @@ span.line-run-prov {
 }
 .rail-row.is-held {
   --tone-color: var(--held);
+}
+/* The row-sized stalled mark, after the held one: stalled wins the spine, as it wins the section. */
+.rail-stalled {
+  flex: none;
+  padding: 0 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--stalled) 45%, var(--border));
+  background: color-mix(in oklab, var(--stalled) 13%, transparent);
+  color: var(--stalled);
+  cursor: help;
+}
+.rail-row.is-stalled {
+  --tone-color: var(--stalled);
 }
 .rail-marks {
   font-size: 9.5px;
@@ -31985,6 +32008,11 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
   background: color-mix(in oklab, var(--idle) 10%, var(--panel));
 }
+.board-col-n.n-stalled {
+  color: var(--stalled);
+  border-color: color-mix(in oklab, var(--stalled) 42%, var(--border));
+  background: color-mix(in oklab, var(--stalled) 12%, var(--panel));
+}
 .board-col-n.n-held {
   color: var(--held);
   border-color: color-mix(in oklab, var(--held) 42%, var(--border));
@@ -32051,6 +32079,13 @@ span.line-run-prov {
 }
 .fleet-section-awaiting .fleet-section-line::after {
   background: color-mix(in oklab, var(--awaiting) 35%, var(--border-soft));
+}
+.fleet-section-stalled .fleet-section-line b,
+.fleet-section-stalled .fleet-section-n {
+  color: var(--stalled);
+}
+.fleet-section-stalled .fleet-section-line::after {
+  background: color-mix(in oklab, var(--stalled) 32%, var(--border-soft));
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
@@ -33862,6 +33897,82 @@ span.line-run-prov {
    (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
    so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is
    a reset, and resetting an agent mid-run is exactly what the held marking exists to stop. */
+/* ---- Idle's Stalled section (`idle-stalled`, `StalledTileFacts.tsx`) ----
+   The card keeps its own look and gains a yellow spine, a `stalled` tag and a small fact sheet:
+   what is open, what it last did, and the step that moves it, with the fix beside it. */
+.tile.is-stalled {
+  --tone-color: var(--stalled);
+  border-color: color-mix(in oklab, var(--stalled) 28%, var(--border));
+}
+.tile-stalled {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--stalled) 45%, var(--border));
+  background: color-mix(in oklab, var(--stalled) 13%, transparent);
+  color: var(--stalled);
+  cursor: help;
+}
+.stalled-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: auto;
+}
+.stalled-facts dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.stalled-facts dt {
+  padding-top: 2px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.stalled-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.stalled-facts dd.is-muted {
+  color: var(--muted);
+}
+.stalled-facts dd.is-warn {
+  color: var(--stalled);
+}
+.stalled-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.stalled-actions .btn {
+  padding: 2px 9px;
+  font-size: 11px;
+}
+.stalled-actions .btn-primary {
+  border-color: color-mix(in oklab, var(--stalled) 55%, var(--border));
+  background: color-mix(in oklab, var(--stalled) 16%, var(--panel-2));
+  color: color-mix(in oklab, var(--stalled) 70%, var(--fg));
+}
+.stalled-feedback {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.stalled-feedback.is-error {
+  color: var(--danger);
+}
 /* Board tiles mark sessions held by an open workflow run. */
 .tile-held {
   flex: none;

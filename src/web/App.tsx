@@ -3,7 +3,8 @@ import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -110,12 +111,13 @@ import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
+import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
-import { orderSessions } from "./lib/fleet-order.ts";
+import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
 import { useDisplayItems } from "./lib/board-card.ts";
 import { isTopbarItemShown, PAGE_SEGMENTS, useTopbarLayout } from "./lib/topbar-items.ts";
 import {
@@ -136,7 +138,7 @@ import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
-import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
+import { foldAttention, foldWhileDismissalsUnknown, stallDismissalKey } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -2828,6 +2830,29 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // Read here rather than beside the inbox fold below, because Idle's Stalled section reads the
+  // same dismissals: a stall dismissed from its card returns to free or held (`stalledSessions`).
+  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
+  // popping back up on the next frame, the next reload or in a second window. The fold applies
+  // them, so the figure and the list still cannot disagree.
+  //
+  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
+  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
+  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
+  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  // Idle's Stalled section (`idle-stalled`): the idle stalls, by session, that the Board and the
+  // Console rail draw under the Stalled rule and the inbox no longer folds. One map, handed to the
+  // fleet ordering below and to both views, so the arrow keys walk the order the columns draw.
+  const idleStalledEnabled = resolveFeatureFlag(IDLE_STALLED_FLAG_ID, featureFlags);
+  const stalledById = useMemo(
+    () => stalledSessions(stalls, idleStalledEnabled, attentionDismissals.dismissed),
+    [stalls, idleStalledEnabled, attentionDismissals.dismissed],
+  );
+  const dismissStall = useCallback(
+    (sessionId: string, stall: Stall) => void attentionDismissals.dismiss([stallDismissalKey(sessionId, stall)]),
+    [attentionDismissals.dismiss],
+  );
   // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
   // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
   // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
@@ -2868,12 +2893,29 @@ export function App(): React.JSX.Element {
     });
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
-      awaitingIds,
+      awaitingIds, stalledById,
     );
   }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
     residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
-    pinnedResidents, blockedPlacement, awaitingIds]);
+    pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
+  // The sessions Idle's Stalled section draws, which are the only stalls the inbox leaves out
+  // (`inboxStalls`). Read off the ordering itself rather than re-derived from the stall kinds, so
+  // a stalled session the fleet does not hold - a resident in the residents drawer - keeps its
+  // Stuck row instead of being shown nowhere. Ordered over the placed fleet WITHOUT the search
+  // filter: a card a search hides is still in Idle, and finding it again must not move its stall.
+  const stalledDrawn = useMemo(() => {
+    if (stalledById.size === 0) return NO_STALLED_DRAWN;
+    if (!fleetQuery) return stalledInOrder(fleet.groups);
+    const placed = placement.excluded.size > 0
+      ? sessions.filter((s) => !placement.excluded.has(s.id))
+      : sessions;
+    return stalledInOrder(orderSessions(
+      placed, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds, stalledById,
+    ).groups);
+  }, [stalledById, fleetQuery, fleet, placement, sessions, heldIds, groupByRepo, pipelineCommissionById,
+    pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
    * open resident, which no fleet list holds. The views draw the detail from this, and the
@@ -3060,15 +3102,6 @@ export function App(): React.JSX.Element {
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
   //
-  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
-  // popping back up on the next frame, the next reload or in a second window. The fold applies
-  // them, so the figure and the list still cannot disagree.
-  //
-  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
-  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
-  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
-  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
-  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
   // contract, which the session detail reads so its send composer gives way to that box.
   const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
@@ -3091,14 +3124,16 @@ export function App(): React.JSX.Element {
             // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
             // read figure, whatever the window was told before the flag went off.
             ...(inboxNames ? { reports } : {}),
-            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
-            ...(inboxNames && stalls ? { stalls } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on, and leave
+            // the idle ones to Idle's Stalled section while `idle-stalled` is on.
+            ...(inboxNames && stalls ? { stalls: inboxStalls(stalls, stalledDrawn) } : {}),
           }),
     [
       sessions,
       answerableReviews,
       inboxNames,
       stalls,
+      stalledDrawn,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,
@@ -3733,6 +3768,8 @@ export function App(): React.JSX.Element {
       onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
     }),
     awaitingIds,
+    stalledById,
+    onDismissStall: dismissStall,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),

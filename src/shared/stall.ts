@@ -56,6 +56,20 @@ export type StallKind =
   | "unfinished-work"
   | "workflow-parked";
 
+/**
+ * The stall kinds that fire only on an IDLE session: the two rules that read "went quiet with
+ * something still expected". With the `idle-stalled` flag on these leave the inbox for Idle's
+ * Stalled section, because the session is already drawn in Idle and its card is where the
+ * context and the fix belong. The other two stay inbox rows: a silent-working session is in
+ * Working, and an escalation is a decision handed to a person, whatever column it sits in.
+ */
+export const IDLE_STALL_KINDS: readonly StallKind[] = ["unfinished-work", "workflow-parked"];
+
+/** Whether a stall is one Idle's Stalled section draws (`IDLE_STALL_KINDS`). */
+export function isIdleStall(stall: Pick<Stall, "kind">): boolean {
+  return IDLE_STALL_KINDS.includes(stall.kind);
+}
+
 export interface StallThresholds {
   /** Instrumented + working, but no hook event for this long. */
   workingMs: number;

@@ -10,7 +10,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Stall, StallFacts } from "../src/shared/stall.ts";
 import type { Session } from "../src/shared/types.ts";
-import { interruptDone, parkedStep, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
+import { interruptDone, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
+import { parkedStep } from "../src/web/lib/stall-actions.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 function stall(facts: StallFacts, reason = "idle 21m with work unfinished"): Stall {

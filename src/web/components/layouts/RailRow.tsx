@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef } from "react";
+import type { Stall } from "@shared/stall.ts";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
@@ -59,6 +60,7 @@ export function RailRow({
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
   resident = null,
+  stall = null,
 }: {
   session: Session;
   /**
@@ -91,6 +93,12 @@ export function RailRow({
   onOpenPipelineCommission?: (commissionId: string) => void;
   /** The resident this session is, or null. The same mark and gate the Board card reads. */
   resident?: ResidentSessionMark | null;
+  /**
+   * The idle stall this row sits under the Stalled rule for (`idle-stalled`), or null. The rail
+   * marks it and names the rule in the tooltip; the fact sheet and its fixes are the Board
+   * card's, because a rail row's two-line budget has no room for them.
+   */
+  stall?: Stall | null;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -158,7 +166,8 @@ export function RailRow({
     <>
       <button
         ref={setRef}
-        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}${
+        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${
+          selected ? " selected" : ""}${
           residentMark ? " is-resident" : ""
         }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
@@ -203,6 +212,11 @@ export function RailRow({
                 label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
               >
                 <span className="rail-held">held</span>
+              </Tooltip>
+            )}
+            {stall && (
+              <Tooltip label={`Stalled: ${stall.reason}`}>
+                <span className="rail-stalled">stalled</span>
               </Tooltip>
             )}
             {/* A wait qualifies the "idle" beside it the way "held" does: idle on purpose,

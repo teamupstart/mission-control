@@ -60,10 +60,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // and `POST /voice/shell-report`) answer 404 with the `voice` flag off, and
   // `POST /api/setup/install`'s refusal names the new `voice-previews` id. `GET /api/ui/config` and
   // `GET /api/setup/checks` are unchanged: what voice adds to them is withheld with the flag off.
+  // `POST /api/sessions/:id/inbox-message` then opened to the `idle-stalled` flag as well, so its
+  // 403 with both flags off names both previews.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 448);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "c1c94c97b367d91748929ffa7a05c65bd0f5ad696d2e6383d9d3a89a00a92f29");
+    "3adc1e1c0d99c19d0159c4eb0386245e44dfd69784fc122b1fa9401b5308f0fd");
 });
 
 function sourceFiles(dir: string): string[] {

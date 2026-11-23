@@ -27,6 +27,9 @@ import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
+import { StalledTileFacts } from "../StalledTileFacts.tsx";
+import { STUCK_RULE_LABELS } from "../../lib/stall-actions.ts";
+import type { Stall } from "@shared/stall.ts";
 import { openQuestionsLabel } from "../../lib/async-questions.ts";
 import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
@@ -97,6 +100,8 @@ export function SessionTile({
   shortcutChord = null,
   resident = null,
   residentLoopFeedback,
+  stall = null,
+  onDismissStall,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -164,6 +169,14 @@ export function SessionTile({
    */
   resident?: ResidentSessionMark | null;
   residentLoopFeedback?: ResidentLoopFeedbackBinding;
+  /**
+   * The idle stall this card sits under Idle's Stalled rule for (`idle-stalled`), or null. The
+   * view passes it only for a card it draws in that section, so the tag, the fact sheet and the
+   * section rule cannot disagree about one card.
+   */
+  stall?: Stall | null;
+  /** Dismiss `stall`, returning the card to free or held until its facts change. */
+  onDismissStall?: () => void;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
@@ -333,7 +346,7 @@ export function SessionTile({
       ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
         selected ? " selected" : ""
-      }${held ? " is-held" : ""}${blocker ? " is-blocked" : ""}${
+      }${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${blocker ? " is-blocked" : ""}${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}${
         workflowVisiblyExpanded ? " workflow-expanded" : ""
@@ -428,6 +441,12 @@ export function SessionTile({
             <span className="tile-held">held</span>
           </Tooltip>
         )}
+        {/* The stalled tag, for the reason the held one has it: the section rule scrolls off. */}
+        {stall && (
+          <Tooltip label={`Stalled: ${STUCK_RULE_LABELS[stall.kind]}`}>
+            <span className="tile-stalled">stalled</span>
+          </Tooltip>
+        )}
         {/* Last in the head, which is the card's top-right corner: the name above it takes
             the remaining width, so this lands where a reader's eye finishes the title and
             never pushes the title's ellipsis around. `Keycap` is the shared component every
@@ -487,6 +506,17 @@ export function SessionTile({
           and how far through the window it is. Always drawn while it stands, like the blocker
           state above, because it is why this idle card is quiet; nothing for any other card. */}
       <AwaitingTileTrack session={session} />
+
+      {/* Why this card sits under Stalled, and the fix. Always drawn while it does, like the
+          blocker above: it is the whole reason the card is in that section. */}
+      {stall && (
+        <StalledTileFacts
+          session={session}
+          stall={stall}
+          onOpenRun={onOpenWorkflowRun}
+          onDismiss={onDismissStall}
+        />
+      )}
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`

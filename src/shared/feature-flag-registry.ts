@@ -16,6 +16,11 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+/**
+ * The one owner of the Stalled section's id: idle stalls move from the inbox's Stuck section into
+ * Idle's Stalled section on the Board and the Console rail. See `docs/attention-and-alerts.md`.
+ */
+export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
 export const FEATURE_FLAGS = [
   {
@@ -134,6 +139,16 @@ export const FEATURE_FLAGS = [
       "its resident name in its board colour, else its task title, else its session name.",
     stage: "preview",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall"],
+  },
+  {
+    id: IDLE_STALLED_FLAG_ID,
+    label: "Stalled section in Idle",
+    description:
+      "Sessions that went quiet with work still open move out of the inbox into a Stalled section of " +
+      "the Idle column. Each card says what is open, what it last did and the step that moves it, " +
+      "with the fix in place.",
+    stage: "preview",
+    keywords: ["stalled", "stuck", "stall", "idle", "inbox", "unfinished", "parked", "board"],
   },
   {
     id: MCP_SCHEDULES_FLAG_ID,

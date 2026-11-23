@@ -369,11 +369,24 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       // Mark read is a report row's dismissal; there is nothing to dismiss without reading.
       return [];
     case "session_stuck":
-      // The rule and its clock-free facts, never the sentence: the sentence carries the minutes,
-      // so a dismissed row keyed on it would come back every minute. A stall from a daemon that
-      // predates fingerprints falls back to the sentence, which is the most it can say.
-      return [{ itemId: item.id, occurrence: occurrenceOf(item.stall.kind, item.stall.fingerprint ?? item.stall.reason) }];
+      return [stallDismissalKey(item.session.id, item.stall)];
   }
+}
+
+/**
+ * The one key a stall is dismissed under, whether the operator dismissed it as the inbox's Stuck
+ * row or as a card in Idle's Stalled section (`idle-stalled`). One key for both, so a stall hidden
+ * on one surface is not drawn again on the other when the flag is switched.
+ *
+ * The rule and its clock-free facts, never the sentence: the sentence carries the minutes, so a
+ * dismissal keyed on it would come back every minute. A stall from a daemon that predates
+ * fingerprints falls back to the sentence, which is the most it can say.
+ */
+export function stallDismissalKey(
+  sessionId: string,
+  stall: Pick<Stall, "kind" | "fingerprint" | "reason">,
+): AttentionDismissalKey {
+  return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? stall.reason) };
 }
 
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
@@ -610,7 +623,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     if (!session || isSettling(session)) continue;
     const item: AttentionItem = {
       kind: "session_stuck",
-      id: `stuck:${session.id}`,
+      id: stallDismissalKey(session.id, stall).itemId,
       session,
       stall,
       context: contextFor(session),

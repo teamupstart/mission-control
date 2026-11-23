@@ -82,8 +82,9 @@ in the order they are listed:
 
 The state also carries `capabilities`, `hotkeyError`, `model` and `roster`. The capabilities and
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
-absent and `hotkeyError` is null. `listener` is the daemon's own reading: available while a hello
-is live, and unavailable with the reason while a hello was refused for its protocol version.
+absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
+hello is live, unavailable with the reason while a hello was refused for its protocol version, and
+absent otherwise; a shell report's `listener` entry is dropped.
 `model` reads `missing` and `roster` is empty until later phases drive them.
 
 ### Routes

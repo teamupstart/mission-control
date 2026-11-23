@@ -154,13 +154,21 @@ export function startAwayWatcher(
     // With the flag off no report may be named or counted: the digest loses its report events,
     // keeps every other event, and nothing is marked counted.
     pending = reconcileReports(pending ? mergeBuffers(pending, closed) : closed, waiting ?? [], at, true);
+    // Closed before anything else can fail: a window left open after being merged into `pending`
+    // would be merged again on the next close, doubling every count in the digest.
+    buffer = null;
+    bufferedSince = null;
     if (waiting && deps.reportsCountedInDigest) {
       const counted = new Set(pending.events.filter((e) => e.kind === "report").map((e) => e.key));
       const ids = waiting.filter((r) => counted.has(`report:${r.id}`)).map((r) => r.id);
-      if (ids.length > 0) deps.reportsCountedInDigest(ids);
+      // A failed write (a busy database) loses only the marks, so a counted report may notify
+      // once more; it must not stop the window closing or the return that closes it.
+      try {
+        if (ids.length > 0) deps.reportsCountedInDigest(ids);
+      } catch (err) {
+        console.error("[away] marking reports counted in the digest failed:", err);
+      }
     }
-    buffer = null;
-    bufferedSince = null;
   };
 
   /** One pass: re-run the stall rules, reconcile the window, fold what changed. */

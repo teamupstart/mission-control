@@ -356,6 +356,34 @@ test("turning the inbox flag off while away takes buffered reports out of the di
   w.stop();
 });
 
+test("a failed write marking reports counted still closes the window, so the digest is not merged twice", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  t.mock.method(console, "error", () => undefined);
+  let clock = 1000;
+  const reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  let calls = 0;
+  const w = startAwayWatcher(src, () => clock, {
+    reportsCountedInDigest: () => { calls++; throw new Error("database is locked"); },
+  });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  reports.push(mkReport({ id: "r-9", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: { key: "session:z", name: "Zed", residentProfileId: null } }));
+  clock = 2000;
+  w.tick();
+  setAwayConfig({ away: false }, 2500);
+  assert.doesNotThrow(() => w.flush(), "the return that closes the window does not fail with the write");
+  clock = 3000;
+  w.tick(); // a later close finds no window left open
+  w.flush();
+  const digest = w.takePending()!;
+  assert.equal(calls, 1);
+  assert.deepEqual(digest.events.map((e) => [e.key, e.count]), [["report:r-9", 1]]);
+  assert.equal(rollupLine(digest), "1 report waiting: Zed");
+  w.stop();
+});
+
 test("workflow transitions use the same away window and coalesce stable ids", () => {
   const running = workflowRun();
   const completed = workflowRun({ status: "completed", phase: "complete", updatedAt: 2 });

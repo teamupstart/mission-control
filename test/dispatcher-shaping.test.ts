@@ -1,9 +1,10 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -1403,6 +1404,177 @@ test("Pi's launch message uses the memory pointer its budget measured, even if a
   assertRunning(run.task);
   assert.ok(worktree, "the shaper saw the worktree");
   assert.equal(run.prompt, await unshapedExpectation(run.task, "THE REQUEST"), "no pointer the budget did not count");
+});
+
+// ---- the route stage in turn one (Phase 7) ----
+
+function registerCommandShaper(id: string, stage: "select" | "route", args: string[]): void {
+  assert.equal(shapingStore.applyShapingIntent(ShapingIntentSchema.parse({ kind: "upsert", shaper: {
+    id, label: id, stage, timeoutMs: 30_000, transport: { type: "command", command: process.execPath, args: [FIXTURE, ...args] },
+  } })).ok, true);
+  assert.equal(shapingStore.applyShapingIntent({ kind: "enable", id, enabled: true }).ok, true);
+}
+
+/** What FR-05 appends for a repository's own task skill: the file's own text. */
+const OWN_TASK_SKILL = "OWN-SHIP-SKILL-BODY: the repository's own ship procedure.";
+
+test("turn one runs kind contract, task context, skills for this task, and a repository's own task skill last", async () => {
+  const repo = seedRepo("route-order");
+  // The repository ships its own task skill for the kind, so the routed skill of the same name
+  // must stay out of turn one (D14).
+  mkdirSync(join(repo, ".claude", "skills", "ship"), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", "ship", "SKILL.md"), `---\nname: ship\n---\n${OWN_TASK_SKILL}\n`);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "own task skill"]);
+  registerCommandShaper("guide", "select", ["ok"]);
+  registerCommandShaper("router", "route", ["route", "ship:task-start,lint-fix:during,wrap-notes:after-work"]);
+  const intent = "THE-OPERATOR-REQUEST";
+  // FR-05's reader includes the repository's own task skill only with this flag on.
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: true }).ok, true);
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "route-order", intent });
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: false }).ok, true);
+  assertRunning(run.task);
+  const prompt = run.prompt;
+  const unshaped = await unshapedExpectation(run.task, intent);
+  assert.ok(prompt.startsWith(unshaped), "the kind contract and everything before it come first, unchanged");
+  const at = (marker: string) => prompt.indexOf(marker);
+  assert.ok(at("## Task context") >= unshaped.length, "the task context follows the contract");
+  assert.ok(at("## Skills for this task") > at("## Task context"), "the skills follow the task context");
+  assert.ok(at("- `/lint-fix` - during the work") > at("## Skills for this task"));
+  assert.ok(at("- `/wrap-notes` - after the work: do not use it yet.") > at("- `/lint-fix`"));
+  // With FR-05's block in turn one it is last, and the routed skill of the kind's name has no line.
+  const own = at(OWN_TASK_SKILL);
+  assert.notEqual(own, -1, "the repository's own task skill is in turn one");
+  const record = currentShaping(run.task)!;
+  assert.ok(own > at("## Skills for this task"), "the repository's own task skill is last");
+  assert.equal(prompt.includes("- `/ship` -"), false, "the repository's own task skill wins (D14)");
+  assert.equal(record.skills?.find((skill) => skill.name === "ship")?.state, "superseded");
+  assert.deepEqual(record.skills?.filter((skill) => skill.name !== "ship").map((skill) => [skill.name, skill.state]),
+    [["lint-fix", "announced"], ["wrap-notes", "announced"]]);
+  assert.equal(record.bytes, Buffer.byteLength(getTaskShapingText("route-order")!.text));
+});
+
+test("a skill appearing after the original lookup does not suppress routing for that worktree", async (t) => {
+  const primary = seedRepo("route-race-primary");
+  const secondary = seedRepo("route-race-secondary");
+  const skillPath = ".claude/skills/ship/SKILL.md";
+  mkdirSync(dirname(join(primary, skillPath)), { recursive: true });
+  writeFileSync(join(primary, skillPath), OWN_TASK_SKILL);
+  execFileSync("git", ["-C", primary, "add", "-A"]);
+  execFileSync("git", ["-C", primary, "commit", "-qm", "own task skill"]);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "route-race", repoRoot: primary, agent: "claude", kind: "ship",
+    extraRepos: [{
+      repoRoot: secondary, worktreePath: null, branch: null, provider: null,
+      worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+    }],
+  }));
+  registerCommandShaper("router", "route", ["route", "ship:task-start"]);
+
+  // Let the real filesystem lookup report the secondary skill missing, then create it
+  // before returning that result. The first resolution skips it; a second read would see
+  // it and incorrectly suppress routing although turn one has no block from this tree.
+  const originalRealpath = fs.realpathSync;
+  let lateFile: string | null = null;
+  const lookup = t.mock.method(fs, "realpathSync", (...args: Parameters<typeof originalRealpath>) => {
+    try {
+      return originalRealpath(...args);
+    } catch (error) {
+      const path = args[0];
+      if (!lateFile && typeof path === "string" && path.endsWith(skillPath)
+        && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, "LATE-SHIP-SKILL-BODY");
+        lateFile = path;
+      }
+      throw error;
+    }
+  });
+  syncBuiltinESMExports();
+  t.after(() => { lookup.mock.restore(); syncBuiltinESMExports(); });
+
+  const run = await terminalDispatch({
+    agent: "claude", repo: primary, taskId: "route-race", intent: "work",
+    registry, headlessMode: true,
+  });
+  assertRunning(run.task);
+  assert.equal(lateFile, join(run.task.extraRepos![0]!.worktreePath!, skillPath));
+  assert.equal(readFileSync(lateFile!, "utf8"), "LATE-SHIP-SKILL-BODY");
+  assert.ok(run.prompt.includes(OWN_TASK_SKILL), "the original contributor's block is delivered");
+  assert.equal(run.prompt.includes("LATE-SHIP-SKILL-BODY"), false, "the late block was not captured");
+  assert.ok(run.prompt.includes("- `/ship` -"), "the late skill must not suppress the routed skill");
+  const routed = currentShaping(run.task)!.skills!.find((skill) => skill.name === "ship")!;
+  assert.equal(routed.state, "announced");
+  assert.deepEqual(routed.repositories, ["route-race-secondary"], "only the original contributor is excluded");
+});
+
+test("a skill disappearing after its body is read still suppresses routing for that worktree", async (t) => {
+  const repo = seedRepo("route-disappearing");
+  const skillPath = ".claude/skills/ship/SKILL.md";
+  mkdirSync(dirname(join(repo, skillPath)), { recursive: true });
+  writeFileSync(join(repo, skillPath), OWN_TASK_SKILL);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "own task skill"]);
+  registerCommandShaper("router", "route", ["route", "ship:task-start"]);
+
+  // Delete the file as readCapped closes it, after the body has been read but before the
+  // resolver returns. Even intersecting captured contributors with a later filesystem
+  // lookup would lose this worktree, although its block is still delivered in turn one.
+  const originalOpen = fs.openSync;
+  const originalClose = fs.closeSync;
+  let skillFile: { fd: number; path: string } | null = null;
+  let removedFile: string | null = null;
+  const open = t.mock.method(fs, "openSync", (...args: Parameters<typeof originalOpen>) => {
+    const fd = originalOpen(...args);
+    if (typeof args[0] === "string" && args[0].endsWith(skillPath)) skillFile = { fd, path: args[0] };
+    return fd;
+  });
+  const close = t.mock.method(fs, "closeSync", (fd: number) => {
+    originalClose(fd);
+    if (skillFile?.fd === fd) {
+      rmSync(skillFile.path);
+      removedFile = skillFile.path;
+      skillFile = null;
+    }
+  });
+  syncBuiltinESMExports();
+  t.after(() => { open.mock.restore(); close.mock.restore(); syncBuiltinESMExports(); });
+
+  const run = await terminalDispatch({
+    agent: "claude", repo, taskId: "route-disappearing", intent: "work", headlessMode: true,
+  });
+  assertRunning(run.task);
+  assert.equal(removedFile, join(run.task.worktreePath!, skillPath));
+  assert.equal(existsSync(removedFile!), false, "the contributor's file has disappeared");
+  assert.ok(run.prompt.includes(OWN_TASK_SKILL), "the captured contributor's body is still delivered");
+  assert.equal(run.prompt.includes("- `/ship` -"), false, "the original contributor still suppresses routing");
+  const routed = currentShaping(run.task)!.skills!.find((skill) => skill.name === "ship")!;
+  assert.equal(routed.state, "superseded");
+  assert.deepEqual(routed.repositories, [], "the original contributor stays excluded despite deletion");
+});
+
+test("a launch no router applies to is byte-identical to one from before routing, and records no skills", async () => {
+  const repo = seedRepo("route-none");
+  registerCommandShaper("guide", "select", ["ok"]);
+  const intent = "sort out the flexbox helper";
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "route-none", intent });
+  assertRunning(run.task);
+  const section = getTaskShapingText("route-none")!.text;
+  assert.equal(run.prompt, `${await unshapedExpectation(run.task, intent)}\n\n${section}`);
+  assert.equal(section.includes("Skills for this task"), false);
+  assert.equal("skills" in currentShaping(run.task)!, false);
+});
+
+test("Codex and Pi name a routed skill in their own grammar in turn one", async () => {
+  const repo = seedRepo("route-harness");
+  registerCommandShaper("router", "route", ["route", "lint-fix:during"]);
+  const codex = await terminalDispatch({ agent: "codex", repo, taskId: "route-codex", intent: "work" });
+  assertRunning(codex.task);
+  assert.ok(codex.prompt.includes("- `$lint-fix` - during the work: use this skill when it applies."), codex.prompt.slice(-400));
+  const pi = await terminalDispatch({ agent: "pi", repo, taskId: "route-pi", intent: "work" });
+  assertRunning(pi.task);
+  assert.ok(pi.prompt.includes("- `/skill:lint-fix` - during the work"), pi.prompt.slice(-400));
 });
 
 // ---- the work unit (work unit id, Phase 4) ----

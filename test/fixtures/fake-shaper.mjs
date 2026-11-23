@@ -40,6 +40,16 @@ switch (mode) {
       repo: request.stage === "gather" ? { facts: { language: "typescript" }, summary: `summary of ${request.repo.name}` } : undefined,
     });
     break;
+  case "route":
+    // A router (FR-04 `route_skills`): `route <name>:<point>[,<name>:<point>...]`, each with a fixed reason id.
+    reply({
+      version: "route-1",
+      skills: (rest[0] ?? "").split(",").filter(Boolean).map((pair) => {
+        const [name, point] = pair.split(":");
+        return { name, lifecycle_point: point, reason_id: `fixture/${name}` };
+      }),
+    });
+    break;
   case "large": {
     // Entries of `size` bytes each until `total` bytes, so the budget has something to cut.
     const total = Number(rest[0] ?? 64 * 1024);

@@ -45,7 +45,7 @@ import type {
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
-import { AttentionInbox } from "./components/AttentionInbox.tsx";
+import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
@@ -128,7 +128,7 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -363,6 +363,7 @@ export function App(): React.JSX.Element {
     sessions,
     restoringSessions,
     reviews,
+    reports,
     tasks,
     personas,
     sessionActions,
@@ -468,6 +469,30 @@ export function App(): React.JSX.Element {
   // target of its own - what it draws is `attention` below, folded from state App already has -
   // so it cannot go stale behind an item that resolved while it was open.
   const [inboxOpen, setInboxOpen] = useState(false);
+  // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
+  // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
+  // read" to. Opening a report records that it was opened (once) and never marks it read.
+  const [openReportId, setOpenReportId] = useState<string | null>(null);
+  const reportOpenPosted = useRef(new Set<string>());
+  const reportControls = useMemo<InboxReportControls>(() => ({
+    openReportId,
+    onToggle: (report) => {
+      const opening = openReportId !== report.id;
+      setOpenReportId(opening ? report.id : null);
+      if (opening && report.openedAt === null && !reportOpenPosted.current.has(report.id)) {
+        reportOpenPosted.current.add(report.id);
+        void api.openReport(report.id).then((result) => {
+          if (!result.ok) reportOpenPosted.current.delete(report.id);
+        });
+      }
+    },
+    onMarkRead: async (report) => {
+      const result = await api.markReportRead(report.id);
+      if (!result.ok) return result.error ?? "Could not mark the report read";
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+  }), [openReportId]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -2888,14 +2913,15 @@ export function App(): React.JSX.Element {
   // popping back up on the next frame, the next reload or in a second window. The fold applies
   // them, so the figure and the list still cannot disagree.
   //
-  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
-  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
-  // count after a reload, which is the pop-back dismissing exists to prevent.
+  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
+  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
+  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
+  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? NO_ATTENTION_YET
+        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
         : foldAttention({
             sessions,
             reviews: answerableReviews,
@@ -2905,6 +2931,9 @@ export function App(): React.JSX.Element {
             pipelineCommissions,
             tasks,
             dismissed: attentionDismissals.dismissed,
+            // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
+            // read figure, whatever the window was told before the flag went off.
+            ...(inboxNames ? { reports } : {}),
           }),
     [
       sessions,
@@ -2915,6 +2944,8 @@ export function App(): React.JSX.Element {
       tasks,
       residentRuns,
       attentionDismissals.dismissed,
+      inboxNames,
+      reports,
     ],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
@@ -4636,6 +4667,7 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           snoozed={snoozed.length}
+          toRead={attention.toRead}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
@@ -5301,6 +5333,8 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  reports={reportControls}
+                  held={attentionDismissals.dismissed === null}
                 />
               )}
 
@@ -5511,9 +5545,6 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
-
-/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
-const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

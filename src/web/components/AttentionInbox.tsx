@@ -21,6 +21,8 @@ import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
+import { ReportCard } from "./ReportCard.tsx";
+import type { ReportItem } from "@shared/reports.ts";
 import {
   PausedResidentsContext,
   QUESTION_ACTION_COPY,
@@ -71,7 +73,21 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   pipeline_commission: "Pipeline lifecycle",
   session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
+  agent_reports: "Reports",
 };
+
+/**
+ * What the Reports section needs from the dashboard: which report is open on screen
+ * (`openReportId` lives in App, so there is one answer to it), and the two things a card does.
+ */
+export interface InboxReportControls {
+  openReportId: string | null;
+  /** Open this report, or close it when it is the open one. */
+  onToggle: (report: ReportItem) => void;
+  /** Mark it read. Resolves to why the daemon refused, or null. */
+  onMarkRead: (report: ReportItem) => Promise<string | null>;
+}
+
 
 export function AttentionInbox({
   fold,
@@ -81,6 +97,8 @@ export function AttentionInbox({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
+  reports,
+  held = false,
 }: {
   fold: AttentionFold;
   /**
@@ -100,7 +118,32 @@ export function AttentionInbox({
   /** Focus a session on the fleet. */
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission?: (commissionId: string) => void;
+  /**
+   * The Reports section's state and actions (`inbox` flag). Required, with no inert default: a
+   * Reports row whose toggle and Mark read did nothing would look like a working inbox.
+   */
+  reports: InboxReportControls;
+  /**
+   * The operator's dismissals are not known yet (still loading, or unreadable), so every row
+   * that can be dismissed is held back and only reports are listed. The heading then says the
+   * answers are held rather than claiming there is nothing to answer.
+   */
+  held?: boolean;
 }): React.JSX.Element {
+  const reportsOn = useFeatureFlag(INBOX_FLAG);
+  // A refused Mark read, by report, drawn under its card until it is tried again.
+  const [readRefused, setReadRefused] = useState<ReadonlyMap<string, string>>(new Map());
+  const markRead = (report: ReportItem) => {
+    setReadRefused((current) => {
+      if (!current.has(report.id)) return current;
+      const next = new Map(current);
+      next.delete(report.id);
+      return next;
+    });
+    void reports.onMarkRead(report).then((error) => {
+      if (error) setReadRefused((current) => new Map(current).set(report.id, error));
+    });
+  };
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
   const leave = (go: () => void) => () => {
@@ -153,11 +196,17 @@ export function AttentionInbox({
             on a panel headed `3 need you` made the operator reconcile two labels for one
             figure at the moment they were trying to drain it.
           */}
-          <strong>{fold.total > 0 ? `${fold.total} to answer` : "Nothing to answer"}</strong>
+          <strong>{fold.total > 0 ? `${fold.total} to answer` : held ? "Answers held" : "Nothing to answer"}</strong>
+          {held && <span className="dim"> · they appear once your inbox dismissals can be read</span>}
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
-          <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
+          <span className="dim">
+            {reportsOn
+              ? " · answers, decisions, halts, stuck finalizations and reports"
+              : " · answers, decisions, halts and stuck finalizations"}
+          </span>
+          {fold.toRead > 0 && <span className="dim"> · {fold.toRead} to read</span>}
           {snoozed.length > 0 && <span className="dim"> · {snoozed.length} snoozed</span>}
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
@@ -182,6 +231,9 @@ export function AttentionInbox({
               {heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem
                 item={item}
+                reports={reports}
+                onMarkRead={markRead}
+                readRefused={readRefused}
                 dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
@@ -249,6 +301,8 @@ function inboxSubject(item: AttentionItem): string {
       return item.summary.title;
     case "pipeline_halt":
       return item.run.slug;
+    case "agent_reports":
+      return item.authorName;
     case "session_reviews":
     case "session_dialog":
     case "session_blocked":
@@ -290,6 +344,9 @@ function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: ()
 
 function InboxItem({
   item,
+  reports,
+  onMarkRead,
+  readRefused,
   dismissButton,
   onOpenEnsemble,
   onOpenSession,
@@ -297,7 +354,10 @@ function InboxItem({
   onLeave,
 }: {
   item: AttentionItem;
-  /** Drawn last in the row's header, whatever the kind. */
+  reports: InboxReportControls;
+  onMarkRead: (report: ReportItem) => void;
+  readRefused: ReadonlyMap<string, string>;
+  /** Drawn last in the row's header, whatever the kind but a report row's, which Mark read clears. */
   dismissButton: React.ReactNode;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
@@ -506,6 +566,30 @@ function InboxItem({
             {dismissButton}
           </div>
           <p className="inbox-line inbox-error">{item.error}</p>
+        </section>
+      );
+    case "agent_reports":
+      // No Dismiss: Mark read is a report's dismissal, and a report waits to be read rather
+      // than to be answered.
+      return (
+        <section className="inbox-item inbox-reports" aria-label={`Reports from ${item.authorName}`}>
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>
+              ✉
+            </span>
+            {subject}
+            <span className="dim"> · {item.reports.length} to read</span>
+          </div>
+          {item.reports.map((report) => (
+            <ReportCard
+              key={report.id}
+              report={report}
+              open={reports.openReportId === report.id}
+              onToggle={() => reports.onToggle(report)}
+              onMarkRead={() => onMarkRead(report)}
+              error={readRefused.get(report.id) ?? null}
+            />
+          ))}
         </section>
       );
   }

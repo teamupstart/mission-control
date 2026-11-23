@@ -204,8 +204,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Schedule enum values
 - Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
   transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
-  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
-  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
+  (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
+  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
+  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
+  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
+  `pending_turns` and is final. Stage, transport and
   built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
   recorded with launches. A stored shaper whose stage or transport this build does not know is
   kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup

@@ -63,6 +63,12 @@ export interface LaunchShapingInput {
    * such as a pane paste that travels as an `osascript` argument.
    */
   finalCheck?: (section: string) => Promise<string | null>;
+  /**
+   * The attached worktrees, by path, whose own task skill for this kind turn one carries
+   * (FR-05's `resolveRepoTaskSkills`). A routed skill of the kind's name is not announced for
+   * them (D14). By path, because two attached worktrees of one repository share its name.
+   */
+  repositoryTaskSkillWorktrees?: readonly string[];
 }
 
 export interface LaunchShaping {
@@ -207,6 +213,7 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
       ...shapingInputFor({ ...input, workflowName: workflowNameOf(input.workflowName) }),
       signal: cancel.signal,
       ...(allowance ? { maxSectionBytes: allowance.maxSectionBytes } : {}),
+      ...(input.repositoryTaskSkillWorktrees ? { repositoryTaskSkillWorktrees: input.repositoryTaskSkillWorktrees } : {}),
     };
     poll = setInterval(() => { if (!input.stillDispatching()) cancel.abort(); }, CANCEL_POLL_MS);
     input.onShaping(true);

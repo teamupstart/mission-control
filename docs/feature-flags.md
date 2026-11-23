@@ -185,7 +185,7 @@ gates, not by resolving an unknown id as on.
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, and its launch record, which the session detail's "work unit" row shows. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
-| `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards. Agent reports and Stuck rows join it in later releases | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent) |
+| `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section and the top bar's to read figure), and the one naming rule on alert titles, inbox row headers, the review modal header and question cards. Stuck rows join it in a later release | [Agent reports](attention-and-alerts.md#agent-reports), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
@@ -195,6 +195,10 @@ a toggle reaches a second window without a reload, and the `/api/shaping` gate f
 and reaches a second window without a reload, and that the panel's filter finds it.
 `e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
 modal header, the question card, an alert's title, and a resident's board colour.
+`e2e/specs/reports-inbox.spec.ts` checks agent reports: a report posted on the tool's channel
+reaches the inbox and the to read figure, opening it changes no figure, Mark read clears it, a
+replacement shows once with its note, the session never turns amber, and nothing shows with the
+flag off.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
 

@@ -25,9 +25,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { foldAttention, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
+import { attentionDismissalKeys, foldAttention, foldWhileDismissalsUnknown, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
+import { mkReport, mkReportControls } from "./helpers/report-fixture.ts";
 import {
   mkEnsembleLink,
   mkEnsembleSummary,
@@ -392,6 +393,7 @@ test("the inbox renders every item kind the fold can produce", () => {
     "pipeline_halt",
     "session_blocked",
     "parked_finalization",
+    "agent_reports",
   ]) {
     assert.match(inbox, new RegExp(`case "${kind}":`), `${kind} has no arm in the inbox`);
   }
@@ -442,6 +444,14 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
     "inbox-line",
     "inbox-error",
     "inbox-empty",
+    "inbox-reports",
+    "agent-report-card",
+    "agent-report-head",
+    "agent-report-toggle",
+    "agent-report-meta",
+    "agent-report-body",
+    "agent-report-link",
+    "agent-report-actions",
   ]) {
     assert.ok(css.includes(`.${cls}`), `${cls} has no rule in styles.css`);
   }
@@ -449,7 +459,7 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
 
 test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they are derived in", () => {
   // R24: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts,
-  // Waiting on you, Stuck finalizations. Later phases insert Stuck and Reports at fixed places.
+  // Waiting on you, Stuck finalizations, Reports. Stuck is inserted by a later phase at its place.
   assert.deepEqual([...INBOX_SECTION_ORDER], [
     "ensemble_decision",
     "session_reviews",
@@ -458,6 +468,7 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
     "pipeline_halt",
     "session_blocked",
     "parked_finalization",
+    "agent_reports",
   ]);
   const commission: PipelineCommission = {
     id: "commission-1", taskId: "pipeline-task", provider: "ai-conductor", repoRoot: "/repo",
@@ -494,6 +505,201 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
     ],
     pipelineCommissions: [commission],
     pipelineRuns: [halted],
+    reports: [mkReport({ id: "r-1" })],
   });
   assert.deepEqual(result.items.map((item) => item.kind), [...INBOX_SECTION_ORDER]);
+});
+
+// ---- agent reports (`inbox` flag) ----
+
+test("reports fold into one row per author, authors ordered by their oldest report", () => {
+  const steve = { key: "resident:steve", name: "Steve", residentProfileId: "steve" };
+  const carol = { key: "session:s-carol", name: "Carol", residentProfileId: null };
+  const result = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [
+      mkReport({ id: "r-3", author: steve, createdAt: 30 }),
+      mkReport({ id: "r-1", author: carol, createdAt: 10 }),
+      mkReport({ id: "r-2", author: steve, createdAt: 20 }),
+    ],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["agent-reports:session:s-carol", "agent-reports:resident:steve"]);
+  const steveRow = result.items[1]!;
+  assert.equal(steveRow.kind, "agent_reports");
+  if (steveRow.kind === "agent_reports") {
+    assert.deepEqual(steveRow.reports.map((r) => r.id), ["r-2", "r-3"]);
+    assert.equal(steveRow.authorName, "Steve");
+  }
+  assert.equal(result.toRead, 3);
+  assert.equal(result.total, 0, "a report is never something to answer");
+});
+
+test("a replacing report keeps its chain's place in the queue, and read or replaced reports are left out", () => {
+  const author = { key: "session:s1", name: "Fix the parser", residentProfileId: null };
+  const other = { key: "session:s2", name: "Other", residentProfileId: null };
+  const result = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [
+      mkReport({ id: "r-1", author, createdAt: 10, supersededBy: "r-4" }),
+      mkReport({ id: "r-2", author: other, createdAt: 20 }),
+      mkReport({ id: "r-3", author: other, createdAt: 25, readAt: 26, readBy: "mark-read" }),
+      // r-4 replaced r-1: posted last, but it keeps r-1's place ahead of r-2.
+      mkReport({ id: "r-4", author, createdAt: 40, rootId: "r-1", rootCreatedAt: 10, version: 2 }),
+    ],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["agent-reports:session:s1", "agent-reports:session:s2"]);
+  assert.equal(result.toRead, 2);
+  const first = result.items[0]!;
+  if (first.kind === "agent_reports") assert.deepEqual(first.reports.map((r) => r.id), ["r-4"]);
+});
+
+test("opening a report changes neither to read nor to answer", () => {
+  const unopened = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })] });
+  const opened = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1", openedAt: 5 })] });
+  assert.deepEqual([opened.toRead, opened.total], [unopened.toRead, unopened.total]);
+  assert.equal(opened.toRead, 1);
+});
+
+test("a report claims no session: an amber session with a report is still Waiting on you", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s1", name: "Amber", state: "awaiting_input" })],
+    reviews: [],
+    ensembles: [],
+    reports: [mkReport({ id: "r-1", sessionId: "s1" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_blocked", "agent_reports"]);
+  assert.equal(result.total, 1);
+  assert.equal(result.toRead, 1);
+});
+
+test("agent_reports is the final fold kind, directly after parked_finalization", () => {
+  const order: readonly string[] = INBOX_SECTION_ORDER;
+  assert.equal(order.at(-1), "agent_reports");
+  assert.equal(order[order.indexOf("agent_reports") - 1], "parked_finalization");
+  // Whether or not a later phase's `session_stuck` is present, nothing follows Reports in the
+  // fold, so the inbox's own Snoozed heading is always the next one.
+  assert.ok(!order.slice(order.indexOf("agent_reports") + 1).length);
+});
+
+test("a dismissal of an unrelated row leaves the Reports row and the to read figure in place", () => {
+  const amber = mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" });
+  const withoutDismissal = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })] });
+  const blocked = withoutDismissal.items.find((item) => item.kind === "session_blocked")!;
+  const dismissed = new Map(attentionDismissalKeys(blocked).map((key) => [key.itemId, key.occurrence]));
+  assert.ok(dismissed.size > 0, "precondition: a real, non-empty dismissal");
+  const result = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })], dismissed });
+  assert.deepEqual(result.items.map((item) => item.kind), ["agent_reports"], "the dismissed row left, the report stayed");
+  assert.equal(result.toRead, 1);
+  assert.equal(result.total, 0);
+  // Even a dismissal recorded under the report row's own id does not hide it: Mark read is how it leaves.
+  const ownId = foldAttention({
+    sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })],
+    dismissed: new Map([["agent-reports:session:s1", ""]]),
+  });
+  assert.equal(ownId.toRead, 1);
+});
+
+test("while dismissals are unknown, reports are still folded and counted, and nothing else is", () => {
+  const held = foldWhileDismissalsUnknown([mkReport({ id: "r-1" }), mkReport({ id: "r-2", readAt: 3, readBy: "mark-read" })]);
+  assert.deepEqual(held.items.map((item) => item.kind), ["agent_reports"]);
+  assert.equal(held.toRead, 1);
+  assert.equal(held.total, 0);
+  // With the flag off the caller passes no reports, and the held fold is empty, as it always was.
+  assert.deepEqual(foldWhileDismissalsUnknown(undefined), { items: [], total: 0, toRead: 0 });
+});
+
+test("a held inbox says its answers are held rather than that there is nothing to answer", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const draw = (held: boolean) => renderToStaticMarkup(withOverlayHost(createElement(AttentionInbox, {
+    fold: foldWhileDismissalsUnknown([mkReport({ id: "r-1" })]),
+    onClose: () => {},
+    onDismiss: async () => null,
+    onOpenEnsemble: () => {},
+    onOpenSession: () => {},
+    reports: mkReportControls().controls,
+    held,
+  })));
+  const heldHtml = draw(true);
+  assert.match(heldHtml, /<strong>Answers held<\/strong>/);
+  assert.match(heldHtml, /once your inbox dismissals can be read/);
+  assert.doesNotMatch(heldHtml, /Nothing to answer/);
+  assert.match(heldHtml, /<h4 class="inbox-section">Reports<\/h4>/);
+  assert.match(draw(false), /<strong>Nothing to answer<\/strong>/);
+});
+
+test("with no reports passed the fold is the one every older caller gets", () => {
+  const result = foldAttention({ sessions: [], reviews: [], ensembles: [] });
+  assert.deepEqual(result, { items: [], total: 0, toRead: 0 });
+});
+
+test("the inbox draws Stuck finalizations, then Reports, then Snoozed", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const snoozedSession = mkSession({ id: "s-snooze", name: "Snoozer" });
+  const result = foldAttention({
+    sessions: [snoozedSession],
+    reviews: [],
+    ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })],
+    reports: [mkReport({
+      id: "r-7", title: "Build failure diagnosed", version: 2, rootId: "r-6",
+      author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" },
+    })],
+  });
+  const draw = (openReportId: string | null) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold: result,
+        snoozed: [{ review: review({ id: "q-snoozed", sessionId: "s-snooze" }), session: snoozedSession }],
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls(openReportId).controls,
+      }))),
+  );
+  const html = draw(null);
+  const headings = [...html.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  assert.deepEqual(headings, ["Stuck finalizations", "Reports", "Snoozed"]);
+  // Collapsed: the title is the toggle, with the author, and the chain's note; no body, no Mark read.
+  assert.match(html, /aria-expanded="false"[^>]*data-inbox-action="toggle"[^>]*>Build failure diagnosed<\/button>/);
+  assert.match(html, /updated 1 time</);
+  assert.doesNotMatch(html, /data-inbox-action="mark-read"/);
+  // A report row has no Dismiss: Mark read is how it leaves.
+  assert.match(html, /aria-label="Reports from Steve"/);
+  assert.doesNotMatch(html, /Dismiss Steve from the inbox/);
+  assert.match(html, /1 to read/);
+  // The open card is the one the dashboard's `openReportId` names, and only that one has Mark read.
+  const open = draw("r-7");
+  assert.match(open, /aria-expanded="true"[^>]*data-inbox-action="toggle"[^>]*>Build failure diagnosed<\/button>/);
+  assert.match(open, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
+});
+
+test("an open report shows its body, its link and Mark read", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const html = renderToStaticMarkup(createElement(ReportCard, {
+    report: mkReport({ id: "r-1", body: "The **cache** was stale.", url: "https://github.com/o/r/pull/1",
+      document: { name: "report.html", kind: "html" } }),
+    open: true,
+    onToggle: () => {},
+    onMarkRead: () => {},
+    now: 1,
+  }));
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /<strong>cache<\/strong>/);
+  assert.match(html, /href="https:\/\/github.com\/o\/r\/pull\/1"/);
+  assert.match(html, /Attached: report.html/);
+  assert.match(html, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
+  assert.doesNotMatch(html, /updated \d+ time/, "a first report replaced nothing");
 });

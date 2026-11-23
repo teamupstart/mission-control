@@ -5,9 +5,10 @@
 // daemon, the dashboard and a later voice layer read one declaration rather than three copies.
 
 /**
- * The preview flag for reports and inbox upgrades. Today it turns on the one naming rule
- * (`agentDisplayName`) on alert titles, inbox rows, the review modal and question cards. Agent
- * reports and Stuck rows are planned to join it in later phases, behind this same flag.
+ * The preview flag for reports and inbox upgrades. Today it turns on agent reports (the Reports
+ * section and the to read figure) and the one naming rule (`agentDisplayName`) on alert titles,
+ * inbox rows, the review modal and question cards. Stuck rows are planned to join it in a later
+ * phase, behind this same flag.
  * "inbox" also names headless mode's dispatch inbox, which is why the flag's label spells out
  * what it turns on.
  */
@@ -62,6 +63,19 @@ export const INBOX_ACTIONS = [
     id: "answer",
     label: "Send answer",
     spoken: { named: "{name}, ...", whileOpen: "reply, ..." },
+    clickOnly: null,
+  },
+  // The report card's show-and-hide control. It only discloses the body, so it is never spoken.
+  {
+    id: "toggle",
+    label: "Show report",
+    spoken: null,
+    clickOnly: "disclosure",
+  },
+  {
+    id: "mark-read",
+    label: "Mark read",
+    spoken: { named: "{name}, mark read", whileOpen: null },
     clickOnly: null,
   },
 ] as const satisfies readonly InboxActionSpec[];

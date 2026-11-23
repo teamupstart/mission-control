@@ -3415,6 +3415,34 @@ that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same 
 leaves whatever **Install integrations** registered machine-wide alone.
 
 
+### Agent reports
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, an agent tells you it has
+finished something you need to read with the Mission Control MCP tool `post_report`. It takes a
+one-line `title`, a Markdown `body` (up to 4,000 characters), and optionally a checkout-relative
+`.html` or `.md` `file`, an http(s) `url`, and `replaces`, the id of one of its own earlier
+reports. The tool returns at once with a receipt naming the report's id (`r-42`) and telling the
+agent not to wait for a reply. Its description tells the agent when to report: when asked to, or
+when it has finished something you must read to act. Progress stays on `report_status`, and
+anything urgent or needing your decision is a `request_input` question.
+
+- **Stored apart from questions.** A report has its own table and never becomes a review: the
+  session does not turn amber, nothing counts toward **need you** or **to answer**, completion is
+  not held, and Foreman never sees it. It is read in the attention inbox's
+  [Reports](attention-and-alerts.md#agent-reports) section and counted in the top bar's **to read**.
+- **An attached document is copied.** The file must be inside the session's checkout (the same
+  containment rules as the Files viewer: no symlinks, nothing outside), an `.html` or `.md` file,
+  at most 2 MiB. It is copied to `<state home>/reports/<id>/` when the report is posted, so worktree
+  cleanup does not take it away.
+- **Replacing a report.** `replaces` must name one of the agent's own reports that is still
+  waiting to be read. Anything else is refused with the list of the agent's open reports and their
+  titles, so an agent that lost the id can retry. A resident is one author across its runs.
+- **A report outlives its session.** It keeps the author's name, task, repository and resident
+  profile from when it was posted. `GET /api/sessions/:id/reports` lists every report the session
+  posted, every version, read or not, after the session has gone.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on. A session on
+  an MCP bundle older than this build does not have the tool.
+
 ### Scout reports from a session
 
 The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y

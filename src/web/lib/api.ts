@@ -8,6 +8,7 @@ import {
   type ShapingRun,
   type ShapingTestRequest,
   type TaskShaping,
+  type TaskSkillPrompt,
 } from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
@@ -636,6 +637,8 @@ export interface TaskShapingView {
   summary: TaskShaping;
   /** The section delivered in turn one, or null when nothing was kept. */
   text: string | null;
+  /** The launch's after-work prompt, null until one was written. Absent from an older daemon. */
+  afterWork?: TaskSkillPrompt | null;
 }
 
 /** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
@@ -2145,6 +2148,10 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
    * conversation replays afterwards - `response` is the flattened string the agent reads,

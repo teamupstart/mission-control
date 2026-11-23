@@ -3269,3 +3269,382 @@ for (const refused of [false, true]) test(`a marked answer pasted into a termina
   else await until(() => deliveriesFor(key)[0]?.confirmedAt != null, "the pasted delivery to be confirmed");
   f.manager.stop(); clearPendingTurns(key);
 });
+
+test("a queued after-work prompt is dropped, never sent, when task shaping is off at delivery", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const run = (name: string, enabled: boolean) => {
+    const registry = new Registry();
+    const id = `sdk:${name}`;
+    registry.registerSdkSession({ id, agent: "claude", name, cwd: `/repo/${name}`, agentSessionId: `conversation:${name}` });
+    const sent: string[] = [];
+    let shaping = true;
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn) => { sent.push(turn.text); return "started"; },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping });
+    manager.start();
+    working(registry, id);
+    const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}task-${name}:${id}:1`;
+    // Queued while task shaping was on, as the after-work prompter queues it.
+    const queued = manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+      taskId: `task-${name}`, sessionId: id, noteKey, turnId, text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+    }));
+    assert.equal(queued.pendingTurn?.id, turnId);
+    shaping = enabled;
+    return { registry, manager, id, sent, row: () => getTaskSkillPrompt(`task-${name}`, id) };
+  };
+
+  const off = run("after-work-off", false);
+  idle(off.registry, off.id);
+  await settles(() => (off.registry.getSession(off.id)?.pendingTurns.length ?? 1) === 0);
+  await tick(20);
+  assert.deepEqual(off.sent, [], "nothing is sent once the flag is off");
+  assert.deepEqual(off.registry.getSession(off.id)?.pendingTurns, [], "the queued turn is gone from the outbox");
+  assert.equal(off.row()?.state, "not_delivered");
+  assert.equal(off.row()?.reason, AFTER_WORK_FLAG_OFF);
+  off.manager.stop();
+
+  // The same turn with the flag still on is delivered at idle.
+  const on = run("after-work-on", true);
+  idle(on.registry, on.id);
+  await until(() => on.sent.length > 0, "the after-work turn to be delivered");
+  assert.equal(on.sent[0]!.split("\n")[0], "/wrap-notes");
+  on.manager.stop();
+});
+
+test("an after-work turn a later launch supersedes while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, upsertTask, commitTaskShaping } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-superseded";
+  registry.registerSdkSession({ id, agent: "claude", name: "superseded", cwd: "/repo/superseded", agentSessionId: "conversation:superseded" });
+  const taskId = "task-superseded";
+  upsertTask(mkTask({ id: taskId, status: "running", sessionId: id }));
+  const sent: string[] = [];
+  let handoffs = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The task is handed back to this session while the delivery holds the turn: the new
+      // launch's shaping commit removes the earlier launch's prompt row, but not the claimed turn.
+      commitTaskShaping(taskId, null, "", Date.now(), id);
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(sent, [], "the superseded launch's prompt is refused at the acceptance guard");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+  manager.stop();
+});
+
+test("an after-work turn task shaping is turned off for while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+
+  // SDK: the flag is turned off after the outbox claimed the turn, while the driver waits to send it.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-flag-held";
+    registry.registerSdkSession({ id, agent: "claude", name: "flag-held", cwd: "/repo/flag-held", agentSessionId: "conversation:flag-held" });
+    let shaping = true;
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        shaping = false;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping, afterWorkTurnOwed: () => true });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-flag-held-sdk");
+    idle(registry, id);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(sent, [], "refused at the acceptance guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+
+  // Terminal: the flag is turned off after the outbox claimed the turn, before the paste.
+  {
+    const name = "after-work-flag-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let shaping = true;
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => shaping,
+        afterWorkTurnOwed: () => true,
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          shaping = false;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-flag-held-pane");
+    stopHook(registry, name);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(pasted, [], "refused at the paste guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+});
+
+test("an after-work turn whose launch cannot be checked is held back, never delivered and never dropped, until it can", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-unverified";
+  registry.registerSdkSession({ id, agent: "claude", name: "unverified", cwd: "/repo/unverified", agentSessionId: "conversation:unverified" });
+  const taskId = "task-unverified";
+  let readable = true;
+  let checksWhileUnreadable = 0;
+  let handoffs = 0;
+  const sent: string[] = [];
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The ownership read starts failing while the driver holds the claimed turn.
+      if (handoffs === 1) readable = false;
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5,
+    afterWorkTurnOwed: () => {
+      if (readable) return true;
+      checksWhileUnreadable += 1;
+      throw new Error("database is locked");
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  // Refused at the acceptance guard, then checked again on the drain's recheck timer, never claimed.
+  await until(() => checksWhileUnreadable >= 3, "the drain to recheck the unreadable launch");
+  assert.deepEqual(sent, [], "an unreadable ownership check never delivers the turn");
+  assert.equal(handoffs, 1, "and the turn is not claimed again while it cannot be checked");
+  assert.equal(registry.getSession(id)?.pendingTurns.length, 1, "it stays queued: nothing was dropped");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "queued", "and its prompt row is not settled");
+  // The read recovers: the turn is delivered, once.
+  readable = true;
+  await until(() => sent.length === 1, "the held-back turn to be delivered");
+  await tick(20);
+  assert.equal(sent.length, 1);
+  manager.stop();
+});
+
+test("an ownership read that fails only at the delivery guard still gets the turn rechecked and delivered on a quiet session", async () => {
+  const { queueTaskSkillPromptTurn } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  // Reads: 1 at the drain (owed), 2 at the guard (throws), 3 after the release (owed again).
+  // Nothing else happens to the session, so only the drain's own recheck can deliver it.
+  const intermittent = () => {
+    let reads = 0;
+    return () => {
+      reads += 1;
+      if (reads === 2) throw new Error("database is locked");
+      return true;
+    };
+  };
+
+  // SDK: the acceptance guard.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-intermittent";
+    registry.registerSdkSession({ id, agent: "claude", name: "intermittent", cwd: "/repo/intermittent", agentSessionId: "conversation:intermittent" });
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5, afterWorkTurnOwed: intermittent() });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-intermittent-sdk");
+    idle(registry, id);
+    await until(() => sent.length === 1, "the turn the guard held back to be rechecked and delivered");
+    assert.equal(handoffs, 2, "refused once at the guard, then delivered by the recheck");
+    await tick(20);
+    assert.equal(sent.length, 1);
+    manager.stop();
+  }
+
+  // Terminal: the paste guard.
+  {
+    const name = "after-work-intermittent-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => true,
+        afterWorkRecheckMs: 5,
+        afterWorkTurnOwed: intermittent(),
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-intermittent-pane");
+    stopHook(registry, name);
+    await until(() => pasted.length === 1, "the pane's held-back turn to be rechecked and pasted");
+    assert.equal(handoffs, 2, "refused once at the paste guard, then pasted by the recheck");
+    manager.stop();
+  }
+});
+
+test("the outbox records an after-work prompt delivered when it retires the turn, with no listener involved", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retired";
+  registry.registerSdkSession({ id, agent: "claude", name: "retired", cwd: "/repo/retired", agentSessionId: "conversation:retired" });
+  const taskId = "task-retired";
+  const sent: string[] = [];
+  // No after-work prompter is wired here: only the outbox's own retire can settle the row.
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.ok(getTaskSkillPrompt(taskId, id)?.deliveredAt);
+  manager.stop();
+});
+
+test("a delivered turn whose retire fails is retired again, and its after-work row settled, without sending it again", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retire-retry";
+  registry.registerSdkSession({ id, agent: "claude", name: "retire-retry", cwd: "/repo/retire-retry", agentSessionId: "conversation:retire-retry" });
+  const taskId = "task-retire-retry";
+  const sent: string[] = [];
+  let retires = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true,
+    retireDelivered: (turnId, revision, at) => {
+      retires += 1;
+      if (retires === 1) throw new Error("disk I/O error");
+      return db.retireDeliveredPendingTurn(turnId, revision, at);
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => db.queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(retires, 1);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "queued", "the failed retire changed nothing yet");
+  await until(() => retires === 2, "the retire to be tried again", 3_000);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, []);
+  await tick(20);
+  assert.equal(sent.length, 1, "the prompt is never sent twice");
+  manager.stop();
+});
+
+test("marking an uncertain after-work turn sent settles its prompt row delivered in the same transaction", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const d = db.openDb();
+  const taskId = "task-uncertain-sent";
+  const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:s-uncertain:1`;
+  db.queueTaskSkillPromptTurn({ taskId, sessionId: "s-uncertain", noteKey: "note:s-uncertain", turnId, text: "/wrap-notes", skills: ["wrap-notes"], from: null, now: 1 });
+  // The daemon stopped after the agent took the turn and before its retire committed.
+  d.prepare(`UPDATE pending_turns SET state = 'sending', claimed_at = 2 WHERE id = ?`).run(turnId);
+  db.recoverSendingPendingTurns(3);
+  const row = d.prepare(`SELECT state, revision FROM pending_turns WHERE id = ?`).get(turnId) as { state: string; revision: number };
+  assert.equal(row.state, "uncertain", "never resent on its own");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "queued");
+  assert.equal(db.resolveUncertainPendingTurn(turnId, row.revision, 40), true);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "delivered");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.deliveredAt, 40);
+});

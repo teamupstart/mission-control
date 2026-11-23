@@ -1,6 +1,7 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import type { TaskSkillPrompt } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -50,6 +51,7 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
+import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -1157,6 +1159,33 @@ export const McpClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
 });
 
+// ---- agent reports (`inbox` flag) ----
+
+/**
+ * What an agent sends with `post_report`. The MCP tool validates the same fields first, so the
+ * agent reads a refusal rather than a transport error; this is the daemon's own check.
+ */
+export const PostReportBodySchema = z.object({
+  /** One line: whitespace and line breaks collapse to single spaces. */
+  title: z.string().max(REPORT_LIMITS.title * 4).transform(oneLine)
+    .pipe(z.string().min(1, "a report needs a title").max(REPORT_LIMITS.title)),
+  body: z.string().trim().min(1, "a report needs a body").max(REPORT_LIMITS.body),
+  /** A checkout-relative `.html` or `.md` document, copied when the report is posted. */
+  file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional(),
+  url: z.string().trim().max(REPORT_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" }).optional(),
+  /** The id of this agent's own earlier report that this one replaces. */
+  replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional(),
+});
+export type PostReportBody = z.infer<typeof PostReportBodySchema>;
+
+/** `POST /mcp/reports`: bound to the caller the way `/mcp/reviews` is. */
+export const McpPostReportSchema = PostReportBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
@@ -1874,7 +1903,12 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).strict();
 
 /** Durable task facts plus pull request references, without session-private state. */
-export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+export type McpTaskSnapshot = Task & {
+  prUrl: string | null;
+  repoPrs: TaskRepoPrSummary[];
+  /** The after-work prompt of the launch `shaping` describes, when one was written. */
+  shapingAfterWork?: TaskSkillPrompt;
+};
 
 /** Read-only task queries share validation between the MCP child and daemon. */
 export const McpListTasksSchema = z.object({

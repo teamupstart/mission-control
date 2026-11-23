@@ -80,6 +80,7 @@ await build({
   target: "es2023",
   mainFields: ["module", "main"],
   alias: { "@shared": join(root, "src/shared") },
+  define: { __MOD_VERSION__: JSON.stringify(pkg.version) },
   logLevel: "warning",
 });
 

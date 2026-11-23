@@ -86,6 +86,7 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "list_open_questions",
   "withdraw_question",
+  "post_report",
   "report_product_issue",
   "report_status",
   "report_blocker",

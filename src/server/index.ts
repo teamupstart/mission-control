@@ -61,6 +61,7 @@ import {
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -119,6 +120,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { ReportManager } from "./reports.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
@@ -342,6 +344,18 @@ tasks.useMergeQuestions({
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
 const queues = new QueueManager(registry);
+// Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
+// or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
+// which is what releases a prompt held behind it. Delivered through the one outbox.
+const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
+  registry,
+  outbox: pendingTurns,
+  // `workflows` is constructed below; this is read only when a prompt is written, long after.
+  workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+  // Read at start and when task shaping is turned on again, after `workflows` exists.
+  owedSessions: () => workflows.afterWorkOwedSessions(),
+});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
@@ -443,6 +457,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  afterWorkSkills,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -830,6 +845,10 @@ fileComments.start();
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
+// Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
+// read to the registry now, so the first snapshot after a restart carries them. It subscribes to
+// no session event: a report outlives the session that posted it.
+const reports = new ReportManager(registry);
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -865,6 +884,7 @@ const app = buildApp({
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  reports,
   settingsBackups,
   databaseBackups,
   storageHealth,
@@ -918,6 +938,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // After the outbox: a delivery it confirms settles the prompt row it was queued as.
+  afterWorkSkills.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
   // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
   // temporary files can be removed safely.
@@ -1120,8 +1142,10 @@ async function shutdown(): Promise<void> {
   // between a harness closing its session file cleanly and it being killed mid-turn.
   const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
+  afterWorkSkills.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  reports.stop();
   // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
   // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
   await pauses.stop();

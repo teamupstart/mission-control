@@ -45,6 +45,7 @@ import {
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import { taskShapingRead, type TaskShapingRead } from "@shared/shaping.ts";
 import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
+import { REPORT_GUIDANCE, REPORT_ID_PATTERN, REPORT_LIMITS } from "@shared/reports.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -783,7 +784,7 @@ function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
 }
 
 function withTaskShapingRead(task: McpTaskSnapshot): { shaping?: TaskShapingRead } {
-  const shaping = taskShapingRead(task);
+  const shaping = taskShapingRead(task, task.shapingAfterWork ?? null);
   return shaping ? { shaping } : {};
 }
 
@@ -796,7 +797,7 @@ server.registerTool(
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
       "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs, " +
-      "and shaping {state, sessionId, summary} when task shaping added context to the launch that session received. " +
+      "and shaping {state, sessionId, summary, skills?, afterWork?} when task shaping added context to the launch that session received. " +
       "Pass workUnitId to list the tasks of one work unit. " +
       "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
       TASK_REFERENCE_RULE,
@@ -823,7 +824,7 @@ server.registerTool(
   {
     title: "Read a saved task (read-only)",
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
-      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary} " +
+      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary, skills?, afterWork?} " +
       "when task shaping added context to the launch that session received. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
       "Never launches, modifies or reorders work and does not read session-private state. " +
@@ -1119,6 +1120,54 @@ server.registerTool(
     try {
       const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
       return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// An agent's report for the operator to read (`inbox` flag). Non-blocking, like
+// `respond_to_file_comments`: the daemon stores it and the receipt is the whole result, so the
+// agent carries on. It is not a question and never waits on anyone.
+server.registerTool(
+  "post_report",
+  {
+    title: "Post a report for the operator to read",
+    description:
+      "Post a report to your human operator's Mission Control inbox, where it waits to be read. " +
+      REPORT_GUIDANCE + " " +
+      "Returns at once with the report's id; do not wait for a reply. To correct or update a report " +
+      "you posted earlier, pass its id as `replaces`: the new report takes the earlier one's place " +
+      "in the inbox. Reports posted without `replaces` stack.",
+    inputSchema: {
+      title: z.string().trim().min(1).max(REPORT_LIMITS.title)
+        .describe("One line: what the operator reads as the heading, e.g. 'Build failure diagnosed'"),
+      body: z.string().trim().min(1).max(REPORT_LIMITS.body)
+        .describe("Markdown: what you found or did, and what the operator should do with it"),
+      file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional()
+        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy."),
+      url: z.string().trim().url().max(REPORT_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("An http(s) link to go with the report, e.g. a pull request"),
+      replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional()
+        .describe("The id of one of your earlier reports, still unread, that this one replaces"),
+    },
+  },
+  async (input) => {
+    try {
+      const res = await http("/mcp/reports", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...input },
+        false, AbortSignal.timeout(30_000));
+      const body = (await res.json().catch(() => ({}))) as { receipt?: string; error?: string; feature?: string };
+      if (res.status === 404 && body.feature) {
+        return textResult("Not posted: agent reports are turned off in Mission Control (Settings > Feature flags > " +
+          "Reports and inbox upgrades). Nothing was shown to the operator. Say what you would have reported in " +
+          "your reply instead.", true);
+      }
+      if (!res.ok || !body.receipt) {
+        return textResult(`Not posted (${res.status}): ${body.error ?? "Mission Control refused the report"}`, true);
+      }
+      return textResult(body.receipt);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

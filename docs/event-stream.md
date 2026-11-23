@@ -166,3 +166,24 @@ windows through it. Identical frames are suppressed by canonical JSON. The confi
 `SHAPING_LIMITS`, 32 shapers of at most 16 KiB and 128 choices, below 560 KiB serialized at the
 maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
 folds them. See [Task shaping](task-shaping.md#settings).
+
+## Agent reports
+
+`report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
+report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
+never deleted and outlives the session that posted it, so a read or replaced report is upserted
+with its new state, and the dashboard drops it from its state on that frame
+(`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
+replaced report with its `supersededBy` set and then its successor.
+
+The reconnect snapshot's `reports` field holds every report waiting to be read: unread, and the
+latest of its chain. It is bounded by what the operator has not read yet. A session's whole
+history, older versions and read reports included, is read on demand from
+`GET /api/sessions/:id/reports` rather than carried here.
+
+Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
+`report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
+read, so an open window fills its Reports section and **to read** figure with no reload.
+`MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
+stage folds reports.

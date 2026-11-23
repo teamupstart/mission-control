@@ -100,7 +100,9 @@ export function useStallActions(sessionId: string, stall: Stall): {
       .catch((err: unknown): ActionResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     void settled.then((result) => {
       if (request === latest.current) setBusy(null);
-      // A sent message has left the box whatever is on screen now, so the draft is cleared.
+      // `after` runs on every success, even when the card has since moved on to a different
+      // stall: it is the caller's follow-up to its own request (the Stuck row's message box uses it
+      // to clear the words it sent), not feedback about the stall on screen, which is gated below.
       if (result.ok) after?.();
       // A result about an earlier stall says nothing about this one: it is not shown.
       if (current.current !== sentFor || request !== latest.current) return;

@@ -4065,7 +4065,7 @@ export type ServerEvent =
       /**
        * The voice state at connect time (contract B of the voice plan). Present only while the
        * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
-       * seven entries, and a roster that is empty until the names phase fills it.
+       * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
       /**

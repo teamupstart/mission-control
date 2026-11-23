@@ -83,7 +83,6 @@ async function shoot(
     // the exact visual state the surrounding assertions just proved was present.
     await page.waitForTimeout(250);
     await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-    // oxlint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
     return;
   }
@@ -92,7 +91,6 @@ async function shoot(
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
 }
 

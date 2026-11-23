@@ -148,6 +148,7 @@ interface HarnessOptions {
   pullRequest?: boolean;
   unchangedRepository?: boolean;
   unchangedRepositoryProblem?: string;
+  beforeReadContext?: () => Promise<void> | void;
   readUnchangedRepository?: WorkflowManagerOptions["readUnchangedRepository"];
   realLedger?: boolean;
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
@@ -265,6 +266,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     }) as never,
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
+      if (options.beforeReadContext) await options.beforeReadContext();
       const session = _registry.getSession(binding.sessionId!);
       const located = session ? sessionMessages(session) : null;
       const transcript = boundedWorkflowTranscript(located?.read.window(located.path, 12, 68).messages ?? []);
@@ -2575,7 +2577,7 @@ test("missing publication cooldown survives more candidates than the successful-
   } finally { await h.stop(); }
 });
 
-test("overlapping sweep and Inspector observations share a pending publication-tree lookup", async () => {
+test("overlapping sweep and Inspector observations share a pending publication-tree lookup", async (t) => {
   const { adoptInspectorPr } = await import("../src/server/db.ts");
   const candidate = "b".repeat(40);
   const root = "/repo/pending-publication";
@@ -2583,13 +2585,15 @@ test("overlapping sweep and Inspector observations share a pending publication-t
   const gate = new Promise<void>(resolve => { release = resolve; });
   let treeReads = 0;
   let identityReads = 0;
-  const h = await harness("pending-publication", { pullRequest: true, realLedger: true, resumptionSettleMs: 0,
+  const errors = t.mock.method(console, "error");
+  const options: HarnessOptions = { pullRequest: true, realLedger: true, resumptionSettleMs: 0,
     readRepositoryId: async value => { if (value === root) identityReads++; return value; },
     resolveCommitTree: async (_root, oid) => {
       if (oid === candidate) { treeReads++; await gate; }
       return h.contentTree.oid;
     },
-  });
+  };
+  const h = await harness("pending-publication", options);
   h.repository.root = root;
   h.repository.branch = "pending-publication";
   const key = "pending/repo#1";
@@ -2611,12 +2615,108 @@ test("overlapping sweep and Inspector observations share a pending publication-t
     await waitFor(() => identityReads >= 2, "the background observation did not reach publication proof");
     for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(treeReads, 1, "the second observation must await the first lookup");
+    const attempt = waitingAttempt(h, runId)!;
+    options.beforeReadContext = async () => {
+      // Also observe after reservation, while the sweep still holds the capture lock.
+      h.registry.inspectionUpdated(key, candidate, "MERGED");
+      await new Promise<void>(resolve => setImmediate(resolve));
+    };
     release();
     await sweep;
+    await h.settle();
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "shared proof did not complete the action");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "completed");
+    const submissions = h.store.listSubmissions(runId);
+    assert.equal(submissions.length, 2);
+    const child = submissions[1]!;
+    assert.equal(child.continuationNodeAttemptId, attempt.id);
+    assert.deepEqual(h.store.listReceipts(child.id).filter(r => r.edgeId === "e-act").map(r => r.sourceAttemptId), [attempt.id]);
+    assert.equal(h.store.listEvents(runId).filter(e => e.kind === "session_action_completed").length, 1);
+    assert.doesNotMatch(errors.mock.calls.map(c => c.arguments.join(" ")).join("\n"), /session_action_continuation_failed/);
   } finally { release(); await h.stop(); }
 });
 
+
+test("a shared capture rejection releases the reserved child for retry on the same manager", async (t) => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const options: HarnessOptions = { pullRequest: true, realLedger: true, resumptionSettleMs: 0 };
+  const h = await harness("shared-capture-retry", options);
+  h.repository.root = "/repo/shared-capture-retry";
+  h.repository.branch = "shared-capture-retry";
+  const errors = t.mock.method(console, "error");
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    const attempt = waitingAttempt(h, runId)!;
+    const key = "retry/repo#1";
+    const head = h.full(h.head.sha);
+    const now = Date.now();
+    adoptInspectorPr({ key, owner: "retry", repo: "repo", number: 1,
+      url: "https://github.com/retry/repo/pull/1", sessionId: h.sessionId,
+      repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+      source: "hook", state: "open", observedState: "OPEN", headSha: head,
+      reviewPosture: "live", round: 1, lastReviewedAt: null, lastError: null, failCount: 0,
+      lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: null,
+      mergeBlock: null, title: "Shared capture retry", updatedAt: now,
+      observedHeadSha: head, adoptedAt: now, observedAt: now });
+    h.runActionTurn();
+
+    // Both observers need the reserved capture's result. Lose access to the run while
+    // reading evidence, so even the capture error handler cannot read its durable status.
+    // This rejects the shared promise instead of returning a classified capture result.
+    const reservations = t.mock.method(h.store, "reserveSessionActionContinuation");
+    options.beforeReadContext = async () => {
+      h.registry.inspectionUpdated(key, head, "OPEN");
+      await new Promise<void>(resolve => setImmediate(resolve));
+      t.mock.method(h.store, "getRun", () => {
+        throw new DOMException("Run temporarily unreadable", "NotReadableError");
+      });
+    };
+    await h.manager.sweepSessionActions(SETTLED());
+    await h.settle();
+    assert.equal(reservations.mock.callCount(), 1, "the observers must share one capture");
+    const observerErrors = errors.mock.calls.filter(c => c.arguments.join(" ").includes(
+      `event=session_action_observe_failed call=${attempt.id} error=NotReadableError`,
+    ));
+    assert.equal(observerErrors.length, 2, "both observers must report the rejected capture");
+
+    t.mock.restoreAll();
+    delete options.beforeReadContext;
+    const reserved = h.store.latestSubmission(runId)!;
+    assert.equal(reserved.status, "capturing");
+    assert.equal(reserved.continuationNodeAttemptId, attempt.id);
+    assert.equal(h.store.listReceipts(reserved.id).length, 0);
+    await h.manager.sweepSessionActions(SETTLED());
+
+    assert.equal(h.store.getRun(runId)?.status, "completed");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "completed");
+    assert.deepEqual(h.store.listSubmissions(runId).map(s => s.id), [attempt.submissionId, reserved.id]);
+    assert.deepEqual(h.store.listReceipts(reserved.id).filter(r => r.edgeId === "e-act").map(r => r.sourceAttemptId), [attempt.id]);
+    assert.equal(h.store.listEvents(runId).filter(e => e.kind === "session_action_completed").length, 1);
+  } finally {
+    t.mock.restoreAll();
+    await h.stop();
+  }
+});
+
+test("cancelling a session action during continuation capture reports the conflict", async (t) => {
+  const options: HarnessOptions = {};
+  const h = await harness("cancel-continuation-capture", options);
+  const errors = t.mock.method(console, "error");
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    const attempt = waitingAttempt(h, runId)!;
+    options.beforeReadContext = () => { h.manager.cancel(runId, "cancel-during-capture"); };
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.getRun(runId)?.status, "cancelled");
+    assert.ok(errors.mock.calls.some(c => c.arguments.join(" ").includes(
+      `event=session_action_continuation_failed call=${attempt.id} error=conflict`,
+    )));
+    assert.equal(h.store.listEvents(runId).some(e => e.kind === "session_action_completed"), false);
+  } finally { await h.stop(); }
+});
 
 for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(`an unchanged PR action releases sibling feedback with ${proof} proof`, async () => {
   const h = await harness(`no-change-queue-${proof}`, { pullRequest: true, unchangedRepository: true,

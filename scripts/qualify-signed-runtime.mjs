@@ -58,6 +58,7 @@ export async function qualifySignedRuntime(app, metadata, policy) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-signed-runtime-')));
   let helper;
   let parent;
+  const failures = [];
   try {
     const original = join(root, 'Agent Mission Control.app');
     execFileSync('/bin/cp', ['-R', app, original]);
@@ -111,7 +112,10 @@ export async function qualifySignedRuntime(app, metadata, policy) {
     await mcpHandshake(join(runtime, 'Contents/MacOS/Mission Control'), join(runtime, 'Contents/Resources/app/dist/mcp/server.mjs'), env);
     assert.equal(existsSync(join(root, 'trap-hits')), false, 'Host runtime traps must never execute');
     console.log(`Signed-runtime qualification ${metadata.commit}: signature/staple/fuses retained; parent exited; original path retired; shipped detached helper recorded expected pre-swap failure; shipped MCP initialize/tools-list passed; no node/npm/npx trap hit.`);
-  } finally {
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
     if (parent?.exitCode === null && parent.signalCode === null) {
       parent.kill('SIGKILL');
       await boundedMigrationWait(() => !parent.pid || !processIsAlive(parent.pid), 'Probe parent could not be stopped', {timeout: 10_000});
@@ -131,7 +135,11 @@ export async function qualifySignedRuntime(app, metadata, policy) {
       }
     }
     rmSync(root, {recursive: true, force: true});
+  } catch (error) {
+    failures.push(error);
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Signed-runtime qualification and cleanup failed");
 }
 
 if (process.argv[2] === '--parent') {

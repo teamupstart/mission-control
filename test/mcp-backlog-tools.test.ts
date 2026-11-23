@@ -1214,7 +1214,7 @@ test("read tools include durable attached-repository PRs without live session fe
 test("the MCP tools carry the work unit: a plan's phase task shares it, and list_tasks filters by it", async (t) => {
   const f = await fixture(t);
   const createTool = (await f.client.listTools()).tools.find((tool) => tool.name === "create_task")!;
-  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] }).enum, ["inherit", "new"]);
+  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] })?.enum, ["inherit", "new"]);
   const listTool = (await f.client.listTools()).tools.find((tool) => tool.name === "list_tasks")!;
   assert.ok(listTool.inputSchema.properties?.workUnitId);
 

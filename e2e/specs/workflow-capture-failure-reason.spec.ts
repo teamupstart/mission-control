@@ -47,7 +47,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-capture-failure-reason/${name}.png`);
 }
 

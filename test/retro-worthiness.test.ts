@@ -360,7 +360,7 @@ function pollerHost(): {
   } as unknown as Registry;
   return {
     host,
-    exit: (session) => { for (const fn of [...listeners]) fn(session); },
+    exit: (session) => { for (const fn of Array.from(listeners)) fn(session); },
     recorded,
   };
 }

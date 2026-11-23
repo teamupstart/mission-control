@@ -15,7 +15,7 @@ import {
   nothingPostedLine,
 } from "../src/web/components/InspectorFindingsModal.tsx";
 import { inspectorPrClosedAs } from "../src/web/lib/pr-standing.ts";
-import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
+
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { InspectorComment, InspectorInspection } from "../src/shared/types.ts";

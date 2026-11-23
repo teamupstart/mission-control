@@ -29,7 +29,6 @@ const TASK = "measure what this session actually ran on";
 
 function note(message: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`    · ${message}`);
 }
 
@@ -38,7 +37,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/telemetry-session-attribution/${name}.png`);
 }
 

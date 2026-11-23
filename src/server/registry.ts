@@ -2598,7 +2598,7 @@ export class Registry extends EventEmitter {
   replaceResidentProfiles(profiles: readonly ResidentProfile[]): void {
     const next = new Map(profiles.filter((profile) => profile.archivedAt === null)
       .map((profile) => [profile.id, profile]));
-    for (const id of [...this.residentProfiles.keys()]) {
+    for (const id of Array.from(this.residentProfiles.keys())) {
       if (!next.has(id)) this.removeResidentProfile(id);
     }
     for (const profile of next.values()) {
@@ -4577,7 +4577,7 @@ export class Registry extends EventEmitter {
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
     if (priorMux) {
-      for (const [id, other] of [...this.sessions]) {
+      for (const [id, other] of Array.from(this.sessions)) {
         if (id === sessionId) continue;
         const pane = muxHandle(other);
         if (!pane || pane.session !== priorMux) continue;
@@ -4869,7 +4869,7 @@ export class Registry extends EventEmitter {
       list.push(binding);
       historical.set(binding.taskId, list);
     }
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -4905,7 +4905,7 @@ export class Registry extends EventEmitter {
     >,
     at: number,
   ): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -4945,7 +4945,7 @@ export class Registry extends EventEmitter {
   ): Task[] {
     const rebinds: Task[] = [];
     const boundTaskMatches = new Map<string, boolean>();
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5064,7 +5064,7 @@ export class Registry extends EventEmitter {
     prUrl: string,
     at: number,
   ): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5087,7 +5087,7 @@ export class Registry extends EventEmitter {
   }
 
   private dropTaskDependencyProvenance(taskId: string, at: number): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5175,7 +5175,7 @@ export class Registry extends EventEmitter {
         : null;
     if (activeTaskId !== null) taskIds.add(activeTaskId);
 
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -7837,7 +7837,7 @@ export class Registry extends EventEmitter {
   }
 
   private reconcileSessionDependencies(session: Session, match: PrMatch | null, at: number): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -9045,7 +9045,7 @@ export class Registry extends EventEmitter {
     worktree: string | null,
   ): void {
     const key = pipelineRunKey(provider, repoRoot, slug);
-    for (const session of [...this.sessions.values()]) {
+    for (const session of Array.from(this.sessions.values())) {
       if (session.runtime === "sdk") {
         const workspace = this.workspaceFor(session.id, session.cwd, session.runtime);
         if (
@@ -12304,8 +12304,6 @@ export function summarizeQueue(
 }
 
 // ---- pure helpers ----
-
-
 
 /**
  * The task statuses a merged pull request can still decide.

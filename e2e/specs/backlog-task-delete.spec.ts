@@ -26,7 +26,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   if (restore) await page.setViewportSize(restore);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/backlog-task-delete/${name}.png`);
 }
 

@@ -195,7 +195,7 @@ for its own grant. Asking and accepting are separate authorities:
 - **The ask.** `POST /mcp/session-control/requests` requires the machine token and the signed
   Registry session credential, so the asker is always the verified caller and never a body id.
   It records one pending ask per session, bound to the same identity the grant binds, and draws
-  it on that session. It grants nothing, and a long-poll route answers only the session that
+  it in the attention inbox. It grants nothing, and a long-poll route answers only the session that
   asked.
 - **Why it is not a review.** A review settles through `POST /api/reviews/:id/resolve`, which any
   loopback caller can reach with a body-asserted `by: "human"`, and which Foreman and a session

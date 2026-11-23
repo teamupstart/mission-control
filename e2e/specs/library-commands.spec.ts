@@ -78,7 +78,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     await page.setViewportSize({ width, height: 1000 });
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png`, fullPage: true });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/library-commands/${name}-${suffix}.png`);
   }
   await page.setViewportSize(original);

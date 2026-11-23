@@ -38,7 +38,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/residents-tour/${name}.png`);
 }
 

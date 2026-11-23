@@ -672,7 +672,7 @@ test("a held prompt is released after a restart when Foreman's wrap-up is answer
 
 test("an answered held prompt found while task shaping is off is released when the flag is turned on again", () => {
   const flag = { on: true, listeners: new Set<() => void>() };
-  const toggle = (on: boolean) => { flag.on = on; for (const listener of [...flag.listeners]) listener(); };
+  const toggle = (on: boolean) => { flag.on = on; for (const listener of Array.from(flag.listeners)) listener(); };
   const before = setup({ flag });
   const taskId = nextTask();
   before.registry.launch(taskId, "s-flag");

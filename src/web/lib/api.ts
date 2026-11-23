@@ -2,7 +2,7 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceState } from "@shared/voice.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -496,6 +496,8 @@ export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shippin
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+/** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
+export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -1129,7 +1131,7 @@ export function forgetCachedRepos(): void {
   lastRepos = null;
   announcedIdentity = null;
   repoCacheGeneration += 1;
-  for (const listener of [...repoListDropListeners]) listener();
+  for (const listener of Array.from(repoListDropListeners)) listener();
 }
 
 /**
@@ -1902,7 +1904,7 @@ export type ArchiveRead<T> =
  */
 async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
-    const res = await actionFetch(path, { ...(signal ? { signal } : {}) });
+    const res = await actionFetch(path, signal ? { signal } : {});
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
@@ -2467,6 +2469,11 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  /** A 409 carries `reason` when there is no model to download. */
+  startVoiceModelDownload: () =>
+    post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
+  cancelVoiceModelDownload: () =>
+    request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
@@ -2694,7 +2701,7 @@ export const api = {
     try {
       const res = await actionFetch(
         `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
-        { ...(signal ? { signal } : {}) },
+        signal ? { signal } : {},
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };

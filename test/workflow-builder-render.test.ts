@@ -21,7 +21,7 @@ import {
   readRequestedWorkflowVersion,
   requestWorkflowVersionOpen,
 } from "../src/web/workflows/workflowSelection.ts";
-import type { LlmState } from "../src/web/useLlm.ts";
+
 import {
   WORKFLOW_LIMITS,
   type WorkflowDefinition,
@@ -29,7 +29,6 @@ import {
   type WorkflowVersion,
 } from "../src/shared/workflow.ts";
 
-const llm: LlmState = { config: null, status: null, personaDefaults: null, error: null, update: async () => {} };
 const workflow: WorkflowDefinition = {
   id: "w", name: "Release review", normalizedName: "release review", description: "",
   draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } }], edges: [] },

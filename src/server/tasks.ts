@@ -7125,7 +7125,7 @@ export class TaskManager {
 
   /** Drain producers first: an empty queue alone says nothing about a pending closure/archive. */
   async settleWorktreeReturns(): Promise<void> {
-    await Promise.allSettled([...this.completing.values()]);
+    await Promise.allSettled(this.completing.values());
     await this.closureSweep;
     await this.cleanupQueue.settled();
   }
@@ -7708,7 +7708,6 @@ export class TaskManager {
     });
   }
 }
-
 
 /** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
 const HANDOVER_BASELINE_TIMEOUT_MS = 2000;

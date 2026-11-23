@@ -909,7 +909,7 @@ test("removing a task never removes its archive", async () => {
 
 test("a ship task's cleanup does no archive work at all", async () => {
   const h = harness();
-  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const { worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
   const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "failed", worktreePath: cwd, repoRoot: cwd });
   h.registry.upsertTask(task);
   assert.equal((await h.tasks.reclaim(task.id)).ok, true);
@@ -1056,7 +1056,7 @@ test("a rescheduled scout exit reserves its current episode despite an older arc
 
 test("a session exit reserves nothing for a ship task", () => {
   const h = harness();
-  const { repoRoot, worktreePath: cwd } = makeWorktree();
+  const { worktreePath: cwd } = makeWorktree();
   const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "running", worktreePath: cwd, repoRoot: cwd });
   h.registry.upsertTask(task);
   h.registry.emit("session_exit", bindSession(h, task, cwd));
@@ -1069,7 +1069,7 @@ test("a session exit reserves nothing for a ship task", () => {
 
 test("a submission from a session running no scout is refused", async () => {
   const h = harness();
-  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const { worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
   const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "running", worktreePath: cwd, repoRoot: cwd });
   h.registry.upsertTask(task);
   const result = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });

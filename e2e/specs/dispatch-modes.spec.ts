@@ -449,6 +449,5 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   if (restore) await page.setViewportSize(restore);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/dispatch-modes/${name}.png`);
 }

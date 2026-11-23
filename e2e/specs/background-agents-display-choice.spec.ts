@@ -74,7 +74,6 @@ async function shoot(page: Page, target: Locator | Page, name: string): Promise<
   // Off every control first: a resting pointer portals a tooltip over what is photographed.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/background-agents-display-choice/${name}.png`);
 }
 

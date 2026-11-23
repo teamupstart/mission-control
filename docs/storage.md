@@ -40,6 +40,12 @@ when that plan deletes nothing. The categories are `STORAGE_CATEGORIES` in
 | Archives | `archives/`, `scouts/` | Not cleaned here |
 | Everything else | whatever no category names | Not cleaned here |
 
+The speech model voice addressing downloads lives in `voice/models/`, about 542 MiB for the
+current model, and is counted under **Everything else**. It is removed only by the model manager,
+which deletes an old revision once a new one verifies; see
+[Voice addressing](voice.md#where-it-is-kept). Like everything outside SQLite, it is not in a
+database or settings backup.
+
 Measuring walks every file, which on a machine with large pools is millions of files and can
 take minutes. A state directory reached through a symlink is resolved first, so the walk measures
 what the link points at; symlinks inside it are never followed. When a walk finishes, the backup

@@ -459,7 +459,7 @@ server.registerTool(
   {
     title: "Ask the operator to let this session control other sessions",
     description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
-      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "control_session require. Mission Control shows your reason in the attention inbox and BLOCKS until the " +
       "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
       "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
       "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +

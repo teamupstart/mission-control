@@ -29,7 +29,6 @@ async function capture(target: Locator, name: string, page: Page): Promise<void>
   await page.mouse.move(0, 0);
   await expect(page.locator(".tooltip")).toHaveCount(0, { timeout: 3000 }).catch(() => undefined);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/inbox/${name}.png`);
 }
 
@@ -249,7 +248,6 @@ test("with the inbox flag on, an alert's title names the agent the way its inbox
     });
     mkdirSync(EVIDENCE, { recursive: true });
     await page.screenshot({ path: join(EVIDENCE, "05-alert-title-matches-inbox.png") });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/inbox/05-alert-title-matches-inbox.png");
   }
 });

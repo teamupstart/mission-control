@@ -52,7 +52,6 @@ async function shoot(
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   }
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-standing-instructions/${name}.png`);
 }
 

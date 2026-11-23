@@ -34,7 +34,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
       unresolvedThreads: 0,
       baseRefName: "main",
       defaultBranch: "main",
-      ...(over.pr ?? {}),
+      ...over.pr,
     },
     stack: { lineage: false, releasedForHead: false },
     reviewedBase: "main",

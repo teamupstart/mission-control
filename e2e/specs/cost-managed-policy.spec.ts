@@ -49,7 +49,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     .locator("section.settings-section")
     .first()
     .screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/cost-managed-policy/${name}.png`);
 }
 

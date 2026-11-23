@@ -3631,7 +3631,7 @@ export class EnsembleEngine {
    * materialize it as a normal Task. Best-effort, because a terminal run cannot be held open on a
    * cleanup hiccup.
    */
-  private async settleMemberTask(member: EnsembleMember, now: number): Promise<void> {
+  private async settleMemberTask(member: EnsembleMember, _now: number): Promise<void> {
     if (!member.taskId) return;
     const taskStatus = this.tasks.status(member.taskId);
     if (taskStatus === null || !LIVE_TASK_STATUSES.includes(taskStatus)) return;

@@ -70,12 +70,19 @@ export function useAwayMode(): {
    * not away, which is also when nothing asks for it.
    */
   buffered: AwayBufferSummary | null;
+  /**
+   * True from the moment this tab asks to come back until the daemon has answered. The daemon
+   * closes the away window when it handles that request, and only then marks the reports its
+   * digest counted, so a report announced in between is still treated as arriving while away.
+   */
+  returning: boolean;
 } {
   const [away, setAwayState] = useState<AwayConfig | null>(null);
   const [digest, setDigest] = useState<AwayDigest | null>(null);
   const [buffered, setBuffered] = useState<AwayBufferSummary | null>(null);
   /** The last `away` we saw, to spot the transition back. */
   const wasAway = useRef(false);
+  const [returning, setReturning] = useState(false);
   /**
    * Bumped every time away mode is flipped from here, so a buffer read issued before the
    * flip cannot commit after it. See `bufferReadIsCurrent`.
@@ -144,8 +151,23 @@ export function useAwayMode(): {
         awayEpoch.current += 1;
         setBuffered(null);
       }
-      const res = await api.setAwayConfig(patch);
-      if (!res.ok) return;
+      const leaving = patch.away === false && wasAway.current;
+      if (leaving) setReturning(true);
+      const res = await api.setAwayConfig(patch).finally(() => {
+        if (leaving) setReturning(false);
+      });
+      if (!res.ok) {
+        // The optimistic state above is now wrong: read the daemon's, so the notifier's Away gate
+        // matches the window the daemon still holds rather than waiting for the next poll.
+        // A request that failed after the daemon committed it is still a return: claimed through
+        // `claimIfReturned`, so its digest is fetched like any other.
+        const cfg = await fetchAwayConfig();
+        if (cfg) {
+          setAwayState(cfg);
+          claimIfReturned(cfg);
+        }
+        return;
+      }
       const cfg = await fetchAwayConfig();
       if (!cfg) return;
       setAwayState(cfg);
@@ -156,5 +178,5 @@ export function useAwayMode(): {
 
   const dismissDigest = useCallback(() => setDigest(null), []);
 
-  return { away, setAway, digest, dismissDigest, buffered };
+  return { away, setAway, digest, dismissDigest, buffered, returning };
 }

@@ -625,7 +625,7 @@ test("a directory this difference never touched is still refused, not read as an
   // hold and neither modified matches no entry at all, so without asking the trees it would
   // take the absent-file path and come back 200 with an empty patch - a directory wearing an
   // untouched file's answer, which is the one reading the exact-file rule exists to prevent.
-  const { repo, member, baseSha } = mkRepoWithMember("unchanged-directory");
+  const { repo, member } = mkRepoWithMember("unchanged-directory");
   mkdirSync(join(member, "untouched"), { recursive: true });
   writeFileSync(join(member, "untouched", "stable.txt"), "committed in the base\n");
   git(member, "add", "-A");

@@ -289,7 +289,7 @@ export function registerRunActionRefresh(
 export function dropRunActions(runId: WorkflowRunId): void {
   const prefix = `${runId}:`;
   let changed = revisions.delete(runId);
-  for (const cycle of [...(refreshCycles.get(runId) ?? [])]) {
+  for (const cycle of Array.from(refreshCycles.get(runId) ?? [])) {
     settleRefreshCycle(runId, cycle);
   }
   for (const key of actions.keys()) {

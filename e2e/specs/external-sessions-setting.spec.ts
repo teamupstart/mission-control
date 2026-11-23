@@ -77,7 +77,6 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
     const evidence = artifactsDir("external-sessions-setting");
     mkdirSync(evidence, { recursive: true });
     await settledShot(page, join(evidence, "terminals-switch-on.png"));
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-on.png");
   }
 
@@ -98,7 +97,6 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("external-sessions-setting");
     await settledShot(page, join(evidence, "terminals-switch-off.png"));
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-off.png");
   }
 });
@@ -179,7 +177,6 @@ test.describe("the Board with discovery on", () => {
       mkdirSync(evidence, { recursive: true });
       await dashboard.mouse.move(0, 0);
       await dashboard.locator("main.board").screenshot({ path: join(evidence, `${name}.png`) });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED e2e/.artifacts/external-sessions-setting/${name}.png`);
     };
 

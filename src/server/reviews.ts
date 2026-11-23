@@ -1114,7 +1114,7 @@ export class ReviewManager {
   private releaseWaiters(review: ReviewItem): void {
     const set = this.waiters.get(review.id);
     if (set) {
-      for (const w of [...set]) w(review);
+      for (const w of Array.from(set)) w(review);
       this.waiters.delete(review.id);
     }
   }

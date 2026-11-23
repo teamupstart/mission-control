@@ -41,8 +41,6 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
   test.setTimeout(120_000);
   let listener: Listener | null = null;
   try {
-    // Off: the row is off, the category and the routes are absent, and a link to the category
-    // opens the default panel.
     await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
     await expect(page.locator('[data-anchor="feature-flags/voice"]')).toContainText("Voice addressing");
     await expect(flagToggle(page)).toHaveAttribute("aria-pressed", "false");
@@ -57,20 +55,17 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     let peerNavigations = 0;
     peer.on("framenavigated", (frame) => { if (frame === peer.mainFrame()) peerNavigations++; });
 
-    // On, from the first window: the peer's own link now opens Settings > Voice, with no reload.
     await flagToggle(page).click();
     await expect(flagToggle(page)).toHaveAccessibleName("Voice addressing: on");
     await expect(voiceTab(page)).toBeVisible();
     await expect(peer.getByRole("tab", { name: "Voice", selected: true })).toBeVisible();
     expect(peerNavigations, "the second window changed without navigating").toBe(0);
 
-    // The mode line: unavailable, with both reasons that hold on a fresh machine.
     await expect(modeLine(peer)).toContainText("Not listening");
     await expect(modeLine(peer)).toContainText("a preview it needs is off and no listener is running.");
     await expect(modeLine(peer).getByRole("button", { name: "Open Setup" })).toBeVisible();
     await capture(peer, "settings-unavailable");
 
-    // The behaviour rows hold their defaults, and a changed cancel window persists across a reload.
     const panel = peer.getByRole("tabpanel", { name: "Voice" });
     await expect(panel.getByRole("checkbox", { name: "Auto-mute during calls" })).toBeChecked();
     await expect(panel.getByRole("checkbox", { name: "Cancel window", exact: true })).toBeChecked();
@@ -86,13 +81,10 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     const reloaded = peer.getByRole("tabpanel", { name: "Voice" });
     await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("8");
     await expect(reloaded.getByRole("radio", { name: "Ask aloud" })).toBeChecked();
-    // Switching the window off keeps its length and disables the picker.
     await reloaded.getByRole("checkbox", { name: "Cancel window", exact: true }).uncheck();
     await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toBeDisabled();
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: false, seconds: 8 });
 
-    // Setup: the mode line's link opens the Voice family, whose row names what is off and turns
-    // exactly those flags on.
     await modeLine(peer).getByRole("button", { name: "Open Setup" }).click();
     await expect(peer.getByRole("tab", { name: "Setup", selected: true })).toBeVisible();
     await expect(peer.locator("#setup-family-voice")).toHaveAttribute("aria-current", "true");
@@ -105,10 +97,11 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     await expect(previews).toContainText("Ask without stopping, Reports and inbox upgrades and File plan decisions are on");
     const flags = await storedFlags(daemon);
     expect([flags["async-input"], flags.inbox, flags["filed-plan-decisions"]]).toEqual([true, true, true]);
-    await expect(peer.locator("#setup-family-voice")).toHaveAccessibleName("Voice: 1 of 1 ready");
+    // The previews row is ready; the microphone and the speech model are Phase 8's rows and are
+    // not, on a machine with neither (`voice-model-setup.spec.ts` drives them).
+    await expect(peer.locator("#setup-family-voice")).toHaveAccessibleName("Voice: 1 of 3 ready");
     await capture(peer, "setup-voice-ready");
 
-    // The flags reason is gone; only the listener's remains, in both windows.
     await page.goto(`${daemon.baseURL}/#/settings/voice`);
     await peer.goto(`${daemon.baseURL}/#/settings/voice`);
     peerNavigations = 0;
@@ -116,7 +109,6 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     await expect(modeLine(page)).toContainText("no listener is running.");
     await expect(modeLine(page)).not.toContainText("a preview it needs is off");
 
-    // A listener says hello: both windows read listening, with no reload.
     listener = await beListener(daemon);
     await expect(modeLine(page)).toContainText("Listening");
     await expect(modeLine(peer)).toContainText("Listening");
@@ -191,7 +183,6 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   expect(await voiceConfig(daemon)).toMatchObject({ cancelWindow: { enabled: true, seconds: 4 } });
   await capture(page, "settings-write-refused");
 
-  // The next write that sticks clears the sentence.
   await page.unroute("**/api/voice/config");
   await length.selectOption("6");
   await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
@@ -225,7 +216,6 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   expect(flags["async-input"]).toBe(true);
   expect(flags.inbox).not.toBe(true);
   expect(flags["filed-plan-decisions"], "the flag after the refusal is never switched on").not.toBe(true);
-  // The row still needs setup, and now offers only the two that are still off.
   await expectRowStatus(page, "dependency-voice-previews", "Needs setup");
   await expect(previews).toContainText("Ask without stopping is on. Reports and inbox upgrades and File plan decisions are off.");
   await expect(previews.getByRole("button", { name: "Turn on the two that are off" })).toBeVisible();
@@ -285,7 +275,6 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   expect(writes[1]!.at).toBeGreaterThanOrEqual(firstAnsweredAt);
   await capture(page, "settings-edits-in-order");
 
-  // The sentence stays until an edit made after it is kept.
   await length.selectOption("6");
   await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
   await expect(panel.getByText(/That change didn't stick/)).toHaveCount(0);

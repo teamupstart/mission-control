@@ -317,7 +317,11 @@ let db: DatabaseSync | undefined;
 //     a current shaping record carries too (`TaskShaping.deliveryId`). Backfilled once: a record
 //     naming the task's bound session shares a fresh id with its row, so what readers showed
 //     still shows; every other record gains an id no binding carries, so it stays hidden.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 48;
+// 49: `reports.counted_in_digest_at`, when a return digest counted a report (agent reports
+//     phase 6). Nullable, no backfill: no digest counted a report before it existed.
+// 50: muted report authors (`report_mutes`, agent reports phase 7), a new empty table: no
+//     author was muted before it existed, so every report notifies and is listed as before.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 50;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -5161,6 +5165,20 @@ function migrate(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
     CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
+  `);
+  // Schema 49: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
+  addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
+  // Schema 50: muted report authors (`ReportManager.mute`). One row per author key, deleted on
+  // Unmute. A mute only hides: it never touches `reports`, so unmuting brings back every report
+  // still waiting to be read. A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS report_mutes (
+      author_key  TEXT PRIMARY KEY,
+      author_name TEXT NOT NULL,
+      muted_at    INTEGER NOT NULL
+    );
   `);
 
   rebuildInFlightIndexIfStale(d);

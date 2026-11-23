@@ -2,7 +2,7 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceState } from "@shared/voice.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -115,9 +115,11 @@ import type {
   AttentionDismissal,
   AttentionDismissalWrite,
   InspectorFindingsResponse,
+  ReportGuidanceView,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  ReportGuidanceViewSchema,
   InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
@@ -496,6 +498,8 @@ export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shippin
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+/** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
+export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -779,6 +783,12 @@ export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
  * you are back at the desk, so it can never source a figure shown while you are away.
  */
 export const fetchAwayBuffer = () => fetchJson<AwayBufferSummary>("/api/away/buffer");
+/**
+ * One agent report, read or not, and the latest of its chain when it was replaced. What a report
+ * notification opens when this window no longer holds the report. Null on any failure.
+ */
+export const fetchReport = (id: string) =>
+  fetchJson<{ report: ReportItem; latest: ReportItem | null }>(`/api/reports/${encodeURIComponent(id)}`);
 /**
  * The sessions the daemon currently reads as stuck. Fetched rather than derived:
  * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
@@ -1123,7 +1133,7 @@ export function forgetCachedRepos(): void {
   lastRepos = null;
   announcedIdentity = null;
   repoCacheGeneration += 1;
-  for (const listener of [...repoListDropListeners]) listener();
+  for (const listener of Array.from(repoListDropListeners)) listener();
 }
 
 /**
@@ -1894,7 +1904,7 @@ export type ArchiveRead<T> =
  */
 async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
-    const res = await actionFetch(path, { ...(signal ? { signal } : {}) });
+    const res = await actionFetch(path, signal ? { signal } : {});
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
@@ -2178,6 +2188,39 @@ export const api = {
   followUpReport: (id: string, text: string) =>
     post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
   /**
+   * Mark all read: exactly the reports the Reports section listed when it was pressed, so one
+   * that arrived after the click stays. Answers the reports it cleared.
+   */
+  markAllReportsRead: (ids: readonly string[]) =>
+    post<ActionResult & { reports?: ReportItem[] }>("/api/reports/read-all", { ids }),
+  /** Mute an author's reports from now on. Its reports are hidden, never marked read. */
+  muteReports: (authorKey: string) => post("/api/reports/mutes", { authorKey }),
+  /** Unmute an author: its reports still waiting to be read are listed again. */
+  unmuteReports: (authorKey: string) => del(`/api/reports/mutes/${encodeURIComponent(authorKey)}`),
+  /**
+   * Settings > Reports' guidance: the saved text, the text in force, the default and the limit.
+   * An answer missing any of them is a failed read, never filled in.
+   */
+  reportGuidance: async (): Promise<JsonRead<ReportGuidanceView>> => {
+    const read = await readJson<unknown>("/api/reports/guidance");
+    if (!read.ok) return read;
+    const view = ReportGuidanceViewSchema.safeParse(read.value);
+    return view.success ? { ok: true, value: view.data } : { ok: false, definite: true };
+  },
+  /**
+   * Save the guidance new sessions' `post_report` carries, or null to reset it to the default.
+   * Resolves to the stored view, or to why it failed; an accepted save whose answer is not a
+   * whole view is a failure, never filled in.
+   */
+  saveReportGuidance: async (guidance: string | null): Promise<{ ok: true; view: ReportGuidanceView } | { ok: false; error: string }> => {
+    const result = await put("/api/reports/guidance", { guidance });
+    if (!result.ok) return { ok: false, error: result.error ?? "Could not save the report guidance" };
+    const view = ReportGuidanceViewSchema.safeParse(result);
+    return view.success
+      ? { ok: true, view: view.data }
+      : { ok: false, error: "Mission Control saved the guidance but did not answer with it. Reload to see what is stored" };
+  },
+  /**
    * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
    * A page the archive's checker refused answers with every problem in `problems`.
    */
@@ -2459,6 +2502,11 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  /** A 409 carries `reason` when there is no model to download. */
+  startVoiceModelDownload: () =>
+    post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
+  cancelVoiceModelDownload: () =>
+    request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
@@ -2686,7 +2734,7 @@ export const api = {
     try {
       const res = await actionFetch(
         `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
-        { ...(signal ? { signal } : {}) },
+        signal ? { signal } : {},
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };

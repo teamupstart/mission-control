@@ -173,7 +173,6 @@ test("each member and its stage show a live clock that freezes when it finishes"
       mkdirSync(EVIDENCE, { recursive: true });
       await dashboard.mouse.move(0, 0);
       await strip.locator(".wf-pipeline-stage").screenshot({ path: `${EVIDENCE}01-running.png` });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED ${EVIDENCE}01-running.png`);
     }
 
@@ -199,7 +198,6 @@ test("each member and its stage show a live clock that freezes when it finishes"
     if (process.env.MC_E2E_EVIDENCE === "1") {
       await dashboard.mouse.move(0, 0);
       await strip.locator(".wf-pipeline-stage").screenshot({ path: `${EVIDENCE}02-finished.png` });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED ${EVIDENCE}02-finished.png`);
     }
   } finally {
@@ -292,7 +290,6 @@ test("a session action's clock ticks while it waits and freezes when it complete
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.mouse.move(0, 0);
     await actionStage.screenshot({ path: `${EVIDENCE}03-action-waiting.png` });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED ${EVIDENCE}03-action-waiting.png`);
   }
 
@@ -312,7 +309,6 @@ test("a session action's clock ticks while it waits and freezes when it complete
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await dashboard.mouse.move(0, 0);
     await actionStage.screenshot({ path: `${EVIDENCE}04-action-complete.png` });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED ${EVIDENCE}04-action-complete.png`);
   }
 });

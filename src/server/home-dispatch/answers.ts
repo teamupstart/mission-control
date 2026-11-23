@@ -12,7 +12,7 @@ import {
   HOME_DISPATCH_CHAT_FIRST_TEXT,
 } from "@shared/home-dispatch-inbox.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
-import type { PlanDecision, PlanDecisionAnswer, ReviewActor, ReviewItem, Task } from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionAnswer, ReviewActor, ReviewItem } from "@shared/types.ts";
 import { openDb } from "../db.ts";
 import { parseBody } from "../http-body.ts";
 import { ReviewResolutionError } from "../reviews.ts";

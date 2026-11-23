@@ -1229,7 +1229,7 @@ export class SdkSupervisor {
     const waiters = this.conversationWaiters.get(id);
     if (!waiters) return;
     this.conversationWaiters.delete(id);
-    for (const waiter of [...waiters]) waiter(conversation);
+    for (const waiter of Array.from(waiters)) waiter(conversation);
   }
 
   /**
@@ -2260,7 +2260,6 @@ export class SdkSupervisor {
     this.capacityAttempts.set(id, held.attempt - 1);
     return this.scheduleCapacityRetry(id, handle, held.reason);
   }
-
 
   /**
    * Report the turn a cancelled retry was holding open as finished after all, against

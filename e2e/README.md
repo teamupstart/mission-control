@@ -2209,9 +2209,8 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 ## Writing specs
 
-There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
-and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Eight traps, all of which have cost time already:
+Select controls with `getByRole`, `getByLabel`, or `getByPlaceholder` using their existing
+roles, labels, and placeholders. Never add `data-testid`.
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.

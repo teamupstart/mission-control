@@ -4,9 +4,13 @@ Status: Decisions D1 to D4 were adopted by the operator on 2026-11-23, together 
 requirement R1 and goal R2. Approval is recorded by Mission Control against the exact revision,
 not in this file.
 
-This is an analysis and options plan. Nothing in it is implemented.
-Measured on 2026-11-20 and 2026-11-21 against `main` at `9f4db6308` and this machine's
-Inspector ledger.
+Phase 1 is implemented. An internal harness can run an isolated Codex or Claude review
+against a supplied repository view through the [read-only repository MCP](../../repository-review-workloads.md).
+Phases 2 to 6 remain planned, including exact-state capture, Persona and Workflow integration,
+and Local Inspector reviews before a pull request opens.
+
+The analysis below uses measurements from 2026-11-20 and 2026-11-21 against `main` at
+`9f4db6308` and this machine's Inspector ledger.
 
 ## Summary
 
@@ -130,9 +134,10 @@ Three consequences:
   Judge Persona. Versions 9 to 17 ran without the Inspector gate. Version 18 (#1043) restored
   it for the High Rigor preset. This plan is that plan's Option C, now far cheaper because of
   the items above.
-- **Persona repository access** (`docs/plans/persona-repository-access/plan.md`, with
-  `phased-plan.md` and three phase files beside it) was approved in September 2026 and is not
-  present in `src/`. Under D4 its three phases are Phases 1 to 3 of this plan.
+- **Persona repository access.** The [repository-access plan](../persona-repository-access/plan.md)
+  was approved in September 2026. At the November planning baseline (`9f4db6308`), `src/`
+  lacked the repository MCP and isolated review workload. Under D4, the three phases of
+  that plan correspond to Phases 1 to 3 here.
 
 ## Flow change
 

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Session } from "@shared/types.ts";
+import { useState, type ReactNode } from "react";
+import type { SessionControlRequestView } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { authorizeSessionControl, canAuthorizeSessionControl } from "../lib/session-control-authorization.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -12,30 +12,31 @@ import { Tooltip } from "./Tooltip.tsx";
  * Outside the desktop app Accept cannot arm anything and is disabled; Decline only removes
  * the ask, so it works anywhere.
  */
-export function SessionControlRequestCard({ session }: { session: Session }): React.JSX.Element | null {
+export function SessionControlRequestCard({ sessionId, subject, request }: {
+  sessionId: string;
+  subject: ReactNode;
+  request: SessionControlRequestView;
+}): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ask = session.sessionControlRequest;
-  if (!ask || session.sessionControlEnabled === true) return null;
-  const pending = ask;
   const available = canAuthorizeSessionControl();
 
   async function accept(trusted: boolean): Promise<void> {
     // Synchronous, inside the click's own dispatch: the preload refuses once it has ended.
     const requestId = crypto.randomUUID();
-    if (!trusted || !authorizeSessionControl({ requestId, sessionId: session.id, enabled: true })) {
+    if (!trusted || !authorizeSessionControl({ requestId, sessionId, enabled: true })) {
       setError("Click Accept yourself in the Mission Control desktop app to grant this.");
       return;
     }
     setBusy(true);
-    const result = await api.setSessionControl(session.id, true, requestId, pending.id);
+    const result = await api.setSessionControl(sessionId, true, requestId, request.id);
     setError(result.ok ? null : (result.error ?? "Could not grant session control"));
     setBusy(false);
   }
 
   async function decline(): Promise<void> {
     setBusy(true);
-    const result = await api.declineSessionControlRequest(session.id, pending.id);
+    const result = await api.declineSessionControlRequest(sessionId, request.id);
     setError(result.ok ? null : (result.error ?? "Could not decline the request"));
     setBusy(false);
   }
@@ -44,10 +45,10 @@ export function SessionControlRequestCard({ session }: { session: Session }): Re
     <section className="session-control-request" aria-label="Session control request">
       <div className="review-head">
         <span className="kind-tag kind-input">permission</span>
-        <h3>{session.name} asks to control your other sessions</h3>
+        <h3>{subject} asks to control your other sessions</h3>
       </div>
       <div className="review-content">
-        <p className="question">{pending.reason}</p>
+        <p className="question">{request.reason}</p>
       </div>
       <p className="session-control-request-note">
         Accepting lets this session read, message and steer your other live sessions on your behalf. Turn it off

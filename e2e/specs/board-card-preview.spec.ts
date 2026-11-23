@@ -82,7 +82,6 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     mkdirSync(EVIDENCE, { recursive: true });
     await page.mouse.move(0, 0);
     await panel.screenshot({ path: `${EVIDENCE}01-defaults.png` });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/board-card-preview/01-defaults.png");
 
     // And the conversation section on its own, large enough to read. The whole-panel frame
@@ -112,7 +111,6 @@ test("the preview redraws as items are toggled, and never navigates", async ({
           height: bottom.y + 64 - top.y,
         },
       });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/board-card-preview/03-conversation-header-section.png");
     }
   }
@@ -148,7 +146,6 @@ test("the preview redraws as items are toggled, and never navigates", async ({
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await page.mouse.move(0, 0);
     await panel.screenshot({ path: `${EVIDENCE}02-toggled.png` });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/board-card-preview/02-toggled.png");
   }
 

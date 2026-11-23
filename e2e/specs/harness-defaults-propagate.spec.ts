@@ -135,7 +135,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/harness-defaults-propagate/${name}.png`);
 }
 

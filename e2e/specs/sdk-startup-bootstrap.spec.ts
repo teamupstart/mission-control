@@ -103,7 +103,6 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: join(EVIDENCE, "console-during-restore.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/sdk-startup-bootstrap/console-during-restore.png");
   }
 
@@ -130,7 +129,6 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
 
   if (process.env.MC_E2E_EVIDENCE) {
     await dashboard.screenshot({ path: join(EVIDENCE, "filtered-restoring-board.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/sdk-startup-bootstrap/filtered-restoring-board.png");
   }
 
@@ -140,7 +138,6 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: join(EVIDENCE, "restoring-board.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/sdk-startup-bootstrap/restoring-board.png");
   }
 
@@ -153,7 +150,6 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
 
   if (process.env.MC_E2E_EVIDENCE) {
     await dashboard.screenshot({ path: join(EVIDENCE, "settled-board.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/sdk-startup-bootstrap/settled-board.png");
   }
 });

@@ -10,6 +10,7 @@ import {
   CostConfigSchema,
   ForemanConfigSchema,
   HarnessesConfigSchema,
+  ReportsSettingsSchema,
   InspectorConfigSchema,
   LlmConfigSchema,
   ShippingConfigSchema,
@@ -28,6 +29,7 @@ import type {
   HarnessesConfig,
   InspectorConfig,
   LlmConfig,
+  ReportsSettings,
   ShippingConfig,
   SkillsConfig,
   TerminalsConfig,
@@ -353,6 +355,10 @@ const storageLimitsFields = {
   poolKeepWarm: "setting",
 } satisfies Record<keyof StorageLimitsConfig, AppConfigValueClass>;
 
+const reportsFields = {
+  guidance: "setting",
+} satisfies Record<keyof ReportsSettings, AppConfigValueClass>;
+
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
   expiresAt: z.number(),
@@ -464,6 +470,14 @@ export const APP_CONFIG_ENTRIES = {
    * disk, and restored onto another installation it would report captures that never ran there.
    */
   backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
+  /**
+   * Settings > Reports (`inbox` flag): the operator's guidance for when an agent posts a report.
+   * Muted agents are not here: they are rows of `report_mutes`, owned by `ReportManager`.
+   */
+  reports: {
+    ...fieldsEntry("reports", ReportsSettingsSchema, "reports", reportsFields),
+    optionalInSnapshot: true,
+  },
   /** Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget. */
   storageLimits: {
     ...fieldsEntry("storage.limits", StorageLimitsConfigSchema, "storage-limits", storageLimitsFields),

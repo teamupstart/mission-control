@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 // Builds the review worklist's visual record: one self-contained HTML page carrying the real
 // browser captures inline, for attaching to a pull request. It is EVIDENCE, so it is written
 // into the gitignored artifacts tree and never committed.

@@ -69,14 +69,14 @@ case "$FAKE_JIRA_MODE" in
   pages)
     total=\${FAKE_JIRA_TOTAL:-7}
     out=""
-    i=\$start
-    end=\$((start + limit))
-    while [ \$i -lt \$end ] && [ \$i -lt \$total ]; do
-      if [ -n "\$out" ]; then out="\$out,"; fi
-      out="\$out{\\"key\\":\\"MC-\$i\\",\\"fields\\":{\\"summary\\":\\"Issue \$i\\"}}"
-      i=\$((i + 1))
+    i=$start
+    end=$((start + limit))
+    while [ $i -lt $end ] && [ $i -lt $total ]; do
+      if [ -n "$out" ]; then out="$out,"; fi
+      out="$out{\\"key\\":\\"MC-$i\\",\\"fields\\":{\\"summary\\":\\"Issue $i\\"}}"
+      i=$((i + 1))
     done
-    printf '{"issues":[%s]}' "\$out" ;;
+    printf '{"issues":[%s]}' "$out" ;;
   *)
     printf '{"issues":[{"key":"MC-1","self":"https://acme.atlassian.net/rest/api/3/issue/1","fields":{"summary":"Fix the thing","description":"Do it.","priority":{"name":"Highest"}}}]}' ;;
 esac

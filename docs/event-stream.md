@@ -172,7 +172,9 @@ folds them. See [Task shaping](task-shaping.md#settings).
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
 `mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
-or one of them lapsed, which a daemon timer publishes with no request. The reconnect snapshot's
+or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
+state moved. A model download publishes its progress at most every 250 ms, so a download is a
+few frames a second for as long as it runs. The reconnect snapshot's
 `voice` field is present only while the `voice` flag is on, computed at that moment. While the
 flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
 shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are
@@ -185,10 +187,12 @@ names phase fills it. It is not a `LINE_INPUT_EVENTS` member. See [Voice address
 ## Agent reports
 
 `report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
-report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
-never deleted and outlives the session that posted it, so a read or replaced report is upserted
-with its new state, and the dashboard drops it from its state on that frame
-(`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+report is posted, first opened, marked read, or replaced; when its notification wording is
+stamped (`announcedAs`, which is what raises its notification); and when an Away return digest
+marks it counted (`countedInDigestAt`, so no window notifies about it afterwards). There is no
+remove frame: a report is never deleted and outlives the session that posted it, so a read or
+replaced report is upserted with its new state, and the dashboard drops it from its state on that
+frame (`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
 the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
 replaced report with its `supersededBy` set and then its successor.
 
@@ -200,5 +204,13 @@ history, older versions and read reports included, is read on demand from
 Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
 `report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
 read, so an open window fills its Reports section and **to read** figure with no reload.
+`report_mutes` carries `{ mutes }`, the whole list of muted report authors (`ReportMute` in
+`src/shared/reports.ts`), after every mute and unmute. It is sent whole because the list is small
+and applying it twice ends in the same state. The snapshot's `reportMutes` field holds the same
+list. A muted author's reports still arrive in `reports` and `report_upsert`: the dashboard's
+inbox fold leaves them out, so an unmute lists them again without a fetch. Both follow the
+`inbox` flag like `reports`; turning the flag on sends `report_mutes` before the reports it
+resends. `MissionState.reportMutes` is their only browser owner.
+
 `MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
 stage folds reports.

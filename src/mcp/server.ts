@@ -47,7 +47,7 @@ import {
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import { taskShapingRead, type TaskShapingRead } from "@shared/shaping.ts";
 import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
-import { REPORT_GUIDANCE, REPORT_ID_PATTERN, REPORT_LIMITS } from "@shared/reports.ts";
+import { REPORT_GUIDANCE, REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, postReportGuidance } from "@shared/reports.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -459,7 +459,7 @@ server.registerTool(
   {
     title: "Ask the operator to let this session control other sessions",
     description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
-      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "control_session require. Mission Control shows your reason in the attention inbox and BLOCKS until the " +
       "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
       "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
       "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +
@@ -1210,6 +1210,25 @@ server.registerTool(
   },
 );
 
+/**
+ * The when-to-report paragraph for `post_report`, read once as this child starts: the operator's
+ * guidance from Settings > Reports, or the default when the daemon does not answer in time, has
+ * the `inbox` flag off, or answers anything unexpected. Read once, so a session keeps the
+ * guidance it started with and an edit reaches the sessions started after it.
+ */
+async function readPostReportGuidance(): Promise<string> {
+  try {
+    const res = await http("/mcp/reports/guidance", "GET", undefined, false, AbortSignal.timeout(1_500));
+    if (!res.ok) return REPORT_GUIDANCE;
+    const body = (await res.json()) as { guidance?: unknown };
+    const guidance = typeof body.guidance === "string" ? body.guidance.slice(0, REPORT_GUIDANCE_LIMIT) : null;
+    return postReportGuidance(guidance);
+  } catch {
+    return REPORT_GUIDANCE;
+  }
+}
+const POST_REPORT_GUIDANCE = await readPostReportGuidance();
+
 // An agent's report for the operator to read (`inbox` flag). Non-blocking, like
 // `respond_to_file_comments`: the daemon stores it and the receipt is the whole result, so the
 // agent carries on. It is not a question and never waits on anyone.
@@ -1219,7 +1238,7 @@ server.registerTool(
     title: "Post a report for the operator to read",
     description:
       "Post a report to your human operator's Mission Control inbox, where it waits to be read. " +
-      REPORT_GUIDANCE + " " +
+      POST_REPORT_GUIDANCE + " " +
       "Returns at once with the report's id; do not wait for a reply. To correct or update a report " +
       "you posted earlier, pass its id as `replaces`: the new report takes the earlier one's place " +
       "in the inbox. Reports posted without `replaces` stack.",

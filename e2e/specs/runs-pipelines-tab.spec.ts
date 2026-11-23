@@ -64,7 +64,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
     path: `${EVIDENCE}${name}.png`,
     ...("mouse" in target ? { fullPage: true } : {}),
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/runs-pipelines-tab/${name}.png`);
 }
 

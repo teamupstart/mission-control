@@ -53,7 +53,7 @@ import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
-import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
+import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -1229,6 +1229,57 @@ export const ReportFollowUpSchema = z.object({
     .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
     .optional().default(""),
 });
+
+/**
+ * The `reports` settings entry (Settings > Reports). `guidance` is the operator's own text for
+ * when to post a report, or null for the default (`DEFAULT_REPORT_GUIDANCE`).
+ */
+export const ReportsSettingsSchema = z.object({
+  guidance: z.string().max(REPORT_GUIDANCE_LIMIT).nullable().catch(null).default(null),
+});
+export type ReportsSettings = z.infer<typeof ReportsSettingsSchema>;
+
+/**
+ * `PUT /api/reports/guidance`: save the operator's guidance, or null to reset it to the default.
+ * Trimmed; blank text is the same as null, so a cleared box resets rather than saving nothing.
+ */
+export const ReportGuidanceUpdateSchema = z.object({
+  guidance: z.string().trim()
+    .max(REPORT_GUIDANCE_LIMIT, `report guidance can be at most ${REPORT_GUIDANCE_LIMIT} characters`)
+    .nullable()
+    .transform((text) => (text ? text : null)),
+}).strict();
+
+/**
+ * What the guidance routes answer: the saved text, the text in force, the default and the limit.
+ * Every field is required, and the dashboard parses an answer against this rather than filling
+ * a missing field in, so a malformed answer reads as a failure and never as an empty editor.
+ */
+export const ReportGuidanceViewSchema = z.object({
+  /** The operator's own text, or null while the default is in force. */
+  guidance: z.string().nullable(),
+  /** The guidance new sessions' `post_report` carries. */
+  effective: z.string(),
+  defaultGuidance: z.string(),
+  limit: z.number().int().positive(),
+});
+export type ReportGuidanceView = z.infer<typeof ReportGuidanceViewSchema>;
+
+/** `POST /api/reports/mutes`: mute one author, named by the key its reports carry. */
+export const ReportMuteBodySchema = z.object({
+  authorKey: z.string().trim().min(1).max(512)
+    .regex(/^(resident|session):.+$/, "must be an author key such as session:<id> or resident:<id>"),
+}).strict();
+
+/**
+ * `POST /api/reports/read-all`: Mark all read for exactly the reports the Reports section listed
+ * when it was pressed, so a report that arrives after the click is not cleared. One request
+ * carries at most `REPORT_READ_ALL_BATCH` ids; the dashboard sends a longer list in batches
+ * (`markAllReportsRead`).
+ */
+export const ReportReadAllSchema = z.object({
+  ids: z.array(z.string().regex(REPORT_ID_PATTERN, "must be a report id such as r-12")).min(1).max(REPORT_READ_ALL_BATCH),
+}).strict();
 
 /**
  * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
@@ -4519,7 +4570,17 @@ export const UI_CONFIG_DEFAULTS = {
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
   keybindings: {},
-  alerts: { notifications: false, sound: true },
+  /**
+   * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
+   * defaults on, which is exactly what each kind of item did before the switches existed, and
+   * none is read while the flag is off.
+   */
+  alerts: {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  },
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
@@ -4693,6 +4754,24 @@ export const UiConfigSchema = z.object({
     .object({
       notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
       sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
+      /**
+       * Which kinds of item raise a notification (`inbox` flag). A switch only stops the
+       * notification; the item is still in the inbox. A record stored before these keys existed
+       * parses to every switch on, which is what it already did, so no migration is owed.
+       */
+      notify: z
+        .object({
+          blockingQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.blockingQuestions),
+          filedQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.filedQuestions),
+          reports: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.reports),
+          stuck: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.stuck),
+        })
+        .prefault(UI_CONFIG_DEFAULTS.alerts.notify),
+      /**
+       * Whether agent reports are listed in the inbox and counted in the to read figure. Off,
+       * they stay in each conversation and are not marked read.
+       */
+      reportsInInbox: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.reportsInInbox),
     })
     .prefault(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */

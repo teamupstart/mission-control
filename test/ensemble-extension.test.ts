@@ -47,22 +47,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void
   }
 }
 
-async function driveToTerminalBoundary(plan: ReturnType<typeof fx.fixedMatrixPlan>): Promise<{
-  store: InstanceType<typeof EnsembleStore>;
-  runId: string;
-  status: string | null;
-}> {
-  const store = new EnsembleStore(db);
-  const { engine, gateway } = fx.reviewEngine(store);
-  const run = makeRun(store, plan);
-  await fx.runAllMembers(engine, gateway, store, run.id);
-  await waitFor(() => {
-    const s = store.getRun(run.id)?.status;
-    return s === "awaiting_decision" || s === "failed" || s === "completed" || s === "cancelled";
-  });
-  return { store, runId: run.id, status: store.getRun(run.id)?.status ?? null };
-}
-
 // ---- launch-count shapes ----
 
 test("fixed matrix: an explicit roster with duplicates launches as one wave and reaches a decision", async () => {

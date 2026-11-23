@@ -37,7 +37,6 @@ async function shoot(page: import("@playwright/test").Page, name: string): Promi
   mkdirSync(dir, { recursive: true });
   await page.mouse.move(1, 1);
   await page.screenshot({ path: join(dir, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/setup-install-defaults/${name}.png`);
 }
 

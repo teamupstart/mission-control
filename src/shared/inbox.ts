@@ -126,6 +126,17 @@ export const INBOX_ACTIONS = [
   { id: "open-session", label: "Open session", spoken: null, clickOnly: "navigation" },
   { id: "open-run", label: "Open run", spoken: null, clickOnly: "navigation" },
   { id: "dismiss", label: "Dismiss", spoken: null, clickOnly: "dismissal" },
+  // The report card's mute, drawn only while its author is not muted. A muted author's rows
+  // leave the inbox, so Unmute lives in Settings > Reports, where it is a setting, not an action.
+  {
+    id: "mute",
+    label: "Mute reports",
+    spoken: { named: "{name}, mute reports", whileOpen: null },
+    clickOnly: null,
+  },
+  // The Reports heading's Mark all read. It names no agent, and voice routes speech only by an
+  // agent's name or "reply", so it is reached by a click alone.
+  { id: "mark-all-read", label: "Mark all read", spoken: null, clickOnly: "section-wide" },
 ] as const satisfies readonly InboxActionSpec[];
 
 export type InboxActionId = (typeof INBOX_ACTIONS)[number]["id"];

@@ -263,7 +263,7 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
   assert.ok(rules.length > 0, "the filter rung is gone");
 
   const readoutSelectors = rules.filter(({ selector }) =>
-    /\.pulse-seg:not\(\.pulse-btn\):not\(\.pulse-link\)$/.test(selector),
+    selector.endsWith('.pulse-seg:not(.pulse-btn):not(.pulse-link)'),
   );
   assert.equal(readoutSelectors.length, 2, "filter compaction must cover focus and a held term");
   for (const { body } of readoutSelectors) assert.match(body, /display:\s*none/);
@@ -281,7 +281,7 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
     assert.doesNotMatch(selector, /\.pulse-btn$/, "filter compaction hides the review control");
   }
 
-  const buttonSelectors = rules.filter(({ selector }) => /\.pulse-btn$/.test(selector));
+  const buttonSelectors = rules.filter(({ selector }) => selector.endsWith('.pulse-btn'));
   assert.equal(buttonSelectors.length, 2, "the review control must survive both filter states");
   for (const { body } of buttonSelectors) {
     assert.match(body, /padding:\s*0 9px/);
@@ -299,7 +299,7 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
   // gated on display so the sole-survivor ROUNDING rule below does not trip it.
   const emptyPulseSelectors = rules.filter(
     ({ selector, body }) =>
-      /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector) && /display:\s*none/.test(body),
+      selector.endsWith('.pulse:not(:has(.pulse-btn))') && /display:\s*none/.test(body),
   );
   assert.deepEqual(
     emptyPulseSelectors.map(({ selector }) => selector),
@@ -312,7 +312,7 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
   // survivor: its leading-edge-only radius would otherwise draw a square trailing
   // corner on hover inside the pulse's fully rounded pill.
   const soleSurvivor = rules.filter(({ selector }) =>
-    /\.pulse:not\(:has\(\.pulse-btn\)\) \.pulse-link$/.test(selector),
+    selector.endsWith('.pulse:not(:has(.pulse-btn)) .pulse-link'),
   );
   assert.equal(
     soleSurvivor.length,

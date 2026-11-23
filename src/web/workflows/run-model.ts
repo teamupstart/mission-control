@@ -1836,7 +1836,6 @@ function runRecordCompletionSummary(detail: WorkflowRunDetail): RunRecordComplet
   };
 }
 
-
 /**
  * Whether the run is standing still on THIS submission's readiness result.
  *
@@ -2308,7 +2307,6 @@ export function readinessActionLabel(
   if (action === "retry") return busy === "retry" ? "Retrying…" : "Retry evidence preflight";
   return busy === "override" ? "Continuing…" : "Continue to review";
 }
-
 
 /**
  * How many decisions, and how much prose, the collapsed list is standing in for.
@@ -3684,7 +3682,7 @@ export function eventLine(
     if (typeof value === "boolean" && !value) continue;
     const text = typeof value === "boolean"
       ? key.replaceAll("_", " ")
-      : /Sha$/.test(key) && typeof value === "string"
+      : key.endsWith('Sha') && typeof value === "string"
         ? `${label(key)} ${shortSha(value)}`
         : `${label(key)} ${String(value).replaceAll("_", " ")}`;
     facts.push(text.slice(0, 160));
@@ -3981,7 +3979,6 @@ export function runRemedy(
       },
     };
   }
-
 
   if (recovery.triage === "retry") {
     return {

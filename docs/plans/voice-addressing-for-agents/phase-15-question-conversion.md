@@ -7,7 +7,7 @@ this file. Owns V25.
 
 A spoken message reaches an agent that is blocked inside a question: the question is filed, the
 agent is released with a receipt, and the message is delivered. A session whose MCP child cannot
-understand this keeps waiting, and the card Phase 6 draws says so.
+understand this keeps waiting and delivery still reports `held`.
 
 ## 2. Entry criteria
 
@@ -32,7 +32,8 @@ As of `2088bd522`:
   per session.
 - The filed plan's contract: the wait mode is decided at insert, with one conversion, from filed
   to call, and no path from call to filed. That plan leaves this conversion to voice.
-- Inherited: the `held` outcome (contract F) and its card (Phase 6).
+- Inherited: the `held` outcome (contract F). Phase 6 draws a card for that outcome; this phase
+  does not depend on it and checks the outcome only.
 
 ## 5. Implementation steps
 
@@ -84,8 +85,8 @@ sends a query the daemon ignores.
 
 ## 8. Merge and exit criteria
 
-A spoken message unblocks a current session and is delivered. An older session is unchanged and
-still yields the held card.
+A spoken message unblocks a current session and is delivered. For an older session nothing
+changes: delivery still reports the `held` outcome, as section 7's tests assert.
 
 ## 9. Downstream handoff
 
@@ -96,7 +97,11 @@ None inside this plan. Typed messages could use `convertToFiled` later; that is 
 - This phase changes one sentence of the filed plan's contract, as that plan's coordination note
   and this plan's source both state. No rule of that plan reads what a row's mode used to be, so
   a converted row needs no extra column.
-- The held card's words are Phase 6's; this phase changes how often the card appears.
+- The held card's words are Phase 6's; this phase changes how often the `held` outcome occurs
+  and so how often that card appears.
 - Pull request review: a `converted` response lost in transit would have let the child's next
   poll re-attach the ask as a call while the message had already been reported delivered. Step 3
   and `filed_by_voice_at` make the conversion durable, and a test drops the first response.
+- Pull request review, third round: the exit criterion named Phase 6's held card, which this
+  phase's one prerequisite, Phase 5, does not build. It now names the `held` outcome, which
+  Phase 5 owns and section 7 tests, so this phase can merge before or after Phase 6.

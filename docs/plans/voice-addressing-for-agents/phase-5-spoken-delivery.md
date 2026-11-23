@@ -63,10 +63,18 @@ As of `2088bd522`:
    The card's `openQuestions` count is filled from `openAsks`.
 5. **Stop.** `stop` interrupts through `interruptSession` and, where the harness cannot be
    interrupted, reports `failed` with the reason.
-6. **Foreman hold.** `voiceHold(sessionId)` is set when a card targets a session and cleared when
-   the spoken turn's own turn ends, when the card is cancelled, or after 10 minutes.
-   `foremanWriteRefusal` refuses review writes for a held session with the reason
-   `voice-message-pending`.
+6. **Foreman hold.** `voiceHold(sessionId)` is true in three cases, and in no other:
+   - a pending card targets the session, until it is cancelled or delivered;
+   - a spoken turn for the session is queued and has not been delivered (no `composed_at`),
+     for as long as that lasts. This is the `held` outcome's case, and it has no time limit:
+     a message waiting behind a question keeps Foreman off that question however long the
+     operator takes. Removing the queued turn ends it;
+   - a spoken turn has been delivered and its own turn has not ended, for at most 10 minutes
+     after `composed_at`. The limit guards against a turn end that is never observed and does
+     not apply before delivery.
+   The second and third cases are read from the spoken turn's row, so they survive a daemon
+   restart with it. `foremanWriteRefusal` refuses review writes for a held session with the
+   reason `voice-message-pending`.
 7. **Conversation.** Present a turn with the voice prefix as `spoken_words` with a small
    "Spoken" mark and a "What the agent received" disclosure, following the review-message model.
 8. **Docs.** `docs/voice.md`, `docs/sessions.md`, `docs/foreman.md`,
@@ -76,8 +84,9 @@ As of `2088bd522`:
 
 One migration: two nullable columns on `pending_turns`, `spoken_words` and `composed_at`. An
 existing database opens unchanged and other turns leave both null. It takes the next schema
-number at merge time. A queued spoken turn survives a daemon restart as any queued turn does; the
-hold is in memory and lapses on restart.
+number at merge time. A queued spoken turn survives a daemon restart as any queued turn does, and
+so does its hold, which is read from the row. A pending card is in memory, so a card lost in a
+restart is not delivered and holds nothing.
 
 ## 7. Tests and verification
 
@@ -90,7 +99,10 @@ hold is in memory and lapses on restart.
   the composed text.
 - A database upgrade test for the two columns.
 - `test/voice-foreman-hold.test.ts`: refused while held, allowed after the turn ends and after a
-  cancel.
+  cancel. With the `held` outcome and the clock moved past 10 minutes, Foreman is still refused
+  on the blocking question; it is still refused after a daemon restart; it is allowed once the
+  queued turn is removed. A delivered turn whose end is never observed stops holding 10 minutes
+  after delivery.
 - `e2e/specs/voice-spoken-message.spec.ts`: say "Steve, check the build" to a fake session with an
   open question; its conversation shows "check the build" marked Spoken; the disclosure shows the
   open-questions note and the post-a-report line.
@@ -99,7 +111,7 @@ hold is in memory and lapses on restart.
 ## 8. Merge and exit criteria
 
 Each agent state yields its outcome. A typed message is unchanged. Foreman cannot answer a held
-session's question.
+session's question, for as long as a spoken message for that session has not been delivered.
 
 ## 9. Downstream handoff
 
@@ -114,3 +126,7 @@ text builders are also what phases 13 and 14 use when an answer falls back to a 
 - Plan validation round 1: steps 2 and 3 now say where the words live, when the notes are
   composed and what a retry or restart does. The earlier text said both "created with the full
   text" and "computed at delivery".
+- Pull request review, third round: the hold ended 10 minutes after the card opened, so with
+  the `held` outcome Foreman could answer the question the message was waiting behind. The
+  hold now lasts while the turn is undelivered, the 10 minutes count from delivery, and the
+  hold is read from the row so a restart does not drop it.

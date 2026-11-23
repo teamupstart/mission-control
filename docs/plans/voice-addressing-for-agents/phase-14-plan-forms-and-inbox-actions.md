@@ -38,11 +38,22 @@ form for a control the inbox plan declares click-only.
    to `ask`.
 2. **Fill state.** The daemon holds a `VoiceAnswer` for the form with no deadline: it fills and
    does not submit. The dashboard mirrors each fill into the draft with a voice mark. Clicks and
-   voice edit the same draft.
-3. **Submit.** "<name>, submit" or "reply, submit". When a dashboard has the form open, the daemon
-   asks it to submit its draft, so clicks made meanwhile are included. When a decision is
-   unanswered the submit is refused: the card marks that decision and the voice card says which
-   one and how to say it.
+   voice edit the same draft, and the draft is what is submitted; the daemon's fill state is
+   never submitted by itself. The fill state is cleared when the review stops being pending
+   (answered, dismissed, withdrawn or replaced by a revised form), when `planFormsByVoice` is
+   turned off, and 10 minutes after the last open-cards report that listed the form. Clearing it
+   changes no draft: what was mirrored stays in the browser.
+3. **Submit.** "<name>, submit" or "reply, submit", while the agent has a pending plan form. It
+   acts only when that form is the agent's voice target at that moment, which means a dashboard
+   has it open (contract J). The daemon then asks that dashboard to submit its draft, so clicks
+   made meanwhile are included. When a decision is unanswered the submit is refused: the card
+   marks that decision and the voice card says which one and how to say it.
+   When no dashboard has the form open, the submit is refused with the reason `form-not-open`:
+   the review is not resolved, the words are not delivered to the agent as a message, the fill
+   state is kept, and the voice card reads "Open <name>'s plan form to submit it". The same
+   refusal applies when the dashboard that was asked does not resolve or refuse within 5
+   seconds, for example because it closed in that moment. With no plan form pending for that
+   agent, "<name>, submit" is plain speech and is delivered as a message.
 4. **Badges.** While the voice flag is on and the setting is on, each decision of a plan form
    wears an ordinal badge (1st, 2nd, 3rd) beside its question, blue once voice fills it and amber
    while a refused submit waits on it.
@@ -63,27 +74,34 @@ form for a control the inbox plan declares click-only.
 
 ## 6. Data and compatibility
 
-No storage. Fill state is in memory and is dropped on restart; the draft in the browser keeps what
-was mirrored.
+No storage. Fill state is in memory and is dropped on restart and by step 2's rules; the draft in
+the browser keeps what was mirrored.
 
 ## 7. Tests and verification
 
 - `test/voice-plan-form.test.ts`: ordinals with and without the approval decision, a refused
-  submit, the setting off.
+  submit, the setting off. A submit with the form filled and no dashboard showing it is refused
+  as `form-not-open`, resolves nothing, queues no message and keeps the fill state; so is a
+  submit whose dashboard never answers. "<name>, submit" with no plan form pending is a
+  message. The fill state is cleared when the review settles, when the setting is turned off
+  and 10 minutes after the form was last reported open.
 - `test/voice-inbox-actions.test.ts`: a phrase for each spoken action in the registry, no phrase
   for a click-only one, the mark-read target, and "cancel" inside the window leaving the report
   unread.
 - `e2e/specs/voice-plan-form.spec.ts`: a three-decision form; say "Steve, first one B, second one
   A"; two badges turn blue; "Steve, submit" is refused and the third is marked; fill it; submit;
-  the form is answered. With the setting off, the same words arrive as a message.
+  the form is answered. On a second form: fill it by voice, close the inbox so the form is no
+  longer drawn, and say "Steve, submit"; the voice card says to open Steve's plan form and the
+  form is still unanswered; open it again and the filled options are still ticked. With the
+  setting off, the same words arrive as a message.
 - `e2e/specs/voice-inbox-actions.spec.ts`: "Steve, mark read" with one unread report clears it
   after the window; "Steve, nudge" sends the fixed nudge message.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the specs.
 
 ## 8. Merge and exit criteria
 
-A plan form is submitted by voice on "submit" and when complete, and not otherwise. Each spoken
-inbox action does what its click does.
+A plan form is submitted by voice on "submit", when complete and while a dashboard has it open,
+and not otherwise. Each spoken inbox action does what its click does.
 
 ## 9. Downstream handoff
 
@@ -95,3 +113,7 @@ None inside this plan.
   none.
 - Pull request review: a pending inbox action is cancelled by the same rule as a routed message
   and a voice answer, contract D's newest pending voice action.
+- Pull request review, third round: step 3 covered a submit only while a dashboard had the form
+  open, and nothing said when a fill state ends. A submit with the form not open is now refused
+  and says to open it, the daemon never submits its own fill state, and step 2 lists what
+  clears the fill state.

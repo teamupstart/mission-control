@@ -85,6 +85,18 @@ A second review raised two more, both accepted.
 - **A mock-up path naming Parakeet v3.** The setup mock-up printed a v3 directory while the
   plan pins v2. It now prints a placeholder path, since Phase 8 owns the real one.
 
+A third review raised three more, all accepted.
+
+- **A spoken submit with the form not open.** Phase 14 said what "submit" does while a
+  dashboard has the plan form open and nothing else. It is now refused when no dashboard has
+  the form open, the daemon never submits its own fill state, and the fill state has stated
+  ends.
+- **An exit criterion that needed another phase.** Phase 15's exit named the held card, which
+  Phase 6 draws and Phase 15 does not wait for. It now names the `held` outcome.
+- **The Foreman hold lapsing under a held message.** Phase 5's hold ended 10 minutes after the
+  card opened, while a held message can wait longer. The hold now lasts until the message is
+  delivered, survives a restart, and the 10 minutes count from delivery.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -240,7 +252,9 @@ not return the key.
 `PendingTurnManager.submitSpoken(sessionId, words, utteranceId)`, which stores the words and
 composes the notes once, when the turn is claimed for delivery; the `pending_turns` columns
 `spoken_words` and `composed_at`; the delivery outcomes `sent`, `queued`, `held`, `not-running`,
-`failed`; `voiceHold(sessionId)`.
+`failed`; `voiceHold(sessionId)`, which is true while a card is pending for the session, while a
+spoken turn for it is queued and undelivered, and for at most 10 minutes after delivery until
+that turn ends.
 
 **G. Card component (Phase 6).** `VoiceCardView` draws one `VoiceCard`. `VoiceCardHost` shows it
 as a toast when `ui.voice.confirmation` is `toast` or the `floating-windows` capability is

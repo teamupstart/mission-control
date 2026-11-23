@@ -274,7 +274,8 @@ toast in the dashboard, or in a frameless shell window as a pill or a tray popov
   describe the agent at that moment; the row keeps the operator's words beside the composed text.
 - Idle starts a turn; busy queues; hibernated resumes then delivers. Not running sends nothing and
   shows the hint. "<name>, stop" calls the interrupt path.
-- Foreman is refused on that session's reviews from routing until the spoken turn has ended.
+- Foreman is refused on that session's reviews from routing until the spoken turn has ended. A
+  message still waiting to be delivered keeps the refusal however long it waits.
 
 ### Answering cards
 
@@ -320,6 +321,8 @@ from recorded audio. The rest is a follow-on plan.
 - "Cancel" in a split stops both halves.
 - A bare "cancel" stops the newest pending voice action, whether it is a routed message, a
   voice answer or an inbox action. A second "cancel" stops the one before it.
+- A spoken submit of a plan form needs the form open in a dashboard. Otherwise it is refused
+  and the card says to open the form.
 - Control words a name is warned against: cancel, stop, reply, answer, submit, option, no.
 - A hotkey that cannot be registered keeps the previous one and shows a warning.
 - A cancelled utterance is listed in Recently heard. Nothing is listed while muted.

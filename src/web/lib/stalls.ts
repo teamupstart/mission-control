@@ -7,7 +7,28 @@ import { fetchAwayStalls } from "./api.ts";
 const POLL_MS = 5000;
 
 /** Shared empty array, so "no stalls" is one stable reference across renders. */
-const NONE: Stall[] = [];
+type ObservedStall = Stall & { legacy?: true };
+const NONE: ObservedStall[] = [];
+
+/** Bind an older daemon's response to the session episode observed when its poll started. */
+export function captureStalls(stalls: Stall[], sessions: readonly Session[]): ObservedStall[] {
+  if (!stalls.some(stall => !stall.fingerprint)) return stalls;
+  const byId = new Map(sessions.map(session => [session.id, session]));
+  return stalls.map(stall => stall.fingerprint ? stall : {
+    ...stall, legacy: true, fingerprint: legacyStallFingerprint(stall, byId.get(stall.sessionId)),
+  });
+}
+
+/** A session update can retire a cached stall. Only a fresh poll can report a new occurrence. */
+export function currentStalls(stalls: ObservedStall[] | undefined, sessions: readonly Session[]): Stall[] | undefined {
+  if (!stalls?.some(stall => stall.legacy)) return stalls;
+  const byId = new Map(sessions.map(session => [session.id, session]));
+  return stalls.filter(stall => {
+    if (!stall.legacy) return true;
+    const session = byId.get(stall.sessionId);
+    return session && legacyStallFingerprint(stall, session) === stall.fingerprint;
+  });
+}
 
 /**
  * The daemon's currently-stuck sessions, polled into the client.
@@ -32,19 +53,26 @@ const NONE: Stall[] = [];
  * withKnownStalls).
  */
 export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
-  const [stalls, setStalls] = useState<Stall[] | undefined>(undefined);
+  const [stalls, setStalls] = useState<ObservedStall[] | undefined>(undefined);
+  const currentSessions = useRef(sessions);
+  currentSessions.current = sessions;
   const seen = useRef<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+    let reading = false;
     const read = async (): Promise<void> => {
-      const next = await fetchAwayStalls();
-      if (!alive || !next) return;
+      if (reading) return;
+      reading = true;
+      const atStart = currentSessions.current;
+      const response = await fetchAwayStalls().finally(() => { reading = false; });
+      if (!alive || !response) return;
+      const next = captureStalls(response, atStart);
       // `forMs` climbs every tick, so it is deliberately not part of the signature:
       // comparing on it would re-render on each poll for a stall nothing changed
       // about. The alert engine edge-triggers on (session, kind) anyway. The fingerprint is in
       // it because a Stuck row draws the facts, which can change while the sentence does not.
-      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint ?? legacyStallFingerprint(s)}`).join("|");
+      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint}`).join("|");
       if (sig === seen.current) return;
       seen.current = sig;
       setStalls(next.length > 0 ? next : NONE);
@@ -57,11 +85,5 @@ export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
     };
   }, []);
 
-  return useMemo(() => {
-    if (!stalls?.some(stall => !stall.fingerprint)) return stalls;
-    const byId = new Map(sessions.map(session => [session.id, session]));
-    return stalls.map(stall => stall.fingerprint ? stall : {
-      ...stall, fingerprint: legacyStallFingerprint(stall, byId.get(stall.sessionId)),
-    });
-  }, [stalls, sessions]);
+  return useMemo(() => currentStalls(stalls, sessions), [stalls, sessions]);
 }

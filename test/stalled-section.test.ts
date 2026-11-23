@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isIdleStall, legacyStallFingerprint, type Stall } from "../src/shared/stall.ts";
 import { inboxStalls, NO_STALLED_DRAWN, NO_STALLED_SESSIONS, stalledSessions } from "../src/web/lib/stalled.ts";
+import { captureStalls, currentStalls } from "../src/web/lib/stalls.ts";
 import { orderSessions, stalledInOrder } from "../src/web/lib/fleet-order.ts";
 import { attentionDismissalKeys, foldAttention, stallDismissalKey } from "../src/web/lib/attention.ts";
 import type { Session } from "../src/shared/types.ts";
@@ -134,4 +135,16 @@ test("a legacy stall keeps its identity as it ages and renews after session acti
   assert.deepEqual(stallDismissalKey(session.id, older), stallDismissalKey(session.id, legacy));
   assert.equal(legacyStallFingerprint(older, session), legacyStallFingerprint(legacy, session));
   assert.notEqual(legacyStallFingerprint(older, { ...session, lastActivity: 123 }), legacyStallFingerprint(legacy, session));
+});
+
+test("new session activity retires a cached legacy occurrence until a fresh poll confirms the stall", () => {
+  const session = idleSession("s-idle");
+  const legacy = { ...IDLE_WORK, fingerprint: undefined };
+  const cached = captureStalls([legacy], [session]);
+  const advanced = { ...session, lastActivity: 123 };
+  assert.deepEqual(currentStalls(cached, [session]), cached);
+  assert.deepEqual(currentStalls(cached, [advanced]), []);
+  const fresh = captureStalls([legacy], [advanced]);
+  assert.deepEqual(currentStalls(fresh, [advanced]), fresh);
+  assert.notEqual(fresh[0]!.fingerprint, cached[0]!.fingerprint);
 });

@@ -113,9 +113,11 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await card().getByRole("button", { name: `Dismiss ${session.name} from Stalled` }).click();
   await expect(card()).toHaveCount(0);
   served = [{ ...served[0]!, reason: "Waiting on the review for 2m", forMs: 120_000 }];
-  await page.reload();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/away/stalls")),
+    page.reload(),
+  ]);
   await expect(page.getByRole("button", { name: `Open ${session.name}`, exact: true })).toBeAttached();
-  await page.waitForResponse(response => response.url().endsWith("/api/away/stalls"));
   await expect(card()).toHaveCount(0);
   served = [{ ...served[0]!, workflowRunId: "another-run", reason: "Another review" }];
   await expect(card()).toContainText("Another review", { timeout: 15_000 });

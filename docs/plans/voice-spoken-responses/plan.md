@@ -269,7 +269,11 @@ helper synthesizes, and the listener plays.
   as one it is still stopping: capture is off for every listener, the holder is told to stop,
   and capture returns only on the holder's `ended` or its supervisor's exit report, as for any
   other stop. A second listener that is running across the restart therefore gets no capture
-  while the first may still be playing. A job the daemon cannot write down is not spoken.
+  while the first may still be playing. A job the daemon cannot write down is not spoken. If
+  the file is there and cannot be read, the daemon does not guess who holds a job: it treats
+  every listener a supervisor has started and not yet reported as exited as possibly playing,
+  tells each to stop, and waits for each one's confirmation or exit report. Nothing the
+  operator can switch, muting and voice off and on included, releases capture in its place.
 - **An utterance captured during speech is discarded.** The utterance route ignores one
   captured while a job was live, and Recently heard lists the reason. This is a second guard
   behind the listener's own pause.
@@ -399,10 +403,16 @@ Spoken replies
   states and its routes. A and B are merged and the others are not. Each change is an addition
   with a default, made by the phase that needs it, so nothing shipped breaks.
 - **The Linux follow-on inherits** the speech job contract, the synthesizer helper (which needs
-  no shell), the picker and the capability rule, all unchanged. It owns one thing: the Linux
-  listener plays an audio job and reports start and end, verified on a Linux desktop. That is
-  the whole of its "speech output for ask-aloud" item, and it should not plan engines, voices or
-  a picker.
+  no shell), the picker and the capability rule, all unchanged. It owns the two halves of
+  contract L that live outside the daemon's speech manager, for Linux. The listener's half: the
+  Linux listener plays an audio job, reports start and end, and confirms every stop, verified
+  on a Linux desktop. The supervisor's half: whatever starts the Linux listener names each
+  process, announces it, keeps the supervisor record, reports its exit only after the
+  operating system has reported it, and replaces a listener that does not confirm; and, since
+  on Linux that supervisor is the daemon, how a restarted daemon proves that the listener an
+  earlier run started has exited. Without the supervisor's half no Linux listener is announced
+  and none is given a speech job. That is the whole of its "speech output for ask-aloud" item,
+  and it should not plan engines, voices or a picker.
 - **How the existing documents are treated.** The earlier plan's files are pinned revisions of
   another managed plan. As with the spike's first-word decision, they are not rewritten. This
   plan records what it supersedes, and the Phase 12 task and the Linux plan task are updated to

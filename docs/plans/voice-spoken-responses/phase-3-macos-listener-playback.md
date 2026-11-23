@@ -58,10 +58,11 @@ and on Linux (the Linux follow-on).
    with `AVSpeechSynthesizer` and the named voice, posting `started` and `ended` from its
    delegate. Keep the synthesizer alive until it finishes. An unknown voice id is `ended` as
    `failed`.
-3. **Stop and failure.** When `speak` is `{ id, stop: true }`: stop playback of that job if it
-   is playing, do not start it if it has not started, and post `ended` as `stopped` once the
-   player has actually stopped. Post that `ended` also for an id the helper never received,
-   because the daemon waits for it. After a daemon restart the daemon recovers the job from
+3. **Stop and failure.** When `speak` is `{ id, stop: true }`: stop whatever is playing,
+   whichever job it is, do not start a job that has not started, and post `ended` as `stopped`
+   for the named id once the player has actually stopped. Post that `ended` also for an id the
+   helper never received, because the daemon waits for it and reads it as proof that the
+   helper is silent; if a different job was playing, post that job's `ended` as well. After a daemon restart the daemon recovers the job from
    its record and the helper's directive names the stop request for the job it holds, so the
    helper stops and posts `ended` on this same path. When `speak` becomes null or names
    another job mid-speech, which only a lost record could cause, stop playback the same way
@@ -108,7 +109,9 @@ and on Linux (the Linux follow-on).
    to stop. Either way post `exited` for the recorded id before starting a new helper. A record
    that has an id and no process id, left by a run that ended in the instant between starting
    the helper and recording it, is reported as exited only once the operating system lists no
-   process running the helper executable. Read the other supervisor's record too: report and
+   process running the helper executable. A record that cannot be read is treated the same
+   way, and is removed, after that proof, before `started` is posted for a new helper, because
+   the daemon may be waiting on it. Read the other supervisor's record too: report and
    remove it when its process is gone, and leave it alone while its process is alive. Repeat
    `started` for the running helper whenever the shell reconnects to a restarted daemon. The
    development launcher from Phase 9 does the same for the helper it starts, under its own
@@ -128,8 +131,9 @@ that was later given the same process id.
 
 - Who may read it. The directory is created owner-only (0700) and the file owner-only (0600),
   written by write-then-rename, because the instance id in it is the secret contract L
-  describes. Supervisors read it at their start and nothing else reads it. It appears in no
-  log.
+  describes. Supervisors read it at their start. The daemon reads it in one case only, when
+  its own `speech-holds.json` cannot be read (contract L, restart recovery), and never writes
+  it. It appears in no log.
 - Lifetime. Written with the id before the helper is started, and completed with the process
   id and start time as soon as the helper has started. Kept while the helper runs and after it
   exits until the daemon has accepted `exited` for that id, then removed. The next start
@@ -149,7 +153,9 @@ protocol's major version does not change.
   URL; one `ended` on each path; a stop
   mid-speech, where `ended` is posted only after the
   stub player reports it has stopped; a stop before playback started, which never starts it; a
-  stop for an unknown id, which is still answered; a stop request for the held job arriving on
+  stop for an unknown id, which is still answered; a stop request naming another id than the
+  job being played, which stops the player and posts `ended` for the named id only after the
+  stub player reports it has stopped; a stop request for the held job arriving on
   the first poll after a reconnect, as after a daemon restart, which stops playback and posts
   one `ended`; no resume while `capture` is false; no
   microphone while the stub player is still playing, even with `capture` true.
@@ -165,8 +171,9 @@ protocol's major version does not change.
   an `exited` posted while the daemon is down is repeated on reconnect and the record is kept
   until then; a recorded helper whose process is already gone is reported at start; a record
   with no process id is not reported while a helper process is listed and is reported once
-  none is; the other supervisor's record is reported and removed when its process is gone and
-  left alone while it is alive.
+  none is; an unreadable record is removed only once no helper process is listed, and before
+  `started` is posted for a new helper; the other supervisor's record is reported and removed
+  when its process is gone and left alone while it is alive.
 - `test/voice-listener-protocol.test.ts` gains cases for `speak` against the fake listener.
 - `test/voice-hotkey-tap.test.ts`: a tap stops speech while a job is live and toggles mute
   otherwise, as a pure function of the voice state.
@@ -195,6 +202,10 @@ listener on Linux, including the proof a restarted daemon needs when it is that 
 
 - The audit note in Phase 12 about S9 moves here, and is stricter: a leak that pausing cannot
   stop leaves Ask aloud unavailable, where Phase 12 said off by default.
+- Plan validation round 5: the daemon may read the supervisor record, in the one case where
+  its own record of unfinished speech cannot be read, to learn which helpers could be playing.
+  A stop request now stops whatever is playing, so its `ended` proves silence. Steps 3 and 8,
+  section 6 and the tests changed.
 - Plan validation round 4: section 6 said nothing was stored while step 8 stored the
   supervisor's record. Section 6 now defines the record, its permissions and its lifetime, and
   step 8 names it. The same round made the daemon keep unresolved jobs across a restart, so

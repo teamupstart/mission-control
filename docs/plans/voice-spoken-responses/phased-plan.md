@@ -174,7 +174,10 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   has exited. A stop (a click, the hotkey, muting, a settled
   card) or an expired limit moves the job to `stopping`: the holder's directive's `speak` becomes
   `{ id, stop: true }` and `capture` stays false. The listener stops playback or does not start
-  it, and posts `ended` as `stopped`, also for an id it never received. On that `ended` the job
+  it, and posts `ended` as `stopped`, also for an id it never received. A stop request stops
+  whatever the listener is playing, whichever id it names, and the `ended` for the named id is
+  posted only after the player has actually stopped, so that `ended` proves the listener is
+  silent. On that `ended` the job
   becomes `stopped` or, when a limit caused it, `timed-out`; `speak` clears and `capture`
   follows the mode. A `started` for a `stopping` job is recorded and changes nothing. With no
   `ended` by the confirm limit, the daemon treats the listener as absent: the `listener` reason
@@ -213,10 +216,34 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   on an exit report for the holder, which is accepted for a recorded holder whether or not it
   has been announced again, and on nothing else. A hold left for a job the listener never
   received, or one it had already ended, is ended by that same `ended`, which a listener posts
-  for every stop request. A file that exists and cannot be read keeps `capture` false and holds
-  the `listener` reason with the sentence "the record of unfinished speech could not be read",
-  until the operator switches voice off and on, which removes the file; that manual release
-  applies to this case only.
+  for every stop request. A file that exists and cannot be read means the holder is not known.
+  The manager does not guess, and nothing but proof releases capture. Every listener a
+  supervisor has started and not yet reported as exited is treated as holding a job. Those are
+  the instances named by the supervisor records, defined in the next item: a supervisor writes
+  its record before it starts a listener and removes it only after the daemon has accepted
+  that listener's exit report, and only an announced listener is ever given a job, so no
+  holder is missing from them. The manager makes one recovered job per recorded instance,
+  under a new job id, and writes those entries over the unreadable file, by the same
+  write-then-rename, before the directive route answers a poll. If that write fails, the
+  holds stand in memory, the file stays unreadable and the next start repeats this. Each then
+  ends as any
+  recovered job does: on that instance's `ended`, which a listener that is not playing posts
+  at once and one that is playing posts only after its player has stopped, or on the exit
+  report for it. A supervisor record that cannot be read either is written as one more entry,
+  `{ jobId, supervisor }`, with no instance to ask. It ends only when that record is gone or
+  has been replaced by a readable one, which its supervisor does only after the proof Speech 3
+  step 8 defines, and the manager looks again on every supervised-instances post. While any
+  of these is unresolved, `capture` is false in every listener's directive and the `listener`
+  capability carries "the record of unfinished speech could not be read". Muting, and
+  switching voice off and on, release nothing here either.
+- Supervisor record. Each supervisor keeps one owner-only file,
+  `<state home>/voice/supervised/<supervisor>.json`, where `<supervisor>` is `shell` for the
+  desktop shell and `dev` for the development launcher, holding `{ instance, pid, startedAt }`
+  for the listener it most recently started. It is written with the instance before the
+  listener is started and removed only after the daemon has accepted `exited` for that
+  instance. Speech 3 builds it, and its data section gives the permissions and the full
+  lifetime. The daemon reads these files in one case only, the unreadable `speech-holds.json`
+  above, and never writes them.
 - The hello (contract B) gains optional `speech { audio, systemVoices, instance }`. `audio`
   says the listener can play an audio job. A system voice is `{ id, name, language, quality }`
   with quality `premium`, `enhanced` or `default`. `instance` is the id the listener's
@@ -320,6 +347,10 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After plan validation round 5: no manual release exists anywhere in the bundle. Every path
+  that returns capture after speech, the unreadable-record case included, waits for a
+  listener's `ended` or a supervisor's proof of exit. `plan.md` and "Not scheduled here" give
+  the Linux follow-on the same duties: the listener's half and the supervisor's half.
 - After plan validation round 4: a daemon restart is one more event that cannot return
   capture, in `plan.md`, contract L, Speech 1 and Speech 3. Every file a phase writes is named
   in that phase's data section with what it holds, who may read it and when it is removed: the
@@ -341,6 +372,25 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
+
+## Plan validation round 5
+
+One finding from the Plan Feasibility Judge and two from the pull request's reviewer were
+accepted and applied. The reviewer's second finding was the judge's.
+
+- **An unreadable record could be cleared by hand, without proof.** Round 4 let the operator
+  switch voice off and on to remove a `speech-holds.json` that could not be read, which could
+  erase the only record of a listener still playing. That release is gone. With the holder
+  unknown, the daemon treats every listener a supervisor has started and not yet reported as
+  exited as a possible holder, taken from the supervisor records, gives each a stop request,
+  and writes those holds over the unreadable file before it answers a poll. Each ends only on
+  that listener's `ended` or its exit report. A stop request now stops whatever the listener
+  is playing, whichever id it names, so the `ended` is proof of silence. Contract L gained the
+  rule and the "Supervisor record" item. Speech 1 tests the unreadable file with playback
+  still active, and Speech 3 tests a stop request that names another id than the one playing.
+- **`plan.md` gave the Linux follow-on one duty where the index gave it several.** `plan.md`
+  now lists the same duties as "Not scheduled here": the listener's half, the supervisor's
+  half, and the proof a restarted daemon needs when it is the supervisor.
 
 ## Plan validation round 4
 

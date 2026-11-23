@@ -72,7 +72,12 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    the job is final, fails a job whose entry cannot be written, and at its own start, before
    the directive route answers a poll, turns every entry it finds into a recovered job in the
    state `stopping` that only its recorded holder's `ended` or an exit report for that holder
-   can end. The file is written owner-only by write-then-rename, as
+   can end. When the file cannot be read, the manager follows contract L's rule for an unknown
+   holder: one recovered job, under a new id, for every instance a supervisor record names,
+   written over the unreadable file before any poll is answered, and one more for a supervisor
+   record that cannot be read, which ends when that record is gone or readable again. Muting,
+   and switching voice off and on, release none of them. The file is written owner-only by
+   write-then-rename, as
    `src/server/window-background.ts` writes its own. A job
    whose card is settled while it is still `preparing` is dropped. Clocks and timers are
    injected, as in the state store.
@@ -151,6 +156,11 @@ spoken or stopped. It is machine-local runtime state: not in the database, not p
 config export, and not restored with one. A file from a build before this phase does not
 exist, and a missing file reads as no entries.
 
+In one case the daemon also reads files it does not write: when `speech-holds.json` cannot be
+read, it reads the supervisor records under `<state home>/voice/supervised/` that contract L
+defines and Speech 3 builds. Until Speech 3 lands no supervisor writes a record and none
+announces a listener, so no listener outside a test can hold a job.
+
 ## 7. Tests and verification
 
 - `test/voice-speech.test.ts`: `askSentence` for two, three, one and four names; the Automatic
@@ -199,8 +209,18 @@ exist, and a missing file reads as no entries.
   the entry is on disk before the first directive that names the job, the file is owner-only,
   and no log line carries the id; a job whose entry cannot be written ends as `failed` and is
   never named; an entry left for a job the listener never received is ended by that
-  listener's `ended`; a file that cannot be read keeps `capture` false with the `listener`
-  reason until voice is switched off and on;
+  listener's `ended`;
+  an unreadable file with playback still active: a job is `speaking` for the first instance,
+  both instances have a supervisor record on disk, written by the test as a supervisor would,
+  and the file is overwritten with bytes that do not parse before a second manager starts.
+  Both directives have `capture` false and each names a stop request under a new id, and the
+  rewritten file holds both entries before the first poll is answered. The second instance's
+  `ended` clears only its own entry, muting and switching voice off and on change nothing, and
+  `capture` turns true only after the first instance's `ended`, or in a second run of the case
+  the exit report for it. With one supervisor record unreadable as well, `capture` stays false
+  after both `ended` reports until that record is removed and a supervised-instances post
+  arrives; with no supervisor records at all, an unreadable file is replaced by an empty one
+  and `capture` follows the mode;
   a click on Stop follows the same order;
   the next queued job does not start until the one before it is final.
 - The same file: the directive shows `capture` false and `speak` while a job is live and returns
@@ -244,6 +264,9 @@ and fetches audio from this phase's audio route. Speech 4 writes
 - After Speech 3: the hotkey tap calls this phase's stop route.
 - Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
   audio without waiting for Speech 2.
+- Plan validation round 5: round 4 let voice off and on clear an unreadable record. Nothing
+  manual clears it now. Step 3, the data section and the tests changed: every listener a
+  supervisor record names is asked to stop and must confirm or be reported as exited.
 - Plan validation round 4: the job and its holder used to live only in memory, so a daemon
   restart could return capture to a second listener while the first was still playing. The
   holder is now also written to `speech-holds.json` before the job is handed over, and a

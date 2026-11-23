@@ -647,6 +647,19 @@ test("--uninstall removes the shim along with the hooks", () => {
   });
 });
 
+test("install and uninstall keep a user's hook that writes beside the shim", () => {
+  const userHook = "my-hook >> ~/.mission-control/bin/harness-hook.log";
+  const settings = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: userHook }] }] } });
+  withTempSettings(settings, (path) => {
+    const commands = (): string[] =>
+      (parse(readFileSync(path, "utf8")) as any).hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    runInstaller(path);
+    assert.ok(commands().includes(userHook), "install keeps it");
+    runInstaller(path, ["--uninstall"]);
+    assert.deepEqual(commands(), [userHook], "uninstall keeps it");
+  });
+});
+
 test("a shim runs a checkout whose path holds shell syntax, without expanding it", () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-shim-quote-"));
   try {

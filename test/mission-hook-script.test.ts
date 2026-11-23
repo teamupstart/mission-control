@@ -359,6 +359,14 @@ test("only a command that runs the shim itself counts as a shim command", () => 
   assert.equal(isMissionHookShimCommand(beside), false);
   assert.equal(missionHookScriptPath(beside), "/home/me/.mission-control/bin/harness-hook.mjs");
   assert.equal(isMissionHookShimCommand("my-hook >> /home/me/.mission-control/bin/harness-hook.log"), false);
+  assert.equal(isMissionHookShimCommand('sh -c "\\"$HOME/.mission-control/bin/harness-hook\\" Stop"'), true);
+  assert.equal(isMissionHookShimCommand("C:\\Users\\me\\.mission-control\\bin\\harness-hook Stop"), true);
+});
+
+test("a user's hook that only mentions a file beside the shim is not ours to strip", () => {
+  assert.equal(isMissionHookCommand("my-hook >> /home/me/.mission-control/bin/harness-hook.log"), false);
+  assert.equal(isMissionHookCommand(missionHookShimCommand("Stop")), true);
+  assert.equal(isMissionHookCommand("C:\\Users\\me\\.mission-control\\bin\\harness-hook Stop"), true);
 });
 
 test("the shim's text escapes paths a shell would expand, and still yields the script", () => {

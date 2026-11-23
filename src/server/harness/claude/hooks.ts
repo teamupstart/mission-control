@@ -294,7 +294,7 @@ export function missionHookShimCommand(event: string): string {
 
 /** Whether a settings.json hook command runs the shim rather than naming a script itself. */
 export function isMissionHookShimCommand(command: string): boolean {
-  return SHIM_IN_COMMAND.test(command.replace(/\\/g, "/"));
+  return SHIM_IN_COMMAND.test(command);
 }
 
 /**
@@ -347,7 +347,7 @@ const HOOK_SCRIPT = new RegExp(
 );
 
 // Bounded after, so a script or log beside the shim (`harness-hook.mjs`) is not taken for the shim itself.
-const SHIM_IN_COMMAND = new RegExp(`${escapeRe(MISSION_HOOK_SHIM)}(?=["'\\s]|$)`);
+const SHIM_IN_COMMAND = new RegExp(`${MISSION_HOOK_SHIM.split("/").map(escapeRe).join(SEP)}(?=["'\\s\\\\]|$)`);
 
 /**
  * Whether a settings.json hook command is one an installer of ours wrote.
@@ -362,7 +362,11 @@ const SHIM_IN_COMMAND = new RegExp(`${escapeRe(MISSION_HOOK_SHIM)}(?=["'\\s]|$)`
  */
 export function isMissionHookCommand(command: string): boolean {
   const normalized = command.replace(/\\/g, "/");
-  return MISSION_HOOK_SCRIPTS.some((name) => normalized.includes(name));
+  // The shim is a bare path with no extension, so a substring would also claim a user's `harness-hook.log`.
+  return (
+    isMissionHookShimCommand(command) ||
+    MISSION_HOOK_SCRIPTS.some((name) => name !== MISSION_HOOK_SHIM && normalized.includes(name))
+  );
 }
 
 /**

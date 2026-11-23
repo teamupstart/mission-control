@@ -6,6 +6,7 @@ import test from "node:test";
 import { LAUNCHER_ENABLED } from "../src/mod/constants.ts";
 import { runDispatchCommand, runLauncher } from "../src/mod/flows/command.ts";
 import { PANE_WIDER_NOTICE } from "../src/mod/flows/command.ts";
+import { FLOW_FAILED_TEXT, reportFlowFailure } from "../src/mod/flows/failure.ts";
 import { DESCRIBE_NOTICE, EXPIRED_NOTICE } from "../src/mod/flows/dispatch.ts";
 import { START_DISPATCH_DESCRIPTION, intentNudge, runStartDispatchTool } from "../src/mod/flows/tool.ts";
 import type { ModAskAnswer, ModAskQuestion } from "../src/mod/host.ts";
@@ -592,4 +593,16 @@ test("the intent nudge is the spec's one line, and the tool description keeps it
   for (const promise of ["unchanged as `brief`", "as `context`", "Never put secrets in `context`", "never change the session's files, branch or working folder"]) {
     assert.ok(START_DISPATCH_DESCRIPTION.includes(promise), promise);
   }
+});
+
+test("an exception from a flow is logged with its message and stack before the person sees the friendly line", () => {
+  const fake = createFakeModHost();
+  const logged: string[] = [];
+  reportFlowFailure(fake.host, (text) => logged.push(text), new TypeError("boom in the flow"));
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /dispatch flow threw: .*boom in the flow/);
+  assert.deepEqual(fake.notices, [FLOW_FAILED_TEXT]);
+  // A thrown non-error is still recorded.
+  reportFlowFailure(fake.host, (text) => logged.push(text), "plain string");
+  assert.match(logged[1]!, /plain string/);
 });

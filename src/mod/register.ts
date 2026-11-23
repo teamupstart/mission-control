@@ -2,6 +2,7 @@ import { dispatchIntentFor } from "@shared/home-dispatch.ts";
 import type { CoreHost, CoreStateKey, ModAskAnswer, ModAskQuestion, ModBand, ModHost, ModPaneOpen, ModState } from "./host.ts";
 import { createModCore, type ModCore } from "./core.ts";
 import { DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_PLACEHOLDER_TEXT, PANE_REQUEST_ID } from "./constants.ts";
+import { FLOW_FAILED_TEXT, reportFlowFailure } from "./flows/failure.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
 
@@ -120,22 +121,27 @@ export function register(on: EngineOn, _options: unknown): void {
   });
 
   // Flows (P11) and pane tabs (P12) register here, one line each.
-  on("command.run", { command: DISPATCH_COMMAND }, async (_$, e) => {
+  on("command.run", { command: DISPATCH_COMMAND }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { text: FLOW_UNAVAILABLE_TEXT };
     // The dialogs outlive the hook (as the S10 spike ran them), and every line the person needs
     // is a notice, so the command itself answers nothing.
     const host = flowHost;
-    void runDispatchCommand(host, flowSession, typeof e.args === "string" ? e.args : "").catch(() => host.notice(FLOW_FAILED_TEXT));
+    void runDispatchCommand(host, flowSession, typeof e.args === "string" ? e.args : "").catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error));
     return { text: "" };
   });
-  on("tool.run", { tool: DISPATCH_TOOL_ID }, async (_$, e) => {
+  on("tool.run", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
-    return { result: await runStartDispatchTool(flowHost, flowSession, e as Record<string, unknown>) };
+    const host = flowHost;
+    try {
+      return { result: await runStartDispatchTool(host, flowSession, e as Record<string, unknown>) };
+    } catch (error) {
+      reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error);
+      return { result: FLOW_FAILED_TEXT };
+    }
   });
 }
 
 /** What the command and the tool say when headless mode is not connected (flag off, daemon down, modApi mismatch). */
-const FLOW_FAILED_TEXT = "Mission Control could not finish that dispatch. Run /mission-dispatch again.";
 const FLOW_UNAVAILABLE_TEXT = "Mission Control headless mode is not available in this session.";
 type FlowHostType = Pick<ModHost, "ask" | "notice" | "toast" | "fetch" | "fillPrompt" | "paneOpen" | "paneState">;
 
@@ -180,7 +186,7 @@ interface Engine {
     toast: (text: string) => void;
     status: (text: string | undefined) => void;
     invalidate: (event: "ui.render") => void;
-    log: (text: string) => void;
+    log: (text: string, options?: { to?: "debug" }) => void;
   };
   state: {
     set: (ref: { plugin: "mission-control"; key: FlowStateKey }, value: unknown) => Promise<unknown>;

@@ -40,6 +40,9 @@ export function register(on: EngineOn, _options: unknown): void {
   const pane: PaneHolder = { owner: null, closing: Promise.resolve(), writes: Promise.resolve() };
   on("session.start", async ($, e, next) => {
     generation += 1;
+    // This start's own number, taken before anything awaits: a later start or end moves
+    // `generation` on, and every await below checks it again.
+    const mine = generation;
     core?.stop();
     core = null;
     flowSession = null;
@@ -48,7 +51,7 @@ export function register(on: EngineOn, _options: unknown): void {
     // A draft left waiting for its description belongs to the session that made it: the next
     // session's text must start a new brief, not describe an orphaned draft.
     await queuedStateSet($, pane, "draftId", null);
-    const mine = generation;
+    if (mine !== generation) return next(e);
     const host = await createHost($, view, { pane, mine, current: () => generation });
     const sessionId = await $.session.id();
     const entrypoint = await $.env.get("CLAUDE_CODE_ENTRYPOINT");

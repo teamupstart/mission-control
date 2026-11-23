@@ -24,7 +24,7 @@ function world(on, { flag, minModApi = 1 }) {
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
-  on('session.id', () => ({ value: 's1' }))
+  on('session.id', () => ({ value: seen.ids?.shift() ?? 's1' }))
   on('fs.read', async () => { if (seen.holdRead) await seen.holdRead; return { value: 'a-token' } })
   on('http.fetch', (_, e) => {
     seen.urls.push(e.url)
@@ -468,4 +468,24 @@ test('a draft left waiting for its description does not outlive its session', as
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.state.draftId === null)
   expect(seen.state.draftId).toBe(null)
+})
+
+test('overlapping session starts: the replacement owns dispatch and the held start installs nothing', async ($, on) => {
+  const seen = dispatchWorld(on)
+  seen.ids = ['s2']
+  let release
+  // The first start's draftId clear is held in flight.
+  seen.holdSet = new Promise((resolve) => { release = resolve })
+  seen.holdSetKey = 'draftId'
+  const first = $.session.start({ cwd: '/old', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const second = $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  release()
+  await Promise.all([first, second])
+  await settle(() => seen.statuses.length > 0)
+  // Only the replacement registered, and it polls under its own id.
+  expect(seen.urls.filter((u) => u.endsWith('/dispatch/sessions')).length).toBe(1)
+  expect(seen.urls.some((u) => u.includes('/dispatch/inbox') && u.includes('session=s2'))).toBe(true)
+  expect(seen.urls.some((u) => u.includes('session=s1'))).toBe(false)
 })

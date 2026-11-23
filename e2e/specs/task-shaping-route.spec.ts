@@ -219,6 +219,12 @@ test("an after-work prompt queued while task shaping is on is never delivered on
     .find((session) => session.id === sessionId)?.state, { timeout: 60_000 }).toBe("working");
   await expect.poll(() => recordedUserTurns(daemon).some((turn) => turn.includes("## Skills for this task")), { timeout: 30_000 }).toBe(true);
 
+  // A binding is keyed by the conversation (`noteKeyFor`), and one made before the agent reports
+  // its conversation id is paused as `conversation_changed` the moment that id arrives, so the
+  // submit below would meet an inactive binding. Wait for the id, as the idle waits elsewhere do.
+  await expect.poll(async () => (await api<Array<{ id: string; agentSessionId: string | null }>>(daemon, "/api/sessions"))
+    .find((session) => session.id === sessionId)?.agentSessionId ?? null, { timeout: 30_000 }).not.toBeNull();
+
   // The work is submitted while the turn is still running: the prompt waits in the outbox.
   const versionId = await publishedWorkflow(daemon);
   const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {

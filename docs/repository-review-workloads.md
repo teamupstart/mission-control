@@ -98,8 +98,10 @@ read error or a failure writing a private lease leaves the digest ready so any h
 In either case the submission can still resume or retry.
 Promoting a fresh, verified copy of the same digest can repair its existing claims. The
 service replaces only a digest directory it owns and whose contents match the flat file
-layout. If publication is interrupted, reconciliation verifies the replacement bytes before
-restoring access for existing holders.
+layout. If publication is interrupted, reconciliation replays the recorded intent for
+existing holders. It verifies the published copy or, if the directory is still missing,
+verifies and installs the pending copy. The interrupted submission acquires a claim only
+through a successful promotion transaction.
 Each lease reconstructs a private loose Git object store
 from verified files, along with the layer descriptor used by the MCP. This works after both
 the checkout and its Git common directory have disappeared.

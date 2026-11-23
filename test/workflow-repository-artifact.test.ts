@@ -839,6 +839,66 @@ for (const published of [false, true]) {
   });
 }
 
+for (const when of ["before", "after"]) {
+  test(`missing digest repair survives process exit ${when} publishing the candidate`, async (t) => {
+    const f = fixture(t);
+    f.write("file", "holder bytes");
+    const holder = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(holder);
+    const dest = join(realpathSync(f.root), "digests", holder.digest);
+    rmSync(dest, { recursive: true });
+    await assert.rejects(f.service.verify(holder, signal), { code: "artifact_unavailable" });
+    const incoming = f.submission();
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import { WorkflowStore } from "./src/server/workflows/store.ts";
+      import { WorkflowRepositoryArtifactService } from "./src/server/workflows/repository-artifact/service.ts";
+      const [root, checkout, dest, submissionId, when] = process.argv.slice(1);
+      const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+      const candidate = await service.prepare({ checkout, sourceBase: null }, new AbortController().signal);
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        if (to === dest && when === "before") process.exit(0);
+        rename(from, to);
+        if (to === dest && when === "after") process.exit(0);
+      };
+      syncBuiltinESMExports();
+      await service.promote(candidate, submissionId);
+      throw new Error("promotion missed simulated crash");
+    `, f.root, f.checkout, dest, incoming, when]);
+    const [candidate] = readdirSync(join(f.root, "pending"));
+    assert.ok(candidate);
+    const pending = join(f.root, "pending", candidate);
+    assert.equal(readFileSync(join(pending, "promotion"), "utf8"), holder.digest);
+    assert.equal(existsSync(join(pending, "previous")), false);
+    assert.equal(existsSync(dest), when === "after");
+    assert.equal(f.service.activeSnapshot(holder.submissionId), null);
+    if (when === "after") {
+      const blob = join(dest, f.git("hash-object", "file"));
+      const valid = readFileSync(blob);
+      chmodSync(blob, 0o600);
+      writeFileSync(blob, "bad");
+      chmodSync(blob, 0o400);
+      assert.equal((await f.service.reconcile()).orphans, 1);
+      assert.equal(f.service.activeSnapshot(holder.submissionId), null);
+      assert.ok(existsSync(pending));
+      chmodSync(blob, 0o600);
+      writeFileSync(blob, valid);
+      chmodSync(blob, 0o400);
+    }
+    assert.equal((await f.service.reconcile()).orphans, 0);
+    assert.equal(existsSync(pending), false);
+    assert.deepEqual(f.db.prepare("SELECT submission_id, state FROM workflow_repository_snapshot_claims WHERE digest=?")
+      .all(holder.digest).map(row => [row.submission_id, row.state]), [[holder.submissionId, "active"]]);
+    const lease = await f.service.materialize(f.request(holder), signal);
+    assert.equal(lease.descriptor.worktree.find(e => e.path === "file")?.blob, f.git("hash-object", "file"));
+    await lease.release();
+    await f.service.release(holder.submissionId);
+    await f.service.reconcile();
+  });
+}
+
 test("promotion preserves an unowned corrupt directory at the candidate digest", async (t) => {
   const f = fixture(t);
   const candidate = await f.prepare();

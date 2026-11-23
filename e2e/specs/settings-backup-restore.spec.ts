@@ -29,7 +29,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-backup-restore/${name}.png`);
 }
 

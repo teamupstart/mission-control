@@ -74,7 +74,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/harness-terminal-picker/${name}.png`);
 }
 

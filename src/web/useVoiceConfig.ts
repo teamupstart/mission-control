@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch } from "@shared/voice.ts";
-import { api, fetchVoiceConfig } from "./lib/api.ts";
+import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
+import { api, fetchVoiceConfig, fetchVoiceDevices } from "./lib/api.ts";
 
 // Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
 // `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
@@ -112,4 +112,35 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   );
 
   return { config, update, error };
+}
+
+export interface VoiceDevicesState {
+  devices: readonly VoiceInputDevice[];
+  /** Whether a listener is live, so the panel can say why only two inputs are offered. */
+  listener: boolean;
+}
+
+const NO_DEVICES: VoiceDevicesState = { devices: [], listener: false };
+
+/**
+ * The live listener's input devices (`GET /api/voice/devices`), polled while Settings > Voice is
+ * on screen. A listener says hello every ten seconds, so a device plugged in shows within a poll.
+ */
+export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
+  const [state, setState] = useState<VoiceDevicesState>(NO_DEVICES);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const tick = async (): Promise<void> => {
+      const read = await fetchVoiceDevices();
+      if (alive && read) setState({ devices: read.devices, listener: read.listener });
+    };
+    void tick();
+    const id = setInterval(() => void tick(), POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [enabled]);
+  return state;
 }

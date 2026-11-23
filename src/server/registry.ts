@@ -6,7 +6,7 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
-import { reportToRead, type ReportItem } from "@shared/reports.ts";
+import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
@@ -955,6 +955,8 @@ export class Registry extends EventEmitter {
    * or replaced. Never touched by eviction - a report outlives its session.
    */
   private reports = new Map<string, ReportItem>();
+  /** Muted report authors: a cache and a notifier for `ReportManager`, which owns `report_mutes`. */
+  private reportMutes: ReportMute[] = [];
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
@@ -1445,6 +1447,7 @@ export class Registry extends EventEmitter {
     restoringSessions: RestoringSession[];
     reviews: ReviewItem[];
     reports?: ReportItem[];
+    reportMutes?: ReportMute[];
     tasks: Task[];
     personas: PersonaView[];
     sessionActions: SessionAction[];
@@ -1478,7 +1481,7 @@ export class Registry extends EventEmitter {
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
       // Behind its flag, like the routes: with it off no window is handed a report.
-      ...(featureEnabled(INBOX_FLAG) ? { reports: [...this.reports.values()] } : {}),
+      ...(featureEnabled(INBOX_FLAG) ? { reports: [...this.reports.values()], reportMutes: [...this.reportMutes] } : {}),
       // Memory keeps an earlier launch's record so a later publish can carry it forward; what
       // leaves the daemon carries only the record of the session the task is on now.
       tasks: [...this.tasks.values()].map(taskShapingForReads),
@@ -2608,7 +2611,7 @@ export class Registry extends EventEmitter {
   replaceResidentProfiles(profiles: readonly ResidentProfile[]): void {
     const next = new Map(profiles.filter((profile) => profile.archivedAt === null)
       .map((profile) => [profile.id, profile]));
-    for (const id of [...this.residentProfiles.keys()]) {
+    for (const id of Array.from(this.residentProfiles.keys())) {
       if (!next.has(id)) this.removeResidentProfile(id);
     }
     for (const profile of next.values()) {
@@ -4587,7 +4590,7 @@ export class Registry extends EventEmitter {
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
     if (priorMux) {
-      for (const [id, other] of [...this.sessions]) {
+      for (const [id, other] of Array.from(this.sessions)) {
         if (id === sessionId) continue;
         const pane = muxHandle(other);
         if (!pane || pane.session !== priorMux) continue;
@@ -4879,7 +4882,7 @@ export class Registry extends EventEmitter {
       list.push(binding);
       historical.set(binding.taskId, list);
     }
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -4915,7 +4918,7 @@ export class Registry extends EventEmitter {
     >,
     at: number,
   ): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -4955,7 +4958,7 @@ export class Registry extends EventEmitter {
   ): Task[] {
     const rebinds: Task[] = [];
     const boundTaskMatches = new Map<string, boolean>();
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5074,7 +5077,7 @@ export class Registry extends EventEmitter {
     prUrl: string,
     at: number,
   ): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5097,7 +5100,7 @@ export class Registry extends EventEmitter {
   }
 
   private dropTaskDependencyProvenance(taskId: string, at: number): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -5185,7 +5188,7 @@ export class Registry extends EventEmitter {
         : null;
     if (activeTaskId !== null) taskIds.add(activeTaskId);
 
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -7769,6 +7772,17 @@ export class Registry extends EventEmitter {
     return [...this.reports.values()];
   }
 
+  /** Replace the muted authors and tell every window, behind the `inbox` flag like reports. */
+  setReportMutes(mutes: readonly ReportMute[]): void {
+    this.reportMutes = [...mutes];
+    if (featureEnabled(INBOX_FLAG)) this.emitEvent({ type: "report_mutes", mutes: [...mutes] });
+  }
+
+  /** The muted report authors, as the snapshot carries them. */
+  listReportMutes(): ReportMute[] {
+    return [...this.reportMutes];
+  }
+
   getReview(id: string): ReviewItem | undefined {
     return this.reviews.get(id);
   }
@@ -7847,7 +7861,7 @@ export class Registry extends EventEmitter {
   }
 
   private reconcileSessionDependencies(session: Session, match: PrMatch | null, at: number): void {
-    for (const task of [...this.tasks.values()]) {
+    for (const task of Array.from(this.tasks.values())) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (dependency.type === "plan") return dependency;
@@ -9055,7 +9069,7 @@ export class Registry extends EventEmitter {
     worktree: string | null,
   ): void {
     const key = pipelineRunKey(provider, repoRoot, slug);
-    for (const session of [...this.sessions.values()]) {
+    for (const session of Array.from(this.sessions.values())) {
       if (session.runtime === "sdk") {
         const workspace = this.workspaceFor(session.id, session.cwd, session.runtime);
         if (
@@ -12314,8 +12328,6 @@ export function summarizeQueue(
 }
 
 // ---- pure helpers ----
-
-
 
 /**
  * The task statuses a merged pull request can still decide.

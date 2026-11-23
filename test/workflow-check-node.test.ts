@@ -14,7 +14,6 @@ import {
   parseCheckCommand,
   resolveWorkflowCommand,
   type WorkflowCheckSlot,
-  type WorkflowCommandOverride,
   type WorkflowCommandView,
   type WorkflowPolicy,
 } from "../src/shared/workflow.ts";

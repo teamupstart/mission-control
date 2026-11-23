@@ -8,7 +8,7 @@ import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
+import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
@@ -42,6 +42,7 @@ import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchReport, fetchRepos } from "./lib/api.ts";
 import { pinnedToShow, placeReport, reportToShow, resolvedReport, type ReportPlacement } from "./lib/report-notification.ts";
+import { markAllReportsRead } from "./lib/report-state.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -380,6 +381,7 @@ export function App(): React.JSX.Element {
     restoringSessions,
     reviews,
     reports,
+    reportMutes,
     tasks,
     personas,
     sessionActions,
@@ -431,6 +433,7 @@ export function App(): React.JSX.Element {
   const stalls = useStalls();
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
+  const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
   const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
   // The runs as the naming rule reads them: each with its profile's current reference name, the
   // name the operator says to it (`withCurrentReferenceNames`).
@@ -440,6 +443,8 @@ export function App(): React.JSX.Element {
   );
   // Call signs and reference names are voice's names: they name an agent only while it is on.
   const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  // Muted report authors: left out of the fold and its to read figure, and never notified.
+  const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
     () => ({
       sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
@@ -463,6 +468,7 @@ export function App(): React.JSX.Element {
     // unknown (null) until its first answer, so a report stamped during page load waits for it.
     away: away === null ? null : away.away || returningFromAway,
     onOpenReport: (reportId) => openReportFromNotification.current(reportId),
+    muted: mutedReportAuthors,
   });
   const { bindings } = useKeybindings();
   useEffect(() => {
@@ -630,6 +636,20 @@ export function App(): React.JSX.Element {
       refreshPinned(report.id);
       return null;
     },
+    mutedAuthors: mutedReportAuthors,
+    // The author's rows leave the inbox as soon as the daemon's `report_mutes` lands; nothing is
+    // marked read, so Unmute in Settings brings them back.
+    onMute: async (report) => {
+      const result = await api.muteReports(report.author.key);
+      return result.ok ? null : result.error ?? "Could not mute these reports";
+    },
+    onMarkAllRead: async (ids) => {
+      // Batched: a Reports section longer than one request's bound is still cleared by one press.
+      const refused = await markAllReportsRead(ids, (batch) => api.markAllReportsRead(batch));
+      if (refused) return refused;
+      setOpenReportId((current) => (current !== null && ids.includes(current) ? null : current));
+      return null;
+    },
     // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
     onPublish: (report) => {
       const set = (state: ReportPublishState) =>
@@ -654,7 +674,7 @@ export function App(): React.JSX.Element {
       setInbox(null);
       navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
-  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate, refreshPinned]);
+  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate, refreshPinned, mutedReportAuthors]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -3122,7 +3142,7 @@ export function App(): React.JSX.Element {
   // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
   // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
   // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
-  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
+  // and control requests have no dismissal action, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
   // contract, which the session detail reads so its send composer gives way to that box.
@@ -3133,9 +3153,16 @@ export function App(): React.JSX.Element {
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
+        // Held, but under the same rule as the full fold: "Agent reports are listed in the inbox"
+        // off lists and counts no report here either, and a muted author's reports are left out.
+        ? foldWhileDismissalsUnknown(
+          inboxNames && alertSettings.reportsInInbox ? reports : undefined,
+          sessionControlRequestsEnabled ? sessions : [],
+          mutedReportAuthors,
+        )
         : foldAttention({
             sessions,
+            sessionControlRequestsEnabled,
             reviews: answerableReviews,
             residentRuns,
             ensembles: ensembleSummaries,
@@ -3147,7 +3174,7 @@ export function App(): React.JSX.Element {
             // read figure, whatever the window was told before the flag went off. "Agent reports
             // are listed in the inbox" off does the same without marking anything read; each
             // conversation keeps its reports.
-            ...(inboxNames && alertSettings.reportsInInbox ? { reports } : {}),
+            ...(inboxNames && alertSettings.reportsInInbox ? { reports, mutedAuthors: mutedReportAuthors } : {}),
             // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
             ...(inboxNames && stalls ? { stalls } : {}),
           }),
@@ -3155,6 +3182,7 @@ export function App(): React.JSX.Element {
       sessions,
       answerableReviews,
       inboxNames,
+      sessionControlRequestsEnabled,
       stalls,
       ensembleSummaries,
       pipelineRuns,
@@ -3162,9 +3190,9 @@ export function App(): React.JSX.Element {
       tasks,
       residentRuns,
       attentionDismissals.dismissed,
-      inboxNames,
       alertSettings.reportsInInbox,
       reports,
+      mutedReportAuthors,
     ],
   );
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
@@ -5231,6 +5259,7 @@ export function App(): React.JSX.Element {
             <SettingsPage
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              reportMutes={reportMutes}
               voice={voice}
               sessions={sessions}
               residentProfiles={residentProfiles}

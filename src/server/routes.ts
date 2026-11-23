@@ -6,7 +6,7 @@ import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIO
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { isVoiceStop } from "@shared/voice-routing.ts";
-import { registerVoiceRoutes } from "./voice/routes.ts";
+import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -9294,7 +9294,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
-  registry.voiceRouter = registerVoiceRoutes(app, {
+  registerVoiceRoutes(app);
+  registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
     async deliver(target, text) {
       if (target.state !== "running" || !target.sessionId) return "not-running";
       if (isVoiceStop(text)) {

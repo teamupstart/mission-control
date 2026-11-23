@@ -126,3 +126,45 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Release Captain", exact: true }) }).getByRole("cell"))
     .toHaveText(["Release Captain", "Resident", "Release Captain", "Not running", "Distinct"]);
 });
+
+test("a warned reference name is saved as typed, and the roster lists it with its warning", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1500, height: 1100 });
+  for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"]) await setFlag(daemon, id, true);
+  const captain = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Release Captain", description: "Cuts the weekly release" },
+    persona: { personaId: PERSONA_ID },
+  } });
+  await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Steve", description: "Watches lint" },
+    persona: { personaId: PERSONA_ID },
+  } });
+
+  // "Stevie" sounds like Steve, and Save goes ahead with it unchanged.
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Release Captain/ }).first().click();
+  const editor = page.getByRole("region", { name: "Resident profile Release Captain" });
+  const identity = editor.getByRole("region", { name: "Identity", exact: true });
+  await referenceNameOf(identity).fill("Stevie");
+  await expect(identity.locator(".voice-meter-bad")).toHaveText("Sounds like Steve");
+  const saved = page.waitForResponse((r) => r.request().method() === "PATCH"
+    && new URL(r.url()).pathname === `/api/residents/profiles/${encodeURIComponent(captain.id)}`);
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  const response = await saved;
+  expect(response.ok(), await response.text()).toBe(true);
+  const sent = JSON.parse(response.request().postData() ?? "{}") as { settings?: { identity?: { referenceName?: string } } };
+  expect(sent.settings?.identity?.referenceName, "the warned name is sent as typed").toBe("Stevie");
+  expect(((await response.json()) as ResidentProfile).settings.identity.referenceName, "and saved as typed").toBe("Stevie");
+  await expect(editor).toContainText("Revision 2. Edits apply");
+  const profiles = await api<ResidentProfile[]>(daemon, "/api/residents/profiles");
+  expect(profiles.find((profile) => profile.id === captain.id)?.settings.identity.referenceName).toBe("Stevie");
+
+  // The roster lists Release Captain said as Stevie, with the warning, and Steve warns back.
+  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
+  await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Stevie", exact: true }) }).getByRole("cell"))
+    .toHaveText(["Release Captain", "Resident", "Stevie", "Not running", /Sounds like Steve$/]);
+  await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Steve", exact: true }) }).getByRole("cell"))
+    .toHaveText(["Steve", "Resident", "Steve", "Not running", /Sounds like Stevie/]);
+  await shoot(page.getByRole("tabpanel", { name: "Voice" }), "04-roster-warned-stevie");
+});

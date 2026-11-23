@@ -62,7 +62,7 @@ function fakeClock() {
     clearTimer: (h: unknown): void => void timers.delete(h as number),
     tick(ms: number): void {
       now += ms;
-      for (const [id, t] of [...timers]) {
+      for (const [id, t] of Array.from(timers)) {
         if (t.at <= now) {
           timers.delete(id);
           t.fn();

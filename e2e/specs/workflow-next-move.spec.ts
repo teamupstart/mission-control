@@ -125,7 +125,6 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
       })
       .toBe("waiting_for_session");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }
@@ -186,7 +185,6 @@ test("recovery controls follow daemon capabilities and fail closed for an unknow
     const destination = artifactsDir("workflow-recovery-capabilities");
     mkdirSync(destination, { recursive: true });
     await header.screenshot({ path: `${destination}unknown-phase.png` });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-recovery-capabilities/unknown-phase.png");
   }
 });

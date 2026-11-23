@@ -24,6 +24,7 @@ import {
   type ReportAuthor,
   type ReportDocumentKind,
   type ReportItem,
+  type ReportMute,
   type ReportReadBy,
 } from "@shared/reports.ts";
 import { reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -301,6 +302,9 @@ export class ReportManager {
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
     this.stopEvents = registry.subscribe((event) => this.observe(event));
+    // Muted authors are handed to the registry before any report, so the first snapshot after a
+    // restart never lists a muted author's reports.
+    this.registry.setReportMutes(this.listMutes());
     // Every report still waiting to be read is handed to the registry once, so the snapshot
     // carries it from the first connect after a restart. One the daemon stopped before stamping
     // is stamped from its session's state: sessions are re-adopted after startup, so that state
@@ -325,7 +329,11 @@ export class ReportManager {
     let wasOn = featureEnabled(INBOX_FLAG);
     this.stopFlags = onFeatureFlagsChanged(() => {
       const on = featureEnabled(INBOX_FLAG);
-      if (on && !wasOn) for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
+      if (on && !wasOn) {
+        // Mutes first, so a window never lists a muted author's reports in between.
+        this.registry.setReportMutes(this.registry.listReportMutes());
+        for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
+      }
       wasOn = on;
     });
     // A follow-up's report follows its task: cleared once the task has started, however it was
@@ -716,8 +724,9 @@ export class ReportManager {
   }
 
   /**
-   * The one way a report becomes read. Sets `readAt` and `readBy` once; a report already read
-   * keeps the first time and the first way.
+   * The one way a single report becomes read. Sets `readAt` and `readBy` once; a report already
+   * read keeps the first time and the first way. `markAllRead` writes the same two columns, under
+   * the same guard, for a whole batch at once.
    */
   markRead(id: string, readBy: ReportReadBy): ReportItem | null {
     const changed = openDb().prepare("UPDATE reports SET read_at = ?, read_by = ? WHERE id = ? AND read_at IS NULL")
@@ -725,6 +734,71 @@ export class ReportManager {
     const report = this.getRow(id);
     if (changed && report) this.registry.upsertReport(report);
     return report;
+  }
+
+  /**
+   * Mark all read for exactly these ids, which are the reports the Reports section listed when it
+   * was pressed, as `mark-all`. A report not named stays unread, however recently it arrived.
+   * Answers the reports this call took out of to read; an unknown id, or one already read, changes
+   * nothing.
+   *
+   * One batch is one transaction, and nothing is announced until it commits: a write that fails
+   * partway rolls the whole batch back, so a refused request leaves every report it named unread
+   * and no window was told otherwise. Every report in a batch is read at the same moment.
+   */
+  markAllRead(ids: readonly string[]): ReportItem[] {
+    const at = this.now();
+    const clearedIds = inTransaction(() => {
+      const mark = openDb().prepare(
+        "UPDATE reports SET read_at = ?, read_by = 'mark-all' WHERE id = ? AND read_at IS NULL",
+      );
+      return [...new Set(ids)].filter((id) => mark.run(at, id).changes > 0);
+    });
+    const cleared: ReportItem[] = [];
+    for (const id of clearedIds) {
+      const report = this.getRow(id);
+      if (!report) continue;
+      cleared.push(report);
+      this.registry.upsertReport(report);
+    }
+    return cleared;
+  }
+
+  /** Muted report authors, oldest mute first. */
+  listMutes(): ReportMute[] {
+    return (openDb()
+      .prepare("SELECT author_key, author_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
+      .all() as Array<{ author_key: string; author_name: string; muted_at: number }>)
+      .map((row) => ({ authorKey: row.author_key, authorName: row.author_name, mutedAt: Number(row.muted_at) }));
+  }
+
+  /**
+   * Mute an author's reports, from now on. Named by the name its latest report stored, so
+   * Settings can list it after its session is gone. Null when no report carries that author key:
+   * a mute is offered on a report card, so there is always one. Muting twice keeps the first
+   * mute's time. Never touches `reports`: nothing is marked read, and posting is never refused.
+   */
+  mute(authorKey: string): ReportMute | null {
+    const latest = openDb()
+      .prepare("SELECT author_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
+      .get(authorKey) as { author_name: string } | undefined;
+    if (!latest) return null;
+    openDb()
+      .prepare("INSERT INTO report_mutes (author_key, author_name, muted_at) VALUES (?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
+      .run(authorKey, latest.author_name, this.now());
+    const mutes = this.listMutes();
+    this.registry.setReportMutes(mutes);
+    return mutes.find((mute) => mute.authorKey === authorKey) ?? null;
+  }
+
+  /**
+   * Unmute an author. Its reports still waiting to be read are listed and counted again, since
+   * a mute never marked them read. False when the author was not muted.
+   */
+  unmute(authorKey: string): boolean {
+    const removed = openDb().prepare("DELETE FROM report_mutes WHERE author_key = ?").run(authorKey).changes > 0;
+    if (removed) this.registry.setReportMutes(this.listMutes());
+    return removed;
   }
 
   /**

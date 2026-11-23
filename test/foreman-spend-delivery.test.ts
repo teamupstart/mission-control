@@ -180,7 +180,7 @@ afterEach(async () => {
   // Then wait for any child the case left running. Released first, deliberately: a reporter
   // parked on the response above cannot exit until it gets one, so awaiting before releasing
   // would trade a poisoned next test for a hung file.
-  await Promise.allSettled([...liveChildren]);
+  await Promise.allSettled(liveChildren);
   for (const path of spoolFiles()) if (path !== SPOOL) rmSync(path, { force: true });
 });
 

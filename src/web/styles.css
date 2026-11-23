@@ -7987,6 +7987,46 @@ a.btn {
 .inbox-entry:first-child .inbox-section {
   margin-top: 8px;
 }
+/* Settings > Reports. */
+.reports-settings-group + .reports-settings-group {
+  margin-top: 20px;
+}
+.reports-muted-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.reports-muted-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.reports-muted-row .btn {
+  margin-left: auto;
+}
+.agent-report-muted {
+  margin-top: 6px;
+}
+/* A section heading that carries a section-wide control: Reports' Mark all read. */
+.inbox-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+.inbox-entry:first-child .inbox-section-head {
+  margin-top: 8px;
+}
+.inbox-section-head .inbox-section {
+  margin: 0;
+}
+.inbox-section-head .inbox-section-action {
+  font-size: 12px;
+  padding: 2px 8px;
+}
 .inbox-item {
   border: 1px solid var(--border-soft);
   border-radius: 10px;
@@ -23142,6 +23182,40 @@ button.wf-carried.is-link:focus-visible {
 .voice-roster-warn {
   color: var(--attention);
   font-size: 11px;
+}
+/* Setup > Voice > Voice speech model: the download's bar, its figures and Cancel. The bar is the
+   updater's own rail, at the row's width. */
+.voice-model-progress .app-banner-progress {
+  width: min(520px, 100%);
+}
+.voice-model-progress-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+.voice-model-figures {
+  flex: 1;
+  min-width: 0;
+  font: 11px var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.setup-run-controls .voice-model-figures {
+  flex: none;
+  align-self: center;
+}
+.voice-input-device-hint {
+  color: var(--dim);
+}
+/* A remedy's own guidance sentence, inside the remedy's indent rather than adding a second one. */
+.setup-remedy-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  max-width: 760px;
 }
 /* The capture target is a button that shows the current key, and swaps to a live
    "Press a key…" prompt while recording. Min-width keeps the row from jumping. */
@@ -41093,10 +41167,13 @@ body.foreman-sidecar-open .modal-backdrop {
 /* The evidence and the consequence hang off the label, not the dot. */
 .setup-row-missing .setup-impact,
 .setup-row-needs-setup .setup-impact,
+.setup-row-unknown .setup-impact,
 .setup-row-missing .setup-why,
 .setup-row-missing .setup-evidence,
 .setup-row-needs-setup .setup-why,
 .setup-row-needs-setup .setup-evidence,
+.setup-row-unknown .setup-why,
+.setup-row-unknown .setup-evidence,
 .setup-row-satisfied .setup-evidence,
 .setup-row .setup-remedy-actions,
 .setup-row .setup-guide {
@@ -41774,12 +41851,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
 
-/* A session's own ask for Control other sessions (SessionControlRequestCard.tsx). It borrows
-   the review card's head, body and action row so it reads like a `request_input` question,
-   inside its own attention-framed panel because it sits in the conversation, not a modal.
-   Like the blocker band it never shrinks under the transcript. Only the agent's reason
-   scrolls, inside its own capped box: capping the card instead scrolled Accept and Decline
-   out of view on a short window, and the decision is the one thing this card exists for. */
+/* Cap the inbox card's reason so its decision buttons stay within reach. */
 .session-control-request {
   padding: 14px 16px;
   border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
@@ -41787,7 +41859,6 @@ body.foreman-sidecar-open .modal-backdrop {
   border-radius: 8px;
   background: var(--panel);
 }
-.detail-conv > .session-control-request { flex: none; }
 .session-control-request .review-content {
   margin-bottom: 10px;
   max-height: min(9.5em, 16dvh);

@@ -285,14 +285,14 @@ export class AfterWorkSkills {
     } catch (error) {
       console.warn("[shaping] could not read the after-work prompts that are held:", error);
     }
-    for (const sessionId of [...this.heldCheck]) this.checkHeld(sessionId);
+    for (const sessionId of Array.from(this.heldCheck)) this.checkHeld(sessionId);
     // Waiting rows a restart left behind are tried again once the outbox is up.
     try {
       for (const sessionId of listWaitingTaskSkillPromptSessions()) this.waiting.add(sessionId);
     } catch (error) {
       console.warn("[shaping] could not read the after-work prompts that are waiting:", error);
     }
-    for (const sessionId of [...this.waiting]) this.retry(sessionId);
+    for (const sessionId of Array.from(this.waiting)) this.retry(sessionId);
   }
 
   /** Prompt a session a durable signal says is owed, when its current launch predates the signal. */

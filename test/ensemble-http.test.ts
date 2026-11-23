@@ -72,7 +72,7 @@ function build() {
 async function driveToDecision(store: InstanceType<typeof EnsembleStore>, gateway: InstanceType<typeof FakeGateway>, driver: InstanceType<typeof EnsembleEngine>) {
   const { run } = store.createRun(runInsert(decidePlan(3, 2)));
   await driver.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await driver.wake(run.id);
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;

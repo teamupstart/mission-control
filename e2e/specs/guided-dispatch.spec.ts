@@ -194,7 +194,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // a fade, not of the feature, and reads as a translucent panel that has lost a z-index
   // fight it never had.
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/guided-dispatch/${name}.png`);
 }
 

@@ -20,7 +20,7 @@ import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/work
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
-import type { ReportItem } from "@shared/reports.ts";
+import { mutedAuthorKeys, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -55,6 +55,8 @@ export interface AwaySource {
     residentProfiles?: ResidentProfile[];
     /** Agent reports waiting to be read, present while the `inbox` flag is on. */
     reports?: ReportItem[];
+    /** Muted report authors, present while the `inbox` flag is on. Their reports are not counted. */
+    reportMutes?: ReportMute[];
   };
 }
 
@@ -123,6 +125,12 @@ export interface AwayWatcher {
   tick: () => void;
 }
 
+/** The reports waiting to be read whose authors are not muted: what the digest may count. */
+function listedReports(snap: Pick<ReturnType<AwaySource["snapshot"]>, "reports" | "reportMutes">): ReportItem[] {
+  const muted = mutedAuthorKeys(snap.reportMutes);
+  return (snap.reports ?? []).filter((report) => !muted.has(report.author.key));
+}
+
 export function startAwayWatcher(
   registry: AwaySource,
   now = () => Date.now(),
@@ -144,7 +152,7 @@ export function startAwayWatcher(
    * rather than from the last tick, because closing the window is not on the tick.
    */
   const waitingReports = (): ReportItem[] | null =>
-    featureEnabled(INBOX_FLAG) ? (registry.snapshot().reports ?? []) : null;
+    featureEnabled(INBOX_FLAG) ? listedReports(registry.snapshot()) : null;
 
   /** When each parked gate was first seen parked - the gate rule's only honest clock. */
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
@@ -231,11 +239,14 @@ export function startAwayWatcher(
         // Reports ride the same gate: while away a report's alert is buffered rather than
         // delivered, and the digest names who posted. `takenAt` lets a report posted and stamped
         // between two reads still count as news (see `AlertScope.takenAt`).
+        //
+        // A muted author's reports are left out of this scope, so they are never buffered and the
+        // digest never counts them; one buffered before the mute leaves at the next reconcile.
         ...(featureEnabled(INBOX_FLAG)
           ? {
               names: withCurrentReferenceNames(snap.residentRuns ?? [], snap.residentProfiles ?? []),
               spokenNames: featureEnabled(VOICE_FLAG),
-              reports: snap.reports ?? [],
+              reports: listedReports(snap),
             }
           : {}),
         takenAt: t,

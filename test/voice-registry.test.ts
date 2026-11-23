@@ -189,6 +189,31 @@ test("a finished task counts its 24 hours from when it completed", () => {
   assert.deepEqual(brief(names.roster()), ["task:t-done Otto not-running"], "a day past completion is gone");
 });
 
+test("a restart keeps a finished task's 24 hours but starts a still-open stopped task's clock again", () => {
+  const { sources, names, clock } = harness();
+  const stoppedAt = clock.now;
+  sources.upsertTask(callSignTask("t-open", "Otto", { status: "running", sessionId: null }));
+  sources.upsertTask(callSignTask("t-done", "Ada", { status: "done", completedAt: stoppedAt, sessionId: null }));
+  assert.deepEqual(brief(names.roster()), ["task:t-done Ada not-running", "task:t-open Otto not-running"]);
+  names.stop();
+
+  // The daemon restarts 20 hours later: a new registry over the same rows, with no memory.
+  clock.now = stoppedAt + 20 * HOUR;
+  const restarted = new VoiceNameRegistry(sources, { now: () => clock.now, enabled: () => true, taskStored: () => true, setTimer: () => null, clearTimer: () => {} });
+  restarted.start();
+  assert.deepEqual(brief(restarted.roster()), ["task:t-done Ada not-running", "task:t-open Otto not-running"]);
+
+  // 30 hours after both stopped: the finished task's stored completion time has run out, while the
+  // open task's 24 hours count from the restart, so it is still listed.
+  clock.now = stoppedAt + 30 * HOUR;
+  restarted.refresh();
+  assert.deepEqual(brief(restarted.roster()), ["task:t-open Otto not-running"]);
+  clock.now = stoppedAt + 44 * HOUR;
+  restarted.refresh();
+  assert.deepEqual(brief(restarted.roster()), [], "24 hours after the restart it leaves too");
+  restarted.stop();
+});
+
 test("a hibernated task reads hibernated, never expires, and reads running again when resumed", () => {
   const { sources, names, clock } = harness();
   sources.upsertTask(callSignTask("t-h", "Hazel", { status: "hibernated" }));
@@ -237,16 +262,43 @@ test("a task the Registry evicts from memory keeps its name for its day, and a d
   assert.deepEqual(names.roster(), [], "the evicted task's day ends like any other");
 });
 
-test("with the flag off frames only mark the roster stale, and a read computes it", () => {
+test("with the flag off the roster is kept current but nothing is published", () => {
   const { sources, names, changes, flag, timers } = harness({ enabled: false });
   sources.upsertTask(callSignTask("t-1", "Alice", { status: "done", completedAt: 999_000, sessionId: null }));
   assert.deepEqual(changes, [], "nothing is published while voice is off");
-  assert.equal(timers.length, 0);
-  assert.deepEqual(brief(names.roster()), ["task:t-1 Alice not-running"], "a read still answers");
+  assert.deepEqual(brief(names.roster()), ["task:t-1 Alice not-running"], "the roster still answers");
+  assert.equal(timers.length, 1, "the expiry timer is armed whatever the flag");
   flag.on = true;
   sources.upsertTask(callSignTask("t-2", "Bea"));
   sources.upsertSession(liveSession("s-t-2", "t-2"));
   assert.deepEqual(changes.map(brief).at(-1), ["task:t-1 Alice not-running", "task:t-2 Bea running"]);
+});
+
+test("a task that stops while voice is off counts its 24 hours from when it stopped, not from when voice comes back", () => {
+  const { sources, names, clock, timers, flag } = harness({ enabled: false });
+  sources.upsertTask(callSignTask("t-1", "Otto"));
+  sources.upsertSession(liveSession("s-t-1", "t-1"));
+  const stoppedAt = clock.now;
+  sources.upsertSession(liveSession("s-t-1", "t-1", { state: "exited" }));
+
+  // Voice comes back on ten hours later: the name is listed, and its day began when it stopped.
+  clock.now = stoppedAt + 10 * HOUR;
+  flag.on = true;
+  assert.deepEqual(brief(names.roster()), ["task:t-1 Otto not-running"]);
+  clock.now = stoppedAt + VOICE_NAME_RETENTION_MS;
+  timers.at(-1)!.fn();
+  assert.deepEqual(names.roster(), [], "it leaves 24 hours after it stopped");
+});
+
+test("a listed task the Registry evicts while voice is off keeps its name for its day", () => {
+  const { sources, names, clock, flag } = harness({ enabled: false, stored: () => true });
+  sources.upsertTask(callSignTask("t-done", "Otto", { status: "done", completedAt: clock.now - HOUR, sessionId: null }));
+  sources.removeTask("t-done");
+  flag.on = true;
+  assert.deepEqual(brief(names.roster()), ["task:t-done Otto not-running"], "kept, not dropped early");
+  clock.now += 23 * HOUR;
+  sources.upsertSession(mkSession({ id: "nudge", state: "idle", task: null }));
+  assert.deepEqual(names.roster(), [], "and gone once its day is up");
 });
 
 test("a session frame that changes neither its liveness nor its task does not recompute", () => {

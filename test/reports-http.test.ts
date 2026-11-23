@@ -137,7 +137,7 @@ test("opened and read are the operator's alone, and idempotent", async () => {
     ] as Record<string, string>[]) {
       const refused = await call(path, {}, headers);
       assert.equal(refused.status, 403, `${path} refuses ${JSON.stringify(headers)}`);
-      assert.equal(refused.body.error, "Only the operator can open, mark read, reply to, follow up or publish a report");
+      assert.equal(refused.body.error, "Only the operator can open, mark read, reply to, follow up, publish or mute reports, or change their guidance");
     }
   }
   // None of those refusals opened or read it.
@@ -230,4 +230,147 @@ test("an app built without the manager answers 503 rather than building a second
   const { cwd } = liveSession(registry);
   assert.equal((await call("/mcp/reports", { env: {}, cwd, title: "t", body: "b" }, agent)).status, 503);
   assert.equal((await call("/api/reports/r-1/read", {})).status, 503);
+});
+
+// ---- noise controls (Phase 7): guidance, mutes and Mark all read ----
+
+test("report guidance: the default until saved, the operator's text once saved, refused past the limit, and reset by null", async () => {
+  const { call, agent } = setup();
+  const { DEFAULT_REPORT_GUIDANCE, REPORT_GUIDANCE_LIMIT } = await import("../src/shared/reports.ts");
+  const initial = await call("/api/reports/guidance");
+  assert.equal(initial.status, 200);
+  assert.deepEqual(initial.body, { guidance: null, effective: DEFAULT_REPORT_GUIDANCE, defaultGuidance: DEFAULT_REPORT_GUIDANCE, limit: REPORT_GUIDANCE_LIMIT });
+  // The MCP child's read: the machine token, and the guidance in force.
+  assert.equal((await call("/mcp/reports/guidance")).status, 401);
+  assert.deepEqual((await call("/mcp/reports/guidance", undefined, agent)).body, { guidance: DEFAULT_REPORT_GUIDANCE });
+
+  const custom = "Only post a report when a pull request is ready for review.";
+  const saved = await call("/api/reports/guidance", { guidance: `  ${custom}\n` }, {}, "PUT");
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.guidance, custom, "trimmed");
+  assert.equal(saved.body.effective, custom);
+  assert.deepEqual((await call("/mcp/reports/guidance", undefined, agent)).body, { guidance: custom });
+
+  const tooLong = await call("/api/reports/guidance", { guidance: "x".repeat(REPORT_GUIDANCE_LIMIT + 1) }, {}, "PUT");
+  assert.equal(tooLong.status, 400);
+  assert.equal(tooLong.body.error, `report guidance can be at most ${REPORT_GUIDANCE_LIMIT} characters`);
+  assert.equal((await call("/api/reports/guidance")).body.guidance, custom, "a refused save changes nothing");
+  // Exactly the limit is accepted.
+  assert.equal((await call("/api/reports/guidance", { guidance: "y".repeat(REPORT_GUIDANCE_LIMIT) }, {}, "PUT")).status, 200);
+
+  // An agent never changes it.
+  assert.equal((await call("/api/reports/guidance", { guidance: "post everything" }, agent, "PUT")).status, 403);
+  assert.equal((await call("/api/reports/guidance", { guidance: "post everything" }, { "x-mission-operation-actor": "agent" }, "PUT")).status, 403);
+
+  // Reset: null, or blank text, is the default again.
+  const reset = await call("/api/reports/guidance", { guidance: null }, {}, "PUT");
+  assert.deepEqual([reset.body.guidance, reset.body.effective], [null, DEFAULT_REPORT_GUIDANCE]);
+  await call("/api/reports/guidance", { guidance: custom }, {}, "PUT");
+  const blank = await call("/api/reports/guidance", { guidance: "   " }, {}, "PUT");
+  assert.deepEqual([blank.body.guidance, blank.body.effective], [null, DEFAULT_REPORT_GUIDANCE]);
+});
+
+test("a mute is the operator's, names the author, rides the snapshot and one event, and never marks a report read", async () => {
+  const { registry, call, agent, events } = setup();
+  const { cwd, id } = liveSession(registry);
+  const report = (await call("/mcp/reports", { env: {}, cwd, title: "Chatty", body: "b" }, agent)).body.report as ReportItem;
+  const authorKey = report.author.key;
+  assert.equal(authorKey, `session:${id}`);
+
+  for (const headers of [agent, { "x-mission-operation-actor": "agent" }, { "x-mission-operation-actor": "foreman" }] as Record<string, string>[]) {
+    assert.equal((await call("/api/reports/mutes", { authorKey }, headers)).status, 403);
+  }
+  assert.equal((await call("/api/reports/mutes", { authorKey: "session:never-posted" })).status, 404, "no report from that author");
+  assert.equal((await call("/api/reports/mutes", { authorKey: "nobody" })).status, 400);
+
+  const before = events.length;
+  const muted = await call("/api/reports/mutes", { authorKey });
+  assert.equal(muted.status, 200);
+  const mute = muted.body.mute as { authorKey: string; authorName: string; mutedAt: number };
+  assert.deepEqual([mute.authorKey, mute.authorName], [authorKey, report.author.name]);
+  const told = events.slice(before).filter((event) => event.type === "report_mutes");
+  assert.equal(told.length, 1);
+  assert.ok(told[0]!.type === "report_mutes" && told[0]!.mutes.some((m) => m.authorKey === authorKey));
+  assert.ok(registry.snapshot().reportMutes?.some((m) => m.authorKey === authorKey));
+  // Muting again keeps the first mute's time.
+  const again = await call("/api/reports/mutes", { authorKey });
+  assert.equal((again.body.mute as { mutedAt: number }).mutedAt, mute.mutedAt);
+
+  // A muted agent can still post, and nothing it posted was marked read.
+  const later = await call("/mcp/reports", { env: {}, cwd, title: "Still chatty", body: "b" }, agent);
+  assert.equal(later.status, 200);
+  const history = (await call(`/api/sessions/${id}/reports`)).body.reports as ReportItem[];
+  assert.deepEqual(history.map((r) => [r.title, r.readAt]), [["Chatty", null], ["Still chatty", null]]);
+  // Both still ride the snapshot: the dashboard's fold, not the daemon, leaves them out.
+  assert.ok(registry.snapshot().reports?.some((r) => r.title === "Still chatty"));
+
+  // Unmute is the operator's too; once gone, a second unmute is a 404.
+  const path = `/api/reports/mutes/${encodeURIComponent(authorKey)}`;
+  assert.equal((await call(path, undefined, agent, "DELETE")).status, 403);
+  const unmuted = await call(path, undefined, {}, "DELETE");
+  assert.equal(unmuted.status, 200);
+  assert.ok(!(unmuted.body.mutes as { authorKey: string }[]).some((m) => m.authorKey === authorKey));
+  assert.ok(!registry.snapshot().reportMutes?.some((m) => m.authorKey === authorKey));
+  assert.equal((await call(path, undefined, {}, "DELETE")).status, 404);
+});
+
+test("Mark all read marks exactly the ids it was sent, as mark-all, and leaves any other report unread", async () => {
+  const { registry, call, agent } = setup();
+  const first = liveSession(registry);
+  const second = liveSession(registry);
+  const a = (await call("/mcp/reports", { env: {}, cwd: first.cwd, title: "A", body: "a" }, agent)).body.report as ReportItem;
+  const b = (await call("/mcp/reports", { env: {}, cwd: second.cwd, title: "B", body: "b" }, agent)).body.report as ReportItem;
+  // Arrives after the click: the section never listed it, so it was not sent.
+  const late = (await call("/mcp/reports", { env: {}, cwd: first.cwd, title: "Late", body: "c" }, agent)).body.report as ReportItem;
+
+  assert.equal((await call("/api/reports/read-all", { ids: [a.id, b.id] }, agent)).status, 403);
+  assert.equal((await call("/api/reports/read-all", { ids: [] })).status, 400);
+  assert.equal((await call("/api/reports/read-all", { ids: ["nope"] })).status, 400);
+
+  const done = await call("/api/reports/read-all", { ids: [a.id, b.id, a.id] });
+  assert.equal(done.status, 200);
+  assert.deepEqual((done.body.reports as ReportItem[]).map((r) => [r.id, r.readBy]), [[a.id, "mark-all"], [b.id, "mark-all"]]);
+  const read = async (sessionId: string) => (await call(`/api/sessions/${sessionId}/reports`)).body.reports as ReportItem[];
+  assert.deepEqual((await read(first.id)).map((r) => [r.id, r.readBy]), [[a.id, "mark-all"], [late.id, null]]);
+  assert.deepEqual((await read(second.id)).map((r) => [r.id, r.readBy]), [[b.id, "mark-all"]]);
+  // Already read: changed by nothing, and not answered as cleared again.
+  const repeat = await call("/api/reports/read-all", { ids: [a.id, "r-424242"] });
+  assert.deepEqual(repeat.body.reports, []);
+  assert.equal((await read(first.id))[0]!.readAt, (done.body.reports as ReportItem[])[0]!.readAt);
+});
+
+test("Mark all read clears a Reports section of 1,001 reports in one press, batched under the route's bound", async () => {
+  const { registry, call, agent } = setup();
+  const { REPORT_READ_ALL_BATCH } = await import("../src/shared/reports.ts");
+  const { markAllReportsRead } = await import("../src/web/lib/report-state.ts");
+  const { id, cwd } = liveSession(registry);
+  const ids: string[] = [];
+  for (let n = 0; n < REPORT_READ_ALL_BATCH + 1; n++) {
+    ids.push(((await call("/mcp/reports", { env: {}, cwd, title: `Report ${n}`, body: "b" }, agent)).body.report as ReportItem).id);
+  }
+  // The route stays bounded: one request may not carry the whole section.
+  assert.equal((await call("/api/reports/read-all", { ids })).status, 400);
+  // What the dashboard's button does with the ids it lists.
+  const batches: number[] = [];
+  const refused = await markAllReportsRead(ids, async (batch) => {
+    batches.push(batch.length);
+    const answer = await call("/api/reports/read-all", { ids: batch });
+    return answer.status === 200 ? { ok: true } : { ok: false, error: String(answer.body.error) };
+  });
+  assert.equal(refused, null);
+  assert.deepEqual(batches, [REPORT_READ_ALL_BATCH, 1]);
+  const history = (await call(`/api/sessions/${id}/reports`)).body.reports as ReportItem[];
+  assert.equal(history.length, REPORT_READ_ALL_BATCH + 1);
+  assert.ok(history.every((report) => report.readBy === "mark-all"), "every listed report is read, as mark-all");
+  assert.ok(!registry.reportsToRead().some((report) => report.sessionId === id), "none left to read");
+});
+
+test("both guidance routes answer the whole view the dashboard's contract requires", async () => {
+  const { call } = setup();
+  const { ReportGuidanceViewSchema } = await import("../src/shared/protocol.ts");
+  assert.ok(ReportGuidanceViewSchema.safeParse((await call("/api/reports/guidance")).body).success);
+  const saved = await call("/api/reports/guidance", { guidance: "Post when a review is ready." }, {}, "PUT");
+  assert.ok(ReportGuidanceViewSchema.safeParse(saved.body).success, JSON.stringify(saved.body));
+  const reset = await call("/api/reports/guidance", { guidance: null }, {}, "PUT");
+  assert.ok(ReportGuidanceViewSchema.safeParse(reset.body).success, JSON.stringify(reset.body));
 });

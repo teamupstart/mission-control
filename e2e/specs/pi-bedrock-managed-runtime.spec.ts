@@ -281,7 +281,6 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
   expect(command).not.toContain("'--resume'");
   expect(command).not.toContain("'--fork'");
   if (process.env.MC_E2E_EVIDENCE) {
-    // oxlint-disable-next-line no-console
     console.log(`OBSERVED the terminal command reopens the managed Pi conversation: ${command}`);
   }
 });

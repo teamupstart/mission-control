@@ -283,7 +283,6 @@ test("a scout without a submitted report warns first, then closes and preserves 
       path: join(CLOSE_WARNING_EVIDENCE, "confirm-close-without-report.png"),
       animations: "disabled",
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/scout-close-warning/confirm-close-without-report.png");
   }
 
@@ -478,7 +477,6 @@ async function capturePromptEvidence(page: Page, name: string): Promise<void> {
     path: `${EVIDENCE}${name}.png`,
     animations: "disabled",
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/scout-prompt-context/${name}.png`);
 }
 
@@ -490,7 +488,6 @@ async function captureShortcutEvidence(page: Page): Promise<void> {
     path: `${SHORTCUT_EVIDENCE}slash-focus-from-state-selector.png`,
     animations: "disabled",
   });
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/scouts-shortcuts/slash-focus-from-state-selector.png");
 }
 
@@ -503,7 +500,6 @@ async function captureFragmentEvidence(page: Page): Promise<void> {
     path: `${FRAGMENT_EVIDENCE}scout-fragment-target.png`,
     animations: "disabled",
   });
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/scout-fragment-links/scout-fragment-target.png");
 }
 
@@ -513,7 +509,6 @@ async function capturePromptCapEvidence(page: Page, name: string): Promise<void>
   mkdirSync(PROMPT_CAP_EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${PROMPT_CAP_EVIDENCE}${name}.png`, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/scout-prompt-cap/${name}.png`);
 }
 
@@ -723,7 +718,6 @@ test("a long prompt trail is bounded to one scrollable ledger and collapses away
       bodyOverflow: bodies.map((el) => el.scrollHeight - el.clientHeight),
     };
   });
-  // eslint-disable-next-line no-console
   console.log(`MEASURED prompt context ${JSON.stringify(geometry)}`);
 
   expect(geometry.pane, "the reader pane has a laid-out height").toBeGreaterThan(400);

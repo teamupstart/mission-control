@@ -47,7 +47,7 @@ function harness(finalize: EnsembleFinalizeDeps) {
 async function driveToDecision(store: InstanceType<typeof EnsembleStore>, gateway: InstanceType<typeof FakeGateway>, engine: InstanceType<typeof EnsembleEngine>, count = 3) {
   const { run } = store.createRun(runInsert(decidePlan(count, 2)));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(run.id);
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;

@@ -206,10 +206,46 @@ export type VoiceCapabilities = Partial<Record<VoiceCapabilityId, VoiceCapabilit
 export const VOICE_MODEL_STATUSES = ["missing", "downloading", "verifying", "ready", "failed"] as const;
 export type VoiceModelStatus = (typeof VOICE_MODEL_STATUSES)[number];
 
-/** The speech model on this machine. `missing` until Phase 8's manager drives it. */
+/**
+ * The speech model on this machine, as the daemon's model manager (contract H) reads it.
+ *
+ * - `missing`: a file is not on disk, or no model is published for the backend (`revision` null);
+ * - `downloading`: Download is running, with `doneBytes` of `totalBytes` and a rate;
+ * - `verifying`: every file is on disk at its pinned size and is being hashed again;
+ * - `ready`: every file matched its pinned SHA-256 in this daemon's lifetime, at `directory`;
+ * - `failed`: a size or digest did not match, or the download failed; `error` says which.
+ *
+ * Whether a listener has LOADED the model is the hello's `modelLoaded` and the `model` reason,
+ * never this.
+ */
 export interface VoiceModelState {
   status: VoiceModelStatus;
+  /** The backend the model is for. Null while voice is off. */
+  backend: VoiceBackend | null;
+  /** The manifest revision, or null when this build publishes no model for the backend. */
+  revision: string | null;
+  totalBytes: number;
+  /** Bytes downloaded (`downloading`) or hashed (`verifying`) so far. */
+  doneBytes: number;
+  /** The recent download rate while downloading, or null. */
+  bytesPerSecond: number | null;
+  /** The verified directory while `ready`, which a listener is given as its model directory. */
+  directory: string | null;
+  /** Why it `failed`, or why there is nothing to download. */
+  error: string | null;
 }
+
+/** The model state with nothing known: voice off, or no manager reading yet. */
+export const VOICE_MODEL_STATE_NONE: VoiceModelState = Object.freeze({
+  status: "missing",
+  backend: null,
+  revision: null,
+  totalBytes: 0,
+  doneBytes: 0,
+  bytesPerSecond: null,
+  directory: null,
+  error: null,
+});
 
 /** A hotkey the shell could not register, and the chord still in force (null for none). */
 export interface VoiceHotkeyError {
@@ -333,8 +369,21 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.reasons,
     capabilities,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
-    state.model,
+    canonicalVoiceModel(state.model),
   ]);
+}
+
+function canonicalVoiceModel(model: VoiceModelState): unknown[] {
+  return [
+    model.status,
+    model.backend,
+    model.revision,
+    model.totalBytes,
+    model.doneBytes,
+    model.bytesPerSecond,
+    model.directory,
+    model.error,
+  ];
 }
 
 /**
@@ -349,7 +398,7 @@ export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
 
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", reasons: [], capabilities: {}, hotkeyError: null, model: { status: "missing" }, roster: [] };
+  return { mode: "off", reasons: [], capabilities: {}, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----

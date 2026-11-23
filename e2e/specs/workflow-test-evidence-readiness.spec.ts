@@ -33,7 +33,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-test-evidence-readiness/${name}.png`);
 }
 
@@ -155,7 +154,6 @@ async function seedRejectedRun(
     { message: "the refused round should return to the session", timeout: 40_000 })
       .toBe("waiting_for_session");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

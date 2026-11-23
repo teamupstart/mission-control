@@ -204,7 +204,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void
 
 async function runToPanel(engine: Engine, gateway: Gateway, store: Store, runId: string): Promise<string | null> {
   await engine.launch(runId);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = store.listAttempts(runId).find((a) => a.taskId === dispatch.taskId)!.memberId;
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(runId);
@@ -505,7 +505,7 @@ test("a panel interrupted by a restart is re-run whole against the same evidence
   const first = harness(() => new Promise<string>(() => {}), store);
   const run = makeRun(store, panelPlan(3, 3));
   await first.engine.launch(run.id);
-  for (const dispatch of [...first.gateway.dispatched]) {
+  for (const dispatch of Array.from(first.gateway.dispatched)) {
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
     first.gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await first.engine.wake(run.id);
@@ -542,7 +542,7 @@ test("recovery completes a settled panel from its ballots rather than re-spendin
   const first = harness(() => new Promise<string>(() => {}), store);
   const run = makeRun(store, panelPlan(3, 3));
   await first.engine.launch(run.id);
-  for (const dispatch of [...first.gateway.dispatched]) {
+  for (const dispatch of Array.from(first.gateway.dispatched)) {
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
     first.gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await first.engine.wake(run.id);
@@ -750,7 +750,7 @@ test("a ballot that arrives after the run was cancelled is recorded interrupted,
 
   const run = makeRun(store, panelPlan(3, 3));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(run.id);

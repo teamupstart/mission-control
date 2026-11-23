@@ -3940,6 +3940,12 @@ export type ServerEvent =
        * session's whole history is read per session from `GET /api/sessions/:id/reports`.
        */
       reports?: import("./reports.ts").ReportItem[];
+      /**
+       * Authors whose reports are muted (`report_mutes`). Present only while the `inbox` flag is
+       * on. `reports` still carries a muted author's reports: the dashboard's fold leaves them
+       * out, so unmuting brings them back without a fetch.
+       */
+      reportMutes?: import("./reports.ts").ReportMute[];
       tasks: Task[];
       personas: PersonaView[];
       /**
@@ -4065,7 +4071,7 @@ export type ServerEvent =
       /**
        * The voice state at connect time (contract B of the voice plan). Present only while the
        * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
-       * seven entries, and a roster that is empty until the names phase fills it.
+       * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
       /** Cards still awaiting delivery or a pick when this window connects. */
@@ -4114,6 +4120,11 @@ export type ServerEvent =
    * session and is never deleted, so a read or replaced one is upserted with its new state.
    */
   | { type: "report_upsert"; report: import("./reports.ts").ReportItem }
+  /**
+   * The whole list of muted report authors, after a mute or an unmute (`inbox` flag). Sent whole
+   * because it is small and a window that applies it twice ends in the same state.
+   */
+  | { type: "report_mutes"; mutes: import("./reports.ts").ReportMute[] }
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }
@@ -4253,8 +4264,9 @@ export type ServerEvent =
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces
    * `VoiceState.roster`; a change to the roster alone sends this and no `voice_state` frame. Sent
    * only while the `voice` flag is on, and only when the roster changed. Bounded by the live
-   * resident profiles (at most 200) and the launched tasks with a call sign that are running or
-   * hibernated, or that stopped within the last day (`computeVoiceRoster`).
+   * resident profiles (at most 200) and the launched tasks with a call sign that are running,
+   * hibernated, or recently stopped and still kept by the roster's retention rules
+   * (`computeVoiceRoster`; docs/voice.md, "Who can be addressed").
    */
   | { type: "voice_roster"; roster: import("./voice-names.ts").SpokenName[] }
   /**

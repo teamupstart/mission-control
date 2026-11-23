@@ -591,6 +591,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("derived-status"),
   },
   {
+    id: "voice-input-device",
+    label: "Voice input device",
+    description: "Which microphone voice listens on: the built-in one, the system default, or another input.",
+    category: "voice",
+    anchor: "voice/input-device",
+    keywords: ["microphone", "input", "device", "mic", "bluetooth", "headset", "built-in"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-auto-mute",
     label: "Auto-mute during calls",
     description: "Stop listening while another app, such as a call, is using the microphone.",
@@ -765,6 +775,28 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["instruction", "repository", "override", "inherited", "per-repo", "rule"],
     kind: "jump",
     backup: backupDomains("standing-instructions"),
+  },
+  {
+    id: "reports-guidance",
+    label: "Report guidance",
+    description: "The text that tells agents when to post a report. Sessions started after a change use it; Reset to default puts the shipped text back.",
+    category: "reports",
+    anchor: "reports/guidance",
+    keywords: ["report", "guidance", "when to report", "post_report", "reset", "default", "chatty"],
+    kind: "jump",
+    backup: backupDomains("reports"),
+  },
+  {
+    id: "reports-muted",
+    label: "Muted agents",
+    description: "Agents whose reports raise no notification and are not listed in the inbox. Unmute one to list its reports again.",
+    category: "reports",
+    anchor: "reports/muted",
+    keywords: ["mute", "unmute", "muted", "silence", "noisy", "agent", "report"],
+    kind: "jump",
+    // Muting is an action on a report card, recorded in its own table; a settings snapshot
+    // restored onto another installation would name agents that never ran there.
+    backup: backupNotApplicable("operational-action"),
   },
   {
     id: "cost-track",

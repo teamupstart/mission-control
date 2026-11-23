@@ -19,7 +19,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-round-limit-grant/${name}.png`);
 }
 
@@ -167,7 +166,6 @@ async function seedRoundLimitedRun(
         .poll(async () => statusOf(daemon, runId), { message: why, timeout: 40_000 })
         .toBe("waiting_for_session");
     } catch (caught) {
-      // eslint-disable-next-line no-console
       console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
       throw caught;
     }
@@ -536,13 +534,11 @@ test("a clean current Inspector head is adopted through the audited grant evalua
       run: { status: string; currentPhase: string; gateState: unknown };
       events: Array<{ kind: string; payload: unknown }>;
     }>(daemon, `/api/workflow-runs/${runId}`);
-    // eslint-disable-next-line no-console
     console.log(`FAILED ADOPTION DETAIL:\n${JSON.stringify({
       summary: detail.summary,
       run: detail.run,
       events: detail.events.slice(-8),
     }, null, 2)}`);
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
     throw caught;
   }

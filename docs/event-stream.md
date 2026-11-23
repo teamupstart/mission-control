@@ -172,7 +172,9 @@ folds them. See [Task shaping](task-shaping.md#settings).
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
 `mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
-or one of them lapsed, which a daemon timer publishes with no request. The reconnect snapshot's
+or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
+state moved. A model download publishes its progress at most every 250 ms, so a download is a
+few frames a second for as long as it runs. The reconnect snapshot's
 `voice` field is present only while the `voice` flag is on, computed at that moment. While the
 flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
 shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are
@@ -195,9 +197,10 @@ repeated states leaves the roster out, so the shell, which follows the mode, is 
 agent starting. Each `voice_state` frame still carries the roster as it stands. Sent only while the
 `voice` flag is on, and only when the roster changed. `wireVoiceNameEvents` in
 `src/server/voice/names.ts` is the one bridge. It is bounded by the live resident profiles (at most
-200) and the launched tasks with a call sign that are running or hibernated, or that stopped within
-the last day: a hibernated task stays however long it sleeps, and a stopped one can leave sooner
-when another agent takes its name (see [who can be addressed](voice.md#who-can-be-addressed)). It
+200) and the launched tasks with a call sign that are running, hibernated, or recently stopped and
+still kept by the roster's retention rules ([who can be addressed](voice.md#who-can-be-addressed)):
+a hibernated task stays however long it sleeps, and a stopped one leaves when its retention ends
+or sooner when another agent takes its name. It
 is not a `LINE_INPUT_EVENTS` member: the Line reads the task and session frames it is computed
 from. See [Voice addressing](voice.md#spoken-names).
 
@@ -221,5 +224,13 @@ history, older versions and read reports included, is read on demand from
 Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
 `report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
 read, so an open window fills its Reports section and **to read** figure with no reload.
+`report_mutes` carries `{ mutes }`, the whole list of muted report authors (`ReportMute` in
+`src/shared/reports.ts`), after every mute and unmute. It is sent whole because the list is small
+and applying it twice ends in the same state. The snapshot's `reportMutes` field holds the same
+list. A muted author's reports still arrive in `reports` and `report_upsert`: the dashboard's
+inbox fold leaves them out, so an unmute lists them again without a fetch. Both follow the
+`inbox` flag like `reports`; turning the flag on sends `report_mutes` before the reports it
+resends. `MissionState.reportMutes` is their only browser owner.
+
 `MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
 stage folds reports.

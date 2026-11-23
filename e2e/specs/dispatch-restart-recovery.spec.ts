@@ -22,9 +22,7 @@ async function captureRecovery(page: Page): Promise<void> {
   await page.locator("main.board").screenshot({
     path: join(EVIDENCE, "restart-recovery-backlog.png"),
   });
-  // eslint-disable-next-line no-console
   console.log("OBSERVED the interrupted dispatch visible in Backlog with its retry explanation and launch control");
-  // eslint-disable-next-line no-console
   console.log(
     "CAPTURED e2e/.artifacts/dispatch-restart-recovery/restart-recovery-backlog.png",
   );
@@ -42,9 +40,7 @@ async function captureLiveFailure(page: Page): Promise<void> {
   } finally {
     if (viewport) await page.setViewportSize(viewport);
   }
-  // eslint-disable-next-line no-console
   console.log("OBSERVED the failed git preflight visible in Backlog with its error and launch control");
-  // eslint-disable-next-line no-console
   console.log(
     "CAPTURED e2e/.artifacts/dispatch-restart-recovery/git-preflight-recovery-backlog.png",
   );
@@ -56,9 +52,7 @@ async function captureRefRaceRecovery(page: Page): Promise<void> {
   await page.locator("main.board").screenshot({
     path: join(EVIDENCE, "git-ref-race-retried.png"),
   });
-  // eslint-disable-next-line no-console
   console.log("OBSERVED the task running after Mission Control retried a stale-ref fetch race");
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/dispatch-restart-recovery/git-ref-race-retried.png");
 }
 
@@ -75,9 +69,7 @@ async function captureStillCloning(page: Page): Promise<void> {
   } finally {
     if (viewport) await page.setViewportSize(viewport);
   }
-  // eslint-disable-next-line no-console
   console.log("OBSERVED the dispatch into a clone with no refs yet back in Backlog, naming the clone");
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/dispatch-restart-recovery/still-cloning-backlog-card.png");
 }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import test, { before, after, mock } from 'node:test';
@@ -9,12 +10,50 @@ import { qualifiedDistribution } from '../scripts/publish-distribution.mjs';
 import { distributionNames, localDistributionAssets } from '../scripts/distribution-contract.mjs';
 import { binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
 import { distributionFailure } from '../scripts/distribution-diagnostics.mjs';
+import { qualifySignedRuntime } from '../scripts/qualify-signed-runtime.mjs';
+import type { BinaryBuildMetadata } from '../src/shared/binary-distribution.mjs';
 import { fixture, installDistributionFixture, restoreDistributionFixture } from './helpers/distribution-packaging.ts';
 
 const policy = binaryPublisherPolicy();
 const commit = 'a'.repeat(40);
 before(() => { installDistributionFixture(); mock.method(console, 'log', () => {}); });
 after(restoreDistributionFixture);
+
+for (const cleanupFails of [false, true]) {
+  test(`successful signed-runtime qualification ${cleanupFails ? 'propagates a cleanup-only failure' : 'completes and reclaims its runtime'}`, async (t) => {
+    const f = fixture(t);
+    await packageDistribution({repoRoot: f.root, env: f.env});
+    f.beginRecovery();
+    const metadata = JSON.parse(readFileSync(join(f.output, 'build-metadata.json'), 'utf8')) as BinaryBuildMetadata;
+    const priorRoots = f.roots.length;
+    const priorMethods = f.mcpMethods.length;
+    const cleanupError = new Error('fixture runtime cleanup failed');
+    const remove = fs.rmSync;
+    const cleanup = mock.method(fs, 'rmSync', (...args: Parameters<typeof fs.rmSync>) => {
+      const [path, options] = args;
+      if (cleanupFails && f.roots.slice(priorRoots).includes(String(path))) throw cleanupError;
+      return remove(path, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      const qualification = qualifySignedRuntime(f.app, metadata, policy);
+      if (cleanupFails) {
+        await assert.rejects(qualification, (error: unknown) => {
+          assert.equal(error, cleanupError, 'a cleanup-only failure is propagated unchanged, not aggregated or swallowed');
+          return true;
+        });
+      } else {
+        assert.equal(await qualification, undefined, 'successful qualification and cleanup resolve normally');
+      }
+      assert.deepEqual(f.mcpMethods.slice(priorMethods), ['initialize', 'notifications/initialized', 'tools/list']);
+      assert.equal(f.roots.length, priorRoots + 1, 'the real qualifier exercised one copied runtime');
+      assert.equal(existsSync(f.roots[priorRoots]!), cleanupFails, 'only failed cleanup retains the runtime');
+    } finally {
+      cleanup.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
 
 for (const target of ['parent', 'dmg']) test(`${target} ticket validation recovers from Apple's dropped connection`, async (t) => {
   const f = fixture(t, `${target}-staple-transient`);

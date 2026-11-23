@@ -39,7 +39,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     window.scrollTo(0, 0);
   });
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-conductor/${name}.png`);
 }
 
@@ -94,7 +93,6 @@ test.describe("with a stale published Conductor bundle", () => {
       await page.locator('[data-anchor="conductor/detection"]').screenshot({
         path: `${EVIDENCE}09-stale-bundle-warning.png`,
       });
-      // oxlint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/settings-conductor/09-stale-bundle-warning.png");
     }
   });

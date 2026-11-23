@@ -1692,7 +1692,6 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const cfg = getInspectorConfig();
       // Stacked children are observed even with both review sources off: a child keeps its
       // lifecycle (base reconciliation, broken-stack detection, the prompts it needs) whatever
       // any setting says. Only rows with lineage, so the Inspector being off still costs

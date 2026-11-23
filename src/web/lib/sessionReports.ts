@@ -18,18 +18,24 @@ export interface ReportEntryControls {
 /**
  * Every report one session posted, every version, for its conversation (`inbox` flag).
  *
- * Two halves, like `useTimelineReviews`: the history route is the durable half (read reports and
- * replaced versions are not in the snapshot), and the live reports from the event stream are the
- * immediate half, so a report posted, read or replaced while the conversation is open changes its
- * entry at once. Unioned by id with the live copy winning, because it is never older.
+ * Two halves, like `useTimelineReviews`. The history route is the durable half: it has every
+ * version, read or not. The live reports are the immediate half, but the event stream keeps only
+ * reports still waiting to be read (`withReportUpserted` drops one once it is read or replaced),
+ * so the live half alone can never show how a report was cleared. The history is therefore read
+ * again whenever this session's live reports change (`liveReportsKey`): a report posted, read,
+ * replied to, followed up or replaced changes that set, and the fresh read carries its new state.
+ * Unioned by id with the live copy winning, because it is never older.
  *
  * `enabled` gates the fetch, never the hook, so the hook order is fixed whatever the flag says.
  */
 export function useSessionReports(sessionId: string, live: readonly ReportItem[], enabled: boolean): ReportItem[] {
   const [stored, setStored] = useState<{ sessionId: string; reports: ReportItem[] } | null>(null);
+  const liveKey = liveReportsKey(sessionId, live);
   useEffect(() => {
     let alive = true;
-    setStored(null);
+    // Only a different session clears what was read; a refetch for this one keeps the entries on
+    // screen until the fresh read replaces them.
+    setStored((current) => (current?.sessionId === sessionId ? current : null));
     if (!enabled) return;
     void api.sessionReports(sessionId).then((read) => {
       if (alive && read.ok) setStored({ sessionId, reports: read.value.reports });
@@ -37,9 +43,21 @@ export function useSessionReports(sessionId: string, live: readonly ReportItem[]
     return () => {
       alive = false;
     };
-  }, [sessionId, enabled]);
+  }, [sessionId, enabled, liveKey]);
   if (!enabled) return [];
   return sessionReportsFor(sessionId, stored?.sessionId === sessionId ? stored.reports : [], live);
+}
+
+/**
+ * What this session's live reports are, as a string that changes whenever one arrives, changes,
+ * or leaves the stream. A report leaving is how a read or replaced report shows up live at all.
+ */
+export function liveReportsKey(sessionId: string, live: readonly ReportItem[]): string {
+  return live
+    .filter((report) => report.sessionId === sessionId)
+    .map((report) => `${report.id}:${report.readAt ?? ""}:${report.supersededBy ?? ""}:${report.followUpTaskId ?? ""}`)
+    .sort()
+    .join("|");
 }
 
 /**

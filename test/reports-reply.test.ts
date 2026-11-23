@@ -27,7 +27,7 @@ import {
 import { mergeConversation } from "../src/web/lib/episodes.ts";
 import { TASK_KINDS } from "../src/shared/types.ts";
 import { isShippingTaskKind } from "../src/shared/task.ts";
-import { sessionReportsFor } from "../src/web/lib/sessionReports.ts";
+import { liveReportsKey, sessionReportsFor } from "../src/web/lib/sessionReports.ts";
 import { transcriptRows } from "../src/web/lib/tools.ts";
 import type { Session, TranscriptMessage } from "../src/shared/types.ts";
 import { mkReport } from "./helpers/report-fixture.ts";
@@ -198,6 +198,20 @@ test("a conversation's reports union the history with the live stream, one sessi
   const merged = sessionReportsFor("s1", stored, live);
   assert.deepEqual(merged.map((r) => r.id), ["r-1", "r-4", "r-3"]);
   assert.equal(merged.find((r) => r.id === "r-3")!.readBy, "reply");
+});
+
+test("the conversation rereads its history whenever this session's live reports change", () => {
+  const waiting = mkReport({ id: "r-1", sessionId: "s1" });
+  const other = mkReport({ id: "r-9", sessionId: "s2" });
+  const key = liveReportsKey("s1", [waiting, other]);
+  // The stream drops a report once it is read or replaced: its leaving changes the key, which is
+  // what makes the entry reread and show "Replied to" or "Followed up".
+  assert.notEqual(liveReportsKey("s1", [other]), key);
+  // A new report, or a follow-up task recorded on a waiting one, changes it too.
+  assert.notEqual(liveReportsKey("s1", [waiting, mkReport({ id: "r-2", sessionId: "s1" }), other]), key);
+  assert.notEqual(liveReportsKey("s1", [{ ...waiting, followUpTaskId: "t-1" }, other]), key);
+  // Another session's reports, and the order they arrive in, do not.
+  assert.equal(liveReportsKey("s1", [other, waiting, mkReport({ id: "r-8", sessionId: "s3" })]), key);
 });
 
 const turn = (id: string, ts: number): TranscriptMessage => ({ id, role: "assistant", text: `turn ${id}`, tools: [], ts });

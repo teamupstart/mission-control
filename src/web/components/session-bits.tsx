@@ -1,6 +1,6 @@
 import { actionWaitSentence } from "../workflows/run-model.ts";
 import { prCheckSummary } from "@shared/pr-check-details.ts";
-import { PrChecksStatus } from "./PrChecksStatus.tsx";
+import { ChecksFailedIcon, PrChecksStatus } from "./PrChecksStatus.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { canMessage } from "@shared/pane.ts";
 import { branchUpdateLabel, branchConflictPrompt } from "@shared/pr-branch-update.ts";
@@ -44,6 +44,7 @@ import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { questionBadge, useQuestionAgent } from "../lib/async-questions.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
   PIPELINE_PROVIDER_INFO,
@@ -1161,15 +1162,22 @@ export function FleetSectionHead({
   kind,
   count,
 }: {
-  kind: "free" | "held";
+  kind: "free" | "held" | "awaiting";
   count: number;
 }): React.JSX.Element {
   return (
     <div className={`fleet-section fleet-section-${kind}`} role="presentation">
       <span className="fleet-section-line">
-        <b>{kind === "free" ? "free" : "held by a workflow"}</b>
+        <b>{kind === "free" ? "free" : kind === "held" ? "held by a workflow" : "awaiting background work"}</b>
         <span className="fleet-section-n">{count}</span>
       </span>
+      {kind === "awaiting" && (
+        // Count-agnostic like the held sentence, and the reason the section exists: these cards
+        // are quiet on purpose, and nothing will nudge them before the deadline on each card.
+        <span className="fleet-section-why">
+          Each resumes on its own when its process reports back. Nothing nudges them before their deadline.
+        </span>
+      )}
       {kind === "held" && (
         // Count-agnostic on purpose. "Each finished its turn and is waiting..." was written for
         // the plural and reads as a grammar error over a section of one, which is the common
@@ -1779,7 +1787,12 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
   );
 }
 
-/** The status badge; a button that opens the reviews modal when there are pending reviews. */
+/**
+ * The status badge; a button that opens the reviews modal when there is something to answer. A
+ * session still working past its message-mode questions (`async-input`) reads "N questions open"
+ * in the tone it already wears, never amber; once it stops, `stateDisplay` turns it amber and
+ * this is today's amber button (`questionBadge`).
+ */
 export function StateBadge({
   session,
   onOpenReviews,
@@ -1794,20 +1807,20 @@ export function StateBadge({
   // doing. The Console detail draws this component, so it follows.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = display ?? runtimeState;
-  if (session.pendingReviews > 0 && onOpenReviews) {
+  const agent = useQuestionAgent(session);
+  const asks = onOpenReviews ? questionBadge(agent, st) : null;
+  if (asks && onOpenReviews) {
     return (
-      <Tooltip
-        label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
-      >
+      <Tooltip label={asks.tooltip}>
         <button
-          className={`badge badge-${st.tone} badge-btn${session.pause ? " is-paused" : ""}`}
+          className={`badge badge-${asks.tone} badge-btn${session.pause ? " is-paused" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenReviews();
           }}
         >
           <span className="badge-dot" />
-          {st.label} <Keycap action="review" />{" "}
+          {asks.label} <Keycap action="review" />{" "}
           {/* Its own element so the console header's ladder can shed it: this button is the
               one thing that row is never allowed to hide, so what it gives up on a narrow
               pane is the chord hint and this arrow (`detailHeadLadder.ts`, rung 1). */}
@@ -2197,18 +2210,6 @@ export function TaskRepoPrs({
 function prNumberIn(url: string | null): number | null {
   const m = url?.match(/\/pull\/(\d+)/);
   return m ? Number(m[1]) : null;
-}
-
-/** Warning glyph for the "a CI check failed" alert: an outlined triangle with an exclamation. */
-export function ChecksFailedIcon(): React.JSX.Element {
-  return (
-    <svg className="pr-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden focusable="false">
-      <path
-        fill="currentColor"
-        d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
-      />
-    </svg>
-  );
 }
 
 /**

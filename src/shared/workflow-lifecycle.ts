@@ -1,5 +1,5 @@
 import { WorkflowInspectorGateStateSchema } from "./protocol.ts";
-import type { WorkflowInspectorGateState } from "./workflow.ts";
+import type { WorkflowCompletionPolicy, WorkflowInspectorGateState } from "./workflow.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_RUN_TERMINAL_STATUSES,
@@ -923,6 +923,15 @@ export function workflowInspectorGate(
 /** A different visible hold, such as disabling Inspector, cannot erase an unreviewed tree. */
 export function workflowInspectorGateNeedsFreshReview(gate: WorkflowInspectorGateState | null): boolean {
   return gate?.waitReason === "reviewed_tree_changed" || gate?.reviewedContent != null;
+}
+
+/** Inspector-only repair cannot waive an outstanding full review of published content. */
+export function workflowInspectorOnlyRepair(
+  policy: WorkflowCompletionPolicy | undefined,
+  gate: WorkflowInspectorGateState | null,
+): boolean {
+  return policy?.kind === "inspector" && policy.onFindings === "inspector_only"
+    && !workflowInspectorGateNeedsFreshReview(gate);
 }
 
 /** The withheld check retry, only on a run actually blocked in the cleanup phase. */

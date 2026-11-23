@@ -2705,6 +2705,8 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "repository_unchanged",
   // Appended: the bound session reported a durable blocker (waiting on someone else).
   "session_blocked",
+  // Appended: the bound session declared a wait on its own background process, inside its deadline.
+  "session_awaiting",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2745,6 +2747,9 @@ export function workflowResumptionWithheldSentence(
     case "session_blocked":
       return "The session is blocked on someone other than you, so it has not been handed another"
         + " round. The next round opens once its blocker is cleared.";
+    case "session_awaiting":
+      return "The session is waiting on a background process it started, such as CI checks, so it"
+        + " has not been handed another round. The next round opens once it wakes or its deadline passes.";
     default:
       return null;
   }
@@ -5134,6 +5139,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 

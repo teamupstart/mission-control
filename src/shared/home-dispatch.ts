@@ -65,6 +65,8 @@ export const HomeSessionRegistrationAnswerSchema = z.object({
   daemonVersion: Text,
   minModApi: Count,
   dashboardUrl: z.string(),
+  /** The start-up banner as plain lines (7.21), present only for a `startup` registration. Additive. */
+  banner: z.array(z.string()).optional(),
 });
 export type HomeSessionRegistrationAnswer = z.infer<typeof HomeSessionRegistrationAnswerSchema>;
 

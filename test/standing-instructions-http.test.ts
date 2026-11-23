@@ -286,6 +286,18 @@ test("a two-repo preview where only the SECOND repository has rules returns that
   assert.match(body.text, /the second rule/);
 });
 
+test("the session route returns the repository task skill launch record when there is one", async () => {
+  sessions.set("s2", { id: "s2" });
+  const repoTaskSkills: import("../src/shared/standing-instructions.ts").RepoTaskSkillRecord = {
+    included: [{ repo: "repo", kind: "ship", path: ".claude/skills/ship/SKILL.md", bytes: 5, truncated: false }],
+    skipped: [{ repo: "other", kind: "ship", path: ".claude/skills/ship/SKILL.md", reason: "too-large" }],
+  };
+  snapshots.set("s2", { noteKey: "s2", text: "", mechanism: "none", sources: [], createdAt: 1, repoTaskSkills });
+  const res = await app.request("/api/sessions/s2/standing-instructions", { headers: HEADERS });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { text: "", mechanism: "none", sources: [], repoTaskSkills });
+});
+
 test("the session route answers with what THAT session received, or 404", async () => {
   sessions.set("s1", { id: "s1" });
   assert.equal((await app.request("/api/sessions/s1/standing-instructions", { headers: HEADERS })).status, 404);

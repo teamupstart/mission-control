@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -31,6 +31,10 @@ const { createSettingsBackupEnvelope } = await import("../src/server/settings-ba
 const { wireShapingConfigEvents } = await import("../src/server/shaping/events.ts");
 const { SHAPING_LIMITS, ShapingConfigSchema } = await import("../src/shared/shaping.ts");
 const { daemonShapingView } = await import("../src/server/shaping/revisions.ts");
+// Imported here with the rest, never beside the tests that use it: a top-level await in the
+// middle of the file lets the root test finish, and run its `after` cleanup, before the tests
+// registered after it exist, which a filtered run of one of them exposes.
+const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
 type ShapingFrame = { type: "shaping_config"; config: unknown };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -75,7 +79,32 @@ test("with the flag off all three routes answer 404 and write nothing", async ()
 test("GET returns the config and the final reply shape", async () => {
   const response = await get();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], references: {} });
+  assert.deepEqual(await response.json(), {
+    config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], folder: { path: join(home, "shapers"), ignored: 0 }, references: {},
+  });
+});
+
+test("GET reads the shapers folder afresh, and a folder shaper is switched by its manifest", async () => {
+  const dir = join(home, "shapers", "folder-notes");
+  mkdirSync(dir, { recursive: true, mode: 0o755 });
+  const text = JSON.stringify({ id: "folder-notes", label: "Folder notes", stage: "gather", transport: { type: "command", command: "/bin/echo" } });
+  writeFileSync(join(dir, "shaper.json"), text, { mode: 0o644 });
+  chmodSync(dir, 0o755);
+  chmodSync(join(dir, "shaper.json"), 0o644);
+  try {
+    const reply = await (await get()).json() as { discovered: Array<{ id: string; state: string; path: string; sha256: string }> };
+    assert.deepEqual(reply.discovered.map(({ id, state, path }) => ({ id, state, path })), [{ id: "folder-notes", state: "ok", path: realpathSync(dir) }]);
+    const sha256 = reply.discovered[0]!.sha256;
+    const stale = await put({ kind: "enable", id: "folder-notes", enabled: true, manifest: "0".repeat(64) });
+    assert.equal(stale.status, 409);
+    const off = await put({ kind: "enable", id: "folder-notes", enabled: false, manifest: sha256 });
+    assert.equal(off.status, 200);
+    assert.equal(shaping.getShapingConfig().overrides["folder-notes"], false);
+  } finally {
+    rmSync(join(home, "shapers"), { recursive: true, force: true });
+    setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+    shaping.reloadShaping();
+  }
 });
 
 test("each intent persists, notifies and is reflected by GET", async () => {
@@ -118,7 +147,7 @@ test("refused intents answer 400 with a reason and change nothing", async () => 
     assert.equal(response.status, 400);
     assert.equal(((await response.json()) as { error: string }).error, error);
   }
-  for (const body of [{}, { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), stage: "route" } },
+  for (const body of [{}, { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), stage: "audit" } },
     { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), transport: { type: "command", command: "sh -c x" } } },
     { kind: "settings", limits: { totalBytes: 1_000_000 } }]) {
     assert.equal((await put(body)).status, 400, JSON.stringify(body));
@@ -127,7 +156,7 @@ test("refused intents answer 400 with a reason and change nothing", async () => 
 });
 
 test("an entry this build does not understand survives writes, is never enabled, and cannot be dry-run", async () => {
-  const future = { id: "skill-router", label: "Router", stage: "route", transport: { type: "grpc", endpoint: "dns:///r" }, extra: [1] };
+  const future = { id: "skill-router", label: "Router", stage: "audit", transport: { type: "grpc", endpoint: "dns:///r" }, extra: [1] };
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [future] });
   shaping.reloadShaping();
   assert.equal((await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") })).status, 200);
@@ -147,7 +176,7 @@ test("a deeply nested stored entry takes the unreadable path instead of throwing
   // The row as a corrupt or foreign store would hold it: raw JSON, about 14 KiB, 7,000 levels deep.
   const note = `${"[".repeat(7_000)}"leaf"${"]".repeat(7_000)}`;
   openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key,
-    `{"shapers":[{"id":"deep","label":"Deep","stage":"route","transport":{"type":"grpc"},"note":${note}}]}`);
+    `{"shapers":[{"id":"deep","label":"Deep","stage":"audit","transport":{"type":"grpc"},"note":${note}}]}`);
   assert.doesNotThrow(() => shaping.reloadShaping());
   assert.deepEqual(shaping.getShapingConfig(), SHAPING_CONFIG_DEFAULTS, "reads fall back to the defaults");
   const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
@@ -484,7 +513,7 @@ test("a literal credential is refused, so a settings snapshot holds only the ref
 test("an entry stored by another path cannot carry a literal credential into a snapshot", async () => {
   // Written straight into app_config, as a restore or a newer build would, past the API's check.
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{
-    id: "future", label: "Future", stage: "route",
+    id: "future", label: "Future", stage: "audit",
     transport: { type: "grpc", url: "https://user:pw-literal@context.example/x",
       headers: { authorization: "Bearer sk-live-bypass", "x-api-key": "sk-live-trailing ", "x-auth-token": "sk-live-prefix {env:X}" } },
   }] });
@@ -509,7 +538,7 @@ test("an entry stored by another path cannot carry a literal credential into a s
   const { digest: _digest, ...body } = saved.snapshot;
   const crafted = createSettingsBackupEnvelope({ ...body, id: "daily-2026-11-21", localDate: "2026-11-21",
     domains: body.domains.map((domain) => domain.domain !== "shaping" ? domain : { ...domain, payload: {
-      ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+      ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
         transport: { type: "grpc", headers: { authorization: "Bearer sk-live-in-snapshot", "x-api-key": "sk-live-restore-trailing " } } }],
     } }) });
   backupStore.write(crafted);
@@ -636,7 +665,7 @@ test("a stored entry at the size limit stays within it once a credential is stri
 });
 
 test("GET and PUT /api/shaping return the config view, never an unsupported entry's raw envelope", async () => {
-  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
     note: "sk-live-envelope-note", transport: { type: "grpc", endpoint: "grpc://sk-live-envelope-endpoint" } }] });
   shaping.reloadShaping();
   const read = await get();
@@ -680,6 +709,136 @@ test("a settings restore reloads the shaping config; a backup without the domain
     assert.equal((await service.restore(legacy.id, legacy.digest)).status, "restored");
     assert.deepEqual(shaping.getShapingConfig().shapers.map((entry) => entry.id), ["kept", "newer"]);
   } finally { off(); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Remote shapers: registering the fixture `get_guidance` tool is configuration only.
+
+const GUIDANCE_FIXTURE = fileURLToPath(new URL("./fixtures/fake-guidance-mcp.mjs", import.meta.url));
+const GUIDANCE_KEY_ENV = "SHAPING_HTTP_GUIDANCE_KEY";
+const GUIDANCE_KEY = "guidance-key-3c5d1e";
+
+async function withGuidanceKey<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+  const saved = process.env[GUIDANCE_KEY_ENV];
+  if (value === undefined) delete process.env[GUIDANCE_KEY_ENV];
+  else process.env[GUIDANCE_KEY_ENV] = value;
+  try { return await run(); } finally {
+    if (saved === undefined) delete process.env[GUIDANCE_KEY_ENV];
+    else process.env[GUIDANCE_KEY_ENV] = saved;
+  }
+}
+
+test("a dry run or a write that is not loopback JSON is refused before anything runs", async () => {
+  const server = await startGuidanceHttp({ mode: "ok" });
+  try {
+    await put({ kind: "upsert", shaper: {
+      id: "csrf-target", label: "Target", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url } },
+    } });
+    const body = JSON.stringify({ id: "csrf-target", repository, prompt: "chosen by another site" });
+    const plain = await app.request("/api/shaping/test", { method: "POST", headers: { host: headers.host, "content-type": "text/plain" }, body });
+    assert.equal(plain.status, 403);
+    const foreign = await app.request("/api/shaping/test", { method: "POST", headers: { ...headers, origin: "https://attacker.example" }, body });
+    assert.equal(foreign.status, 403);
+    const write = await app.request("/api/shaping", { method: "PUT", headers: { host: headers.host, "content-type": "text/plain" }, body: JSON.stringify({ kind: "remove", id: "csrf-target" }) });
+    assert.equal(write.status, 403);
+    assert.deepEqual(server.requests.length, 0, "no shaper call was made");
+    assert.ok(shaping.getShapingConfig().shapers.some((entry) => entry.id === "csrf-target"), "and nothing was written");
+    const local = await app.request("/api/shaping/test", { method: "POST", headers: { ...headers, origin: "http://127.0.0.1:7317" }, body });
+    assert.equal(local.status, 200, "the dashboard's own origin still runs it");
+  } finally { await server.close(); }
+});
+
+test("GET lists every environment name a shaper references as set or unset, never a value", async () => {
+  await put({ kind: "upsert", shaper: {
+    id: "remote-guidance", label: "Remote guidance", stage: "select",
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://guidance.example.test/mcp",
+      headers: { "x-api-key": `{env:${GUIDANCE_KEY_ENV}}`, "x-unset": "{env:SHAPING_HTTP_NEVER_SET}" } } },
+  } });
+  const body = await withGuidanceKey(GUIDANCE_KEY, async () => (await get()).text());
+  assert.equal(body.includes(GUIDANCE_KEY), false);
+  assert.deepEqual((JSON.parse(body) as { references: unknown }).references, { [GUIDANCE_KEY_ENV]: "set", SHAPING_HTTP_NEVER_SET: "unset" });
+  const unset = await withGuidanceKey(undefined, async () => (await (await get()).json() as { references: unknown }).references);
+  assert.deepEqual(unset, { [GUIDANCE_KEY_ENV]: "unset", SHAPING_HTTP_NEVER_SET: "unset" });
+});
+
+test("the fixture get_guidance tool, registered through the API, dry-runs to its guidance with no other code", async () => {
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  const registered = await put({ kind: "upsert", shaper: {
+    id: "fixture-guidance", label: "Fixture guidance", stage: "select", timeoutMs: 30_000, version: "v1.4.0",
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [GUIDANCE_FIXTURE, "echo"] } },
+  } });
+  assert.equal(registered.status, 200);
+  const response = await dryRun({ id: "fixture-guidance", repository, prompt: "Retry failed charges" });
+  assert.equal(response.status, 200);
+  const run = await response.json() as { summary: { shapers: Array<{ outcome: string; origin: string }> }; entries: Array<{ body: string }> };
+  assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.origin]), [["ok", "registered"]]);
+  const seen = JSON.parse(run.entries[0]!.body) as { arguments: Record<string, unknown> };
+  assert.deepEqual(Object.keys(seen.arguments).sort(), ["repo", "task", "version"], "folded by default: exactly FR-02's three");
+  assert.match(String(seen.arguments.task), /^Retry failed charges\n\nTask context from Mission Control:\n/);
+  assert.match(String(seen.arguments.task), /^- This call is about: repo-01$/m);
+});
+
+test("a dry run of the fixture in echo mode returns [NAME redacted], never the value, and marks the shaper", async () => {
+  const server = await startGuidanceHttp({ mode: "echo-header", args: ["x-api-key"] });
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: {
+      id: "echo-guidance", label: "Echo guidance", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url, headers: { "x-api-key": `{env:${GUIDANCE_KEY_ENV}}` } } },
+    } });
+    const text = await withGuidanceKey(GUIDANCE_KEY, async () => (await dryRun({ id: "echo-guidance", repository })).text());
+    assert.equal(text.includes(GUIDANCE_KEY), false, "neither entries nor section nor summary carry it");
+    const run = JSON.parse(text) as { section: string; entries: Array<{ body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    assert.deepEqual(run.entries.map((entry) => entry.body), [`the server received [${GUIDANCE_KEY_ENV} redacted]`]);
+    assert.ok(run.section.includes(`[${GUIDANCE_KEY_ENV} redacted]`));
+    assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]]);
+    const missing = await withGuidanceKey(undefined, async () => (await dryRun({ id: "echo-guidance", repository })).json()) as { summary: { shapers: Array<{ outcome: string; reason: string }> } };
+    assert.equal(missing.summary.shapers[0]!.outcome, "unavailable", "fails closed with the reference unset");
+    assert.ok(missing.summary.shapers[0]!.reason.includes(`{env:${GUIDANCE_KEY_ENV}}`));
+  } finally { await server.close(); }
+});
+
+test("a dry run has no task, so no shaper is handed a work unit: not the daemon's own, and not a configured one", async () => {
+  const server = await startGuidanceHttp({ mode: "echo-header", args: ["x-work-unit-id"] });
+  const previous = process.env.WORK_UNIT_ID;
+  // The daemon's own environment has one, and each shaper is configured to pass one along.
+  process.env.WORK_UNIT_ID = "wu_01JD000000000000000DAEMON";
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: fixture("dry-work-unit-command", "select", "echo", {
+      transport: { type: "command", command: process.execPath, args: [FIXTURE, "echo", "env=WORK_UNIT_ID"], env: ["WORK_UNIT_ID"] },
+    }) });
+    await put({ kind: "upsert", shaper: {
+      id: "dry-work-unit-mcp", label: "Echo work unit", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url, headers: { "x-work-unit-id": "wu-configured" } } },
+    } });
+    const command = await (await dryRun({ id: "dry-work-unit-command", repository })).json() as { entries: Array<{ body: string }> };
+    const seen = JSON.parse(command.entries[0]!.body) as { env: Record<string, string | null> };
+    assert.deepEqual(seen.env, { WORK_UNIT_ID: null }, "a command shaper's process has none");
+    const mcp = await (await dryRun({ id: "dry-work-unit-mcp", repository })).json() as { entries: Array<{ body: string }> };
+    assert.deepEqual(mcp.entries.map((entry) => entry.body), ["the server received <missing>"], "an MCP request carries no header, not even the configured one");
+  } finally {
+    if (previous === undefined) delete process.env.WORK_UNIT_ID;
+    else process.env.WORK_UNIT_ID = previous;
+    await server.close();
+  }
+});
+
+test("a dry run never returns a caller identity resolved into a header and echoed back", async () => {
+  const server = await startGuidanceHttp({ mode: "echo-header", args: ["x-acme-user"] });
+  try {
+    await put({ kind: "settings", caller: { user: "operator-7c2e" }, limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: {
+      id: "caller-echo", label: "Caller echo", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url, headers: { "x-acme-user": "{caller.user}" } } },
+    } });
+    const text = await (await dryRun({ id: "caller-echo", repository })).text();
+    assert.equal(text.includes("operator-7c2e"), false, "neither entries nor section nor summary carry it");
+    const run = JSON.parse(text) as { entries: Array<{ body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    assert.deepEqual(run.entries.map((entry) => entry.body), ["the server received [caller.user redacted]"]);
+    assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]]);
+  } finally { await server.close(); }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -778,7 +937,7 @@ test("an import with a literal token in an authorization header is refused, stor
 
 test("a stored unsupported entry holding a literal token reaches the snapshot, a frame and the reply only as its id, label and reason", async () => {
   const secret = "sk-live-unsupported-envelope-token";
-  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
     note: secret, transport: { type: "grpc", endpoint: "grpc://" + secret } }] });
   shaping.reloadShaping();
   setFlag(false);
@@ -847,7 +1006,7 @@ test("enable, remove and a dry run that name a replaced definition answer 409 an
 test("an unsupported entry replaced with a different raw envelope answers 409 to the revision shown before", async () => {
   // Two envelopes this build cannot run: the view shows both only as id, label and reason, so
   // only the daemon's revision over the stored entry can tell them apart.
-  const envelope = (endpoint: string) => ({ id: "future", label: "Future shaper", stage: "route",
+  const envelope = (endpoint: string) => ({ id: "future", label: "Future shaper", stage: "audit",
     transport: { type: "grpc", endpoint } });
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [envelope("grpc://first")] });
   shaping.reloadShaping();
@@ -1302,4 +1461,19 @@ test("an ordered write numbered too far ahead, or sent too long ago, is refused 
   assert.equal(((await old.json()) as { error: string }).error, "expired");
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
   assert.equal((await send(Date.now() * 1000, "sent-just-now")).status, 200);
+});
+
+test("a dry run of a router returns its skills and the section, for the harness it names", async () => {
+  const router = { id: "router", label: "Router", stage: "route", transport: { type: "command", command: process.execPath,
+    args: [FIXTURE, "route", "lint-fix:during,wrap-notes:after-work"] }, timeoutMs: 30_000 };
+  assert.equal((await put({ kind: "upsert", shaper: router })).status, 200);
+  const claude = await dryRun({ id: "router", repository });
+  assert.equal(claude.status, 200);
+  const run = (await claude.json()) as { section: string; entries: unknown[]; skills: Array<{ name: string; state: string; verified: boolean }> };
+  assert.deepEqual(run.entries, []);
+  assert.deepEqual(run.skills.map((skill) => [skill.name, skill.state, skill.verified]), [["lint-fix", "announced", false], ["wrap-notes", "announced", false]]);
+  assert.match(run.section, /^## Skills for this task[\s\S]*- `\/lint-fix` - during the work[\s\S]*- `\/wrap-notes` - after the work/);
+  const codex = (await (await dryRun({ id: "router", repository, agent: "codex" })).json()) as { section: string };
+  assert.match(codex.section, /- `\$lint-fix` - during the work/);
+  assert.equal((await dryRun({ id: "router", repository, agent: "other" })).status, 400, "only a known harness");
 });

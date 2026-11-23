@@ -1,3 +1,5 @@
+import type { ReportItem } from "@shared/reports.ts";
+import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -82,6 +84,12 @@ export interface MissionState {
   /** Inert startup rows only; real sessions with the same stable id always suppress them. */
   restoringSessions: RestoringSession[];
   reviews: ReviewItem[];
+  /**
+   * Agent reports waiting to be read: the snapshot's, kept current by `report_upsert`. A report
+   * that is read or replaced leaves (`withReportUpserted`), so this never grows past what the
+   * inbox can show. A session's full history is read from `GET /api/sessions/:id/reports`.
+   */
+  reports: ReportItem[];
   tasks: Task[];
   personas: PersonaView[];
   /** The SessionAction catalog, archived rows included so a node can always name its source. */
@@ -274,6 +282,7 @@ export function useEventStream(): MissionState {
     new Map(),
   );
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
+  const [reports, setReports] = useState<ReadonlyMap<string, ReportItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
@@ -400,6 +409,8 @@ export function useEventStream(): MissionState {
             new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),
           );
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
+          // Absent while the `inbox` flag is off, which is no reports at all.
+          setReports(new Map((msg.reports ?? []).map((report) => [report.id, report])));
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
           setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
@@ -529,6 +540,9 @@ export function useEventStream(): MissionState {
             next.delete(msg.id);
             return next;
           });
+          break;
+        case "report_upsert":
+          setReports((prev) => withReportUpserted(prev, msg.report));
           break;
         case "task_upsert":
           setTasks((prev) => new Map(prev).set(msg.task.id, msg.task));
@@ -803,6 +817,7 @@ export function useEventStream(): MissionState {
     [restoringSessions, sessions],
   );
   const reviewsList = useMemo(() => [...reviews.values()], [reviews]);
+  const reportsList = useMemo(() => [...reports.values()], [reports]);
   const tasksList = useMemo(() => [...tasks.values()], [tasks]);
   const personasList = useMemo(() => [...personas.values()], [personas]);
   const sessionActionsList = useMemo(() => [...sessionActions.values()], [sessionActions]);
@@ -847,6 +862,7 @@ export function useEventStream(): MissionState {
     sessions: sessionsList,
     restoringSessions: restoringSessionsList,
     reviews: reviewsList,
+    reports: reportsList,
     tasks: tasksList,
     personas: personasList,
     sessionActions: sessionActionsList,

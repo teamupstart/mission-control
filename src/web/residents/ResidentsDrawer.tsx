@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
+import { questionAgentStatus } from "../lib/async-questions.ts";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
@@ -54,9 +56,29 @@ export function residentDrawerEntries(
   }));
 }
 
-/** A listed resident whose session has started and needs you: the Board's Needs you tone. */
+/**
+ * A listed resident whose session has started and needs you: the Board's Needs you tone, or a
+ * message-mode question still open (`async-input`). A resident is never amber for its questions
+ * alone, because it keeps iterating on its cadence, so its card keeps the working or idle tone
+ * while the group lists it with its asks.
+ */
 function entryNeedsYou(entry: ResidentDrawerEntry): boolean {
-  return entry.session !== null && stateDisplay(entry.session).tone === "attention";
+  return entry.session !== null
+    && (stateDisplay(entry.session).tone === "attention" || openQuestionCount(entry.session) > 0);
+}
+
+/**
+ * Whether a listed resident is drawn in the Needs you colour: the Board's attention tone, or open
+ * questions it has stopped on. A working resident's questions never turn it amber, since it keeps
+ * iterating, but one the operator paused will not wake to act on them (`questionAgentStatus`), so
+ * it is amber like any other session stopped on a question. Read by its card and the edge tab.
+ */
+export function residentEntryAmber(entry: Pick<ResidentDrawerEntry, "run" | "session">): boolean {
+  const session = entry.session;
+  if (!session) return false;
+  if (stateDisplay(session).tone === "attention") return true;
+  return openQuestionCount(session) > 0
+    && questionAgentStatus({ ...session, residentPaused: entry.run.loopState === "paused" }) === "stopped";
 }
 
 /**
@@ -377,7 +399,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
-  const needsYou = state.tone === "attention";
+  const needsYou = residentEntryAmber(entry);
   // The tone the Board files this session under, so a working resident's card is edged in the
   // Working column's color and one that needs you in the Needs you column's, in every theme.
   const working = state.tone === "working";

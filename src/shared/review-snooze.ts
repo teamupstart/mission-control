@@ -51,7 +51,7 @@ export function canSnoozeReview(review: ReviewItem): boolean {
  * The options the agent can be told to carry on with: the question's own, in its order.
  * Empty for an open-ended question, which can still be snoozed on best judgment or held.
  */
-export function provisionalOptions(review: ReviewItem): readonly PlanDecisionOption[] {
+export function provisionalOptions(review: Pick<ReviewItem, "decisions">): readonly PlanDecisionOption[] {
   return review.decisions?.[0]?.options ?? [];
 }
 
@@ -66,9 +66,30 @@ export function snoozeMeanwhileProblem(
     : "the provisional answer is not one of this question's options";
 }
 
-function optionLabel(review: ReviewItem, optionId: string | null): string | null {
+function optionLabel(review: Pick<ReviewItem, "decisions">, optionId: string | null): string | null {
   if (!optionId) return null;
   return provisionalOptions(review).find((o) => o.id === optionId)?.label ?? null;
+}
+
+/**
+ * The `judgment` choice, as the sheet and every later line name it for a message-mode question
+ * (`async-input`). Its agent never waited: it filed the question and said what it would do
+ * meanwhile, so the default is to let it keep doing that, which sends it nothing. The mode id
+ * stays `judgment`; only the words differ.
+ */
+export const KEEP_DOING_WHAT_IT_SAID = "Keep doing what it said";
+
+/**
+ * Whether this question's snoozes have so far told its agent nothing: a message-mode question
+ * snoozed only on "Keep doing what it said" (`ReviewSnooze.instructed === false`). Read from what
+ * the daemon recorded, never inferred from the mode, because a judgment snooze stored before that
+ * rule did send its agent an instruction.
+ */
+export function snoozeToldNothing(
+  review: Pick<ReviewItem, "waitMode">,
+  snooze: Pick<ReviewSnooze, "instructed"> | null | undefined,
+): boolean {
+  return review.waitMode === "message" && snooze?.instructed === false;
 }
 
 /**
@@ -76,19 +97,34 @@ function optionLabel(review: ReviewItem, optionId: string | null): string | null
  * inbox. An option that no longer resolves falls back to best judgment, which is what the agent
  * would have been told for a question with nothing to carry on with.
  */
-export function snoozeMeanwhileLabel(review: ReviewItem, snooze: Pick<ReviewSnooze, "mode" | "optionId">): string {
+export function snoozeMeanwhileLabel(
+  review: Pick<ReviewItem, "decisions" | "waitMode">,
+  snooze: Pick<ReviewSnooze, "mode" | "optionId" | "instructed">,
+): string {
   const label = snooze.mode === "option" ? optionLabel(review, snooze.optionId) : null;
   if (label) return `Go with "${label}" for now`;
   if (snooze.mode === "hold") return "Hold work that depends on this";
-  return "Use its best judgment";
+  return snoozeToldNothing(review, snooze) ? KEEP_DOING_WHAT_IT_SAID : "Use its best judgment";
 }
 
-/** The past-tense line the returned question carries: what the agent has been doing. */
-export function snoozeMeanwhileSince(review: ReviewItem, snooze: Pick<ReviewSnooze, "mode" | "optionId">): string {
+/**
+ * The past-tense line the returned question carries: what the agent has been doing.
+ *
+ * A message-mode question (`async-input`) snoozed on "Keep doing what it said" is the exception:
+ * nothing was sent, so this says only what the operator chose, never that the agent kept working.
+ * By the time the question comes back its agent may well have stopped on it, and the card's status
+ * line, read live, is the one place that says which.
+ */
+export function snoozeMeanwhileSince(
+  review: Pick<ReviewItem, "decisions" | "waitMode">,
+  snooze: Pick<ReviewSnooze, "mode" | "optionId" | "instructed">,
+): string {
   const label = snooze.mode === "option" ? optionLabel(review, snooze.optionId) : null;
   if (label) return `The agent has kept working with "${label}" as a provisional answer.`;
   if (snooze.mode === "hold") return "The agent has held the work that depends on this and carried on with the rest.";
-  return "The agent has kept working on its best judgment.";
+  return snoozeToldNothing(review, snooze)
+    ? "You left it to do what it said it would when it asked."
+    : "The agent has kept working on its best judgment.";
 }
 
 /** "15 minutes", "1 hour", "about 3 hours", "1 day" - the coarse figure an agent needs. */

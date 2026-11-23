@@ -1038,6 +1038,57 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   assert.deepEqual(actions.slice(-3), ["flag_blocker_reply", "clear_blocker", "clear_blocker"]);
 });
 
+test("residents list sessions awaiting a background process, overdue ones included, and clear one through the dashboard route", async (t) => {
+  const f = fixture(); await f.grant(true);
+  const now = Date.now();
+  const wait = (what: string, expectedBy: number) => ({
+    what, wakeSource: "command" as const, expectedBy, referenceUrl: null, details: "Long **notes**",
+  });
+  assert.equal(f.registry.reportAwaiting(f.target.id, wait("CI checks on PR #7", now + 20 * 60_000), now).ok, true);
+  // Declared twenty minutes ago with a ten-minute deadline: overdue now.
+  const past = now - 20 * 60_000;
+  assert.equal(f.registry.reportAwaiting(f.other.id, wait("Staging deploy", past + 10 * 60_000), past).ok, true);
+
+  // The list form carries a compact summary on every row, and `awaiting: true` narrows to the
+  // sessions with a declared wait, the overdue one included.
+  const filtered = await (await f.request("/mcp/session-control/read", { awaiting: true })).json() as {
+    sessions: Array<{ id: string; awaiting: { what: string; overdue: boolean } & Record<string, unknown> }>;
+  };
+  assert.deepEqual(filtered.sessions.map((s) => s.id).sort(), [f.target.id, f.other.id].sort());
+  const target = filtered.sessions.find((s) => s.id === f.target.id)!.awaiting;
+  assert.deepEqual(Object.keys(target).sort(), ["expectedBy", "id", "overdue", "referenceUrl", "startedAt", "wakeSource", "what"]);
+  assert.equal(target.what, "CI checks on PR #7");
+  assert.equal(target.overdue, false);
+  const other = filtered.sessions.find((s) => s.id === f.other.id)!.awaiting;
+  assert.equal(other.what, "Staging deploy");
+  assert.equal(other.overdue, true);
+
+  // clear_awaiting maps onto the dashboard route: a stale id is refused, the current one clears
+  // the target's wait, sends the session nothing and leaves the other session's wait alone.
+  const shown = f.registry.getSession(f.target.id)!.awaiting!.id;
+  // Watched directly: `f.messages` records `send` only, and a clear must use neither path.
+  const sends = t.mock.method(f.sdk, "send");
+  const idleSends = t.mock.method(f.sdk, "sendWhenIdle");
+  assert.equal((await f.act({ action: "clear_awaiting", awaitingId: "a-wait-that-was-replaced" })).status, 409);
+  assert.ok(f.registry.getSession(f.target.id)!.awaiting, "a stale resident clear removed the wait");
+  const cleared = await f.act({ action: "clear_awaiting", awaitingId: shown, resolution: "CI was cancelled" });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(await cleared.json(), { ok: true, cleared: true });
+  assert.equal(f.registry.getSession(f.target.id)!.awaiting, null);
+  assert.ok(f.registry.getSession(f.other.id)!.awaiting, "clearing one session's wait touched another's");
+  assert.equal(f.messages.length, 0, "a clear sends nothing to the session");
+  assert.equal(sends.mock.callCount(), 0, "a clear called send");
+  assert.equal(idleSends.mock.callCount(), 0, "a clear called sendWhenIdle");
+  const after = await (await f.request("/mcp/session-control/read", { awaiting: true })).json() as { sessions: Array<{ id: string }> };
+  assert.deepEqual(after.sessions.map((s) => s.id), [f.other.id]);
+
+  const { openDb } = await import("../src/server/db.ts");
+  const events = openDb().prepare(`SELECT kind, payload FROM session_events WHERE session_id = ? ORDER BY id`).all(f.target.id) as Array<{ kind: string; payload: string }>;
+  const clearedEvent = events.filter((e) => e.kind === "session_awaiting_cleared").at(-1)!;
+  assert.equal(JSON.parse(clearedEvent.payload).actor, `session:${f.caller.id}`);
+  assert.equal(JSON.parse(clearedEvent.payload).resolution, "CI was cancelled");
+});
+
 test("a granted controller cannot choose Remind me later for the operator", async () => {
   const f = fixture(); await f.grant(true);
   const question = "Which linter should this repo use?";

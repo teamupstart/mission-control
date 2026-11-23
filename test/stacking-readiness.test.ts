@@ -919,6 +919,77 @@ test("a blocked prerequisite stamps no dependent until its blocker is cleared", 
   assert.equal(childEdge(w).stackReadyAt, 1_000, "clearing the blocker releases the stamp");
 });
 
+test("a prerequisite awaiting its own background process stamps no dependent until its deadline passes", async () => {
+  // The reconciler's clock reads 1_000 (see `readiness`), so a deadline at 2_000 is still ahead.
+  const awaiting = (expectedBy: number) => ({
+    id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command" as const, expectedBy,
+    referenceUrl: null, details: null, startedAt: 500, updatedAt: 500,
+  });
+  const w = world();
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", awaiting: awaiting(2_000) }));
+  const s = script();
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "an episode still awaiting its CI is not finished");
+  assert.equal(s.reads, 0, "no GitHub read for a prerequisite that is awaiting");
+
+  // The deadline passes without a wake: the hold lifts and the episode is judged as usual.
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", awaiting: awaiting(1_000) }));
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "the deadline passing did not release the stamp");
+});
+
+test("a prerequisite's wait arms a readiness pass at its deadline, and stopping cancels it", async () => {
+  // Nothing announces a deadline passing, so readiness must look again at `expectedBy` itself.
+  let clock = 1_000;
+  const armed: Array<{ fn: () => void; ms: number; handle: string }> = [];
+  const cleared: string[] = [];
+  const w = world();
+  w.sessions.set("sA", mkSession({
+    id: "sA", state: "idle",
+    awaiting: {
+      id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 5_000,
+      referenceUrl: null, details: null, startedAt: 500, updatedAt: 500,
+    },
+  }));
+  const s = script();
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), () => clock, {
+    set: (fn, ms) => {
+      const handle = `timer-${armed.length + 1}`;
+      armed.push({ fn, ms, handle });
+      return handle;
+    },
+    clear: (handle) => { cleared.push(handle as string); },
+  });
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+  assert.equal(armed.at(-1)?.ms, 4_001, "no pass was armed for the deadline");
+
+  // The deadline passes with nobody waking the session: the armed pass stamps the dependent.
+  clock = 5_001;
+  armed.at(-1)!.fn();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 5_001, "the deadline pass did not stamp the dependent");
+
+  // A fresh wait arms a fresh pass; stopping cancels it.
+  w.sessions.set("sA", mkSession({
+    id: "sA", state: "idle",
+    awaiting: {
+      id: "aw-again", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 9_000,
+      referenceUrl: null, details: null, startedAt: 5_500, updatedAt: 5_500,
+    },
+  }));
+  r.reconcile();
+  await settle();
+  const pending = armed.at(-1)!.handle;
+  r.stop();
+  assert.ok(cleared.includes(pending), "stopping left the deadline pass armed");
+});
+
 test("a blocker reported while the parent pull request is read stamps nothing", async () => {
   const w = world();
   const s = script();
@@ -937,4 +1008,25 @@ test("a blocker reported while the parent pull request is read stamps nothing", 
   await settle();
   assert.equal(s.reads, 1, "the read started before the blocker landed");
   assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite blocked mid-read");
+});
+
+test("a wait declared while the parent pull request is read stamps nothing", async () => {
+  const w = world();
+  const s = script();
+  // Lands inside the GitHub read, after the first eligibility check has already passed. The
+  // reconciler's clock reads 1_000, so this deadline is still ahead when the read returns.
+  s.duringRead = () => {
+    w.sessions.set("sA", mkSession({
+      id: "sA", state: "idle",
+      awaiting: {
+        id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 2_000,
+        referenceUrl: null, details: null, startedAt: 900, updatedAt: 900,
+      },
+    }));
+  };
+  readiness(w, s).reconcile();
+  await settle();
+  await settle();
+  assert.equal(s.reads, 1, "the read started before the wait was declared");
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite that began awaiting mid-read");
 });

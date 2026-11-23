@@ -346,6 +346,26 @@ test("a blocked run is not hidden by a completed run of the same session in anot
   assert.equal((await inboxFor(h)).items.find((i) => i.taskId === "t-two-runs")!.run?.status, "running", "an open run beats an ended one");
 });
 
+test("a run that started before a task took over the session is not attached to that task", async () => {
+  const h = await homeIn("run-owner");
+  const sid = liveSession("w-run-owner");
+  const mine = { surface: "home-session" as const, repo: h.repo, session: h.sessionId };
+  // Task B took the session at 5 000; the run below is task A's, from before.
+  addTask({ id: "t-run-owner", status: "running", sessionId: sid, dispatchedAt: 5_000, updatedAt: Date.now() }, mine);
+  // A fake run list is enough: the run summary carries its own `startedAt`, so no table is read.
+  const row = (id: string, status: string, startedAt: number) =>
+    ({ id, sessionId: sid, workflowId: "wf", workflowName: "General Review", workflowVersion: 1, status, phase: "p", round: 1, actionWait: null, startedAt, updatedAt: startedAt });
+  fakeRuns = [row("run-of-a", "blocked", 1_000)];
+  const before = (await inboxFor(h)).items.find((i) => i.taskId === "t-run-owner")!;
+  assert.equal(before.run, undefined, "an earlier task's run is not this task's");
+  assert.equal(before.state, "running", "so its blocker does not put this task in needsYou");
+
+  fakeRuns = [row("run-of-a2", "blocked", 1_000), row("run-of-b", "running", 6_000)];
+  const after = (await inboxFor(h)).items.find((i) => i.taskId === "t-run-owner")!;
+  assert.equal(after.run?.status, "running", "a run that started after the task did is its own");
+  assert.equal(after.state, "running");
+});
+
 test("a resident's pending request is an item with origin resident, visible by repository or with none", async () => {
   const h = await homeIn("resident");
   const other = await homeIn("resident-other");

@@ -26,7 +26,7 @@ import {
   type ReviewShape,
 } from "./approval.ts";
 import { resolveCaller, taskOriginOf, type ResolvedCaller } from "./caller.ts";
-import { visibleResidents } from "./inbox.ts";
+import { UNATTRIBUTED_ITEM_PREFIX, visibleResidents } from "./inbox.ts";
 import { canAnswerTask, canReadTask } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 
@@ -239,7 +239,10 @@ function answer(
 
   // The request names the item it answers, so a question replaced since the person read it is
   // refused rather than answered by mistake.
-  if (task.id !== body.taskId) return refuse(409, "the review belongs to a different task than the one shown");
+  // A task's second and later pending requests are listed as `review:{id}` items, so that id names
+  // the same review and is answered for the task that owns it.
+  const named = body.taskId === `${UNATTRIBUTED_ITEM_PREFIX}${body.reviewId}` ? task.id : body.taskId;
+  if (task.id !== named) return refuse(409, "the review belongs to a different task than the one shown");
 
   const settled = !review || (review.status !== "pending" && review.status !== "snoozed");
   if (settled) {

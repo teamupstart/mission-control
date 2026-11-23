@@ -13,7 +13,8 @@
 // happened, and DELIVERY decides what is worth interrupting for (see
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
-import { confirmedWorking, openQuestionCount } from "./async-input.ts";
+import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
+import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
 import { goalLine } from "./goal.ts";
 import {
@@ -104,6 +105,13 @@ export interface AlertScope {
   ensembleSummaries?: EnsembleSummary[];
   pipelineCommissions?: PipelineCommission[];
   pipelineRuns?: PipelineRun[];
+  /**
+   * The live resident runs, present only while the `inbox` flag is on. Its presence is what
+   * makes an alert title name its agent by `agentDisplayName`; absent, titles read exactly as
+   * they always have. Both callers pass it from the same flag, so a toast and an Away digest
+   * line name one agent alike.
+   */
+  names?: readonly ResidentNameSource[];
 }
 
 /**
@@ -122,7 +130,8 @@ export function bufferable(a: Alert): boolean {
   return !deliverable(a);
 }
 
-function sessionLabel(s: Session): string {
+function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined): string {
+  if (names) return agentDisplayName(sessionDisplayNameInput(s, names)).name;
   return s.task?.title || s.name || "a session";
 }
 
@@ -157,12 +166,12 @@ function stallKeys(scope: AlertScope): Set<string> {
  * threshold tripped. Deriving both from here means the refreshed line and the alert
  * that announced it can never diverge.
  */
-export function stuckAlert(st: Stall, sessions: Session[]): Alert {
+export function stuckAlert(st: Stall, sessions: Session[], names?: readonly ResidentNameSource[]): Alert {
   const s = sessions.find((x) => x.id === st.sessionId);
   return {
     id: `stuck:${st.sessionId}:${st.kind}`,
     kind: "stuck",
-    title: `${s ? sessionLabel(s) : "a session"} looks stuck`,
+    title: `${s ? sessionLabel(s, names) : "a session"} looks stuck`,
     body: st.reason,
     sessionId: st.sessionId,
     // Spread, so only the one stall kind that HAS a run carries the key. The toast turns
@@ -183,13 +192,14 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
 export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
-  // Newest pending review per session, split the way the two counts are: a question its agent
-  // waits on inside the call, and a message-mode question (`async-input`) its agent kept working past.
+  // Newest pending review per session, split the way the two counts are: a review its agent has
+  // stopped on (inside the call, or a filed plan form), and a message-mode question
+  // (`async-input`) its agent kept working past (`agentKeepsWorking`).
   const latestReviews = new Map<string, ReviewItem>();
   const latestQuestions = new Map<string, ReviewItem>();
   for (const review of next.reviews ?? []) {
     if (review.status !== "pending") continue;
-    const into = review.waitMode === "message" ? latestQuestions : latestReviews;
+    const into = agentKeepsWorking(review) ? latestQuestions : latestReviews;
     const latest = into.get(review.sessionId);
     if (!latest || review.createdAt >= latest.createdAt) into.set(review.sessionId, review);
   }
@@ -210,7 +220,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
-    const label = sessionLabel(s);
+    const label = sessionLabel(s, next.names);
 
     // needs-input: the agent is blocked on you (awaiting input or a review decision).
     const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
@@ -364,7 +374,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
-    alerts.push(stuckAlert(st, next.sessions));
+    alerts.push(stuckAlert(st, next.sessions, next.names));
   }
 
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));

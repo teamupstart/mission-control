@@ -416,6 +416,20 @@ read. The dashboard's Flag reply and Clear blocker always send it.
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
 
+### Sessions awaiting a background process
+
+While the **Awaiting background work** preview is on, sessions can declare that they are
+[idle on purpose](sessions.md#sessions-awaiting-a-background-process-preview) while a background process
+they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`, `wakeSource`,
+`expectedBy`, `referenceUrl`, `startedAt` and `overdue`) to every row of its list and accepts
+`awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one
+session returns its whole wait, Markdown details included. `control_session` adds
+`{"action":"clear_awaiting","awaitingId":"...","resolution":"..."}`, which ends the wait and
+sends the session nothing. `awaitingId` is required: pass the `id` that `read_sessions`
+returned, so a wait the session declared again since is refused with 409. Leave a wait inside
+its deadline alone: the session resumes on its own, and an overdue one is already back under the
+normal stuck-session rules.
+
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
@@ -483,7 +497,13 @@ its cadence while they wait in the attention inbox, and Resume is not refused fo
 still waiting inside a call, a plan or diff review, and a permission dialog hold wakes exactly as
 above. An answer arrives as a message, which counts as human input and preserves pending pacing.
 The loop prompt asks the resident to check whether its earlier questions were answered before it
-asks again, and never to repeat a question that is still open.
+asks again, and never to repeat a question that is still open. In the Residents drawer, a resident
+with a filed question open is listed in the **Needs you** group with its question as an ask row,
+while its card keeps the working or idle colour it already wears; the row opens the question, whose
+card reads **Still working**. A resident you paused does not wake to act on its questions, so once
+it is not mid-turn they read **Stopped, waiting on this answer** everywhere they appear, its drawer
+card and the closed drawer's tab turn amber, the inbox lists it with the other stopped sessions,
+and **e** reaches it among them. Its questions still never hold it: Resume is not refused for them.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
@@ -860,6 +880,42 @@ keeps a server on the launcher.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
+
+### The work unit reference
+
+A resident run has no [work unit](work-units.md), so its launch carries no `WORK_UNIT_ID` and its
+MCP calls are never tagged with one. The pinned catalog still recognizes the reference the
+[config guide](work-units.md#mcp-servers-the-worker-calls) recommends, with the `work-unit-id`
+preview on or off, because an MCP config is usually shared and must not break a resident:
+
+- **Claude Code.** A header named `x-work-unit-id` (any case) whose whole value is
+  `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}` is dropped before expansion: not stored, not a
+  secret, not sent. Before this, it became an empty header on every call.
+- **Codex.** `env_http_headers` whose only entry maps `x-work-unit-id` to `WORK_UNIT_ID` is
+  accepted and dropped. Before this, the server was unusable ("it uses env_http_headers, which
+  residents cannot carry") and a launch that included it was refused. Any other
+  `env_http_headers` entry is still refused, as before.
+- **A literal value is not the reference.** An `x-work-unit-id` with a non-empty value an
+  operator wrote is kept and sent like any configured header.
+- **Runs launched earlier.** A run's private copy is not rewritten, but an empty
+  `x-work-unit-id` is left out whenever a start or resume redeems the server, so such a run stops
+  sending it from its next start. A non-empty stored value is sent as stored until the resident
+  is launched again. No Codex run holds the refused state: that launch never started, and
+  launching the profile again succeeds.
+
+**Sign-in.** The decision whether Claude Code may sign in to a server itself is made on the
+headers that remain once the reference is dropped. A server whose only header was the reference
+is headerless again, so it is handed to the harness exactly as it was before the reference was
+added, which by Claude Code's program text is the entry its stored sign-in is keyed by. A server
+with another header stays on the launcher, which presents no sign-in, as before. A run launched
+before this change keeps its pinned route until the resident is launched again. Whether a pinned
+resident keeps a server's sign-in once the reference is added is **not verified**: the check
+against a local OAuth fixture could not run on the machine it was attempted on (see
+[What the OAuth check found](work-units.md#what-the-oauth-check-found)). So until it is verified,
+leave the reference off a server a pinned resident signs in to with OAuth.
+
+A resident on [all native sources](#all-native-sources) reads the operator's config with the
+variable unset, like any session outside a work unit.
 
 ### Custom MCP servers
 

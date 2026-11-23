@@ -137,6 +137,25 @@ Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never r
 `feature-flags` settings backup domain id is also persisted and final; its surface is
 `settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
 
+The work unit id format and its four carrier names are final, because other services
+query them by exact value: the format `wu_` and a ULID, checked by
+`^wu_[0-9A-HJKMNP-TV-Z]{26}$` (Agent Platform's check); the environment variable
+`WORK_UNIT_ID`; the HTTP header `x-work-unit-id`; the MCP `params._meta` key `work_unit_id`;
+and the span attribute `work_unit_id`. They are spelled once, in `src/shared/work-unit.ts`,
+and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
+choose one. See [Work units](../work-units.md).
+
+What a session emits for its work unit follows its launch record (`session_launch_work_units`),
+never the `work-unit-id` flag. The flag is read in one place, `launchWorkUnitId`, once per
+launch, and that one value goes to the agent's environment and the record. Later readers use
+`launchWorkUnitFor(session)` or `sessionWorkUnitId(session, task)` from
+`src/server/work-unit.ts`. A new launch path computes the decision where it begins, hands it to
+the registry before the session's first event (`registerSdkSession`'s `launchWorkUnitId`, or
+`expectTerminalLaunchWorkUnit` with the launch's own state home before a terminal spawn, then
+`settleTerminalLaunchWorkUnit` with the launch's outcome), and applies it with `withWorkUnit` or
+`workUnitEnv`; it never sets `WORK_UNIT_ID` any other way. A terminal hand-over is never matched
+by checkout path: only the agent beneath that launch's wrapper may take it.
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -185,8 +204,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Schedule enum values
 - Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
   transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
-  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
-  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
+  (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
+  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
+  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
+  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
+  `pending_turns` and is final. Stage, transport and
   built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
   recorded with launches. A stored shaper whose stage or transport this build does not know is
   kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup

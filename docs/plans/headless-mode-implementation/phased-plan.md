@@ -1,6 +1,6 @@
 # FR-05 headless mode: minimal Claude-session E2E plan (phased, revision 18)
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 18, section 0 is the minimal plan). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 20, sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`. Design: the round 2 design artifact (claude.ai artifact `2dJEKTxXd9Hzi9zDgDayZo`) and its spike review. The repository wins over the spec where they differ.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 18, section 0 is the minimal plan). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 21, sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`. Design: the round 2 design artifact (claude.ai artifact `2dJEKTxXd9Hzi9zDgDayZo`) and its spike review. The repository wins over the spec where they differ.
 
 Goal: one real end-to-end test. A person opens Claude Code in a repository with the mod installed and no dashboard open. **The Mission Control pane shows their tasks as Claude launches.** They dispatch a task from the conversation, are signalled when something needs them (toast, status entry, band), answer or approve in the pane's Needs you tab, and the task runs to a result that the pane shows. The mod is the display. Everything else is deferred (section 6).
 
@@ -48,7 +48,7 @@ P14 starts with P11 and P12 (staging and install need only P8) and merges last. 
 
 ## 4. Rules for every phase
 
-1. Re-read the spec version and sha256 above. If the spec moved past 20, stop and report.
+1. Re-read the spec version and sha256 above. If the spec moved past 21, stop and report.
 2. Behind the `headless-mode` preview flag; flag-off tests prove no behavior change.
 3. Do not touch `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs`. Nothing under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports `src/server/terminal/`.
 4. Tests use `node:test` and the fakes in `test/helpers/home-dispatch-fakes.ts`; no model tokens. The pane is drawn inside Claude Code, so its proof is fake-host tests plus `claude plugin test` run locally with output attached to the pull request.

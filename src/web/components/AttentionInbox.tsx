@@ -1,4 +1,8 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
+import { AgentName } from "./AgentName.tsx";
 import { ensembleStageWord } from "@shared/ensemble.ts";
 import {
   PIPELINE_HALT_ACTIONS,
@@ -17,6 +21,17 @@ import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
+import { ReportCard } from "./ReportCard.tsx";
+import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import { StuckCard } from "./StuckCard.tsx";
+import {
+  PausedResidentsContext,
+  QUESTION_ACTION_COPY,
+  allMessageMode,
+  asQuestionAgent,
+  questionAgentStatus,
+} from "../lib/async-questions.ts";
 
 /**
  * One place to drain everything that is waiting on a person.
@@ -59,8 +74,24 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   pipeline_halt: "Pipeline halts",
   pipeline_commission: "Pipeline lifecycle",
   session_blocked: "Waiting on you",
+  session_stuck: "Stuck",
   parked_finalization: "Stuck finalizations",
+  agent_reports: "Reports",
 };
+
+/**
+ * What the Reports section needs from the dashboard: which report is open on screen
+ * (`openReportId` lives in App, so there is one answer to it), and the two things a card does.
+ */
+export interface InboxReportControls extends ReportEntryControls {
+  /** Where a reply to this report can go now (`replyTarget` over the live sessions and runs). */
+  targetFor: (report: ReportItem) => ReplyTarget;
+  /** Reply to it. Resolves to why the daemon refused, or null. */
+  onReply: (report: ReportItem, text: string) => Promise<string | null>;
+  /** Start, or retry, its follow-up task. Resolves to why it failed, or null. */
+  onFollowUp: (report: ReportItem, text: string) => Promise<string | null>;
+}
+
 
 export function AttentionInbox({
   fold,
@@ -70,6 +101,12 @@ export function AttentionInbox({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
+  reports,
+  held = false,
+  onOpenRun = (runId) => {
+    window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
+  },
+  onReplyBox,
 }: {
   fold: AttentionFold;
   /**
@@ -89,7 +126,36 @@ export function AttentionInbox({
   /** Focus a session on the fleet. */
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission?: (commissionId: string) => void;
+  /**
+   * The Reports section's state and actions (`inbox` flag). Required, with no inert default: a
+   * Reports row whose toggle and Mark read did nothing would look like a working inbox.
+   */
+  reports: InboxReportControls;
+  /**
+   * The operator's dismissals are not known yet (still loading, or unreadable), so every row
+   * that can be dismissed is held back and only reports are listed. The heading then says the
+   * answers are held rather than claiming there is nothing to answer.
+   */
+  held?: boolean;
+  /** Open a workflow run on the Runs page, for a Stuck row about a parked run. */
+  onOpenRun?: (runId: string) => void;
+  /** A Stuck row's message box appearing or going, by session (the `onReplyBox` contract). */
+  onReplyBox?: (sessionId: string, present: boolean) => void;
 }): React.JSX.Element {
+  const reportsOn = useFeatureFlag(INBOX_FLAG);
+  // A refused Mark read, by report, drawn under its card until it is tried again.
+  const [readRefused, setReadRefused] = useState<ReadonlyMap<string, string>>(new Map());
+  const markRead = (report: ReportItem) => {
+    setReadRefused((current) => {
+      if (!current.has(report.id)) return current;
+      const next = new Map(current);
+      next.delete(report.id);
+      return next;
+    });
+    void reports.onMarkRead(report).then((error) => {
+      if (error) setReadRefused((current) => new Map(current).set(report.id, error));
+    });
+  };
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
   const leave = (go: () => void) => () => {
@@ -142,11 +208,17 @@ export function AttentionInbox({
             on a panel headed `3 need you` made the operator reconcile two labels for one
             figure at the moment they were trying to drain it.
           */}
-          <strong>{fold.total > 0 ? `${fold.total} to answer` : "Nothing to answer"}</strong>
+          <strong>{fold.total > 0 ? `${fold.total} to answer` : held ? "Answers held" : "Nothing to answer"}</strong>
+          {held && <span className="dim"> · they appear once your inbox dismissals can be read</span>}
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
-          <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
+          <span className="dim">
+            {reportsOn
+              ? " · answers, decisions, halts, stuck sessions, stuck finalizations and reports"
+              : " · answers, decisions, halts and stuck finalizations"}
+          </span>
+          {fold.toRead > 0 && <span className="dim"> · {fold.toRead} to read</span>}
           {snoozed.length > 0 && <span className="dim"> · {snoozed.length} snoozed</span>}
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
@@ -171,10 +243,16 @@ export function AttentionInbox({
               {heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem
                 item={item}
+                reports={reports}
+                onMarkRead={markRead}
+                readRefused={readRefused}
                 dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
+                onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+                onReplyBox={onReplyBox}
+                onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
               {saysNothingNew(item, refused.get(item.id)?.said) && (
@@ -218,7 +296,17 @@ function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefin
 /**
  * What a row is about: the name its header prints, and the name its Dismiss says it removes.
  * One function for both, so the button's accessible name always matches the row it sits in.
+ *
+ * A row about a session names its agent by the one naming rule while the `inbox` flag is on,
+ * in a resident's board colour; off, it prints the session name exactly as before.
  */
+function useInboxSubject(item: AttentionItem): AgentNameView {
+  const enabled = useFeatureFlag(INBOX_FLAG);
+  const runs = useContext(ResidentNamesContext);
+  const legacy = inboxSubject(item);
+  return "session" in item ? agentNameView(item.session, legacy, enabled, runs) : { name: legacy, colorId: null };
+}
+
 function inboxSubject(item: AttentionItem): string {
   switch (item.kind) {
     case "pipeline_commission":
@@ -228,9 +316,12 @@ function inboxSubject(item: AttentionItem): string {
       return item.summary.title;
     case "pipeline_halt":
       return item.run.slug;
+    case "agent_reports":
+      return item.authorName;
     case "session_reviews":
     case "session_dialog":
     case "session_blocked":
+    case "session_stuck":
       return item.session.name || "(unnamed)";
   }
 }
@@ -244,15 +335,21 @@ function inboxSubject(item: AttentionItem): string {
  * that answers. The visible word stays "Dismiss", so the accessible name still starts with it.
  */
 function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: () => void }): React.JSX.Element {
+  const paused = useContext(PausedResidentsContext);
+  const subject = useInboxSubject(item);
+  // A row of message-mode questions (`async-input`) never had its agent waiting inside a call: the
+  // words follow whether that agent is still working or has stopped, as the cards below say.
   const tip =
-    item.kind === "session_reviews"
-      ? "Remove these questions from the inbox without answering them. The agent keeps waiting; a new question from it still shows here"
-      : "Remove this from the inbox without resolving it. It stays dismissed until it reports something new";
+    item.kind !== "session_reviews"
+      ? "Remove this from the inbox without resolving it. It stays dismissed until it reports something new"
+      : QUESTION_ACTION_COPY[
+        allMessageMode(item.reviews) ? questionAgentStatus(asQuestionAgent(item.session, paused)) : "call"
+      ].dismissRow;
   return (
     <Tooltip label={tip}>
       <button
         className="btn btn-ghost"
-        aria-label={`Dismiss ${inboxSubject(item)} from the inbox`}
+        aria-label={`Dismiss ${subject.name} from the inbox`}
         onClick={onDismiss}
       >
         Dismiss
@@ -263,28 +360,57 @@ function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: ()
 
 function InboxItem({
   item,
+  reports,
+  onMarkRead,
+  readRefused,
   dismissButton,
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission,
+  onOpenRun,
+  onDismiss,
+  onReplyBox,
   onLeave,
 }: {
   item: AttentionItem;
-  /** Drawn last in the row's header, whatever the kind. */
+  reports: InboxReportControls;
+  onMarkRead: (report: ReportItem) => void;
+  readRefused: ReadonlyMap<string, string>;
+  /** Drawn last in the row's header, whatever the kind but a report row's, which Mark read clears. */
   dismissButton: React.ReactNode;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
+  onOpenRun: (runId: string) => void;
+  /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
+  onDismiss: () => void;
+  onReplyBox?: (sessionId: string, present: boolean) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
+  const subjectView = useInboxSubject(item);
+  const subject = <AgentName view={subjectView} />;
   switch (item.kind) {
+    case "session_stuck":
+      // Draws its own Dismiss, like every other control on it, from the action registry.
+      return (
+        <StuckCard
+          session={item.session}
+          stall={item.stall}
+          context={item.context}
+          subject={subjectView}
+          onOpenSession={onOpenSession}
+          onOpenRun={onOpenRun}
+          onDismiss={onDismiss}
+          onReplyBox={onReplyBox ? (present) => onReplyBox(item.session.id, present) : undefined}
+        />
+      );
     case "pipeline_commission":
       return (
         <section className="inbox-item inbox-halt">
           <div className="inbox-head">
             <span className="inbox-glyph" aria-hidden>⇶</span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">{item.attention.title}</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this Pipeline commission">
@@ -304,7 +430,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">
               {item.summary.strategyLabel} · {ensembleStageWord(item.summary)}
             </span>
@@ -328,7 +454,7 @@ function InboxItem({
         <section className="inbox-item inbox-reviews">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="dim"> · {item.reviews.length} pending</span>
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
@@ -343,6 +469,7 @@ function InboxItem({
             <ReviewCard
               key={review.id}
               review={review}
+              session={item.session}
               note={item.session.note}
               onMovedToChat={(sessionId) => {
                 onOpenSession(sessionId);
@@ -357,7 +484,7 @@ function InboxItem({
         <section className="inbox-item inbox-dialog">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - a terminal menu is answered on its card">
@@ -383,7 +510,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⇶
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">
               {PIPELINE_PROVIDER_INFO[item.run.provider].label} ·{" "}
               {PIPELINE_HALT_CLASS_INFO[item.haltClass].label}
@@ -441,7 +568,7 @@ function InboxItem({
         <section className="inbox-item inbox-blocked">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - it reported that it is waiting on you, so the answer goes to the agent directly">
@@ -466,7 +593,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">{item.summary.strategyLabel} · promoting</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this run - a finalization resumes from the step that failed, never from the start">
@@ -477,6 +604,33 @@ function InboxItem({
             {dismissButton}
           </div>
           <p className="inbox-line inbox-error">{item.error}</p>
+        </section>
+      );
+    case "agent_reports":
+      // No Dismiss: Mark read is a report's dismissal, and a report waits to be read rather
+      // than to be answered.
+      return (
+        <section className="inbox-item inbox-reports" aria-label={`Reports from ${item.authorName}`}>
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>
+              ✉
+            </span>
+            {subject}
+            <span className="dim"> · {item.reports.length} to read</span>
+          </div>
+          {item.reports.map((report) => (
+            <ReportCard
+              key={report.id}
+              report={report}
+              open={reports.openReportId === report.id}
+              target={reports.targetFor(report)}
+              onToggle={() => reports.onToggle(report)}
+              onMarkRead={() => onMarkRead(report)}
+              onReply={(text) => reports.onReply(report, text)}
+              onFollowUp={(text) => reports.onFollowUp(report, text)}
+              error={readRefused.get(report.id) ?? null}
+            />
+          ))}
         </section>
       );
   }

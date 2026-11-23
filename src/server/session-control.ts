@@ -1,6 +1,6 @@
 import { isActiveTask } from "@shared/task-status.ts";
 import { hasBlocker } from "@shared/session.ts";
-import type { SessionBlocker } from "@shared/types.ts";
+import type { SessionAwaiting, SessionBlocker } from "@shared/types.ts";
 import type { Context, Hono } from "hono";
 import {
   RequestSessionControlSchema, SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
@@ -52,6 +52,13 @@ export function blockerSummary(blocker: SessionBlocker | null | undefined) {
   return { id, kind, reason, waitingOn, referenceUrl, startedAt, reply };
 }
 
+/** The list form's compact wait: what, how it wakes and when it is due, without the details. */
+export function awaitingSummary(awaiting: SessionAwaiting | null | undefined, now = Date.now()) {
+  if (!awaiting) return null;
+  const { id, what, wakeSource, expectedBy, referenceUrl, startedAt } = awaiting;
+  return { id, what, wakeSource, expectedBy, referenceUrl, startedAt, overdue: now >= expectedBy };
+}
+
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
 export function controlRequest(target: string, command: SessionControlAction): {
   path: string; method: string; body?: unknown;
@@ -79,6 +86,7 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_permission_mode": return post("mode", { mode: command.mode });
     case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerId: command.blockerId });
     case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerId: command.blockerId });
+    case "clear_awaiting": return post("awaiting/clear", { resolution: command.resolution, awaitingId: command.awaitingId });
   }
 }
 
@@ -202,10 +210,15 @@ export function registerSessionControlRoutes(
     if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
     if (!parsed.data.sessionId) {
       const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
-        && (!parsed.data.blocked || hasBlocker(s)));
+        && (!parsed.data.blocked || hasBlocker(s))
+        // Every declared wait, overdue ones included: an overdue wait is the one a resident
+        // most needs to find, since the session said it would be back by now.
+        && (!parsed.data.awaiting || s.awaiting != null));
+      const now = Date.now();
       return c.json({ sessions: sessions.map((s) => ({
         id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity,
         blocker: blockerSummary(s.blocker),
+        awaiting: awaitingSummary(s.awaiting, now),
       })) });
     }
     const session = registry.getSession(parsed.data.sessionId);

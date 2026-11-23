@@ -19,8 +19,7 @@ export interface PiLaunchPreparation {
  * newline. It is semantically whitespace to the model while making the argument
  * unambiguously positional to Pi's parser.
  */
-export function preparePiLaunch(prompt: string): PiLaunchPreparation {
-  const sessionId = randomUUID();
+export function preparePiLaunch(prompt: string, sessionId: string = randomUUID()): PiLaunchPreparation {
   const initialMessage = prompt.startsWith("-") || prompt.startsWith("@") ? `\n${prompt}` : prompt;
   return { args: ["--session-id", sessionId, initialMessage], sessionId };
 }

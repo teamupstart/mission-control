@@ -1213,6 +1213,22 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **The idle column groups agents awaiting a background process.** While the **Awaiting
+  background work** preview is on, a session that
+  [declared a wait](sessions.md#sessions-awaiting-a-background-process-preview) on its own CI, build,
+  monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
+  due first, after pinned residents and before free and held agents. The section keeps that
+  order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
+  (**1 awaiting**) and counts the rest as free (**2 free**) rather than drawing the column total,
+  whether or not a workflow holds any, in the **Console** rail's head as well. A pinned resident
+  that is waiting keeps its pinned place, ahead of the other pinned residents and above the Free
+  rule, and is counted as awaiting, never as free. In the Conversation tab, Tab from the
+  conversation reaches the band's **Open**, **Clear** and **Details** before the tab strip; a link
+  inside a closed Details is not on that path. Its card draws a deadline track: what it waits
+  for, the due time, and a bar from when it declared the wait to when it is due. Once the
+  deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
+  never moves to **needs you**. The **Console** rail draws the same rule and a short track beside
+  the row's state.
 - **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
   has an outline and soft glow in its profile's color and a short label chip, and, when its
   profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
@@ -2068,7 +2084,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. With no fleet session asking, it addresses the first resident in the Residents drawer's **Needs you** group, including one that is also a row in the **Needs you** rail: its review queue, or its conversation with the cursor in the reply box when it needs you without a review. While the drawer is on screen, its residents count only in that second step, even when one is the selected session, so a fleet session's review always comes first. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there, and the drawer's **Needs you** group prints it whenever the group is shown | Any session with a pending review, or a resident in the drawer's Needs you group |
+| <kbd>e</kbd> | Open the review queue waiting on you, in this order: (1) the selected fleet session, when it has anything to answer; (2) otherwise the first fleet session, in fleet order, that has stopped on something to answer; (3) otherwise the first resident in the Residents drawer's **Needs you** group that has stopped, including one that is also a row in the **Needs you** rail; (4) otherwise the first fleet session still working past questions it filed with [Ask without stopping](sessions.md#asking-without-stopping); (5) otherwise the first resident listed in that group only for questions it filed. A resident opens its review queue when it has a review or a filed question, or its conversation with the cursor in the reply box when it needs you without either. While the drawer is on screen, its residents are never the selected session of step 1, even when one is selected, so they are reached in steps 3 and 5 only. Without filed questions, steps 4 and 5 find nothing, so the selected session asking comes first, then a fleet session asking, then a resident. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge, or the **N questions open** badge of a session still working. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there, and the drawer's **Needs you** group prints it whenever the group is shown | Any session with a pending review or a filed question, or a resident in the drawer's Needs you group |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |

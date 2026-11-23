@@ -358,8 +358,14 @@ export class ResidentLoop {
     if (!claim) return;
     const text = residentWakeTextFor(claim, run);
     let crossed = false;
-    reserveInjection(session.id, text, "resident");
+    // Released below only when this call's own reservation was made: a refused one recorded
+    // nothing, and releasing would give back an earlier reservation of the same text.
+    let reserved = false;
     try {
+      // Inside the try: a reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) typed nothing, so the catch releases the wake's claim.
+      reserveInjection(session.id, text, "resident");
+      reserved = true;
       const accepted = await this.deps.sdk.sendWhenIdle(session.id, { text }, () => {
         const blocked = this.blocker(run, session);
         if (!blocked) crossed = true;
@@ -370,7 +376,7 @@ export class ResidentLoop {
       else releaseInjection(session.id, text);
     } catch {
       settleResidentClaim(claim, crossed ? "unconfirmed" : "released", this.now());
-      if (!crossed) releaseInjection(session.id, text);
+      if (reserved && !crossed) releaseInjection(session.id, text);
     }
     this.publish(id);
   }

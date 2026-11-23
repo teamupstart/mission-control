@@ -2,6 +2,15 @@ import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useNow } from "./useNow.ts";
+import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { replyTarget, reportToRead } from "@shared/reports.ts";
+import type { ReportEntryControls } from "./lib/sessionReports.ts";
+import { clearReportDraft } from "./lib/reportDrafts.ts";
+import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -39,7 +48,7 @@ import type {
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
-import { AttentionInbox } from "./components/AttentionInbox.tsx";
+import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
@@ -122,7 +131,8 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
+import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -175,7 +185,8 @@ import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { isBuiltinResidentProfileId } from "@shared/residents.ts";
 import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
@@ -356,6 +367,7 @@ export function App(): React.JSX.Element {
     sessions,
     restoringSessions,
     reviews,
+    reports,
     tasks,
     personas,
     sessionActions,
@@ -404,9 +416,15 @@ export function App(): React.JSX.Element {
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
+  // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
+  // resident runs; the daemon's Away watcher passes them on the same flag.
+  const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
   const alertScope = useMemo(
-    () => ({ sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({
+      sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      ...(inboxNames ? { names: residentRuns } : {}),
+    }),
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
@@ -455,6 +473,80 @@ export function App(): React.JSX.Element {
   // target of its own - what it draws is `attention` below, folded from state App already has -
   // so it cannot go stale behind an item that resolved while it was open.
   const [inboxOpen, setInboxOpen] = useState(false);
+  // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
+  // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
+  // read" to. Opening a report records that it was opened (once) and never marks it read.
+  const [openReportId, setOpenReportId] = useState<string | null>(null);
+  // The chain (`rootId`) of the open report, so that when the agent replaces it the replacement
+  // takes its place on screen rather than the card closing under the operator.
+  const openReportRoot = useRef<string | null>(null);
+  // Whether the open report has been seen waiting to be read since it was opened. Only a report
+  // that was live and has just left the live list was replaced under the operator; an older
+  // version opened on purpose from its conversation entry was never live, and stays open.
+  const openReportLive = useRef<{ id: string | null; live: boolean }>({ id: null, live: false });
+  useEffect(() => {
+    const live = openReportId !== null && reports.some((report) => report.id === openReportId);
+    const seen = openReportLive.current;
+    if (seen.id !== openReportId) {
+      openReportLive.current = { id: openReportId, live };
+      return;
+    }
+    if (live) {
+      seen.live = true;
+      return;
+    }
+    if (openReportId === null || !seen.live) return;
+    seen.live = false;
+    const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
+    if (successor) setOpenReportId(successor.id);
+  }, [reports, openReportId]);
+  const reportOpenPosted = useRef(new Set<string>());
+  // What a report's conversation entry needs: which report is open, opening it, and Mark read.
+  // Kept apart from the inbox's controls so that typing a draft, or a session or resident run
+  // changing, does not hand the open conversation new controls and re-merge its transcript.
+  const reportEntryControls = useMemo<ReportEntryControls>(() => ({
+    openReportId,
+    onToggle: (report) => {
+      const opening = openReportId !== report.id;
+      setOpenReportId(opening ? report.id : null);
+      openReportRoot.current = opening ? report.rootId : null;
+      if (opening && report.openedAt === null && !reportOpenPosted.current.has(report.id)) {
+        reportOpenPosted.current.add(report.id);
+        void api.openReport(report.id).then((result) => {
+          if (!result.ok) reportOpenPosted.current.delete(report.id);
+        });
+      }
+    },
+    onMarkRead: async (report) => {
+      const result = await api.markReportRead(report.id);
+      if (!result.ok) return result.error ?? "Could not mark the report read";
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+  }), [openReportId]);
+  // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up. The
+  // card's draft lives in its own store (`lib/reportDrafts.ts`), so typing re-renders the card
+  // alone; a send that is accepted clears it here.
+  const reportControls = useMemo<InboxReportControls>(() => ({
+    ...reportEntryControls,
+    // Read from the live sessions and resident runs, so a card changes what it offers the moment
+    // its agent exits or a resident is relaunched.
+    targetFor: (report) => replyTarget(report, sessions, residentRuns),
+    onReply: async (report, text) => {
+      const result = await api.replyToReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not send the reply";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+    onFollowUp: async (report, text) => {
+      const result = await api.followUpReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
+    },
+  }), [reportEntryControls, sessions, residentRuns]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -2658,6 +2750,19 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
+  // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
+  // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
+  // even in the tick a deadline passes.
+  const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
+  const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
+  // The same Set object while its members are unchanged, so a tick that moves no wait across
+  // its deadline does not rerun the fleet ordering below or redraw its cards.
+  const awaitingIdsRef = useRef<ReadonlySet<string>>(NO_AWAITING_SESSIONS);
+  const awaitingIds = useMemo(() => {
+    awaitingIdsRef.current = keepAwaitingIds(awaitingIdsRef.current, awaitingSessionIds(sessions, awaitingEnabled, awaitingNow));
+    return awaitingIdsRef.current;
+  }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
@@ -2666,8 +2771,9 @@ export function App(): React.JSX.Element {
     const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
+  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -2707,6 +2813,12 @@ export function App(): React.JSX.Element {
     return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
   }, [residentDrawerShown, residentEntries]);
   /**
+   * Residents the operator paused, by session: a paused resident does not wake, so its open
+   * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
+   * `PausedResidentsContext`; the review chord is handed it through `residentKeysRef`.
+   */
+  const pausedResidents = useMemo(() => pausedResidentSessionIds(residentRuns, sessions), [residentRuns, sessions]);
+  /**
    * What the global key handler needs about residents, read through a ref so the listener does
    * not re-subscribe on every resident or drawer change.
    */
@@ -2715,6 +2827,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2726,6 +2839,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2853,14 +2967,21 @@ export function App(): React.JSX.Element {
   // popping back up on the next frame, the next reload or in a second window. The fold applies
   // them, so the figure and the list still cannot disagree.
   //
-  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
-  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
-  // count after a reload, which is the pop-back dismissing exists to prevent.
+  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
+  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
+  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
+  // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
+  // contract, which the session detail reads so its send composer gives way to that box.
+  const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
+  const noteInboxReplyBox = useCallback((sessionId: string, present: boolean) => {
+    setInboxReplyBoxes((boxes) => withInboxReplyBox(boxes, sessionId, present));
+  }, []);
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? NO_ATTENTION_YET
+        ? foldWhileDismissalsUnknown(inboxNames ? reports : undefined)
         : foldAttention({
             sessions,
             reviews: answerableReviews,
@@ -2870,16 +2991,25 @@ export function App(): React.JSX.Element {
             pipelineCommissions,
             tasks,
             dismissed: attentionDismissals.dismissed,
+            // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
+            // read figure, whatever the window was told before the flag went off.
+            ...(inboxNames ? { reports } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
+            ...(inboxNames && stalls ? { stalls } : {}),
           }),
     [
       sessions,
       answerableReviews,
+      inboxNames,
+      stalls,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,
       tasks,
       residentRuns,
       attentionDismissals.dismissed,
+      inboxNames,
+      reports,
     ],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
@@ -3480,6 +3610,9 @@ export function App(): React.JSX.Element {
     // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
+    // Agent reports' conversation entries, behind the `inbox` flag like the inbox's section.
+    reports: inboxNames ? reports : [],
+    reportControls: reportEntryControls,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
@@ -3495,6 +3628,7 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    awaitingIds,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
@@ -3917,6 +4051,34 @@ export function App(): React.JSX.Element {
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // A session awaiting a background process draws its band's controls (Open, Clear,
+        // Details) in the Conversation pane, which the tab strip walk below would skip: without
+        // this a hold could only be ended with a pointer. Tab order inside the reader is
+        // therefore body, then the band's controls, then the tab strip; Shift+Tab walks back to
+        // the body. Only while a band is drawn, so every other reader tabs exactly as before.
+        if ((chord === "Tab" || chord === "shift+Tab") && inReader) {
+          const band = target?.closest(".awaiting-band") ?? null;
+          const onBody = Boolean(target?.matches(".detail-body"));
+          const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          // A collapsed Details keeps its Markdown in the DOM, hidden: a link or button in it cannot
+          // take focus, and stepping onto one would leave the keyboard stuck on the summary. Only
+          // controls a person can see are on the path, so a closed Details offers its summary alone.
+          const controls = scope
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")].filter((el) => {
+                const closed = el.closest("details:not([open])");
+                return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+              })
+            : [];
+          if (controls.length > 0) {
+            const at = band ? controls.indexOf(target as HTMLElement) : -1;
+            const next = controls[at + (chord === "Tab" ? 1 : -1)];
+            e.preventDefault();
+            if (next) next.focus({ preventScroll: true });
+            else if (chord === "Tab") readerTabbers.current.get(readerSession.id)?.(1);
+            else focusReaderBody();
+            return;
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {
@@ -4218,7 +4380,8 @@ export function App(): React.JSX.Element {
       // open. See `reviewChordTarget`.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
-        const target = reviewChordTarget(visible, selectedId, keys.drawerAsking, keys.detailId);
+        const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
+        const target = reviewChordTarget(visible.map(mark), selectedId, keys.drawerAsking.map(mark), keys.detailId);
         if (!target) return;
         e.preventDefault();
         if (target.kind === "resident" && target.opens === "conversation") {
@@ -4545,6 +4708,9 @@ export function App(): React.JSX.Element {
       <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
+      <PausedResidentsContext.Provider value={pausedResidents}>
+      <ResidentNamesContext.Provider value={residentRuns}>
+      <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -4569,6 +4735,7 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           snoozed={snoozed.length}
+          toRead={attention.toRead}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
@@ -5051,7 +5218,7 @@ export function App(): React.JSX.Element {
         {residentsInDrawer && !residentDrawerShown && (
           <ResidentsEdgeTab
             live={residentEntries.length}
-            needsYou={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "attention")}
+            needsYou={residentEntries.some(residentEntryAmber)}
             working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
             onOpen={() => showResidentDrawer()}
           />
@@ -5234,6 +5401,9 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onReplyBox={noteInboxReplyBox}
+                  reports={reportControls}
+                  held={attentionDismissals.dismissed === null}
                 />
               )}
 
@@ -5426,6 +5596,9 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </InboxReplyBoxesContext.Provider>
+      </ResidentNamesContext.Provider>
+      </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
       </FeatureFlagsContext.Provider>
@@ -5442,9 +5615,6 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
-
-/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
-const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

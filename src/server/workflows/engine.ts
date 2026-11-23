@@ -159,6 +159,12 @@ export interface WorkflowEngineOptions {
    * the manager owns. The engine's whole job is to make the wait durable and say so.
    */
   onSessionActionWaiting?: (attemptId: string) => void;
+  /**
+   * Called each time a submission is activated, once its run is durably running: the start of
+   * the after-work step. Fires again for a repair round, a resubmit and a continuation; a
+   * subscriber that acts once per launch keeps its own guard. Must not throw.
+   */
+  onSubmissionActivated?: (submissionId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -450,6 +456,8 @@ export class WorkflowEngine {
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
   private readonly onSessionActionWaiting:
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
+  private readonly onSubmissionActivated:
+    NonNullable<WorkflowEngineOptions["onSubmissionActivated"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
@@ -484,6 +492,7 @@ export class WorkflowEngine {
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
     this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
+    this.onSubmissionActivated = options.onSubmissionActivated ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
@@ -550,6 +559,11 @@ export class WorkflowEngine {
     }
     this.store.setSubmissionState(submission.id, "running", this.now());
     this.store.setRunState(run.id, "running", "persona_review", null, this.now());
+    try {
+      this.onSubmissionActivated(submission.id);
+    } catch (error) {
+      console.warn(`[workflow] a submission-activated subscriber failed for ${submission.id}:`, error);
+    }
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
     this.wake();

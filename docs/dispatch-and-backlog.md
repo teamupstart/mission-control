@@ -814,6 +814,15 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### Work units
+
+Every task has a [work unit](work-units.md) id, `workUnitId`, except a resident run's. A plan
+task and the phase tasks its session files through MCP `create_task` share one. Which other
+tasks share a work unit and which get their own is set out in
+[Which tasks share one](work-units.md#which-tasks-share-one). A task shelved before work units
+existed gets its id when it is next dispatched or assigned. `list_tasks` can list the tasks of
+one work unit.
+
 ### One agent, one task at a time - but not one task per agent
 
 **An agent runs tasks one after another, for as long as it's alive.** Finish one, take the
@@ -826,6 +835,18 @@ recorded finished, which for shipped work is when [its pull request
 merges](inspector-and-shipping.md#when-a-tasks-pull-request-merges) - not when you get round to clicking anything.
 Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
 default it stays, ready for the next drop.
+
+**An agent stays in the work unit it was started for.** An agent started with a
+[work unit](work-units.md#the-launch-environment) has `WORK_UNIT_ID` in its environment for as
+long as it runs, and a drop starts no process, so its MCP calls would tag the next task with the
+first one's work unit. The daemon therefore refuses a drop onto an agent that was started for
+another work unit - "that agent was started for another work unit, so its MCP calls would be
+tagged with it" - and the backlog autopilot does not offer it that task; the task can still be
+dispatched to a new agent. An agent started for the task's own work unit takes it, which is how
+a plan's phase tasks can follow one another on one agent. An agent started with none takes any
+task, and that task emits no work unit until the agent's next start. The rule reads only what
+the agent was started with, never the `work-unit-id` preview, so it holds after the preview is
+switched off; with the preview never switched on no agent has one and nothing is refused.
 
 **Each task keeps its own record.** The card shows the task the agent is executing, or the
 one it most recently finished until it takes another; the previous task keeps its own
@@ -2218,3 +2239,33 @@ publication prerequisite plus direct implementation task merge dependencies. Art
 never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
 using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
 the versioned tool contract, validation compatibility, retention and recovery.
+
+### Change a pinned plan revision (preview)
+
+Enable **Change pinned plan revision** in Settings > Feature flags. In a backlog task's
+Dependencies section, choose **Change pinned revision**, enter the exact plan ID, revision,
+and comma-separated Markdown filenames, then choose **Preview revision change**. The preview
+shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
+the input and originating prerequisite together; Cancel revision change leaves them untouched.
+Save any separate dependency edits before using this action.
+Dependency editing stays disabled while the revision editor is open; cancel the revision change
+to edit prerequisites separately.
+Dispatch availability follows the validated preview's prerequisites. **Dispatch now** saves the
+selected pin and prerequisites before requesting launch.
+
+Only the superseded pin's prerequisites are removed. An origin still required by another pin
+stays, as do unrelated implementation dependencies and recorded merge evidence. A completed
+replacement origin can be added only with merge proof for the exact saved work episode.
+Missing files, revisions from another repository, stale previews, and invalid dependencies
+are refused without saving either half. No newer revision is selected automatically.
+
+The MCP **update_task** tool accepts the same action as
+`planInputChange: { from, to, expectedUpdatedAt? }`, where both inputs contain
+`repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
+`before` and `after` without writing, then repeat with `previewOnly: false` to save.
+The optional timestamp binds the preview to the task configuration you read.
+This release also adds explicit `planInputs` and `dependencies` array edits to MCP `update_task`,
+independently of the preview flag. This extends to MCP the raw atomic edit already supported by
+the dashboard endpoint. MCP requests remain authenticated and use existing task, repository, and
+dependency validation. Do not combine those arrays with `planInputChange`. Only the `planInputChange`
+action and `previewOnly` mode require the flag; omitted fields keep their saved values.

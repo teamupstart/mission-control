@@ -28,6 +28,7 @@ import {
 import { AttentionInbox } from "../src/web/components/AttentionInbox.tsx";
 import { mkEnsembleSummary, mkSession } from "./helpers/session-fixture.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
+import { mkReportControls } from "./helpers/report-fixture.ts";
 
 const REPO = "/repo/demo";
 
@@ -285,6 +286,7 @@ test("the inbox draws a Dismiss on every row kind, named after the row it remove
         onDismiss: async () => null,
         onOpenEnsemble: () => {},
         onOpenSession: () => {},
+        reports: mkReportControls().controls,
       }),
     ),
   );

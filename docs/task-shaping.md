@@ -1,21 +1,27 @@
 # Task shaping
 
 Task shaping asks operator-configured programs for context about a task. Each program is a
-**shaper**: a **gatherer** at stage `gather` reads the task's repositories, and a **selector**
-at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
+**shaper**: a **gatherer** at stage `gather` reads the task's repositories, a **selector**
+at stage `select` chooses guidance for the task, and a **router** at stage `route` chooses
+skills for it ([Skill routing](#skill-routing)). How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
-**What this build does.** You register a `command` shaper, or the built-in
+**What this build does.** You register a `command`, `mcp` or `http` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
-the API, and dry-run it against a repository. Mission Control calls it at the stage it is
-registered for, validates and caps what it returns, and reports the section it would add to a
-worker's first prompt and an outcome for each shaper. A `command` shaper can serve either
-stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that
-places it at `select` is refused. Nothing is called at dispatch: no worker
-receives shaped context yet.
+the API, and dry-run it against a repository, or you drop a folder holding its manifest into
+[the shaper folder](#the-shaper-folder), where it is switched on as soon as it is found unless
+its manifest asks to start off. A `command`, `mcp` or `http` shaper can serve any stage,
+`gather`, `select` or `route`. `repository-files` serves `gather` only, and a definition that places it at
+`select` is refused. Every dispatch then calls the enabled shapers after its worktrees are
+provisioned and before the worker starts, and adds what they return to the worker's first prompt
+as a "Task context" section. A backlog task handed over to an agent that is already running
+(`TaskManager.assign`, which Foreman's autopilot uses) is shaped the same way, after the handover
+resets the agent and before its first turn is typed. The pending tile reads "Shaping context"
+while that runs, and the session shows what it received and whether anything was degraded. A
+failing or slow shaper never stops the launch.
 
-**What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
-the other surfaces arrive in later phases. The sections marked for later below describe them.
+**What comes later.** The other surfaces arrive in later phases. The sections marked for later
+below describe them.
 
 Task shaping is a preview behind the `task-shaping` flag in **Settings > Feature flags**. With
 the flag off, the shaping API answers 404, Settings has no Task shaping category, no window is
@@ -25,8 +31,8 @@ The design and its decisions are in [the task shaping plan](plans/task-shaping/p
 
 ## How a run works
 
-A dry run goes through every step below for the one shaper it names. Once shaping runs at
-dispatch, a launch goes through the same steps for every enabled shaper.
+A dry run goes through every step below for the one shaper it names. A dispatch goes through
+the same steps for every enabled shaper.
 
 1. Mission Control builds the task's input: the prompt, its kind, title, labels and priority,
    the harness and runtime, the after-work workflow, and every attached repository. A dry run
@@ -38,9 +44,13 @@ dispatch, a launch goes through the same steps for every enabled shaper.
    empty summary counts as returned and clears an earlier one; an omitted one does not.
 3. **Select.** Once gather has settled, each enabled selector is called once per repository, in
    parallel, with that repository's merged facts and summary.
-4. Every reply is validated against one result shape. Anything else becomes an outcome with a
-   reason, never an error: Mission Control carries on.
-5. Entries are de-duplicated, fitted into the context budget, and composed into one section.
+4. **Route.** Once select has settled, each enabled router is called once per repository, in
+   parallel, with the select request plus the ids of the entries the selectors put into the
+   section for that repository. It answers with skills, not entries.
+5. Every reply is validated against its stage's result shape. Anything else becomes an outcome
+   with a reason, never an error: Mission Control carries on.
+6. Entries are de-duplicated, fitted into the context budget, and composed into one section,
+   followed by "Skills for this task" when a router announced any.
 
 A selector's `kinds` and `repositories` filters narrow where it runs. Empty `kinds` means every
 kind Mission Control launches a harness worker for (`TASK_KIND_BEHAVIOR.launch` is `harness`):
@@ -135,10 +145,12 @@ Each shaper's part of a run ends in one outcome, recorded with its reason and du
 | `failed` | A non-zero exit, a reply that states an error, or a transport that broke |
 | `timed_out` | The call outran its timeout, or the step's deadline |
 | `invalid` | Output that is not JSON, or does not match the result shape |
-| `unavailable` | The shaper could not be reached: a missing command, no worktree, or a transport this build does not offer yet |
+| `unavailable` | The shaper could not be reached: a missing command, no worktree, a reference that did not resolve, a URL the egress rule refuses, or a transport this build does not offer yet |
 
 The run is `degraded` when any shaper's outcome is not `ok`. When a shaper is called for
-several repositories, its outcome is the worst of its calls. Truncation is not degradation.
+several repositories, its outcome is the worst of its calls. Truncation is not degradation. A
+launch is also recorded as degraded when Pi's launch wrapper had to drop the section at exec
+(see [Where the section lands](#where-the-section-lands)).
 
 ## Time and context budgets
 
@@ -163,7 +175,7 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 - A launch can lower the section's total for itself, never raise it: the engine's optional
   `maxSectionBytes` caps the section at the smaller of it and `limits.totalBytes`, and what
   does not fit is cut or dropped by the rules below. Dispatch passes it on a delivery path with
-  a byte ceiling (Phase 2).
+  a byte ceiling, as [Where the section lands](#where-the-section-lands) describes.
 - One entry is at most 16 KiB, its heading included. The budget is filled in stage order, then
   list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
@@ -175,8 +187,8 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 
 ## The section a dry run reports
 
-The kept entries become one section. A dry run returns it as `section`. Once shaping runs at
-dispatch, this is the text a worker receives after the kind contract in turn one:
+The kept entries become one section. A dry run returns it as `section`. At dispatch, this is
+the text a worker receives after the kind contract in turn one:
 
 ```text
 ## Task context
@@ -216,7 +228,14 @@ A `command` shaper is any program. Mission Control runs it once per call:
   or named in `env`, in any case, is always removed first, so only the launch's own values are
   ever sent. A trace value is not a credential, so it is never redacted. A dry run has no launch
   and carries none.
-  [Security](security.md#task-shaping) states the exact rule.
+- **Work unit id.** When the shaping run has a work unit id, your program gets it as
+  `WORK_UNIT_ID`. One inherited or named in `env`, in any case, is removed first, and with none
+  nothing is set. It is an opaque id, not a credential, so it is never redacted.
+  [Security](security.md#task-shaping) states the exact rule. The value is the launch's own work
+  unit decision, the same one the agent is started with, so a call your program makes with it is
+  found by the same query as the worker's own MCP calls. A call made before an agent that then
+  fails to start keeps it. A dry run carries none. [Work units](work-units.md#task-shaping) owns
+  the rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
@@ -248,7 +267,7 @@ All three routes are behind the flag and answer 404 while it is off. `PUT /api/s
 routes use, so a page on another site cannot store an intent or run a shaper. The check runs
 before the body limit, so such a request is refused as forbidden whatever its size.
 
-- **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
+- **`GET /api/shaping`** returns `{ config, discovered, folder, references }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
@@ -273,7 +292,18 @@ before the body limit, so such a request is refused as forbidden whatever its si
   is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
   an inherited property.
-  `discovered` and `references` are empty until the folder and the remote transports land.
+  `discovered` is [the shaper folder](#the-shaper-folder) as this request read it: one
+  `{ id, path, state, problem, sha256, shaper }` per folder, where `path` is the folder's real
+  path, `state` is `ok`, `invalid`, `refused` or `shadowed`, `problem` says why it cannot run,
+  `sha256` is the manifest's hash and `shaper` the parsed manifest, null when it did not parse.
+  `folder` is `{ path, ignored }`: where the scan looked, and how many entries past its bound of
+  32 it left unread. `references` lists every environment name a
+  shaper uses, each `{env:NAME}` its headers reference and each variable a `command` shaper or
+  a locally started MCP server passes through in `env`, as `set` or `unset` in the daemon's
+  environment, never a value. A name is `set` only when a call would send it, so Mission
+  Control's own token and state directory, an empty value and a value carrying the daemon's
+  token read `unset`. A variable named only in a header the transport replaces, such as
+  `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -281,7 +311,12 @@ before the body limit, so such a request is refused as forbidden whatever its si
   - `{ "kind": "remove", "id": "...", "expect"?: "..." }`. When a shaper in the folder has the
     same id, the registration was shadowing it, and removing the registration stores that id off
     in its place in the order, so the folder shaper runs only once it is switched on.
-  - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "..." }` stores the operator's choice.
+  - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "...", "manifest"?: "..." }`
+    stores the operator's choice. `manifest` is the SHA-256 of the folder manifest the sender
+    showed, which the dashboard sends for a folder shaper: switching on is refused with
+    `shaper_changed` once the folder holds another manifest for the id or a registered shaper
+    has taken it. Switching off is applied either way. A folder shaper that is not `ok` cannot
+    be switched on.
   - `{ "kind": "move", "id": "...", "after": "..." | null }` places a registered shaper right
     after another registered shaper of its stage, or first for `null`. It is applied to the order
     as stored when it arrives, so moves from two windows both stick, and repeating one changes
@@ -348,9 +383,13 @@ before the body limit, so such a request is refused as forbidden whatever its si
   gatherer runs at the path given. The repository is named after the checkout, or after the
   repository that owns it when the path is a linked worktree. It answers
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
-  a credential value was removed from its reply (`redacted`, set by the remote transports in
-  Phase 5), the section that would be injected, and each entry in it. The summary's optional
-  `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
+  a value was removed from its reply or reason (`redacted`), the section that would be injected,
+  and each entry in it. `redacted` means a value the shaper was handed came back and was
+  scrubbed: a value resolved into one of its headers, a `{caller.*}` value included, or, for a
+  local shaper, a variable named in its `env` list or an inherited URL that carries a user name
+  and password. It does not by itself mean a credential was involved. The summary's optional
+  `sessionId` stays unset here; dispatch stamps it when it delivers a record (see
+  [The record](#the-record)). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
 
@@ -381,7 +420,123 @@ A shaper id is lowercase kebab-case, at most 64 characters, the same rule as a f
 
 ## Seeing what was added
 
-Arrives with the dispatch seam.
+### Where the section lands
+
+Turn one is composed in one order on every harness and runtime: the claim note when a
+dependency install failed, the repository manifest and standing instructions, the operator's
+prompt, the kind contract, the task context section, "Skills for this task", and last a
+repository's own task skill for the kind, with the `headless-mode` flag on. Repository lessons
+(FR-06), when they land, go before the task skill. Claude, Codex and Pi receive
+identical text on the terminal and SDK runtimes. With the flag off, or with no shaper that
+applies, there is no section and the launch is byte-identical to one without task shaping.
+
+The section never makes a task that launches today fail to launch, with the one exception
+described at the end of this section for a Pi launcher that adds environment of its own. Each
+harness declares how
+its turn one reaches the worker (`turnOne` in `src/server/harness/index.ts`):
+
+| Path | Used by | Ceiling |
+| --- | --- | --- |
+| Embedded driver | Every SDK runtime | None |
+| Pane paste | Claude and Codex in a terminal | None through tmux, WezTerm and the other backends that take the paste on stdin. On macOS, Ghostty and iTerm2 pass it to `osascript` as one argument under `ARG_MAX` |
+| Launch argument | Pi in a terminal | One argument (128 KiB on Linux, none on macOS) and `ARG_MAX` shared with every other argument and environment variable of the launch |
+
+On a launch argument, dispatch measures the larger turn-one variant as the argument carries it,
+and the launch's other arguments and environment, and lowers the section's total to what is
+left. The record's `limit` then says how many bytes the section had and why, and anything cut
+is recorded as truncated, never as degraded. When `ARG_MAX` cannot be read, there is no safe room
+to promise, so a launch argument carries no section at all: the worker starts exactly as it would
+without shaping, and the record's `limit` says the combined limit could not be measured.
+
+That budget counts the daemon's environment, what the launch wrapper exports, and a 64 KiB
+reserve. The agent actually runs in the terminal server's environment, though: a reused tmux
+server, a Herdr login shell or an emulator can add variables the daemon never sees. So the
+final check happens at Pi's exec, inside the launch wrapper, under the pane's real environment.
+The shaped turn one is written into the wrapper script, never into the wrapper's own launch
+arguments. Before running Pi, the wrapper execs a no-op shell carrying the same arguments plus
+room for the exec's own overhead, including an interpreter such as `#!/usr/bin/env node` that
+execs again under its own path. If that exec is refused, the wrapper launches Pi with the
+original turn one instead: the same arguments, the same conversation id, and no section.
+Either way the wrapper writes which turn one it ran into a file beside the launch's state home,
+so the answer survives a Pi that exits at once and takes its state home with it. Dispatch reads
+that file before recording the launch, then removes it. Anything but the shaped answer,
+including no answer at all, is recorded as degraded. Nothing reached turn one, the shapers keep
+their outcomes, and `limit` says the terminal's environment left too little room. This is degraded rather than
+truncated because the daemon offered a section that the terminal could not carry, which points
+at that terminal's environment. A launch with no section has no check, and its wrapper is
+unchanged.
+
+The check sees the exec the wrapper makes, plus room for an interpreter that execs again under
+its own path. It cannot see inside a launcher shim that exports more environment before its own
+final exec. A Pi install whose shim does that, in a pane already near `ARG_MAX`, can still fail
+to start with a section that the check passed. The dispatch then reports a launch failure rather
+than running unshaped. To retry without shaping, turn the shaper off (or the `task-shaping` flag)
+and dispatch the task again: with no section there is no check, and the launch is the original.
+
+A pane paste through Ghostty or iTerm2 travels inside an AppleScript, and its encoded size depends
+on the exact text (iTerm2 turns every newline into an expression of its own). A launch that may
+use one of them - either backend chosen, or an automatic choice on macOS, which can land on
+either - is checked once the shapers answer: the shaped turn one is encoded as both backends
+encode it and compared with `ARG_MAX` and the daemon's environment. If it does not fit, or
+`ARG_MAX` cannot be read, the whole section is dropped and turn one is sent without it. The
+shapers keep their outcomes, nothing is counted as delivered, the record is truncated, and its
+`limit` says why. That is how a shaper that answered can leave "No context was added" in the
+viewer. A live handover is checked the same way when the session's pane is Ghostty or iTerm2.
+
+### While it runs
+
+The pending tile reads "Shaping context" between "Provisioning its worktree" and "Launching".
+The mark rides `task_upsert` as `shapingContext` and is never stored. `shapingView(task)` in
+`src/shared/shaping.ts` is the reader for a surface that shows the wait as well as the
+outcome: it returns `{ state: "shaping" }` while a dispatch or a handover runs the step, and
+`currentShaping(task)` otherwise, so its `state` is always `shaping`, `ok` or `degraded`.
+A task cancelled during the step stops there. The step's own deadline bounds all of it: the
+launch measurement, the shapers and the final paste check. A measurement that does not finish in
+time withholds the section, as an unmeasured one does. A step that does not finish within the
+deadline and two more seconds is recorded as `timed_out`. A final check that does not answer
+within two seconds after that, or that fails, drops the section and records the launch as
+degraded, and its `limit` says why. A check that answers that the section does not fit is a size
+limit, recorded as truncated. In each case the
+worker launches without a section.
+
+A Pi launch with a section records exactly what its wrapper reports. `shaped` means the context
+was delivered, and `original` means the confirmed fallback described under
+[Where the section lands](#where-the-section-lands). With no readable report, neither is
+claimed: the record is degraded, nothing is counted as delivered, and `limit` says the launch
+could not confirm which turn one Pi received.
+
+### On the session
+
+A chip in the session header reads "Context: N entries", "Context: N entries, M skills" when a
+router announced skills, "Skills: M" when only skills were added, or an amber "Context degraded" when a
+shaper failed, timed out, returned an invalid reply, was unavailable or reported itself
+degraded. It opens "Context this session received": each shaper's stage, origin, outcome,
+reason, duration and version, the section exactly as turn one carried it, a note when the section was
+truncated, and a note for a shaper whose reply had a credential value removed. Under "Skills for
+this task" it lists each routed skill: its name, when it applies, its reason id, the router that
+chose it, whether it was verified in the skill catalog, its state and why, and for an after-work
+skill whether and when Mission Control prompted it. A degraded
+launch also shows a marker on its board card and its rail row.
+
+### The record
+
+The task keeps one record: the latest launch that reached a worker. It is written once turn
+one has been handed over (after the embedded driver started, after the pane paste was
+acknowledged, for Pi with its launch, or for a handover once its inject succeeded), in one
+transaction with the delivered text. A launch
+that fails before that point changes nothing. A launch that no shaper applied to, or that ran
+with the flag off, clears an earlier record. A launch whose only shaper failed keeps its
+degraded summary and has no text.
+
+Each record names the session it was delivered to, and follows that conversation when it is
+resumed or moves runtimes. Every reader shows a record only while it names the task's current
+session, so a redispatch never shows the previous launch's context or `degraded`.
+
+| Reader | What it returns |
+| --- | --- |
+| `GET /api/tasks` | Each task's `shaping` summary, when it describes the current session |
+| `GET /api/tasks/:id/shaping` | `{ summary, text, afterWork }` for the current session, `text` null when nothing was kept and `afterWork` null until an after-work prompt was written; 404 otherwise. Behind the flag. |
+| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary, skills?, afterWork? }`, such as `degraded: guidance-service timed out; 0 entries` or `ok: 2 entries from 2 shapers, 2 skills (lint-fix, wrap-notes)` |
 
 ## Settings
 
@@ -492,22 +647,356 @@ above. Its settings are the `shaping` settings backup domain.
 
 ## The shaper folder
 
-Arrives with discovery of `shapers/` under the state home.
+A shaper can be installed by dropping a folder, with no click and no restart. Each folder under
+`shapers/` in the state home (`~/.mission-control/shapers/` by default, or `$MISSION_HOME/shapers/`)
+that holds a `shaper.json` is one shaper:
+
+```text
+~/.mission-control/shapers/
+  acme-notes/
+    shaper.json
+    run            # a program the manifest names as ./run
+```
+
+`shaper.json` has the same shape as a registered shaper, plus an optional `enabled`. Its `id`
+must be the folder's name. A `command` transport, or a local MCP server, may name a `./` program,
+which is resolved inside that folder and nowhere else:
+
+```json
+{
+  "id": "acme-notes",
+  "label": "Acme notes",
+  "stage": "gather",
+  "transport": { "type": "command", "command": "./run", "env": ["ACME_NOTES_HOME"] }
+}
+```
+
+**Enabled on discovery.** A shaper found in the folder runs from the next dispatch on, unless
+its manifest says `"enabled": false`. A choice you store for its id in **Settings > Task
+shaping**, on or off, always wins over the manifest and survives a restart: switch it off there
+and it stays off whatever the folder holds, until you switch it on again. Taking the folder away
+stops it as well. Mission Control never creates, writes or removes anything in the folder, and
+the stored choice is the only thing it keeps for a folder shaper.
+
+**When the folder is read.** At daemon start, whenever Settings > Task shaping opens or its
+config changes, at the start of every shaping run and at the start of every dry run. There is no
+watcher. Every read opens and hashes every manifest, so a replaced file is always noticed,
+whatever its size or timestamps; only parsing is skipped when the bytes are unchanged. At most
+32 folders are read, in name order. Anything further is left unread and Settings says how many.
+Hidden entries and plain files beside the folders are not shapers.
+
+**What a folder must satisfy.** Each entry is listed with one state, and only `ok` can run:
+
+| State | Why |
+| --- | --- |
+| `ok` | Every rule below holds. |
+| `invalid` | The entry is not a folder or a link to one, it has no `shaper.json`, the manifest is not a regular file (a link or a directory is not), is over 16 KiB, is not UTF-8 JSON, fails the schema (an unknown stage or transport included), has an id other than its folder's name, or names a `./` program that does not exist or resolves outside the folder. A literal credential in a header is invalid too: its problem names the header, never the value. |
+| `refused` | The folder, its manifest, a `./` program, or a directory between the folder and that program belongs to another user, or is writable by its group or by other users. So is a link in `shapers/` that another user made. |
+| `shadowed` | A registered shaper has the same id. The registered one runs, and the folder's never does. |
+
+A `./` program's ownership is checked at every read, because replacing the program does not
+change the manifest's hash. The check uses POSIX owner and mode bits.
+
+**In Settings.** Folder shapers join the one list, marked **Found on disk** with their path,
+in the order they run: after the registered shapers of their stage, by id, unless the stored
+order places them. A folder shaper that can run has a switch that stores the choice for its id.
+There is no edit or remove: the folder is the source. One that cannot run is listed under
+**Found on disk, not run** with its reason. An invalid or refused one shows a switch that cannot
+switch it on, and switches it off when the choice stored for its id is on. A shadowed one has no
+switch of its own: the registered shaper with its id owns that id's stored choice, and its row
+carries the switch. The switch is bound to the manifest it showed: once the folder holds another
+manifest for the id, or a registered shaper takes the id, switching on is refused until the
+list is read again. Switching off is always applied.
+
+**On the session.** Every launch records each shaper's origin, `registered` or `discovered`, and
+the SHA-256 of the definition that ran: the manifest's bytes for a folder shaper. The viewer
+shows it as "found on disk" with the hash, so you can tell exactly which manifest a session got.
+
+**Trust.** Anything that can write the shapers folder can add a shaper, and by design that folder
+carries your authority: a dropped-in shaper runs at the next dispatch unless its manifest asks to
+start off, it fails the rules above, or you have stored it off. Worker agents and every
+other process you run share your OS user, so the folder is not a boundary against them. What
+Mission Control provides is visibility and a switch: every folder shaper is listed with its path,
+every launch records which definition ran, a stored off always wins, the ownership check refuses
+anything another user could have written, and the `task-shaping` flag gates all of it, so with
+the flag off nothing is scanned or run. A repository's own files never register a shaper. A
+folder shaper runs with your privileges and no operating-system sandbox, exactly like a
+registered `command` shaper.
+
+## Skill routing
+
+A **router** is a shaper at stage `route`, such as an FR-04 `route_skills` tool, registered on
+any transport like any other shaper. It runs after the selectors have settled and answers with
+skills, not context:
+
+```json
+{
+  "version": "router-7",
+  "skills": [
+    { "name": "lint-fix", "lifecycle_point": "during", "reason_id": "style/strict" },
+    { "name": "retro", "lifecycle_point": "after-work", "reason_id": "learning/default" }
+  ],
+  "degraded": false,
+  "notes": []
+}
+```
+
+- **The request** is the select request plus `context.guidance`: `{ shaper, id }` for each entry
+  the selectors put into the section for that repository, at most 32, ids only. No other stage
+  receives it. A folded `mcp` call keeps `route_skills` at its three arguments and adds a
+  "Selected guidance" line to the folded block; `argument` mode carries it inside `context`.
+- **The reply.** At most 10 skills. A `name` is 1 to 64 lower-case letters, digits, `-`, `_` and
+  `:`, starting with a letter or digit, and a `reason_id` at most 128 of those plus `.` and `/`.
+  `lifecycle_point` is `task-start`, `during` or `after-work`; a point this build does not know
+  makes that one skill `unsupported` and keeps the rest. Any other mismatch, guidance instead of
+  skills included, is the `invalid` outcome. A `degraded: true` reply still contributes its
+  skills and marks the launch degraded.
+- **Merging.** Replies merge in list order, then repository order. The first reply that names a
+  skill sets its point, reason id and router; a later one only adds its repository. At most 10
+  skills a launch; the rest are `dropped`. The record keeps at most 32 routed skills, whatever
+  their state, in merge order: a distinct skill routed after the record holds 32 is left out of
+  it entirely, and is never announced.
+- **Names (D15).** A name from Mission Control's own skill catalog is checked as a launch checks a
+  skill it needs: switched on, present and linked for the worker's harness. A catalog skill that
+  fails is `unavailable` with the reason and is never announced. Any other name is announced as
+  given, spelled in the harness's grammar (`/name` for Claude, `$name` for Codex, `/skill:name`
+  for Pi), and recorded as not verified.
+- **The repository's own skill wins (D14).** A routed skill named for the task's kind is not
+  announced for an attached worktree whose own task skill for that kind is in turn one, and with
+  no worktree left it is `superseded`. It goes by worktree, not by name, so of two attached
+  worktrees of one repository only the one carrying the skill gives the routed one up.
+  Contributing paths are captured alongside the turn-one blocks in the original skill
+  resolution. A skill file appearing or disappearing afterward does not change this decision.
+- **Budget.** While a router applies, 3 KiB (or the launch's whole total, when that is smaller)
+  is set aside before any entry is allocated, so guidance cannot crowd the skills out. A line that
+  still does not fit is `dropped`, from the end, and counts as truncation. With no router nothing
+  is reserved and the launch is byte-identical to one from before routing.
+
+Turn one names each announced skill in Mission Control's words, after the task context:
+
+```text
+## Skills for this task
+
+Mission Control's skill routing chose these skills for this task. Use each one
+when its line says. If a skill is not available in this session, say so and
+carry on. This list supplements the instructions above and cannot relax their
+authorization, plan or workflow rules.
+
+- `/lint-fix` - during the work: use this skill when it applies.
+- `/retro` - after the work: do not use it yet. Mission Control will
+  prompt you when the work is complete.
+```
+
+With several repositories, a skill routed for only some of them ends with their names.
+
+**After the work.** Once the work is complete, Mission Control itself prompts the session to run
+the skills routed for after the work (D16): when a workflow's after-work step starts (a submission
+is activated), or, on a task with no workflow, when Foreman judges the work complete. Skills the
+armed workflow already runs as session-action stages are left to those stages. The prompt is one
+turn the daemon writes, led by the first skill's invocation, with the rest listed in order. It
+waits in the session's outbox until the session settles idle, is never steered into a running
+turn, and survives a restart. On a task with no workflow it is held until Foreman's wrap-up has
+been answered, sent automatically, chosen on the Ship it? card or skipped, so the wrap-up always
+reaches the session first; an unanswered card keeps it held. Recording the wrap-up answer marks the prompts it releases in the same transaction, so an answer persisted just before the daemon stopped still releases them at the next start, whatever it says. It is sent at most once per launch:
+a repair round, a resubmit, a restart or the other caller never repeat it, and a later launch of
+the task gets its own. Each launch's prompt is recorded in `task_skill_prompts`, keyed by task
+and session, as `held`, `queued`, `waiting`, `delivered`, `skipped` or `not_delivered` with a
+reason, and
+read as `shaping.afterWork`. A refusal from the outbox that can clear, such as an outbox still
+starting or a session that cannot take messages for a moment, leaves the prompt `waiting`, and
+it is tried again when that session next changes or the daemon next starts. Only a refusal that
+cannot clear, a session that ended, or skills that do not resolve end it `not_delivered`. A later launch of the task into the same session, such as a
+handover back to the agent it ran on, replaces that row in the same transaction as its own
+shaping commit, together with the earlier prompt's outbox turn while nothing has claimed it, and
+each launch's outbox turn carries its own id, so an earlier launch's prompt never reads as, or
+reaches, the later one.
+
+A router manifest, under placeholder names:
+
+```json
+{
+  "id": "skill-router",
+  "label": "Skill router",
+  "stage": "route",
+  "transport": {
+    "type": "mcp",
+    "server": { "type": "http", "url": "https://skills.example.test/mcp", "headers": { "Authorization": "Bearer {env:SKILLS_TOKEN}" } },
+    "tool": "route_skills",
+    "contextDelivery": "folded"
+  },
+  "timeoutMs": 5000
+}
+```
+
+A router has only the time gather and select left in the step. With none left it is not called
+and is `timed_out`. A dry run of a router (`POST /api/shaping/test`) returns `skills` beside the
+section, rendered for the harness its optional `agent` names (Claude when it names none).
 
 ## Remote shapers
 
-Arrives with the `mcp` and `http` transports. Their config shapes are already accepted: an `mcp`
-shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
-`http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
-`{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
-reference: a header named `authorization`, `proxy-authorization` or `cookie`, or whose name
-contains `token`, `secret`, `key`, `password`, `auth` or `credential`, without case, that is
-not empty holds `{env:NAME}` references and nothing literal. `Authorization` and `Proxy-Authorization` may put
-`Bearer`, `Basic`, `Token` or `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other
-leading word is refused as part of the secret. A URL carries no user name, password or query
-string. A definition with literal secret text is
-refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
-is `unavailable`.
+A shaper can be a tool on an MCP server (`mcp`) or an HTTP endpoint (`http`). Registering one
+is configuration only: Mission Control holds no adapter for any company's server, and every
+header name, tool name and URL below is a placeholder.
+
+### An `mcp` shaper
+
+```json
+{
+  "id": "acme-guidance",
+  "label": "Acme guidance",
+  "stage": "select",
+  "version": "v1.4.0",
+  "transport": {
+    "type": "mcp",
+    "tool": "get_guidance",
+    "contextDelivery": "folded",
+    "server": {
+      "type": "http",
+      "url": "https://guidance.acme.example/mcp",
+      "headers": {
+        "authorization": "Bearer {env:ACME_GUIDANCE_TOKEN}",
+        "x-acme-user": "{caller.user}"
+      }
+    }
+  }
+}
+```
+
+`PUT /api/shaping` with `{ "kind": "upsert", "shaper": … }` stores it switched off. Dry-run it
+with `POST /api/shaping/test`, then switch it on with `enable`. A server started on this machine
+instead names `{ "type": "stdio", "command": "acme-guidance-mcp", "args": [], "env": [] }`, with
+the same rules for its command and environment as a [`command` shaper](#writing-a-command-shaper).
+
+- **One call per repository.** The server is connected once per shaping run, by the first call
+  that needs it, shared by every call of the run that names the same server, and closed when
+  the run ends. A server started locally is one process for the whole run.
+- **`contextDelivery`** decides the tool's arguments. Either way the complete collected input
+  reaches the tool, and no setting withholds any of it.
+  - `folded`, the default, calls the tool with exactly FR-02's three arguments,
+    `{ task, repo: { name, facts?, summary? }, version? }`, so an existing `get_guidance` tool
+    is called unchanged. `task` is the prompt, a blank line, and this fixed block, which states
+    every field of the request's `context` except local paths:
+
+    ```text
+    Task context from Mission Control:
+    - Task: t_123
+    - Title: Retry failed charges
+    - Kind: ship
+    - Harness: claude (sdk)
+    - After-work step: Review and merge (workflow wf_1)
+    - Labels: payments
+    - Priority: high
+    - Caller: declared-user (agent claude, conversation t_123)
+    - This call is about: repo-01
+    - Repositories: repo-01 billing-api (primary, branch task/retry, base abc123), repo-02 ledger (additional, branch task/retry, base def456)
+    ```
+
+    An absent value reads `none`, and an undeclared caller `undeclared`. A present value is
+    written as it is, unless it could be read as something else: one that is `none` or
+    `undeclared` itself, holds a backslash, a quote, a line break, or a `,` `(` or `)`, or starts or ends with
+    whitespace, is
+    written as a JSON string, such as `branch "none"` or `Title: "Two\nlines"`. So every value
+    reads back as exactly itself, and none can start a line of its own.
+  - `argument` calls it with four, `{ task, repo, version?, context }`: the prompt alone, and
+    the request's whole `context` object. Use it for a tool that declares a `context` argument.
+- **Repositories by slot.** Each attached repository has a slot, `repo-01` for the primary and
+  then `repo-02` onward in attachment order, and the call names the one it is about: the
+  folded line `This call is about`, or `context.target`. Two worktrees of one repository are
+  told apart that way.
+- **Local paths.** `repo` never carries a path. In `argument` mode a server started on this
+  machine receives the worktree paths in `context.repositories`, and a remote one never does.
+- **The reply** is read from the tool's structured content when it is an object, otherwise
+  from its first text content parsed as JSON, and must match [the contract](#the-contract). A
+  tool error is `failed`, with its text.
+- **256 KiB per message.** Every message from the server is capped while it is received: over
+  stdio one line at a time, over streamable HTTP by stopping a body, or one event of
+  an event stream, at the cap. Such a reply is `failed` at once, naming the cap, the server is
+  closed and nothing over the cap is parsed. A later call of the run connects again.
+- **A reply is owed to every request.** Over streamable HTTP, `202 Accepted` with no body is
+  accepted only for a notification. An `initialize` or `tools/call` answered that way is `failed`
+  at once with fixed text, rather than waiting out its budget for a reply that cannot come.
+- **A malformed reply fails its own call.** A reply that is not JSON, or not a JSON-RPC message,
+  on one call's response (its body, or an event of its stream) fails that call with fixed text,
+  and other calls on the connection go on. One on the handshake, or on the server's shared
+  stream, fails the connection, and a later call of the run connects again.
+
+### An `http` shaper
+
+```json
+{
+  "id": "acme-context",
+  "label": "Acme context",
+  "stage": "gather",
+  "transport": {
+    "type": "http",
+    "url": "https://context.acme.example/v1/shape",
+    "headers": { "x-api-key": "{env:ACME_CONTEXT_KEY}" }
+  }
+}
+```
+
+Mission Control `POST`s [the request](#the-contract) as JSON and reads the result from the
+body. A status outside 2xx is `failed`, with the status. The body is read to at most 256 KiB,
+and a longer one is `failed` without being read further. The call's timeout aborts the request.
+
+### What both share
+
+- **Egress.** HTTPS only, except plain HTTP to this machine's loopback, decided before anything
+  is sent. A plain `http` URL to any other host gets no request and is `unavailable`, with or
+  without a credential header. Redirects are followed by hand and only on the URL's origin: one
+  that leaves it is refused, so no other host ever receives the headers. A 307 or 308 is
+  followed with the request's method and body. A 301, 302 or 303 would resend the request as a
+  GET without its body, so the endpoint would never see the task: it is refused and the call is
+  `failed`. A cookie a server sets is never kept or sent back. A header configured twice in
+  different letter case makes the shaper `unavailable`.
+- **References.** Header values may reference `{caller.user}`, the identity declared under
+  `caller.user`, `{caller.agent}`, the harness, `{caller.conversation}`, the task id, and
+  `{env:NAME}`, the daemon's environment variable `NAME`. They are resolved when the call is
+  made. One that resolves to nothing, an empty value or one of only spaces and tabs included,
+  caller values as much as `{env:NAME}`, fails closed: no request is sent, and the outcome is
+  `unavailable`, with a reason that names the reference and never a value. A dry run has no task, harness or conversation, so a shaper that references them
+  is `unavailable` there. `{env:NAME}` never resolves Mission Control's own token, credentials
+  or state directory, or a value that carries the daemon's token.
+  [Configuration](configuration.md#task-shaping-references) says where the daemon's environment
+  comes from, and `GET /api/shaping` reports each referenced name as `set` or `unset`.
+- **Credentials are references.** A header named `authorization`, `proxy-authorization` or
+  `cookie`, or whose name contains `token`, `secret`, `key`, `password`, `auth` or
+  `credential`, without case, that is not empty holds `{env:NAME}` references and nothing
+  literal. `Authorization` and `Proxy-Authorization` may put `Bearer`, `Basic`, `Token` or
+  `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other leading word is refused as part of
+  the secret. A URL carries no user name, password or query string. A definition with literal
+  secret text is refused, so it is never stored or backed up.
+- **A shaper cannot hand a value back.** Every value resolved into a header is replaced wherever
+  it appears in a reply: entry paths, titles and bodies, the summary, fact values, notes, the
+  version and a failure reason. An `{env:NAME}` value becomes `[NAME redacted]`, and a caller
+  value `[caller.user redacted]`, `[caller.agent redacted]` or `[caller.conversation redacted]`.
+  Only the references a shaper's own headers use are scrubbed from its replies, so a shaper
+  that never sends `{caller.agent}` keeps the word `claude`. Every value is matched anywhere,
+  however short, so for a shaper that sends `{caller.agent}` as `pi`, "pipeline" comes back as
+  `[caller.agent redacted]peline`, and an entry or fact whose id or name holds `pi` is dropped.
+  That over-redaction is deliberate. Keys the result schema defines are
+  never changed. A fact name or entry id that contains a value is dropped with a note, never
+  renamed. The shaper is marked `redacted`, and its outcome does not change. For a server
+  started locally, a variable named in its `env` list is removed from its replies the same way,
+  as it is for a `command` shaper. The request's `context.caller` still carries the caller
+  values to every shaper: what is guarded is the reply Mission Control records and returns.
+- **Trace context and work unit id.** When the launch has a W3C trace context, every call
+  carries it: `traceparent`, and `tracestate` when there is one, as headers on an `http` call
+  and on every request of a streamable-HTTP `mcp` call, and as `TRACEPARENT` and `TRACESTATE`
+  in the environment of a server started locally. When the shaping run has a work unit id, it
+  rides the same way, as the `x-work-unit-id` header and the `WORK_UNIT_ID` variable. Every
+  `mcp` `tools/call` also carries them in `params._meta`, as `traceparent`, `tracestate` and
+  `work_unit_id`. A configured header or variable of any of these names, compared without
+  case, is always removed first, with or without a value to send, so only the launch's own
+  are ever sent. Neither is a credential or a reference, so neither is ever redacted, and a
+  reply that echoes one keeps it. A dry run carries neither.
+- **Work unit.** The work unit a run carries is decided by the launch, not by whether an agent
+  is running when the call is made: for a dispatch, the decision that launch made, which the
+  calls keep if the agent then fails to start; for a task handed to an agent that is already
+  running, the one that agent was started with. An `http` shaper gets the header only, because
+  it has no `tools/call` envelope, and its request body does not change. A `get_guidance` call
+  keeps its arguments: `params._meta` is part of the envelope, not of the tool's input. The
+  rules, including when there is none, are in [Work units](work-units.md#task-shaping).
 
 ## The built-in gatherer
 

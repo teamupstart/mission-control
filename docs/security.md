@@ -284,6 +284,20 @@ Like every review, the answer arrives on the dashboard's loopback route. That is
 single-user local trust boundary described above: it keeps Mission Control's own agents and
 delegated sessions from approving a change, not arbitrary shell code running as the operator.
 
+## Agent reports
+
+An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
+session; it never names another session. Taking a report out of **to read** is the operator's:
+`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply` and
+`POST /api/reports/:id/follow-up` refuse the machine token, a signed agent credential, and a
+request attributed to an agent or to Foreman. That is the same single-user local trust boundary
+that review answers rely on. It keeps Mission Control's own agents, Foreman and delegated sessions
+from marking a report read, from sending a message in the operator's name, and from filing and
+dispatching a follow-up task; it does not verify that a header-less loopback
+request came from the dashboard, so shell code running as the operator can still call these
+routes. An attached document is accepted only from inside the posting session's checkout, using
+the same containment rules as the Files viewer.
+
 ## Resident MCP secrets
 
 A custom MCP server's secret values - environment variables and headers marked **Secret**, and
@@ -462,7 +476,19 @@ password are removed from diagnostics and content alike, under the variable's na
 legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
-whole and a non-ASCII value still matches exactly when it is redacted.
+whole and a non-ASCII value still matches exactly when it is redacted. It is kept with a margin
+as long as the longest spelling the scrub can decode of any value it received: an inherited
+value's own length, and 216 characters for each character of a named value: six for a JSON
+`\u` escape, multiplied at each of the three levels of nested JSON text the scrub decodes. The
+margin is capped at 1,048,576 characters; a stderr cut while its margin is held at
+the cap is not quoted at all, as one is not when a named value has inner whitespace. Once the
+front is cut, the margin is dropped in the original text's positions,
+with every spelling of each named value already found there: a value cut at the front, as
+written or escaped, falls inside it, and a spelling that runs across it is removed whole, so
+neither leaves a fragment in a reason. Every kind of match, an inherited value, a named value as
+written and any spelling of one, is found on the original text in one pass, and overlapping
+matches merge before anything is replaced: removing an inherited value never breaks up a
+spelling of a named value that runs across it.
 
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
 started outside its process group cannot keep them open after the group is killed. It also
@@ -540,18 +566,145 @@ with line breaks in it is recognised as well.
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and
 base commits, the declared caller identity, and the facts and summary a gatherer produced. Local
 worktree paths go only to local shapers (`command`, `builtin`, and an `mcp` server started as a
-local process). A remote shaper never receives a local path.
+local process). A remote shaper never receives a local path. When the launch has a trace
+context or the shaping run a work unit id, every shaper also receives those.
 
 **What comes back is untrusted.** A shaper's text is validated against one result shape, capped
 per entry, per shaper and in total, and placed in its own labelled section, which states that it
 cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
 or returns something else is recorded as an outcome, never an error reply.
 
-This build only dry-runs shapers through the API: no worker receives their text yet. Calling
-them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The `mcp` and `http` transports and the shapers folder are declared but not yet
-reachable: each answers `unavailable` until its phase lands, and its egress and folder
-ownership rules are documented with it.
+Every dispatch calls the enabled shapers after its worktrees are provisioned and before the
+worker starts, and the section is appended to the worker's first prompt after the kind
+contract. Nothing a shaper does can stop the launch: a shaper that fails, times out or answers
+something else is recorded as `degraded` and the worker starts without its text, and the
+section is cut to what the delivery path can carry, so it never makes a launch that works today
+fail. What each session received is recorded on the task and shown only for that session.
+
+**A routed skill is a name, never text.** A router supplies only a skill name and a reason id,
+both held to strict character sets, and Mission Control writes every word around them. A name
+from Mission Control's catalog is checked before it is announced, and a catalog skill the
+operator switched off never is. Any other name is announced as given and marked not verified,
+because a skill installed some other way is not inventoried. A router can therefore point the
+worker at any skill installed for its harness; the record and the viewer show each routed skill
+and who routed it, up to 32 a launch. A distinct skill routed past that limit is left out of the
+record and is never announced, so nothing reaches turn one that the record does not show. The after-work prompt Mission Control sends is its own text, delivered only
+when the session is idle, once per launch, and recorded as daemon-written, never as the
+operator's words. A name or reason id that holds a resolved credential value is dropped, never
+rewritten.
+
+**The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
+the state home can run at the next dispatch without a click, so anything that can write that
+folder can add one, worker agents included. The ownership checks, what Mission Control shows
+and records, and the full trust statement are in
+[the shaper folder](task-shaping.md#the-shaper-folder).
+
+**Remote shapers.** An `mcp` shaper reached over streamable HTTP and an `http` shaper send the
+request off the machine, so they follow the egress rule resident MCP servers follow, through
+the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
+
+- **HTTPS only, except plain HTTP to loopback.** It is decided from the configured URL before
+  anything is sent, whether or not the shaper has a credential header. A plain `http` URL to
+  any other host gets no request at all and answers `unavailable`. A credential header may
+  therefore travel over plain HTTP only to `localhost`, `127.0.0.0/8` or `::1`, where the
+  request never leaves the machine.
+- **Redirects stay on the origin.** They are followed by hand, at most five, with the headers
+  reattached on each hop. A redirect to another origin is refused before any request reaches
+  it, so no other host ever receives the headers. A redirect that would resend a shaping
+  request as a GET without its body (a 301, 302 or 303) is refused rather than followed. There
+  is no cookie jar: a cookie a server sets is never kept or sent back.
+- **Bounded replies.** An `http` body is read to at most 256 KiB, and every MCP message, over
+  stdio or streamable HTTP, is capped at 256 KiB while it is received. Reading stops at the byte
+  that passes the cap, the request is aborted or the server closed, and the call is `failed` at
+  once. Nothing over the cap is parsed. A successful event stream is counted per event, every
+  byte on the wire including both bytes of each CRLF, up to and including the blank line that
+  ends it; any other response, an error labelled as an event stream included, is counted as a
+  whole body, because the client reads it whole. A request whose own response stream ends
+  before its reply fails that call at once and leaves the shared connection, and its other
+  calls, alone, unless the stream carried a non-empty event id: the server may close such a
+  stream before replying, as MCP allows, and the client resumes it from that id, at most twice
+  and within the call's own budget. A resumed stream is watched for that call too: one that ends
+  with neither the reply nor a new event id to resume from, a resume the server answers 405, and
+  the client giving up its attempts each fail the call at once rather than at its deadline. A
+  stream resumed for the handshake's `initialize` is watched the same way, and failing it fails
+  the handshake at once. A
+  call's own requests, its `tools/call` and any resumed stream for it, are aborted when the call
+  settles, so one that timed out releases its stream at once and the others on the connection
+  go on. A
+  shared connection's handshake is bounded by the longest
+  step, not by whichever call opened it, and each call waits on it only for its own budget.
+- **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
+  `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is
+  this machine's loopback over http. A cross-site page can send a `text/plain` POST with no
+  preflight and the real loopback `Host`, which is all the daemon-wide guard checks, so without
+  this it could start a dry run, and with it a remote shaper call carrying your credentials,
+  with a prompt of its choosing.
+- **Secrets are references, resolved at call time.** A header's `{env:NAME}` is read from the
+  daemon's environment when the call is made, held only in that call's memory, and never
+  logged, stored or returned. It never resolves Mission Control's own token, credentials or
+  state directory, or a value that carries the daemon's token. A reference that resolves to
+  nothing sends no request. Every value resolved into a header, `{env:NAME}` and `{caller.*}`
+  alike, is replaced with `[NAME redacted]` (or `[caller.user redacted]` and so on) in whatever
+  comes back, data and failure reasons alike, before the engine sees it, and the shaper is
+  marked `redacted`. So no resolved header value reaches a dry-run reply, a recorded reason or
+  the daemon's log. Every value is matched anywhere it appears, whatever its length, a caller
+  value as much as a credential. That over-redacts on purpose: for a shaper whose headers send
+  `{caller.agent}` as `pi`, "pipeline" in its reply becomes `[caller.agent redacted]peline`, an
+  entry or fact whose id or name holds `pi` is dropped with a note, and the shaper is marked
+  `redacted` though no credential was involved. A shaper that does not send a caller reference
+  is not affected by it. When a variable's name itself contains a resolved value, the marker and
+  notes are neutral, so naming it cannot repeat the credential. Each value is also matched in the
+  form the server received, with leading and trailing spaces and tabs trimmed as a header is
+  sent, and in its JSON-escaped form inside a reply's text. Text quoted into a failure reason is
+  scrubbed as written, again with every JSON escape decoded, and again after whitespace is
+  collapsed, so a `\u0061` spelling or a spacing variant of a value cannot survive, and the
+  engine scrubs a shaper's notes and errors before and after collapsing them the same way. A
+  value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
+  for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
+  whitespace and would turn that spelling back into the value. Overlapping spellings, such as the
+  two `ab  ab` in `ab  ab  ab` for `ab ab`, are each found and removed together. They are found
+  by collapsing every run of whitespace to one space, with each position mapped back to the text
+  as written, and searching that for the value's words in linear time, so a value of many
+  repeated words cannot make a reply under the cap stall the daemon. A value spelled with any JSON
+  escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
+  is replaced. That holds up to three levels of JSON text nested inside JSON strings, such as a
+  serialized diagnostic inside a serialized log line, where a value is escaped once per level,
+  in a successful reply as much as in a failure reason. The depth is bounded because each level
+  costs a pass over the text and a crafted chain of escapes can peel only a few characters per
+  level, so a value escaped four or more levels deep is not found.
+- **One spelling per header.** A shaper that configures one header name twice in different
+  letter case, such as `Authorization` and `authorization`, is not called: which value is sent
+  would depend on their order, and two shapers sharing a connection could send each other's
+  credential.
+- **Trace context and work unit id.** The launch's `traceparent`, `tracestate` and the run's
+  `x-work-unit-id` are the only Mission Control values a remote shaper receives besides the
+  request and its own configured headers. A configured header of one of those names is
+  removed first, so a shaper's config cannot impersonate the launch's own.
+
+An `mcp` server started on this machine runs as you, like a `command` shaper: its command is
+resolved through the executable locator, or inside its own folder for a discovered shaper,
+spawned without a shell in an empty working directory of its own, with the same scrubbed
+environment plus only the variables its `env` names, and a value named there is removed from
+its replies and diagnostics. The SDK would add its own defaults (`HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER`) beneath that environment, so each one the scrubbed environment left out
+is passed as unset and the server receives exactly what the diagnostics are redacted against.
+Its stderr is kept and scrubbed exactly as a `command` shaper's is, with the same escape-wide
+margin, so a value cut at the front leaves no fragment in a reason. It is one
+process per shaping run, closed when the run ends, or at once after a message over the cap. A
+run that ends while its command is still being located starts no server, and a call already
+cancelled when it is made opens no connection at all, stdio or streamable HTTP, so no server is
+started and no resolved header is sent. The server runs in a process
+group of its own, as a `command` shaper does, with the SDK's message framing but not its
+process handling: closing the connection ends its stdin, then signals the whole group with
+SIGTERM and then SIGKILL, and a server that exits on its own has what is left of its group
+killed too, so a helper the server started does not outlive the run. The server's exit is seen
+when it happens, not when its pipes close: a helper that inherited them could hold them open,
+so after the exit its pipes get the same 500 ms drain a `command` shaper's do, and then the
+connection fails with what the server wrote and the group is stopped. The group is killed in
+that one place and only once, so a later close never signals a group id the system may since
+have given to an unrelated process. A server that stops reading its stdin while it keeps
+running loses the connection at the first write that fails, and the call answers at once. A helper that leaves the
+group on purpose is out of reach, as it is for a `command` shaper.
 
 **The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
 in the daemon and reads the paths its options list, nothing else. Containment and size are

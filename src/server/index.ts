@@ -36,14 +36,16 @@ import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
+  backgroundReasoningEffortEnabled,
   claudeTransportChoice,
   codexTransportChoice,
   getLlmConfig,
+  llmJobModel,
+  llmJobRunner,
   llmRunnerChoice,
 } from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
-import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
@@ -595,6 +597,7 @@ ensembles = new EnsembleManager(registry, undefined, {
           guidanceMarkdown: persona.guidanceMarkdown,
           runner: persona.runner,
           model: persona.model,
+          ...(persona.effort && { effort: persona.effort }),
           archived: persona.archivedAt !== null,
         }
       : null;
@@ -607,18 +610,16 @@ ensembles = new EnsembleManager(registry, undefined, {
       return resolveEvaluatorExecution(guidance, pins, {
         appRunner: llmRunnerChoice(cfg),
         personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
-        jobModel: (runnerId) =>
-          resolveLlmJobModel(
-            "ensemble-comparison",
-            cfg.models,
-            envVar(LLM_JOB_SPECS["ensemble-comparison"].envKey),
-            runnerId,
-          ).id,
+        jobRunner: llmJobRunner("ensemble-comparison", cfg),
+        jobModel: (runnerId) => llmJobModel("ensemble-comparison", cfg, runnerId).id,
+        effortEnabled: backgroundReasoningEffortEnabled(),
+        jobEffort: cfg.efforts?.["ensemble-comparison"],
       });
     },
     runModel: (runnerId, prompt, opts) =>
       llmRunner(runnerId).run(prompt, {
         model: opts.modelId,
+        effort: opts.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
       }),

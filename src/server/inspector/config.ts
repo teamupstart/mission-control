@@ -3,12 +3,12 @@ import { envVar } from "@shared/harness-runtime.mjs";
 import { INSPECTOR_MODEL_ENV, resolveInspectorModel } from "@shared/inspector.ts";
 import type { ResolvedInspectorModel } from "@shared/inspector.ts";
 import { providerOwningModel } from "@shared/model.ts";
-import { isLlmRunnerId } from "@shared/llm.ts";
+import { isLlmRunnerId, resolveLlmEffort } from "@shared/llm.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import { InspectorConfigSchema } from "@shared/protocol.ts";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { llmRunnerChoice } from "../llm/config.ts";
+import { backgroundReasoningEffortEnabled, llmRunnerChoice } from "../llm/config.ts";
 
 // The Inspector's config: a schema-validated blob over the `app_config` KV, so a new
 // key needs no migration - Zod's defaults are applied on every read, and a blob written
@@ -72,8 +72,20 @@ function pinInspectorProvider(
  * Resolved per call, never captured: the config is editable at runtime through
  * `PUT /api/inspector/config`, and a value read at module load would need a restart.
  */
-export function inspectorModel(cfg: InspectorConfig = getInspectorConfig()): ResolvedInspectorModel {
-  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), inspectorRunner(cfg).id);
+export function inspectorModel(
+  cfg: InspectorConfig = getInspectorConfig(),
+  runner = inspectorRunner(cfg).id,
+): ResolvedInspectorModel {
+  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), runner);
+}
+
+export function inspectorExecution(cfg: InspectorConfig = getInspectorConfig()) {
+  const runner = inspectorRunner(cfg);
+  const model = inspectorModel(cfg, runner.id);
+  const effort = backgroundReasoningEffortEnabled()
+    ? resolveLlmEffort(runner.id, model.id, cfg.effort).level ?? undefined
+    : undefined;
+  return { runner, model, effort };
 }
 
 /**

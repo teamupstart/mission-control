@@ -22,6 +22,8 @@ import type {
 } from "@shared/llm.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
 // The LLM config: a schema-validated blob over the `app_config` KV, mirroring
 // `foreman/config.ts` and `inspector/config.ts`, so a new key needs no migration - Zod's
@@ -48,6 +50,10 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.llm;
 
+export function backgroundReasoningEffortEnabled(): boolean {
+  return featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID);
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getLlmConfig(): LlmConfig {
   return LlmConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
@@ -71,6 +77,7 @@ export function setLlmConfig(patch: LlmConfigPatch): LlmConfig {
     ...before,
     ...patch,
     models: { ...before.models, ...patch.models },
+    ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
     // Same per-key merge, same argument. Two tabs setting different jobs' providers commute,
     // and the panel never has to round-trip the whole map to change one row.
     runners: { ...before.runners, ...pinOutgoingProvider(before, patch), ...patch.runners },

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
@@ -12,7 +13,8 @@ import type { LlmProviderView } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 import { TaskKindDefaultsGroup } from "./TaskKindDefaults.tsx";
-import { modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { modelSlotColumns, modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
 //
@@ -67,6 +69,8 @@ export function LlmSettingsPanel({
   inspector: InspectorState;
 }): React.JSX.Element {
   const { config, status, update, error } = state;
+  const showEffort = useFeatureFlag(BACKGROUND_REASONING_EFFORT_FLAG_ID);
+  const columns = modelSlotColumns(showEffort);
   const runners = status?.runners ?? [];
   /**
    * What a row's own provider change just reset, per job.
@@ -119,10 +123,7 @@ export function LlmSettingsPanel({
         </p>
         <SettingsMatrix
           caption="Background jobs, and what each one runs on"
-          columns={[
-            { key: "provider", label: "Provider" },
-            { key: "model", label: "Model" },
-          ]}
+          columns={columns}
           rows={LLM_JOB_IDS.map((job) =>
             modelSlotRow({
               key: `llm-${job}`,
@@ -138,6 +139,10 @@ export function LlmSettingsPanel({
               modelResolved: status?.models[job],
               disabled: !config,
               reset: reset[job] ?? null,
+              effort: showEffort ? {
+                value: config?.efforts?.[job] ?? null,
+                onCommit: (value) => void update({ efforts: { [job]: value } }),
+              } : undefined,
               onCommit: (patch) => {
                 const dropped =
                   patch.model === "" && patch.runner !== undefined
@@ -164,15 +169,20 @@ export function LlmSettingsPanel({
         />
         <p className="settings-hint foreman-models-hint">
           Model choices come from the provider selected in each row.
+          {showEffort && " Reasoning effort applies to the selected model. Provider default lets the provider choose."}
         </p>
       </div>
 
       {/* The rest of what this app spends on its own account, in the order the page's copy
           names them: the background jobs above, then Foreman's four roles, then the
           Inspector's one review. */}
-      <ForemanModelsGroup foreman={foreman} providers={runners} appWide={status?.runner} />
+      <ForemanModelsGroup
+        foreman={foreman} providers={runners} appWide={status?.runner} showEffort={showEffort}
+      />
 
-      <InspectorModelGroup inspector={inspector} providers={runners} appWide={status?.runner} />
+      <InspectorModelGroup
+        inspector={inspector} providers={runners} appWide={status?.runner} showEffort={showEffort}
+      />
 
       <p className="settings-hint llm-elsewhere">
         A Persona's model, and an Ensemble judge's, stay on the Persona - there is one per row
@@ -199,13 +209,15 @@ function ForemanModelsGroup({
   foreman,
   providers,
   appWide,
+  showEffort,
 }: {
   foreman: ForemanState;
   providers: LlmProviderView[];
   /** What the app-wide provider default resolved to - what Foreman's OWN Inherit option means. */
   appWide: ResolvedLlmRunner | undefined;
+  showEffort: boolean;
 }): React.JSX.Element {
-  const { config, status, update } = foreman;
+  const { config, status, update, error } = foreman;
   const [reset, setReset] = useState<Partial<Record<ForemanModelRole, string>>>({});
   /**
    * What a role's Inherit option resolves to: Foreman's group-level answer.
@@ -235,10 +247,7 @@ function ForemanModelsGroup({
       </p>
       <SettingsMatrix
         caption="Foreman's four model roles, and what each one runs on"
-        columns={[
-          { key: "provider", label: "Provider" },
-          { key: "model", label: "Model" },
-        ]}
+        columns={modelSlotColumns(showEffort)}
         rows={[
           {
             key: "foreman-group",
@@ -294,6 +303,10 @@ function ForemanModelsGroup({
               modelResolved: status?.models?.[role],
               disabled: !config,
               reset: reset[role] ?? null,
+              effort: showEffort ? {
+                value: config?.efforts?.[role] ?? null,
+                onCommit: (value) => void update({ efforts: { [role]: value } }),
+              } : undefined,
               onCommit: (patch) => {
                 const dropped =
                   patch.model === "" && patch.runner !== undefined
@@ -317,6 +330,7 @@ function ForemanModelsGroup({
           }),
         ]}
       />
+      {error && <p className="settings-error" role="alert">{error}</p>}
     </div>
   );
 }
@@ -332,12 +346,14 @@ function InspectorModelGroup({
   inspector,
   providers,
   appWide,
+  showEffort,
 }: {
   inspector: InspectorState;
   providers: LlmProviderView[];
   appWide: ResolvedLlmRunner | undefined;
+  showEffort: boolean;
 }): React.JSX.Element {
-  const { config, model, runner, update } = inspector;
+  const { config, model, runner, update, error } = inspector;
   const [reset, setReset] = useState<string | null>(null);
   return (
     <div className="foreman-models" data-anchor="models/inspector">
@@ -350,10 +366,7 @@ function InspectorModelGroup({
       </p>
       <SettingsMatrix
         caption="GitHub Inspector's review call, and what it runs on"
-        columns={[
-          { key: "provider", label: "Provider" },
-          { key: "model", label: "Model" },
-        ]}
+        columns={modelSlotColumns(showEffort)}
         rows={[
           modelSlotRow({
             key: "inspector",
@@ -368,6 +381,10 @@ function InspectorModelGroup({
             modelResolved: model ?? undefined,
             disabled: !config,
             reset,
+            effort: showEffort ? {
+              value: config?.effort ?? null,
+              onCommit: (effort) => void update({ effort }),
+            } : undefined,
             onCommit: (patch) => {
               const dropped =
                 patch.model === "" && patch.runner !== undefined ? (config?.model ?? "") : "";
@@ -384,6 +401,7 @@ function InspectorModelGroup({
           }),
         ]}
       />
+      {error && <p className="settings-error" role="alert">{error}</p>}
     </div>
   );
 }

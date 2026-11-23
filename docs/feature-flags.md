@@ -179,6 +179,7 @@ gates, not by resolving an unknown id as on.
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
+| `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |

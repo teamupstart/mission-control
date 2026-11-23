@@ -47,11 +47,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
   // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
-  // the agent report routes, which answer 404 with the `inbox` flag off.
+  // the agent report routes, which answer 404 with the `inbox` flag off, and then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 434);
+  assert.equal(others.length, 435);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "14827a96acb0432cd55941321d07b55c0f832b70776835187f1a2c78fdd9f9fa");
+    "7a40cde0d7c47f8dcc3245357442767c74b4119ed7bf7790391b443b490e959c");
 });
 
 function sourceFiles(dir: string): string[] {

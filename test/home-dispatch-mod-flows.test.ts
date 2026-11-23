@@ -581,6 +581,16 @@ test("the launcher follows the recorded gate: off by default, and on only when e
   assert.equal(on.fake.dialogs[0]!.header, "Start");
 });
 
+test("Check in on my tasks says so when the pane cannot be placed, and stays quiet when it can", async () => {
+  const answers = (q: ModAskQuestion): ModAskAnswer => ({ kind: "pick", label: q.options.find((o) => o.label === "Check in on my tasks")?.label ?? q.options[0]!.label });
+  const narrow = world({ host: { answers, placed: false } });
+  await runDispatchCommand(narrow.fake.host, SESSION, "");
+  assert.deepEqual(narrow.fake.notices, [PANE_WIDER_NOTICE]);
+  const wide = world({ host: { answers, placed: true } });
+  await runDispatchCommand(wide.fake.host, SESSION, "");
+  assert.deepEqual(wide.fake.notices, []);
+});
+
 test("Check in on my tasks, from the Start dialog, opens the pane on Needs you", async () => {
   const { fake } = world({ host: { answers: (q) => ({ kind: "pick", label: q.options.find((o) => o.label === "Check in on my tasks")?.label ?? q.options[0]!.label }) } });
   const result = await runDispatchCommand(fake.host, SESSION, "");

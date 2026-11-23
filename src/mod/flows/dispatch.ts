@@ -27,6 +27,8 @@ export const DESCRIBE_NOTICE = "Type what this task should do, then press Enter.
 export const DROP_HINT = "Press Enter again with nothing typed to drop this draft and start over.";
 export const DROPPED_NOTICE = "Dropped the draft that was waiting for its description.";
 export const CANCELLED_LINE = "cancelled";
+/** The one line shown when the pane cannot be placed (7.11); `command.ts` re-exports it. */
+export const PANE_WIDER_NOTICE = "the pane will open when the window is wider";
 export const CANCELLED_NOTICE = "Cancelled. Nothing was created.";
 export const NEEDS_REPO_QUESTION = "Which repo is this for? Type a folder name or a path under Other.";
 
@@ -299,7 +301,11 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
     if (pick.kind !== "pick") return stop(host);
     if (pick.value === "check-in") {
       if (session.live && !session.live()) return ended();
-      await host.paneOpen({ tab: "needs-you", focus: true, ...(session.live ? { guard: session.live } : {}) });
+      const placed = await host.paneOpen({ tab: "needs-you", focus: true, ...(session.live ? { guard: session.live } : {}) });
+      // A session that ended mid-open is also reported as not placed; it is told nothing.
+      if (session.live && !session.live()) return ended();
+      // The same line the pane commands give: a narrow window must not look like the pick was ignored.
+      if (!placed.isPlaced) host.notice(PANE_WIDER_NOTICE);
       return { outcome: "pane", line: "" };
     }
     // Work in this session: the person goes on with their own work.

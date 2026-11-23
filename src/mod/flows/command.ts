@@ -2,7 +2,7 @@ import { HOME_DISPATCH_OFFERED_KINDS } from "@shared/dispatch-options.ts";
 import type { TaskKind } from "@shared/types.ts";
 import { LAUNCHER_ENABLED } from "../constants.ts";
 import type { ModHost, ModPaneOpen } from "../host.ts";
-import { describeDraft, remindOrDropWaitingDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
+import { PANE_WIDER_NOTICE, describeDraft, remindOrDropWaitingDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
 import type { FlowSession } from "./routes.ts";
 
 /**
@@ -22,7 +22,7 @@ import type { FlowSession } from "./routes.ts";
  * brief (L20). The pane arguments call `paneOpen` with the tab or the task id and nothing else.
  */
 
-export const PANE_WIDER_NOTICE = "the pane will open when the window is wider";
+export { PANE_WIDER_NOTICE };
 
 type CommandHost = Pick<ModHost, "ask" | "notice" | "toast" | "fetch" | "fillPrompt" | "paneOpen" | "paneState">;
 

@@ -6,6 +6,18 @@ import type {
 } from "../../src/shared/types.ts";
 import type { EmulatorHandle, MuxHandle } from "../../src/shared/terminal.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "../../src/shared/ensemble.ts";
+import { terminalResourceId } from "../../src/shared/pane.ts";
+
+/**
+ * The terminal resource a fake spawn reports for the agent it discovered, as a real backend
+ * reports the pane it opened. A dispatched launch binds only the worker carrying its spawn's
+ * identity, so a fake whose spawn names no resource launches nothing the dispatcher can find.
+ */
+export function openedResource(discovered: { terminals: ReadonlyArray<MuxHandle | EmulatorHandle> }): string {
+  const pane = discovered.terminals[0];
+  if (!pane) throw new Error("a fake launch must discover its agent in a terminal pane");
+  return terminalResourceId(pane);
+}
 
 /**
  * A representative session for the board's render tests, and the one place a required

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
 // The dispatcher's OWN telemetry branches, driven through `Dispatcher.dispatch` rather than by
@@ -174,7 +174,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
           transcriptPath: null,
           env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
         });
-        return { homeName: "home-terminal", homeBackend: "tmux", terminalResourceId: null };
+        return { homeName: "home-terminal", homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
       },
       inject: async (_session, text) => {
         registry.applyHook({

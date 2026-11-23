@@ -3810,12 +3810,12 @@ export class WorkflowManager {
       : captured;
   }
 
-  /** The live session a submission's run is bound to, or null. */
   /**
-   * The sessions whose work a workflow submission has durably accepted: every submission the
-   * engine activated is `running` before it announces the activation, so this survives a
-   * restart that lost the announcement's after-work prompt. The prompter's once-per-launch
-   * guard makes prompting any of them again harmless.
+   * The sessions whose work a workflow submission has durably accepted, each with its newest
+   * running submission's creation time: every submission the engine activated is `running`
+   * before it announces the activation, so this survives a restart that lost the
+   * announcement's after-work prompt. The prompter's once-per-launch guard makes prompting any
+   * of them again harmless.
    */
   afterWorkOwedSessions(): Array<{ sessionId: string; submittedAt: number }> {
     const sessions = new Map<string, number>();
@@ -3826,6 +3826,7 @@ export class WorkflowManager {
     return [...sessions].map(([sessionId, submittedAt]) => ({ sessionId, submittedAt }));
   }
 
+  /** The live session a submission's run is bound to, or null. */
   private sessionForSubmission(submissionId: string): string | null {
     const submission = this.store.getSubmission(submissionId);
     const run = submission ? this.store.getRun(submission.runId) : null;

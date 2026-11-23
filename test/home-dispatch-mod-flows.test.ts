@@ -136,6 +136,31 @@ test("a brief starts at Kind with the daemon's recommendation first, and its pag
   assert.deepEqual({ entry: (options.body as { entry: string }).entry, brief: (options.body as { brief: string }).brief }, { entry: "command", brief: "fix the flaky logging test" });
 });
 
+test("More... moves to the daemon's next page, and the pick made there reaches the draft", async () => {
+  const { daemon, fake } = world({
+    host: {
+      answers: (q) => {
+        if (q.header === "Confirm") return { kind: "pick", label: "Start now" };
+        if (q.header !== "Kind") return { kind: "pick", label: q.options[0]!.label };
+        const more = q.options.find((o) => o.label === "More...");
+        // First page: ask for the next one. Second page (no More...): take its last option.
+        return { kind: "pick", label: more ? more.label : q.options.at(-1)!.label };
+      },
+    },
+  });
+  await runDispatchCommand(fake.host, SESSION, "hello there");
+  const kindPages = fake.dialogs.filter((d) => d.header === "Kind");
+  assert.equal(kindPages.length, 2);
+  assert.equal(kindPages[0]!.options.at(-1)!.label, "More...");
+  assert.ok(kindPages[1]!.options.every((o) => o.label !== "More..."));
+  // The second page's option is not on the first page, and it is the kind the draft carries.
+  const picked = kindPages[1]!.options.at(-1)!.label;
+  assert.ok(kindPages[0]!.options.every((o) => o.label !== picked));
+  const kind = picked.split(":")[0];
+  assert.equal((createdDrafts(daemon)[0]!.body as { kind: string }).kind, kind);
+  assert.notEqual(kind, "ship");
+});
+
 test("check the flaky logs is a brief, not the check command (L20)", async () => {
   const { fake } = world();
   await runDispatchCommand(fake.host, SESSION, "check the flaky logs");

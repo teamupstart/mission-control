@@ -67,9 +67,13 @@ export function encodeWorkUnitId(timeMs: number, random: Uint8Array): string {
   return `${WORK_UNIT_ID_PREFIX}${time}${entropy}`;
 }
 
-/** What `TaskManager.assign` says when `launchWorkUnitConflicts` refuses an agent. */
+/**
+ * What `TaskManager.assign` says when `launchWorkUnitConflicts` refuses an agent. The board shows
+ * it, and the work unit is tracked but never named in the dashboard, so the sentence says why
+ * without the term.
+ */
 export const WORK_UNIT_REUSE_REFUSAL =
-  "that agent was started for another work unit, so its MCP calls would be tagged with it - dispatch this task to a new agent instead";
+  "that agent was started for other work, so its MCP calls would be attributed to that work - dispatch this task to a new agent instead";
 
 /**
  * Whether a session whose agent was started with `launched` would tag a task of `taskWorkUnit`

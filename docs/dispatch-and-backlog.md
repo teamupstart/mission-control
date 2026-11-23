@@ -840,8 +840,8 @@ default it stays, ready for the next drop.
 [work unit](work-units.md#the-launch-environment) has `WORK_UNIT_ID` in its environment for as
 long as it runs, and a drop starts no process, so its MCP calls would tag the next task with the
 first one's work unit. The daemon therefore refuses a drop onto an agent that was started for
-another work unit - "that agent was started for another work unit, so its MCP calls would be
-tagged with it" - and the backlog autopilot does not offer it that task; the task can still be
+another work unit - "that agent was started for other work, so its MCP calls would be
+attributed to that work" - and the backlog autopilot does not offer it that task; the task can still be
 dispatched to a new agent. An agent started for the task's own work unit takes it, which is how
 a plan's phase tasks can follow one another on one agent. An agent started with none takes any
 task, and that task emits no work unit until the agent's next start. The rule reads only what

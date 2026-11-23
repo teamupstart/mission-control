@@ -69,7 +69,8 @@ write wins and every operation, and the board, ends up with the same id.
 
 ## The launch environment
 
-Behind the **Work unit id** preview (`work-unit-id`, Settings > Feature flags), an agent Mission
+Behind the **MCP call attribution** preview (`work-unit-id`, Settings > Feature flags; its label
+and description do not name the work unit), an agent Mission
 Control starts for a task that has a work unit gets the id in its environment as `WORK_UNIT_ID`.
 MCP config that references the variable then sends it as the `x-work-unit-id` header on the
 agent's own MCP calls (see [MCP servers the worker calls](#mcp-servers-the-worker-calls)).
@@ -145,20 +146,19 @@ disagree.
 
 An agent that was started with one work unit is never handed a task of another: its environment
 is fixed, and its MCP calls would carry the first. `TaskManager.assign` refuses it ("that agent
-was started for another work unit, so its MCP calls would be tagged with it"), and the backlog's
+was started for other work, so its MCP calls would be attributed to that work"), and the backlog's
 own selection does not offer it that task. An agent started for the task's own work unit takes
 it; one started with none takes any task, which then emits nothing until the agent's next start.
 The guard reads the record, not the flag, so it also holds after the preview is switched off.
 See [One agent, one task at a time](dispatch-and-backlog.md#one-agent-one-task-at-a-time---but-not-one-task-per-agent).
 
-### The session detail
+### Not shown in the dashboard
 
-The session detail shows a **work unit** row with the id the session emits and a **Copy**
-control. It follows the agent, not the live preview: an agent started while the preview was on
-keeps the variable until its next start, so its row stays after the preview is switched off and
-goes when the agent restarts without it. With the preview never switched on no agent carries a
-work unit, so no session shows the row. It is absent for a session that emits none - including
-one whose task has an id its agent was not started with.
+The work unit is tracked, never displayed. The session detail shows no work unit row and the
+dashboard names the id nowhere, with the preview on or off. The id still travels where it is
+read: the agent's environment, the MCP headers and metadata, exported telemetry, and the task
+and launch records the API returns (`Task.workUnitId`, `Session.launchWorkUnitId`). The reuse
+refusal on the board explains itself without the term.
 
 ## MCP servers the worker calls
 

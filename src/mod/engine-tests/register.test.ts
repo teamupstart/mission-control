@@ -595,3 +595,20 @@ test('a session end whose draftId clear is overtaken by a replacement start does
   // Only the replacement's own start cleared the marker; the end that it overtook stood down.
   expect(seen.setKeys.filter((k) => k === 'draftId').length).toBe(1)
 })
+
+test('a command whose pane open is refused tells the person, and the next command opens the pane', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const notices = []
+  on('session.append', (_, e) => { notices.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const before = seen.opened.length
+  seen.failOpen = true
+  await $.command.run(COMMAND('inbox'))
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  expect(seen.opened.length).toBe(before)
+  seen.failOpen = false
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => seen.opened.length > before)
+  expect(seen.opened.length).toBe(before + 1)
+})

@@ -7,6 +7,7 @@ import { FLOW_BUSY_TEXT, createFlowGate, type FlowGate } from "./flows/gate.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
 import { createPaneController, renderPane, type PaneController, type PaneNode, type PaneView } from "./pane/index.ts";
+import { releaseClaim } from "./pane-owner.ts";
 import { runQueued } from "./write-queue.ts";
 
 /**
@@ -483,7 +484,15 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
         await queuedStateSet($, session.pane, key, value, () => !stale());
       }
       if (stale()) return takeBack();
-      const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
+      let opened: { isPlaced: boolean };
+      try {
+        opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
+      } catch (error) {
+        // The engine refused: no pane was placed, so the claim made above is given back (only this
+        // session's own; a replacement that has claimed it since keeps it) before the caller sees the error.
+        releaseClaim(session.pane, session.mine);
+        throw error;
+      }
       if (!stale()) return { isPlaced: opened.isPlaced };
       return takeBack();
     },

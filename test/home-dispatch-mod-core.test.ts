@@ -711,3 +711,19 @@ test("the write queue runs a read-modify-write after the writes queued before it
   await runQueued(queue, undefined, async () => { store.value = 12; });
   assert.equal(store.value, 12);
 });
+
+test("a refused pane open gives back its claim, and only its own", async () => {
+  const { releaseClaim } = await import("../src/mod/pane-owner.ts");
+  const holder = { owner: 3 as number | null };
+  // This session's claim is released.
+  assert.equal(releaseClaim(holder, 3), true);
+  assert.equal(holder.owner, null);
+  // A replacement that has claimed the pane since keeps its claim.
+  holder.owner = 4;
+  assert.equal(releaseClaim(holder, 3), false);
+  assert.equal(holder.owner, 4);
+  // Nothing to release when nobody holds it.
+  holder.owner = null;
+  assert.equal(releaseClaim(holder, 3), false);
+  assert.equal(holder.owner, null);
+});

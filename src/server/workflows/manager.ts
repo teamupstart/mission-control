@@ -6315,13 +6315,16 @@ export class WorkflowManager {
         unchangedRepositoryProblem = error instanceof Error ? error.message : "Repository publication proof could not be read.";
       }
     }
+    // Keep consecutive proof-read failures bounded without treating a transient first miss
+    // as a hard failure. Existing persisted state also preserves this window across restart.
+    const proofRetryStartedAt = state.wait === "awaiting_proof" ? state.settledAt ?? now : now;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
       anchorTranscriptBytes: anchor.transcriptBytes,
       deliveredAt: anchor.deliveredAt,
       pickedUpAt,
-      settledAt: now,
+      settledAt: proofRetryStartedAt,
       now,
       repository,
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
@@ -6335,7 +6338,9 @@ export class WorkflowManager {
       return;
     }
     if (decision.kind === "waiting") {
-      this.setSessionActionWait(attempt.id, decision.reason, { pickedUpAt, settledAt: now }, now);
+      this.setSessionActionWait(attempt.id, decision.reason, {
+        pickedUpAt, settledAt: decision.reason === "awaiting_proof" ? proofRetryStartedAt : now,
+      }, now);
       return;
     }
     this.setSessionActionWait(attempt.id, "capturing", {

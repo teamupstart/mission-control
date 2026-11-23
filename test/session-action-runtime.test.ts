@@ -2636,7 +2636,19 @@ for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(
     await h.manager.sweepSessionActions(SETTLED());
     assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting", "pre-pickup idle is not completion");
     h.runActionTurn();
-    await h.manager.sweepSessionActions(SETTLED());
+    const firstProofRead = SETTLED();
+    await h.manager.sweepSessionActions(firstProofRead);
+    if (proof === "missing-base") {
+      assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof");
+      await h.manager.sweepSessionActions(firstProofRead + 15_000);
+      await h.manager.stop();
+      h.manager.start();
+      await h.manager.sweepSessionActions(firstProofRead + 59_999);
+      const state = h.store.sessionActionState(h.store.getAttempt(attempt.id)!);
+      assert.equal(state?.wait, "awaiting_proof", "a transient read must retain its grace period across restart");
+      assert.equal(state?.settledAt, firstProofRead, "later sweeps must not reset the retry deadline");
+      await h.manager.sweepSessionActions(firstProofRead + 60_000);
+    }
     await h.settle();
     assert.equal(h.store.getAttempt(attempt.id)?.state, proof === "verified" ? "completed" : "error");
     if (proof === "verified") {
@@ -2651,5 +2663,32 @@ for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(
     assert.equal(h.store.getDelivery(packet.id)?.state, "delivered");
     await h.manager.sweepSessionActions(SETTLED());
     assert.equal(h.store.listSubmissions(runId).length, proof === "verified" ? 2 : 1, "no duplicate continuation");
+  } finally { await h.stop(); }
+});
+
+test("proof retry starts on a new failure, resets on recovery, and allows a delayed PR adoption", async () => {
+  const options: HarnessOptions = { pullRequest: true };
+  const h = await harness("transient-pr-proof", options);
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    const attempt = waitingAttempt(h, runId)!;
+    h.runActionTurn();
+    const first = SETTLED();
+    await h.manager.sweepSessionActions(first);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    options.unchangedRepositoryProblem = "Git timed out";
+    await h.manager.sweepSessionActions(first + 120_000);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_proof", "an old settled turn gets a fresh read retry window");
+    options.unchangedRepositoryProblem = undefined;
+    await h.manager.sweepSessionActions(first + 120_001);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    options.unchangedRepositoryProblem = "HEAD changed while reading";
+    await h.manager.sweepSessionActions(first + 240_000);
+    assert.equal(h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.settledAt, first + 240_000);
+    h.adoptPr();
+    await h.manager.sweepSessionActions(first + 240_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late adoption did not complete during proof retry");
+    assert.equal(h.injected.length, 1, "retry must never repeat the action instruction");
   } finally { await h.stop(); }
 });

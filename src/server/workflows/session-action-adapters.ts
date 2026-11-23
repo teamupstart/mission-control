@@ -32,6 +32,7 @@ export interface SessionActionAdapterContext {
   anchorTranscriptBytes: number | null;
   deliveredAt: number;
   pickedUpAt: number;
+  /** First settled observation in the current proof-read retry window, otherwise this pass. */
   settledAt: number;
   now: number;
   /**
@@ -396,10 +397,17 @@ function completePullRequest(
 
 /** A settled turn must not hold sibling feedback indefinitely on unreadable local proof. */
 function unprovenPullRequest(context: SessionActionAdapterContext): SessionActionCompletionDecision {
-  const problem = context.unchangedRepositoryProblem
-    ?? (!context.acceptedContentTreeOid ? "The accepted content tree is missing from the reviewed submission." : null)
+  const missingAcceptedTree = !context.acceptedContentTreeOid
+    ? "The accepted content tree is missing from the reviewed submission." : null;
+  const readProblem = context.unchangedRepositoryProblem
     ?? (!context.repository ? "The bound repository could not be read." : null)
-    ?? (!context.repository?.headOid ? "The checkout HEAD could not be verified." : null)
+    ?? (!context.repository?.headOid ? "The checkout HEAD could not be verified." : null);
+  // Unavailable local facts can recover on the next sweep, including an adoption arriving
+  // after the agent settles. The manager preserves the first failed read across sweeps/restart.
+  if (!missingAcceptedTree && readProblem && context.now - context.settledAt < 60_000) {
+    return { kind: "waiting", reason: "awaiting_proof" };
+  }
+  const problem = missingAcceptedTree ?? readProblem
     ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null)
     ?? (!context.repository?.branch ? "The checkout is detached and no unchanged-repository proof was established." : null);
   return problem
@@ -607,8 +615,13 @@ const pullRequest: SessionActionAdapter = {
 
   validateCapture: (expectation, capture) => {
     if (expectation.kind === "no_change") {
+      const capturedTree = workflowPublicationTree(capture.context.evidence);
+      if (!capturedTree) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: "The continuation's publication tree could not be read to verify the unchanged repository. Capture fresh evidence and resubmit the workflow." };
+      }
       if (capture.capturedHeadOid !== expectation.headOid
-        || workflowPublicationTree(capture.context.evidence) !== expectation.treeOid
+        || capturedTree !== expectation.treeOid
         || capture.context.evidence.workingTreeDirty) {
         return { kind: "blocked", code: "expectation_unmet",
           detail: "The repository changed after the no-change proof. Capture fresh evidence and resubmit the workflow." };

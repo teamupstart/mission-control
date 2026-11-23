@@ -733,7 +733,8 @@ for (const branch of [null, BRANCH]) {
     ["base", { unchangedRepositoryProblem: "The default base could not be resolved." }, /default base/],
     ["accepted tree", { acceptedContentTreeOid: null }, /accepted content tree/],
   ] as const) test(`missing ${label} proof on branch ${branch} blocks with a recoverable explanation`, () => {
-    const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 }, ...patch };
+    const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 },
+      settledAt: 3, now: 60_003, ...patch };
     const decision = decide([], context);
     assert.equal(decision.kind, "blocked");
     if (decision.kind !== "blocked") return;
@@ -743,3 +744,44 @@ for (const branch of [null, BRANCH]) {
     assert.equal(decide([pr()], context).kind, "complete", "durable adoption still wins");
   });
 }
+
+for (const [label, patch] of [
+  ["repository read", { repository: null }],
+  ["HEAD read", { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }],
+  ["Git timeout", { unchangedRepositoryProblem: "Git timed out while reading publication proof." }],
+  ["moving HEAD", { unchangedRepositoryProblem: "The checkout HEAD changed while reading publication proof." }],
+  ["default base", { unchangedRepositoryProblem: "The default base could not be resolved." }],
+] satisfies Array<[string, Partial<SessionActionAdapterContext>]>) {
+  test(`transient ${label} proof retries before a bounded recoverable block`, () => {
+    const context = { ...patch, settledAt: 5_000 };
+    for (const now of [5_000, 64_999]) {
+      assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
+      assert.equal(decide([pr()], { ...context, now }).kind, "complete", "late adoption wins during retry");
+    }
+    const expired = decide([], { ...context, now: 65_000 });
+    assert.equal(expired.kind, "blocked");
+    if (expired.kind !== "blocked") return;
+    assert.equal(expired.code, "expectation_unmet");
+    assert.match(expired.detail, /resubmit/i);
+  });
+}
+
+test("known missing accepted-tree proof blocks without being masked by a transient Git error", () => {
+  const decision = decide([], { acceptedContentTreeOid: null, unchangedRepositoryProblem: "Git timed out" });
+  assert.equal(decision.kind, "blocked");
+  if (decision.kind !== "blocked") return;
+  assert.match(decision.detail, /accepted content tree/);
+});
+
+test("no-change capture reports an unreadable publication tree as capture failure", () => {
+  const result = ADAPTER.validateCapture({ kind: "no_change", headOid: HEAD, treeOid: TREE,
+    baseOid: HEAD, baseRef: "origin/main" }, {
+    capturedHeadOid: HEAD,
+    context: { evidence: { contentTreeOid: null, workingTreeDirty: false } } as WorkflowContextSnapshot,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /publication tree could not be read/);
+  assert.doesNotMatch(result.detail, /repository changed/);
+});

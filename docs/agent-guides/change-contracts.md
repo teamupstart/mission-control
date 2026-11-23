@@ -872,7 +872,7 @@ A SessionAction is a durable side effect, not an evaluator:
   child already captured - is supplied on `SessionActionAdapterContext` by the manager, which is
   where git and SQLite live. An adapter that fetched its own facts could not be tested without arranging them on a
   real machine, and "we could not look" would stop being distinguishable from "the answer is
-  no". Null means unknown, and unknown always means wait.
+  no". Null means unknown, never proof of success; each adapter owns its retry and recovery policy.
 
 ### The `pull_request` adapter
 
@@ -884,9 +884,14 @@ A SessionAction is a durable side effect, not an evaluator:
   continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
   This completion releases the existing conversation hold without creating a PR, including for
   actions already waiting when the daemon restarts.
-  Missing local or accepted-tree proof after a settled turn with no adopted PR is a recoverable
-  `expectation_unmet` block, with a precise diagnostic. Both completion and blocking re-offer
-  queued sibling packets after the durable transition; unknown proof must not hold the turn.
+  Missing accepted-tree proof after a settled turn with no adopted PR is an immediate recoverable
+  `expectation_unmet` block. Unavailable local reads (including timeouts, moving HEAD, and an
+  unresolved base) instead retry for one minute before blocking with a precise diagnostic.
+  The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
+  sweeps and restart; a recovered read or a new active turn resets it. Adoption can still
+  complete the action during that window. Both completion and blocking re-offer
+  queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
+  A missing continuation publication tree is `capture_failed`, not evidence of changed content.
   Known changed work on a branch can still wait for PR adoption. No timeout or agent assertion
   is treated as proof of publication.
 - New publication requires a durable adoption in Mission Control's ledger. Repository,

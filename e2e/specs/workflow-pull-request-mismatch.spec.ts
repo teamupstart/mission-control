@@ -178,7 +178,7 @@ async function queueSiblingFeedback(daemon: DaemonHandle, runId: string): Promis
   return peer.id;
 }
 
-for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree"]) test(scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
+for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption"]) test(scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
   ? "an earlier merged PR completes the action and names the publication in Runs"
   : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
   : "a durably adopted pull request completes before provider metadata arrives", async ({
@@ -189,7 +189,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   const alreadyMerged = scenario === "merged";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const sessionId = await dispatch(dashboard, daemon, scenario === "no_change" || scenario.startsWith("missing_"));
+  const sessionId = await dispatch(dashboard, daemon, scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption");
 
   // A `pull_request` action - the completion this build now proves, and the one whose graph
   // this spec's ancestor pinned as unpublishable.
@@ -245,8 +245,8 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   );
   const runId = submitted.run.id;
 
-  if (scenario === "no_change" || scenario.startsWith("missing_")) {
-    if (scenario === "missing_base") {
+  if (scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption") {
+    if (scenario === "missing_base" || scenario === "retry_adoption") {
       const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
       // Remove only base refs in this disposable fixture; HEAD remains a real detached commit.
       for (const ref of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/heads/main"]) {
@@ -264,10 +264,24 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       expect(stored?.tree).toBeNull();
     });
     await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    if (scenario === "missing_base" || scenario === "retry_adoption") {
+      await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_proof");
+    }
+    if (scenario === "retry_adoption") {
+      await announcePullRequest(daemon, sessionId, "https://github.com/owner/repo/pull/77");
+      await expect.poll(async () =>
+        (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+      { timeout: 30_000 }).toBe("completed");
+      await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
+        `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
+      await expect(dashboard.locator("article.wf-run-action")).toContainText("PR opened with warning");
+      await shoot(dashboard, "19-proof-retry-adopted");
+      return;
+    }
     try {
       await expect.poll(async () =>
         (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-      { timeout: 45_000 }).toBe(scenario === "no_change" ? "completed" : "blocked");
+    { timeout: scenario === "missing_base" ? 90_000 : 45_000 }).toBe(scenario === "no_change" ? "completed" : "blocked");
     } catch (error) {
       const holder = await api(daemon, `/api/workflow-runs/${runId}`);
       const sibling = await api(daemon, `/api/workflow-runs/${siblingId}`);
@@ -292,7 +306,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       await expect(card).toContainText("resubmit with fresh evidence");
       await expect(dashboard.getByRole("button", { name: "Start repair round 2", exact: true })).toBeEnabled();
       await card.scrollIntoViewIfNeeded();
-      await shoot(dashboard, `18-${scenario}`, true);
+      await shoot(dashboard, `20-${scenario}-proof-retry`, true);
       return;
     }
     await expect(card).toContainText("No changes to publish");

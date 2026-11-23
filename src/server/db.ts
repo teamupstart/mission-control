@@ -4261,14 +4261,25 @@ function migrate(d: DatabaseSync): void {
   // when the column is added: a record that names the task's bound session now is the one
   // readers showed before delivery ids existed, so it and its row share a fresh id and keep
   // showing; every other record gains an id no binding carries and stays hidden, as it was.
-  if (addColumn(d, "tasks", "shaping_delivery", "TEXT")) {
-    d.exec(`
-      UPDATE tasks SET shaping_delivery = lower(hex(randomblob(16)))
-        WHERE shaping IS NOT NULL AND json_valid(shaping) AND session_id IS NOT NULL
-          AND json_extract(shaping, '$.sessionId') = session_id;
-      UPDATE tasks SET shaping = json_set(shaping, '$.deliveryId', COALESCE(shaping_delivery, lower(hex(randomblob(16)))))
-        WHERE shaping IS NOT NULL AND json_valid(shaping);
-    `);
+  // The column and both updates commit together: the column's presence is what says the
+  // backfill ran, so an upgrade interrupted between them must leave no column behind, and the
+  // next start runs the whole step again.
+  if (!hasColumn(d, "tasks", "shaping_delivery")) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      addColumn(d, "tasks", "shaping_delivery", "TEXT");
+      d.exec(`
+        UPDATE tasks SET shaping_delivery = lower(hex(randomblob(16)))
+          WHERE shaping IS NOT NULL AND json_valid(shaping) AND session_id IS NOT NULL
+            AND json_extract(shaping, '$.sessionId') = session_id;
+        UPDATE tasks SET shaping = json_set(shaping, '$.deliveryId', COALESCE(shaping_delivery, lower(hex(randomblob(16)))))
+          WHERE shaping IS NOT NULL AND json_valid(shaping);
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
   }
   d.exec(`
     CREATE TABLE IF NOT EXISTS task_shaping_text (

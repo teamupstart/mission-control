@@ -612,3 +612,31 @@ test("a schema 47 database stamps the record each task shows now, and leaves eve
   db.openDb();
   assert.equal(db.getTask("upgrade-current")?.shapingDelivery, current.shapingDelivery, "a second open changes nothing");
 });
+
+test("an upgrade stopped inside the delivery-id backfill leaves no column, and the next start runs it whole", () => {
+  db.upsertTask(mkTask({ id: "upgrade-interrupted", status: "running", sessionId: "on-it" }));
+  db.closeDb();
+  const old = new DatabaseSync(dbPath);
+  old.exec("ALTER TABLE tasks DROP COLUMN shaping_delivery");
+  const { deliveryId: _id, ...legacy } = record("on-it");
+  old.prepare(`UPDATE tasks SET shaping = ? WHERE id = 'upgrade-interrupted'`).run(JSON.stringify(legacy));
+  old.exec("PRAGMA user_version = 47");
+  // The process stops at the backfill's second statement, after the column was added and the
+  // binding stamped: the record's own stamp is refused.
+  old.exec(`CREATE TRIGGER stop_in_backfill BEFORE UPDATE OF shaping ON tasks WHEN NEW.id = 'upgrade-interrupted'
+            BEGIN SELECT RAISE(ABORT, 'process stopped'); END;`);
+  old.close();
+  assert.throws(() => db.openDb(), /process stopped/);
+  db.closeDb();
+  const after = new DatabaseSync(dbPath);
+  const columns = (after.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>).map((column) => column.name);
+  assert.equal(columns.includes("shaping_delivery"), false, "the column was rolled back with the backfill");
+  after.exec("DROP TRIGGER stop_in_backfill");
+  after.close();
+  // The next start runs the whole step: the record that showed before the upgrade still shows.
+  db.openDb();
+  const task = db.getTask("upgrade-interrupted")!;
+  assert.ok(task.shaping?.deliveryId);
+  assert.equal(task.shapingDelivery, task.shaping?.deliveryId);
+  assert.equal(currentShaping(task)?.sessionId, "on-it");
+});

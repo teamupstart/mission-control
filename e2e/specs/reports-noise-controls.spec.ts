@@ -421,3 +421,111 @@ test("a refused Mark all read says why in the Reports section and leaves every r
   await expect(toRead(page)).toHaveCount(0);
   for (const id of [first.id, second.id]) expect((await report(daemon, id)).readBy).toBe("mark-all");
 });
+
+test("report guidance that cannot be read says so, and a refused save says why and is never shown as saved", async ({ dashboard: page, daemon }) => {
+  await setInbox(daemon, true);
+  // The read fails: the panel says so and offers no editor to save from.
+  await page.route("**/api/reports/guidance", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "boom" }) });
+  });
+  const unreadable = await openSettingsReports(page, daemon);
+  await expect(unreadable.getByText("The report guidance could not be read.")).toBeVisible();
+  await expect(unreadable.getByRole("textbox", { name: "Report guidance" })).toHaveCount(0);
+  await expect(unreadable.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+  await capture(unreadable, "09-guidance-unreadable", page);
+  await page.unroute("**/api/reports/guidance");
+
+  // The read works again; now the save is refused.
+  await page.reload();
+  const panel = page.getByRole("region", { name: "Reports", exact: true });
+  const box = panel.getByRole("textbox", { name: "Report guidance" });
+  await expect(box).toHaveValue(DEFAULT_REPORT_GUIDANCE);
+  const refusal = "Only the operator can open, mark read, reply to, follow up, publish or mute reports, or change their guidance";
+  await page.route("**/api/reports/guidance", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: refusal }) });
+  });
+  const attempted = "Post a report for every commit you make.";
+  await box.fill(attempted);
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByRole("alert")).toHaveText(refusal);
+  // Not saved: no Saved line, the words stay in the box to try again, and the daemon still
+  // hands new sessions the default.
+  await expect(panel.getByRole("status")).toHaveCount(0);
+  await expect(box).toHaveValue(attempted);
+  await expect(panel.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  expect(await toolGuidance(daemon)).toBe(DEFAULT_REPORT_GUIDANCE);
+  // Evidence only: the clicked Save's tooltip would cover the refusal in the screenshot.
+  if (process.env.MC_E2E_EVIDENCE === "1") await page.addStyleTag({ content: ".tooltip { display: none !important; }" });
+  await capture(panel, "10-guidance-save-refused", page);
+
+  // Let it through: the same Save stores it.
+  await page.unroute("**/api/reports/guidance");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByRole("status")).toHaveText("Saved. Sessions started from now on use this guidance.");
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  await expect.poll(() => toolGuidance(daemon)).toBe(attempted);
+});
+
+test("a refused Mute says why on the card and leaves the report listed; a refused Unmute says why and leaves the agent muted", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const name = "Watch the release branch";
+  const watcher = await agent(daemon, name);
+  await ready(page, daemon);
+  const posted = await post(daemon, watcher, { title: "Release branch is green", body: "All checks passed." });
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
+  const mutes = async () => (await api<{ mutes: Array<{ authorKey: string }> }>(daemon, "/api/reports/mutes")).mutes;
+
+  // Mute is refused.
+  const muteRefusal = "Mission Control could not mute these reports: the database is busy";
+  await page.route("**/api/reports/mutes", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: muteRefusal }) });
+  });
+  const inbox = await openInbox(page);
+  const row = inbox.getByRole("region", { name: `Reports from ${name}` });
+  await row.getByRole("button", { name: "Release branch is green" }).click();
+  await row.getByRole("button", { name: `Mute ${name}'s reports` }).click();
+  await expect(row.getByRole("alert")).toHaveText(muteRefusal);
+  // Nothing was muted: the row, its report, its Mute control and both figures stay.
+  await expect(row.getByRole("button", { name: `Mute ${name}'s reports` })).toBeVisible();
+  await expect(row).toContainText("1 to read");
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  expect(await mutes()).toEqual([]);
+  expect((await report(daemon, posted.id)).readAt).toBeNull();
+  await capture(inbox, "11-mute-refused", page);
+
+  // Let it through: the same control mutes, and the row leaves.
+  await page.unroute("**/api/reports/mutes");
+  await row.getByRole("button", { name: `Mute ${name}'s reports` }).click();
+  await expect(row).toHaveCount(0);
+  expect((await mutes()).map((mute) => mute.authorKey)).toEqual([posted.author.key]);
+  await closeInbox(page);
+
+  // Unmute is refused.
+  const unmuteRefusal = "Mission Control could not unmute these reports: the database is busy";
+  await page.route("**/api/reports/mutes/*", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: unmuteRefusal }) });
+  });
+  const panel = await openSettingsReports(page, daemon);
+  const list = panel.getByRole("list", { name: "Muted agents" });
+  await expect(list.getByText(name, { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: `Unmute ${name}` }).click();
+  await expect(panel.getByRole("alert")).toHaveText(unmuteRefusal);
+  // Still muted: listed here, enabled to try again, kept by the daemon, and its report unlisted.
+  await expect(list.getByText(name, { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: `Unmute ${name}` })).toBeEnabled();
+  expect((await mutes()).map((mute) => mute.authorKey)).toEqual([posted.author.key]);
+  await capture(panel, "12-unmute-refused", page);
+
+  // Let it through: the same control unmutes, and the report is listed again.
+  await page.unroute("**/api/reports/mutes/*");
+  await panel.getByRole("button", { name: `Unmute ${name}` }).click();
+  await expect(panel.getByText("No agent is muted. Mute one from its report card in the inbox.")).toBeVisible();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  expect(await mutes()).toEqual([]);
+  await page.goto(`${daemon.baseURL}/#/`);
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
+});

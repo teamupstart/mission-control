@@ -36,7 +36,12 @@ test("an unset key reads as the shipped defaults", () => {
   assert.equal(config.layout, "board");
   assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
-  assert.deepEqual(config.alerts, { notifications: false, sound: true });
+  assert.deepEqual(config.alerts, {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  });
   assert.deepEqual(config.keybindings, {});
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);

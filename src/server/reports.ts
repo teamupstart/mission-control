@@ -8,6 +8,7 @@ import { INBOX_FLAG } from "@shared/inbox.ts";
 import { launchFailureOutcome } from "@shared/launch-failure.ts";
 import type { PostReportBody } from "@shared/protocol.ts";
 import {
+  REPORT_ANNOUNCE_GRACE_MS,
   REPORT_LIMITS,
   replyRefusal,
   replyTarget,
@@ -18,13 +19,14 @@ import {
   residentAuthorKey,
   sessionAuthorKey,
   type ReplyTarget,
+  type ReportAnnouncement,
   type ReportAuthor,
   type ReportDocumentKind,
   type ReportItem,
   type ReportReadBy,
 } from "@shared/reports.ts";
-import { sessionWorkspaceRoot } from "@shared/session.ts";
-import type { PendingTurn, Session, Task } from "@shared/types.ts";
+import { reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import type { PendingTurn, ServerEvent, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
 import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
@@ -32,6 +34,7 @@ import type { ReportPagePublication, ReportPagePublicationResult } from "./archi
 import type { Registry } from "./registry.ts";
 import { buildReportPage, reportDocumentDir } from "./report-document.ts";
 import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./session-files.ts";
+import { unref } from "./util/timers.ts";
 
 /**
  * Agent reports: what an agent posts with `post_report` for the operator to read.
@@ -39,13 +42,16 @@ import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./s
  * The one owner of the `reports` table. A report is deliberately not a review: it never enters
  * `reviews`, so it raises no `pendingReviews`, holds no completion, counts toward no question
  * limit, closes on no merge, and Foreman (which reads reviews and registered evidence) never sees
- * it. It is also deliberately not session-scoped state: this manager does NOT subscribe to
- * `session_remove`, because a report outlives the session that posted it. Everything a report
+ * it. It is also deliberately not session-scoped state: a session leaving never removes or
+ * clears a report, because a report outlives the session that posted it. Everything a report
  * needs to be drawn after its session is gone - the author's name, task, repository and resident
  * profile - is copied onto the row at post time.
  *
  * `markRead` is the one place a report becomes read. The one way back is a follow-up whose launch
- * failed with no session (`reconcileFollowUp`), so its Retry is offered again.
+ * failed with no session (`reconcileFollowUp`), so its Retry is offered again. `announce` is the
+ * one place a report is stamped `back` or `working`, and the stamp is why this manager watches
+ * session events: a post always happens mid-turn, so whether the agent then stopped is only known
+ * afterwards.
  */
 
 /** A refused post or operator action, with the HTTP status the route answers. */
@@ -136,6 +142,7 @@ interface Row {
   announced_as: string | null;
   announced_at: number | null;
   published_archive_key: string | null;
+  counted_in_digest_at: number | null;
 }
 
 /** How many published reports the startup archive check reads per page. */
@@ -168,12 +175,12 @@ function fromRow(row: Row): ReportItem {
     announcedAs: row.announced_as as ReportItem["announcedAs"],
     announcedAt: nullableNumber(row.announced_at),
     publishedArchiveKey: row.published_archive_key,
+    countedInDigestAt: nullableNumber(row.counted_in_digest_at),
   };
 }
 
-function getRow(id: string): ReportItem | null {
-  const row = openDb().prepare("SELECT * FROM reports WHERE id = ?").get(id) as Row | undefined;
-  return row ? fromRow(row) : null;
+function readRow(id: string): Row | undefined {
+  return openDb().prepare("SELECT * FROM reports WHERE id = ?").get(id) as Row | undefined;
 }
 
 // Where a report's attached document is stored, beside the reader and the page builder that read
@@ -187,15 +194,81 @@ interface StagedDocument {
   bytes: Buffer;
 }
 
+/** The timer the announce grace period runs on, injectable so a test can own the clock. */
+export interface ReportTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const REAL_TIMERS: ReportTimers = {
+  set: (fn, ms) => unref(setTimeout(fn, ms)),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * A report waiting for its announce stamp. `working` is what the session was last seen doing:
+ * `true` once it has been seen working; `false` when what it was seen doing says nothing (an
+ * unconfirmed idle state, as an uninstrumented session always reads); and `null` when its state
+ * is to be read at the next sighting - a report found unstamped at startup, whose session has not
+ * been seen yet, or one posted while the session was in a state that does say something but not
+ * working (confirmed idle, or blocked on you).
+ */
+interface AnnounceWatch {
+  sessionId: string;
+  working: boolean | null;
+  timer: unknown;
+  /**
+   * The report's grace period has ended while its session had still not been seen since a
+   * restart. The session's first sighting then decides the wording at once.
+   */
+  deadlinePassed: boolean;
+  /**
+   * The wording already decided, while its stamp waits to be written again after a failed write.
+   * Later sightings and the grace period no longer change it: only the retry stamps it.
+   */
+  stamping: ReportAnnouncement | null;
+  /** How many times writing that stamp has failed. */
+  failedWrites: number;
+}
+
+/**
+ * How long a stamp whose write failed waits before it is written again: 5 s after the first
+ * failure, doubling each time up to a minute, so a briefly busy database costs seconds.
+ */
+const REPORT_STAMP_RETRY_MS = 5_000;
+const REPORT_STAMP_RETRY_MAX_MS = 60_000;
+/**
+ * Failed writes after which a stamp is given up, about two minutes after the first. A failure
+ * that lasts that long (a read-only state dir, a full disk) is not a busy database, and the report
+ * goes unannounced, as one does when the daemon stops past its deadline: it is still in the
+ * inbox, waiting to be read.
+ */
+const REPORT_STAMP_MAX_FAILED_WRITES = 6;
+
+const isWorking = (session: Session): boolean => reportBucket(session) === "working";
+
+/**
+ * Whether a session's state says nothing about stopping: unconfirmed and idle, as an
+ * uninstrumented session always reads. Blocked on you (a menu, an open question) is evidence of
+ * stopping whatever the hooks say, and a confirmed state is evidence either way.
+ */
+const saysNothing = (session: Session): boolean => !session.stateConfirmed && reportBucket(session) === "idle";
+
+/** How a watch starts from what its session is seen doing: see `AnnounceWatch.working`. */
+const watchStart = (session: Session): boolean | null =>
+  isWorking(session) ? true : saysNothing(session) ? false : null;
+
 export interface ReportManagerOptions {
   /** The state home documents are copied under. Defaults to the daemon's. */
   stateDir?: string;
   now?: () => number;
+  timers?: ReportTimers;
 }
 
 export class ReportManager {
   private readonly stateDir: string;
   private readonly now: () => number;
+  private readonly timers: ReportTimers;
   private readonly stopFlags: () => void;
   private readonly stopTasks: () => void;
   /**
@@ -207,15 +280,44 @@ export class ReportManager {
   private readonly staleFailures = new Map<string, number>();
   /** The follow-up in flight for each report, so two calls for one report run one after the other. */
   private readonly followUps = new Map<string, Promise<FollowUpOutcome>>();
+  private readonly stopEvents: () => void;
+  /** Reports waiting for their announce stamp, by id. Bounded by posts in the last grace period. */
+  private readonly watches = new Map<string, AnnounceWatch>();
+  /**
+   * Digest marks not written to the table yet: report id to when a closed Away window's digest
+   * counted it. The digest waits in the Away watcher's memory until a dashboard claims it, so its
+   * marks wait here beside it and reach the table only once it is claimed (`digestClaimed`). Every
+   * report this manager reads carries them (`item`), so each window is told at once. A daemon
+   * restart before the claim loses the digest and this manager, and the marks go with them: a
+   * report no digest will ever show is not kept quiet as if one had.
+   */
+  private readonly unclaimedDigestMarks = new Map<string, number>();
   /** The publication in flight for each report, chained the same way. */
   private readonly publications = new Map<string, Promise<unknown>>();
 
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
     this.now = options.now ?? Date.now;
+    this.timers = options.timers ?? REAL_TIMERS;
+    this.stopEvents = registry.subscribe((event) => this.observe(event));
     // Every report still waiting to be read is handed to the registry once, so the snapshot
-    // carries it from the first connect after a restart.
-    for (const report of this.listToRead()) this.registry.upsertReport(report);
+    // carries it from the first connect after a restart. One the daemon stopped before stamping
+    // is stamped from its session's state: sessions are re-adopted after startup, so that state
+    // is read when the session is first seen, or when the grace period ends. The grace period
+    // keeps its original deadline, 20 seconds after the post: a restart neither extends it nor
+    // restarts it.
+    //
+    // Only a report whose deadline passed at most one more grace period ago is recovered: that
+    // is a post the restart interrupted. Anything older stays unstamped and silent - every report
+    // posted before stamping existed has no stamp, and stamping a backlog of them on the first
+    // start would raise one notification per report long after anyone needed it.
+    for (const report of this.listToRead()) {
+      this.registry.upsertReport(report);
+      const deadline = report.createdAt + REPORT_ANNOUNCE_GRACE_MS;
+      if (report.announcedAs === null && deadline + REPORT_ANNOUNCE_GRACE_MS >= this.now()) {
+        this.watch(report.id, report.sessionId, null, Math.max(0, deadline - this.now()));
+      }
+    }
     // The snapshot omits reports while the `inbox` flag is off, and the registry sends no report
     // event then. Turning the flag on resends what is waiting, so an open window fills its
     // Reports section and its to read figure without a reload.
@@ -250,31 +352,217 @@ export class ReportManager {
   stop(): void {
     this.stopFlags();
     this.stopTasks();
+    this.stopEvents();
+    for (const watch of this.watches.values()) this.timers.clear(watch.timer);
+    this.watches.clear();
+  }
+
+  /** A stored report as every reader sees it: with its digest mark, claimed or not yet. */
+  private item(row: Row): ReportItem {
+    const report = fromRow(row);
+    const unclaimed = this.unclaimedDigestMarks.get(report.id);
+    return report.countedInDigestAt === null && unclaimed !== undefined
+      ? { ...report, countedInDigestAt: unclaimed }
+      : report;
+  }
+
+  private getRow(id: string): ReportItem | null {
+    const row = readRow(id);
+    return row ? this.item(row) : null;
+  }
+
+  /**
+   * A closed window's return digest has counted these reports. Each is marked and every window is
+   * told, so no window raises a notification for it afterwards, whenever and however its stamp
+   * reaches that window. That includes a report stamped while you were away: a window that missed
+   * the stamp's event, because its stream was down, first sees it stamped in a reconnect snapshot,
+   * and the mark is what keeps that snapshot quiet. The first count's time is kept.
+   *
+   * Held in memory until the digest is claimed (`digestClaimed`), because the digest itself is:
+   * written now, a restart before the claim would lose the digest and keep the mark, so the report
+   * would be announced by neither.
+   */
+  countedInDigest(ids: readonly string[]): void {
+    const at = this.now();
+    for (const id of ids) {
+      if (this.unclaimedDigestMarks.has(id)) continue;
+      const before = this.getRow(id);
+      if (!before || before.countedInDigestAt !== null) continue;
+      this.unclaimedDigestMarks.set(id, at);
+      this.registry.upsertReport({ ...before, countedInDigestAt: at });
+    }
+  }
+
+  /**
+   * A dashboard has claimed the digest: its marks are written to the table, with the time each was
+   * counted, so they now outlive a daemon restart (a window that reloads, reconnects or outlives
+   * the restart stays quiet when a stamp still pending lands). Nothing a window sees changes.
+   */
+  digestClaimed(): void {
+    if (this.unclaimedDigestMarks.size === 0) return;
+    const mark = openDb().prepare(
+      "UPDATE reports SET counted_in_digest_at = ? WHERE id = ? AND counted_in_digest_at IS NULL",
+    );
+    for (const [id, at] of this.unclaimedDigestMarks) mark.run(at, id);
+    this.unclaimedDigestMarks.clear();
+  }
+
+  /** Wait for a report's session to stop, or for the grace period to end, then stamp it. */
+  private watch(id: string, sessionId: string, working: boolean | null, delayMs = REPORT_ANNOUNCE_GRACE_MS): void {
+    const timer = this.timers.set(() => this.graceEnded(id), delayMs);
+    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false, stamping: null, failedWrites: 0 });
+  }
+
+  /**
+   * A session change, read against every report still waiting for its stamp. Leaving working is
+   * what "back" means, so a report is stamped `back` only once its session was seen working and
+   * then not, or once the session is gone. A session never seen working (an uninstrumented one)
+   * gives no such evidence, and its report is announced as still working when the grace ends.
+   */
+  private observe(event: ServerEvent): void {
+    if (this.watches.size === 0) return;
+    if (event.type === "session_remove") {
+      for (const [id, watch] of this.watches) {
+        if (watch.sessionId === event.id && watch.stamping === null) this.announce(id, "back");
+      }
+      return;
+    }
+    if (event.type !== "session_upsert") return;
+    const working = isWorking(event.session);
+    for (const [id, watch] of this.watches) {
+      if (watch.sessionId !== event.session.id || watch.stamping !== null) continue;
+      // Found at startup and first seen idle with an unconfirmed state (uninstrumented, or
+      // re-adopted before a hook confirmed it): that says nothing about stopping, so it is the
+      // same no-evidence case as a post whose session was never seen working. A session blocked
+      // on you (a visible menu, an open question) has stopped whatever its hooks say, and reads
+      // as back below.
+      if (watch.working === null && saysNothing(event.session)) {
+        if (watch.deadlinePassed) this.announce(id, "working");
+        else watch.working = false;
+        continue;
+      }
+      // Unknown (found at startup) reads the state as it is now; otherwise only a change from
+      // working counts. A post that said nothing (unconfirmed idle) reads as stopped as soon
+      // as the session says so: blocked on you, or a hook confirming the turn ended. First seen
+      // working after the deadline already passed, it kept going through the grace period.
+      if (!working && (watch.working !== false || !saysNothing(event.session))) this.announce(id, "back");
+      else if (working && watch.working === null && watch.deadlinePassed) this.announce(id, "working");
+      else if (working) watch.working = true;
+    }
+  }
+
+  private graceEnded(id: string): void {
+    const watch = this.watches.get(id);
+    if (!watch) return;
+    if (watch.stamping !== null) {
+      this.announce(id, watch.stamping);
+      return;
+    }
+    const session = this.registry.getSession(watch.sessionId);
+    // Found at startup, and its session not re-adopted yet: absence says nothing so soon after a
+    // restart. Its first sighting decides the wording, and a session still unseen one grace
+    // period later is taken to be gone.
+    if (!session && watch.working === null && !watch.deadlinePassed) {
+      watch.deadlinePassed = true;
+      watch.timer = this.timers.set(() => this.graceEnded(id), REPORT_ANNOUNCE_GRACE_MS);
+      return;
+    }
+    const gone = !session || session.state === "exited";
+    // A report found at startup is stamped from the state its session has now; one watched since
+    // its post kept going through the whole grace period.
+    if (gone) this.announce(id, "back");
+    // An unconfirmed state is no evidence the session stopped.
+    else if (watch.working === null) {
+      this.announce(id, isWorking(session) || saysNothing(session) ? "working" : "back");
+    }
+    else this.announce(id, "working");
+  }
+
+  /**
+   * Stamp how a report is announced, once, and tell every window: the stamp is what raises the
+   * report's notification. A report read or replaced before its stamp is left unstamped, since
+   * there is nothing left to announce.
+   *
+   * Called from the registry's event loop and from timers, so it never throws. A failed write (a
+   * busy database) keeps the watch, with its wording decided, and writes the same stamp again
+   * shortly, backing off: dropping it at once would leave the report never announced. A write
+   * still failing after `REPORT_STAMP_MAX_FAILED_WRITES` attempts is given up with one last log.
+   */
+  private announce(id: string, as: ReportAnnouncement): void {
+    const watch = this.watches.get(id);
+    let changed: boolean;
+    try {
+      changed = openDb().prepare(
+        `UPDATE reports SET announced_as = ?, announced_at = ?
+         WHERE id = ? AND announced_as IS NULL AND read_at IS NULL AND superseded_by IS NULL`,
+      ).run(as, this.now(), id).changes > 0;
+    } catch (err) {
+      if (!watch) {
+        console.error(`[reports] stamping ${id} failed:`, err);
+        return;
+      }
+      this.timers.clear(watch.timer);
+      watch.failedWrites += 1;
+      if (watch.failedWrites >= REPORT_STAMP_MAX_FAILED_WRITES) {
+        this.watches.delete(id);
+        console.error(`[reports] stamping ${id} failed ${watch.failedWrites} times; giving up, so it will not notify:`, err);
+        return;
+      }
+      console.error(`[reports] stamping ${id} failed; trying again:`, err);
+      watch.stamping = as;
+      const delay = Math.min(REPORT_STAMP_RETRY_MS * 2 ** (watch.failedWrites - 1), REPORT_STAMP_RETRY_MAX_MS);
+      watch.timer = this.timers.set(() => this.graceEnded(id), delay);
+      return;
+    }
+    if (watch) this.timers.clear(watch.timer);
+    this.watches.delete(id);
+    if (!changed) return;
+    // Stamped: a failed read now costs only this event, and a window's next snapshot carries it.
+    try {
+      const report = this.getRow(id);
+      if (report) this.registry.upsertReport(report);
+    } catch (err) {
+      console.error(`[reports] reading ${id} after its stamp failed:`, err);
+    }
   }
 
   get(id: string): ReportItem | null {
-    return getRow(id);
+    return this.getRow(id);
+  }
+
+  /**
+   * A report, and the latest report of its chain when it has been replaced, so a notification
+   * raised for an earlier version can open the one that took its place. Null for an unknown id.
+   */
+  resolve(id: string): { report: ReportItem; latest: ReportItem | null } | null {
+    const report = this.getRow(id);
+    if (!report) return null;
+    if (report.supersededBy === null) return { report, latest: null };
+    const row = openDb()
+      .prepare("SELECT * FROM reports WHERE root_id = ? AND superseded_by IS NULL ORDER BY seq DESC LIMIT 1")
+      .get(report.rootId) as Row | undefined;
+    return { report, latest: row ? this.item(row) : null };
   }
 
   /** Every report waiting to be read, oldest first. */
   listToRead(): ReportItem[] {
     return (openDb()
       .prepare("SELECT * FROM reports WHERE read_at IS NULL AND superseded_by IS NULL ORDER BY seq")
-      .all() as unknown as Row[]).map(fromRow);
+      .all() as unknown as Row[]).map((row) => this.item(row));
   }
 
   /** Every report a session posted, every version, read or not, oldest first. */
   listForSession(sessionId: string): ReportItem[] {
     return (openDb()
       .prepare("SELECT * FROM reports WHERE session_id = ? ORDER BY seq")
-      .all(sessionId) as unknown as Row[]).map(fromRow);
+      .all(sessionId) as unknown as Row[]).map((row) => this.item(row));
   }
 
   /** One author's reports that are still waiting to be read, which are the ones it may replace. */
   private openReportsBy(authorKey: string): ReportItem[] {
     return (openDb()
       .prepare("SELECT * FROM reports WHERE author_key = ? AND read_at IS NULL AND superseded_by IS NULL ORDER BY seq")
-      .all(authorKey) as unknown as Row[]).map(fromRow);
+      .all(authorKey) as unknown as Row[]).map((row) => this.item(row));
   }
 
   /** Who a session is, as a report records it: a resident by its profile, anything else by itself. */
@@ -307,7 +595,7 @@ export class ReportManager {
       result = inTransaction(() => {
         // Re-checked inside the transaction: a Mark read or another replacement that landed while
         // the document was being read must not leave two latest reports in one chain.
-        const current = replaced ? getRow(replaced.id) : null;
+        const current = replaced ? this.getRow(replaced.id) : null;
         if (replaced && (!current || !reportToRead(current))) {
           throw new ReportRefusal(this.replaceRefusal(author, input.replaces!), 409);
         }
@@ -333,7 +621,7 @@ export class ReportManager {
           this.storeDocument(id, document);
           storedDir = reportDocumentDir(id, this.stateDir);
         }
-        return { created: getRow(id)!, superseded: replaced ? getRow(replaced.id) : null };
+        return { created: this.getRow(id)!, superseded: replaced ? this.getRow(replaced.id) : null };
       });
     } catch (error) {
       // The row was rolled back (`inTransaction` rolls back on a throw from the callback and on
@@ -344,12 +632,16 @@ export class ReportManager {
     const { created, superseded } = result;
     if (superseded) this.registry.upsertReport(superseded);
     this.registry.upsertReport(created);
+    const live = this.registry.getSession(session.id) ?? session;
+    // Posted mid-turn, so the state now is either working, no evidence, or one that says the
+    // session has stopped (confirmed idle, or blocked on you), read the same way a restart reads it.
+    this.watch(created.id, session.id, watchStart(live));
     return created;
   }
 
   /** The report `replaces` names, when this author may replace it. */
   private replaceable(author: ReportAuthor, id: string): ReportItem {
-    const prior = getRow(id);
+    const prior = this.getRow(id);
     if (!prior || prior.author.key !== author.key || !reportToRead(prior)) {
       throw new ReportRefusal(this.replaceRefusal(author, id), 409);
     }
@@ -415,7 +707,7 @@ export class ReportManager {
   markOpened(id: string): ReportItem | null {
     const changed = openDb().prepare("UPDATE reports SET opened_at = ? WHERE id = ? AND opened_at IS NULL")
       .run(this.now(), id).changes > 0;
-    const report = getRow(id);
+    const report = this.getRow(id);
     if (changed && report) this.registry.upsertReport(report);
     return report;
   }
@@ -427,7 +719,7 @@ export class ReportManager {
   markRead(id: string, readBy: ReportReadBy): ReportItem | null {
     const changed = openDb().prepare("UPDATE reports SET read_at = ?, read_by = ? WHERE id = ? AND read_at IS NULL")
       .run(this.now(), readBy, id).changes > 0;
-    const report = getRow(id);
+    const report = this.getRow(id);
     if (changed && report) this.registry.upsertReport(report);
     return report;
   }
@@ -466,7 +758,7 @@ export class ReportManager {
         const reopened = openDb()
           .prepare("UPDATE reports SET read_at = NULL, read_by = NULL WHERE id = ? AND read_by = 'follow-up'")
           .run(id).changes > 0;
-        const report = getRow(id);
+        const report = this.getRow(id);
         if (reopened && report) this.registry.upsertReport(report);
       }
       return;
@@ -507,7 +799,7 @@ export class ReportManager {
            read_by = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_by END
          WHERE id = ? AND follow_up_task_id = ?`,
       ).run(id, taskId).changes > 0;
-      const report = getRow(id);
+      const report = this.getRow(id);
       if (changed && report) this.registry.upsertReport(report);
     }
   }
@@ -524,7 +816,7 @@ export class ReportManager {
    * stays unread.
    */
   reply(id: string, words: string, submit: SubmitOperatorTurn): { report: ReportItem; sessionId: string; pendingTurn: PendingTurn | null } {
-    const report = getRow(id);
+    const report = this.getRow(id);
     if (!report) throw new ReportRefusal("no such report", 404);
     // Only a report still waiting is answered: a reply to a replaced version would restate what
     // the agent has since corrected, and one to a read report would not say how it was cleared.
@@ -553,7 +845,7 @@ export class ReportManager {
       // follow-up, or naming its task (the card's Retry) after a refused or failed dispatch. Not
       // before: a report naming a task and still unread reads as "created but not started", so
       // publishing it while the dispatch is still in flight would flash that on success.
-      const settled = getRow(id);
+      const settled = this.getRow(id);
       if (settled) this.registry.upsertReport(settled);
     });
     this.followUps.set(id, run);
@@ -566,7 +858,7 @@ export class ReportManager {
   private async runFollowUp(id: string, words: string, port: FollowUpTaskPort): Promise<FollowUpOutcome> {
     const refuse = (status: 404 | 409, error: string, report: ReportItem | null): FollowUpOutcome =>
       ({ ok: false, status, error, report, taskId: report?.followUpTaskId ?? null });
-    let report = getRow(id);
+    let report = this.getRow(id);
     if (!report) return refuse(404, "no such report", null);
     if (report.author.residentProfileId !== null) {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
@@ -579,7 +871,7 @@ export class ReportManager {
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
       if (report.readBy === "follow-up") return refuse(409, "This report has already been read.", report);
       this.forgetFollowUpTask(report.followUpTaskId, "removed");
-      report = getRow(id)!;
+      report = this.getRow(id)!;
       if (!words.trim()) {
         return refuse(409, "The follow-up task was deleted or cancelled. Write what the follow-up should do and start a new one.", report);
       }
@@ -620,13 +912,13 @@ export class ReportManager {
           if (!stamped) throw new ReportRefusal("a follow-up task was already started for this report", 409);
         });
       } catch (error) {
-        if (error instanceof ReportRefusal) return refuse(error.status === 404 ? 404 : 409, error.message, getRow(id));
+        if (error instanceof ReportRefusal) return refuse(error.status === 404 ? 404 : 409, error.message, this.getRow(id));
         throw error;
       }
-      if (!created.ok) return { ok: false, status: created.status, error: created.error, report: getRow(id), taskId: null };
+      if (!created.ok) return { ok: false, status: created.status, error: created.error, report: this.getRow(id), taskId: null };
       taskId = created.taskId;
       // Not published yet: `followUp` publishes the report once the dispatch has an outcome.
-      report = getRow(id)!;
+      report = this.getRow(id)!;
     }
     // A follow-up whose dispatch succeeded marked the report read with "follow-up" in the same
     // step, so that stamp, not the task row (which the launch updates later), says it was sent.
@@ -638,7 +930,7 @@ export class ReportManager {
       else this.staleFailures.delete(taskId);
       const dispatched = await port.dispatch(taskId);
       if (!dispatched.ok) {
-        return { ok: false, status: 409, error: dispatched.error, report: getRow(id), taskId };
+        return { ok: false, status: 409, error: dispatched.error, report: this.getRow(id), taskId };
       }
     }
     this.markRead(id, "follow-up");
@@ -646,7 +938,7 @@ export class ReportManager {
     // when the task event found nothing to reopen. Reconciled now from the task's record.
     const task = this.registry.getTask(taskId);
     if (task) this.reconcileFollowUp(task);
-    return { ok: true, report: getRow(id) ?? report, taskId };
+    return { ok: true, report: this.getRow(id) ?? report, taskId };
   }
 
   /**
@@ -660,7 +952,7 @@ export class ReportManager {
     if (rows.length === 0) return;
     openDb().prepare("UPDATE reports SET published_archive_key = NULL WHERE published_archive_key = ?").run(key);
     for (const { id } of rows) {
-      const report = getRow(id);
+      const report = this.getRow(id);
       if (report) this.registry.upsertReport(report);
     }
   }
@@ -732,7 +1024,7 @@ export class ReportManager {
     const cleared: string[] = [];
     for (const { id, archiveKey } of this.publishedReports(keys)) {
       const gone = await this.inPublicationQueue(id, async () => {
-        if (getRow(id)?.publishedArchiveKey !== archiveKey) return false;
+        if (this.getRow(id)?.publishedArchiveKey !== archiveKey) return false;
         // A check that fails (the library unreadable right now) is not an absence: that key is
         // left alone and the next check decides.
         let present: boolean;
@@ -746,7 +1038,7 @@ export class ReportManager {
         const changed = openDb()
           .prepare("UPDATE reports SET published_archive_key = NULL WHERE id = ? AND published_archive_key = ?")
           .run(id, archiveKey).changes > 0;
-        const report = changed ? getRow(id) : null;
+        const report = changed ? this.getRow(id) : null;
         if (report) this.registry.upsertReport(report);
         return changed;
       });
@@ -758,7 +1050,7 @@ export class ReportManager {
   private async runPublish(id: string, port: ReportPublisherPort): Promise<PublishOutcome> {
     const refuse = (status: Exclude<PublishOutcome, { ok: true }>["status"], problems: string[], report: ReportItem | null): PublishOutcome =>
       ({ ok: false, status, error: problems[0] ?? "the report could not be published", problems, report });
-    const report = getRow(id);
+    const report = this.getRow(id);
     if (!report) return refuse(404, ["no such report"], null);
     if (!report.document) return refuse(409, ["This report has no attached document, so there is nothing to publish."], report);
     if (report.publishedArchiveKey) {
@@ -788,10 +1080,10 @@ export class ReportManager {
       session: { id: report.sessionId, name: report.author.name, taskId: report.taskId },
       repositoryLabel: report.repository ? basename(report.repository) : null,
     });
-    if (!published.ok) return refuse(published.status, published.problems, getRow(id));
+    if (!published.ok) return refuse(published.status, published.problems, this.getRow(id));
     openDb().prepare("UPDATE reports SET published_archive_key = ? WHERE id = ? AND published_archive_key IS NULL")
       .run(published.key, id);
-    const stamped = getRow(id)!;
+    const stamped = this.getRow(id)!;
     this.registry.upsertReport(stamped);
     return { ok: true, report: stamped, archiveKey: stamped.publishedArchiveKey ?? published.key, replayed: published.replayed };
   }

@@ -37,7 +37,9 @@ import {
 import { subagentActivityLine } from "@shared/subagents.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
-import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
+import { api, acknowledgeTelemetryOrganizationNotice, fetchReport, fetchRepos } from "./lib/api.ts";
+import { pinnedToShow, placeReport, reportToShow, resolvedReport, type ReportPlacement } from "./lib/report-notification.ts";
+import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { useAttentionDismissals } from "./useAttentionDismissals.ts";
@@ -52,7 +54,7 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { ReportDocumentReader } from "./components/ReportDocumentReader.tsx";
 import type { ReportPublishState } from "./lib/sessionReports.ts";
-import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
+import { AttentionInbox, type InboxReportControls, type PinnedReport } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
@@ -419,7 +421,7 @@ export function App(): React.JSX.Element {
   const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
-  const { away, setAway, digest, dismissDigest, buffered } = useAwayMode();
+  const { away, setAway, digest, dismissDigest, buffered, returning: returningFromAway } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
@@ -430,11 +432,25 @@ export function App(): React.JSX.Element {
   const alertScope = useMemo(
     () => ({
       sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
-      ...(inboxNames ? { names: residentRuns } : {}),
+      // Reports too: a report's announce stamp raises its notification, whether or not reports
+      // are listed in the inbox.
+      ...(inboxNames ? { names: residentRuns, reports } : {}),
+      // When this scope was built, so a report posted and stamped inside one batch of events is
+      // still news (see `AlertScope.takenAt`).
+      takenAt: Date.now(),
     }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns],
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns, reports],
   );
-  useNotifier(alertScope, alertSettings, hasSnapshot);
+  // What a click on a report notification does. Assigned further down, once the inbox's fold
+  // exists; the notifier reads it when the click lands, so the toast never holds a stale one.
+  const openReportFromNotification = useRef<(reportId: string) => void>(() => undefined);
+  useNotifier(alertScope, alertSettings, hasSnapshot, {
+    notify: inboxNames ? alertSettings.notify : null,
+    // Still away until the daemon has closed the window and marked what its digest counted, and
+    // unknown (null) until its first answer, so a report stamped during page load waits for it.
+    away: away === null ? null : away.away || returningFromAway,
+    onOpenReport: (reportId) => openReportFromNotification.current(reportId),
+  });
   const { bindings } = useKeybindings();
   useEffect(() => {
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
@@ -513,6 +529,37 @@ export function App(): React.JSX.Element {
     if (successor) setOpenReportId(successor.id);
   }, [reports, openReportId]);
   const reportOpenPosted = useRef(new Set<string>());
+  // Record the first time the operator opened a report, whichever way they opened it.
+  const recordReportOpened = useCallback((report: ReportItem) => {
+    if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
+    reportOpenPosted.current.add(report.id);
+    void api.openReport(report.id).then((result) => {
+      if (!result.ok) reportOpenPosted.current.delete(report.id);
+    });
+  }, []);
+  // The report a notification opened that the inbox does not list, drawn on its own above the
+  // sections. Gone when the inbox closes; a fetch still in flight then is dropped by its number.
+  const [pinnedReport, setPinnedReport] = useState<PinnedReport | null>(null);
+  const pinnedRequest = useRef(0);
+  const inboxOpen = inbox !== null;
+  useEffect(() => {
+    if (inboxOpen) return;
+    pinnedRequest.current += 1;
+    setPinnedReport(null);
+  }, [inboxOpen]);
+  // An action on the pinned report (Mark read, a reply, a follow-up) takes it out of `reports`,
+  // which holds only reports waiting to be read, so the band would fall back to its copy from the
+  // click, unread. Re-read it from the daemon instead. A band showing another report, or none,
+  // by the time the read lands is left alone.
+  const refreshPinned = useCallback((id: string) => {
+    void fetchReport(id).then((answer) => {
+      if (!answer) return;
+      setPinnedReport((current) =>
+        current?.status === "ready" && current.report.id === id
+          ? { status: "ready", report: answer.latest ?? answer.report }
+          : current);
+    });
+  }, []);
   // The report whose attached document the reader is showing, if any.
   const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
   // Publish as scout's state per report id. Held here, not in the card, so a refusal or a request
@@ -524,35 +571,28 @@ export function App(): React.JSX.Element {
   // session or resident run changing, does not hand the open conversation new controls and
   // re-merge its transcript. Everything here depends only on the open report and stable setters.
   const reportEntryControls = useMemo<ReportEntryControls>(() => {
-    // Record the first time the operator opened a report, whichever way they opened it.
-    const postOpened = (report: AgentReport) => {
-      if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
-      reportOpenPosted.current.add(report.id);
-      void api.openReport(report.id).then((result) => {
-        if (!result.ok) reportOpenPosted.current.delete(report.id);
-      });
-    };
     return {
       openReportId,
       onToggle: (report) => {
         const opening = openReportId !== report.id;
         setOpenReportId(opening ? report.id : null);
         openReportRoot.current = opening ? report.rootId : null;
-        if (opening) postOpened(report);
+        if (opening) recordReportOpened(report);
       },
       // Open report: the stored copy of its document. Posts opened, and never marks it read.
       onOpenDocument: (report) => {
         setDocumentReport(report);
-        postOpened(report);
+        recordReportOpened(report);
       },
       onMarkRead: async (report) => {
         const result = await api.markReportRead(report.id);
         if (!result.ok) return result.error ?? "Could not mark the report read";
         setOpenReportId((current) => (current === report.id ? null : current));
+        refreshPinned(report.id);
         return null;
       },
     };
-  }, [openReportId]);
+  }, [openReportId, recordReportOpened, refreshPinned]);
   // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up, and
   // Publish as scout. The card's draft lives in its own store (`lib/reportDrafts.ts`), so typing
   // re-renders the card alone; a send that is accepted clears it here.
@@ -566,6 +606,7 @@ export function App(): React.JSX.Element {
       if (!result.ok) return result.error ?? "Could not send the reply";
       clearReportDraft(report.rootId);
       setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
       return null;
     },
     onFollowUp: async (report, text) => {
@@ -573,6 +614,7 @@ export function App(): React.JSX.Element {
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
       clearReportDraft(report.rootId);
       setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
       return null;
     },
     // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
@@ -599,7 +641,7 @@ export function App(): React.JSX.Element {
       setInbox(null);
       navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
-  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate]);
+  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate, refreshPinned]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -3089,8 +3131,10 @@ export function App(): React.JSX.Element {
             tasks,
             dismissed: attentionDismissals.dismissed,
             // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
-            // read figure, whatever the window was told before the flag went off.
-            ...(inboxNames ? { reports } : {}),
+            // read figure, whatever the window was told before the flag went off. "Agent reports
+            // are listed in the inbox" off does the same without marking anything read; each
+            // conversation keeps its reports.
+            ...(inboxNames && alertSettings.reportsInInbox ? { reports } : {}),
             // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
             ...(inboxNames && stalls ? { stalls } : {}),
           }),
@@ -3106,9 +3150,59 @@ export function App(): React.JSX.Element {
       residentRuns,
       attentionDismissals.dismissed,
       inboxNames,
+      alertSettings.reportsInInbox,
       reports,
     ],
   );
+  const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
+  // The band's report as the window's state moves on: followed to its replacement, and gone once
+  // a Reports row lists it (`pinnedToShow`).
+  const pinnedBand = useMemo<PinnedReport | null>(() => {
+    if (pinnedReport?.status !== "ready") return pinnedReport;
+    const report = pinnedToShow(pinnedReport.report, reportsById, attention);
+    return report ? { status: "ready", report } : null;
+  }, [pinnedReport, reportsById, attention]);
+  // The pin follows what the band draws: once it draws a replacement (or a newer copy), that is
+  // what it falls back to when the report later leaves the waiting reports, never the version it
+  // replaced.
+  useEffect(() => {
+    if (pinnedReport?.status !== "ready" || pinnedBand?.status !== "ready") return;
+    if (pinnedBand.report !== pinnedReport.report) setPinnedReport({ status: "ready", report: pinnedBand.report });
+  }, [pinnedBand, pinnedReport]);
+  // Read when a report notification is clicked, which may be long after it was raised: the flag,
+  // the reports and the fold are taken as they are at the click.
+  const notificationReads = useRef({ inboxOn: inboxNames, reportsById, attention });
+  notificationReads.current = { inboxOn: inboxNames, reportsById, attention };
+  openReportFromNotification.current = (reportId) => {
+    // With the flag off at the click, the toast only focused the window.
+    if (!notificationReads.current.inboxOn) return;
+    // Opens the inbox if it is closed; one already open keeps whatever it was asked to focus.
+    setInbox((current) => current ?? { focusSessionId: null });
+    const show = ({ where, report }: ReportPlacement) => {
+      setPinnedReport(where === "band" ? { status: "ready", report } : null);
+      // Opened as a click on its row would open it: recorded once, never marked read.
+      setOpenReportId(report.id);
+      openReportRoot.current = report.rootId;
+      recordReportOpened(report);
+    };
+    const request = ++pinnedRequest.current;
+    const found = reportToShow(reportId, notificationReads.current.reportsById, notificationReads.current.attention);
+    if (found.where !== "fetch") {
+      show(found);
+      return;
+    }
+    // Already read, or replaced by a report this window never saw: the daemon resolves it.
+    setPinnedReport({ status: "loading" });
+    void fetchReport(reportId).then((answer) => {
+      if (request !== pinnedRequest.current) return;
+      if (!answer) {
+        setPinnedReport({ status: "failed" });
+        return;
+      }
+      const now = notificationReads.current;
+      show(placeReport(resolvedReport(answer, now.reportsById), now.attention));
+    });
+  };
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
   const scheduleAttentionCount = useMemo(
@@ -5513,6 +5607,7 @@ export function App(): React.JSX.Element {
                   onReplyBox={noteInboxReplyBox}
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
+                  pinned={pinnedBand}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from

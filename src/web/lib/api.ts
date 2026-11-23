@@ -780,6 +780,12 @@ export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
  */
 export const fetchAwayBuffer = () => fetchJson<AwayBufferSummary>("/api/away/buffer");
 /**
+ * One agent report, read or not, and the latest of its chain when it was replaced. What a report
+ * notification opens when this window no longer holds the report. Null on any failure.
+ */
+export const fetchReport = (id: string) =>
+  fetchJson<{ report: ReportItem; latest: ReportItem | null }>(`/api/reports/${encodeURIComponent(id)}`);
+/**
  * The sessions the daemon currently reads as stuck. Fetched rather than derived:
  * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
  * SSE change comparison, so the session stream cannot carry the signal.

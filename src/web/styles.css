@@ -42370,3 +42370,35 @@ body.foreman-sidecar-open .modal-backdrop {
 .pinned-plan-change .field { margin: 10px 0; }
 .pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .pinned-plan-change p { margin: 10px 0; }
+
+/* A Stuck row (`inbox` flag): the stall rules fired, and the fix is on the row. The accent the
+   fleet uses for "needs you", because every control here settles it from this list. */
+.inbox-stuck {
+  border-left: 3px solid var(--attention);
+}
+.inbox-stuck-reason {
+  color: var(--fg);
+}
+.inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.inbox-actions:empty {
+  display: none;
+}
+.inbox-message {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.inbox-message-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+}

@@ -168,7 +168,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
-| `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards. Agent reports and Stuck rows join it in later releases | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent) |
+| `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards; the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`. Agent reports join it in a later release | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent), [Stuck rows](attention-and-alerts.md#stuck-rows) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
@@ -178,6 +178,9 @@ a toggle reaches a second window without a reload, and the `/api/shaping` gate f
 and reaches a second window without a reload, and that the panel's filter finds it.
 `e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
 modal header, the question card, an alert's title, and a resident's board colour.
+`e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
+**to answer**, Continue reaching the agent, Mark done, the row leaving when the session works,
+Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
 

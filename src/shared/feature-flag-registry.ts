@@ -87,9 +87,10 @@ export const FEATURE_FLAGS = [
     label: "Reports and inbox upgrades",
     description:
       "One rule names an agent in alert titles, the attention inbox, the review modal and question cards: " +
-      "its resident name in its board colour, else its task title, else its session name.",
+      "its resident name in its board colour, else its task title, else its session name. Stalled " +
+      "sessions get a Stuck section in the inbox with the fix on each row.",
     stage: "preview",
-    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident"],
+    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "stuck", "stall"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

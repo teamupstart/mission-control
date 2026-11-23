@@ -2888,10 +2888,14 @@ export function App(): React.JSX.Element {
             pipelineCommissions,
             tasks,
             dismissed: attentionDismissals.dismissed,
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
+            ...(inboxNames && stalls ? { stalls } : {}),
           }),
     [
       sessions,
       answerableReviews,
+      inboxNames,
+      stalls,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,

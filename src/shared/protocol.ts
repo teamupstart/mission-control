@@ -1,6 +1,7 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import { INBOX_MESSAGE_KINDS, type InboxMessageKind } from "./inbox.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -457,6 +458,16 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
 /** A message the user sends into a session from the dashboard. */
+/**
+ * A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The text is
+ * the daemon's, chosen by kind, so a caller can never send other words under the
+ * daemon-written turn prefix.
+ */
+export const InboxMessageSchema = z.object({
+  kind: z.enum(INBOX_MESSAGE_KINDS as [InboxMessageKind, ...InboxMessageKind[]]),
+});
+export type InboxMessageInput = z.infer<typeof InboxMessageSchema>;
+
 export const SendTextSchema = z.object({
   text: z.string().min(1),
   /** Whether to submit (press Enter) after typing. Default true. */

@@ -13,6 +13,7 @@ import {
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import type { Stall } from "@shared/stall.ts";
 import { stateDisplay } from "./format.ts";
 import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
@@ -151,6 +152,19 @@ export type AttentionItem =
       activity: string | null;
     }
   | {
+      /**
+       * A session the daemon's stall rules flagged (`inbox` flag). One row per stuck session,
+       * naming the rule that fired and carrying its facts, so the card offers the fix in place.
+       * It claims its session before the backstop runs, so a stuck session that is also amber is
+       * drawn here and not again under Waiting on you.
+       */
+      kind: "session_stuck";
+      id: string;
+      session: Session;
+      stall: Stall;
+      context: string | null;
+    }
+  | {
       kind: "parked_finalization";
       id: string;
       runId: string;
@@ -175,6 +189,7 @@ export const INBOX_SECTION_ORDER = [
   "pipeline_commission",
   "pipeline_halt",
   "session_blocked",
+  "session_stuck",
   "parked_finalization",
 ] as const satisfies readonly AttentionItem["kind"][];
 
@@ -264,6 +279,12 @@ export interface AttentionInput {
    * that predates dismissal already gets.
    */
   dismissed?: ReadonlyMap<string, string>;
+  /**
+   * The daemon's current stalls (`GET /api/away/stalls`), passed only while the `inbox` flag is
+   * on. Absent, or with stall detection off, the fold draws no Stuck rows and is the fold every
+   * caller that predates them already gets.
+   */
+  stalls?: readonly Stall[];
 }
 
 /**
@@ -313,6 +334,11 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       return [{ itemId: item.id, occurrence: occurrenceOf(item.session.state, item.activity) }];
     case "parked_finalization":
       return [{ itemId: item.id, occurrence: occurrenceOf(item.error) }];
+    case "session_stuck":
+      // The rule and its clock-free facts, never the sentence: the sentence carries the minutes,
+      // so a dismissed row keyed on it would come back every minute. A stall from a daemon that
+      // predates fingerprints falls back to the sentence, which is the most it can say.
+      return [{ itemId: item.id, occurrence: occurrenceOf(item.stall.kind, item.stall.fingerprint ?? item.stall.reason) }];
   }
 }
 
@@ -373,7 +399,9 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  *  4. **Pipeline lifecycle** - a commission whose provider lifecycle needs a person.
  *  5. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
  *  6. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  7. **Parked finalizations** - a stuck destructive step.
+ *  7. **Stuck sessions** - the daemon's stall rules fired (`inbox` flag); derived before the
+ *     backstop so a stuck session is not drawn twice.
+ *  8. **Parked finalizations** - a stuck destructive step.
  *
  * The five that predate pipelines keep their relative order exactly: the pipeline sections were
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
@@ -533,6 +561,27 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
+  // (7) Sessions the daemon's stall rules flagged, while the `inbox` flag passes them in. Derived
+  // BEFORE the backstop for the reason the pipeline sections are: the backstop claims what
+  // nothing else did, and a stuck session it had already drawn as "Waiting on you" would be one
+  // problem shown twice. A session with questions keeps its question row; only the backstop
+  // yields. A stall for a session the fleet no longer holds, or one on its way out, is dropped:
+  // there is nothing left to nudge. Longest stuck leads; ties break on the session id.
+  for (const stall of [...(input.stalls ?? [])].sort(
+    (a, b) => b.forMs - a.forMs || (a.sessionId < b.sessionId ? -1 : 1),
+  )) {
+    const session = sessionById.get(stall.sessionId);
+    if (!session || isSettling(session)) continue;
+    represented.add(session.id);
+    items.push({
+      kind: "session_stuck",
+      id: `stuck:${session.id}`,
+      session,
+      stall,
+      context: contextFor(session),
+    });
+  }
+
   // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
@@ -557,7 +606,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (7) A finalization that stopped on an error. The run is past its decision and holding a
+  // (8) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)

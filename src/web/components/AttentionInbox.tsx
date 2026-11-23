@@ -21,6 +21,7 @@ import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
+import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
   QUESTION_ACTION_COPY,
@@ -70,6 +71,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   pipeline_halt: "Pipeline halts",
   pipeline_commission: "Pipeline lifecycle",
   session_blocked: "Waiting on you",
+  session_stuck: "Stuck",
   parked_finalization: "Stuck finalizations",
 };
 
@@ -81,6 +83,9 @@ export function AttentionInbox({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
+  onOpenRun = (runId) => {
+    window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
+  },
 }: {
   fold: AttentionFold;
   /**
@@ -100,6 +105,8 @@ export function AttentionInbox({
   /** Focus a session on the fleet. */
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission?: (commissionId: string) => void;
+  /** Open a workflow run on the Runs page, for a Stuck row about a parked run. */
+  onOpenRun?: (runId: string) => void;
 }): React.JSX.Element {
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
@@ -132,6 +139,7 @@ export function AttentionInbox({
     });
   };
   let section: AttentionItem["kind"] | null = null;
+  const inboxOn = useFeatureFlag(INBOX_FLAG);
 
   return (
     <Overlay
@@ -157,7 +165,11 @@ export function AttentionInbox({
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
-          <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
+          <span className="dim">
+            {inboxOn
+              ? " · answers, decisions, halts, stuck sessions and stuck finalizations"
+              : " · answers, decisions, halts and stuck finalizations"}
+          </span>
           {snoozed.length > 0 && <span className="dim"> · {snoozed.length} snoozed</span>}
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
@@ -186,6 +198,8 @@ export function AttentionInbox({
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
+                onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+                onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
               {saysNothingNew(item, refused.get(item.id)?.said) && (
@@ -252,6 +266,7 @@ function inboxSubject(item: AttentionItem): string {
     case "session_reviews":
     case "session_dialog":
     case "session_blocked":
+    case "session_stuck":
       return item.session.name || "(unnamed)";
   }
 }
@@ -294,6 +309,8 @@ function InboxItem({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission,
+  onOpenRun,
+  onDismiss,
   onLeave,
 }: {
   item: AttentionItem;
@@ -302,11 +319,28 @@ function InboxItem({
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
+  onOpenRun: (runId: string) => void;
+  /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
+  onDismiss: () => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
-  const subject = <AgentName view={useInboxSubject(item)} />;
+  const subjectView = useInboxSubject(item);
+  const subject = <AgentName view={subjectView} />;
   switch (item.kind) {
+    case "session_stuck":
+      // Draws its own Dismiss, like every other control on it, from the action registry.
+      return (
+        <StuckCard
+          session={item.session}
+          stall={item.stall}
+          context={item.context}
+          subject={subjectView}
+          onOpenSession={onOpenSession}
+          onOpenRun={onOpenRun}
+          onDismiss={onDismiss}
+        />
+      );
     case "pipeline_commission":
       return (
         <section className="inbox-item inbox-halt">

@@ -1,4 +1,5 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { OpenQuestionLimitError } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
@@ -206,6 +207,7 @@ import {
   UpdateScheduleSchema,
   SelectOptionSchema,
   SendTextSchema,
+  InboxMessageSchema,
   OpenSessionFileSchema,
   ArchiveSearchQuerySchema,
   RenameArchiveSchema,
@@ -6281,6 +6283,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The request
+  // names a kind; the outbox picks the words and records them as daemon-written, so the agent's
+  // prompt hook never takes them for the operator's Goal. A free-form reply from the same row
+  // goes through /send like any other message.
+  app.post("/api/sessions/:id/inbox-message", async (c) => {
+    if (!featureEnabled(INBOX_FLAG)) return c.json({ ok: false, error: "the inbox preview flag is off" }, 403);
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ ok: false, error: "no such session" }, 404);
+    const parsed = await parseBody(c, InboxMessageSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!pendingTurns) return c.json({ ok: false, error: "pending turns are unavailable" }, 503);
+    const result = pendingTurns.submitInboxMessage(session.id, parsed.data.kind);
+    if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor("human", c.req.raw.headers));
+    return c.json(result, result.ok ? 200 : 409);
   });
 
   // Answer the option menu a session is showing by selecting a row.

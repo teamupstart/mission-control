@@ -661,7 +661,12 @@ preserves your model and cap until you change them; clearing a cap disables that
 future launches only. When Model is **harness default**, a capped profile cannot be saved until
 the harness settings load and its price availability is known. Pending or failed reads show
 guidance beside both fields; select an explicit priced model or clear the cap to proceed without
-that lookup, or reload to retry a failed read. GPT-6.1 Sol and Terra have verified Standard API pricing, including cached input,
+that lookup, or reload to retry a failed read. GPT-6.2 Sol and Astra support spend caps using
+verified Standard API rates, including cached input, 30-minute cache writes and long-context
+rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[Astra model reference](https://developers.openai.com/api/docs/models/gpt-6.2-astra)). These are
+Standard API-equivalent estimates, not subscription charges or Fast/Ultrafast billing.
+GPT-6.1 Sol and Terra also have verified Standard API pricing, including cached input,
 cache writes and long-context rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [Terra model reference](https://developers.openai.com/api/docs/models/gpt-6.1-terra)).
 Claude uses harness-reported costs, including for Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5;

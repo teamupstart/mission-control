@@ -171,3 +171,21 @@ test("audited legacy snapshots resolve only their exact verified ids", () => {
     assert.equal(estimateStandardApiUsage(usage(`${model}-preview`)), null);
   }
 });
+
+// Verified 2026-11-23 against the GPT-6.2 Sol and Astra model references.
+for (const [model, shortCost, boundaryCost, longCost] of [
+  ["gpt-6.2-sol", 0.0137, 0.49, 0.930004],
+  ["gpt-6.2-astra", 0.0548, 1.96, 3.720016],
+] as const) {
+  test(`${model} prices cache tiers and the full-input long-context boundary`, () => {
+    assert.equal(estimateStandardApiUsage(usage(model))?.costUsd, shortCost);
+    const event = usage(model, { input: 100_000, cacheRead: 100_000, cacheWrite: 72_000, output: 10_000 });
+    assert.deepEqual(estimateStandardApiUsage(event), {
+      costUsd: boundaryCost, pricingModel: model, pricingVersion: CODEX_PRICE_VERSION,
+    });
+    assert.equal(estimateStandardApiUsage({ ...event, input: 100_001 })?.costUsd, longCost);
+    for (const suffix of ["-preview", "-pro", "-2099-01-01"]) {
+      assert.equal(estimateStandardApiUsage(usage(`${model}${suffix}`)), null);
+    }
+  });
+}

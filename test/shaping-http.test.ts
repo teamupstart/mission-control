@@ -31,6 +31,10 @@ const { createSettingsBackupEnvelope } = await import("../src/server/settings-ba
 const { wireShapingConfigEvents } = await import("../src/server/shaping/events.ts");
 const { SHAPING_LIMITS, ShapingConfigSchema } = await import("../src/shared/shaping.ts");
 const { daemonShapingView } = await import("../src/server/shaping/revisions.ts");
+// Imported here with the rest, never beside the tests that use it: a top-level await in the
+// middle of the file lets the root test finish, and run its `after` cleanup, before the tests
+// registered after it exist, which a filtered run of one of them exposes.
+const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
 type ShapingFrame = { type: "shaping_config"; config: unknown };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -711,7 +715,6 @@ test("a settings restore reloads the shaping config; a backup without the domain
 // Remote shapers: registering the fixture `get_guidance` tool is configuration only.
 
 const GUIDANCE_FIXTURE = fileURLToPath(new URL("./fixtures/fake-guidance-mcp.mjs", import.meta.url));
-const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
 const GUIDANCE_KEY_ENV = "SHAPING_HTTP_GUIDANCE_KEY";
 const GUIDANCE_KEY = "guidance-key-3c5d1e";
 
@@ -794,6 +797,32 @@ test("a dry run of the fixture in echo mode returns [NAME redacted], never the v
     assert.equal(missing.summary.shapers[0]!.outcome, "unavailable", "fails closed with the reference unset");
     assert.ok(missing.summary.shapers[0]!.reason.includes(`{env:${GUIDANCE_KEY_ENV}}`));
   } finally { await server.close(); }
+});
+
+test("a dry run has no task, so no shaper is handed a work unit: not the daemon's own, and not a configured one", async () => {
+  const server = await startGuidanceHttp({ mode: "echo-header", args: ["x-work-unit-id"] });
+  const previous = process.env.WORK_UNIT_ID;
+  // The daemon's own environment has one, and each shaper is configured to pass one along.
+  process.env.WORK_UNIT_ID = "wu_01JD000000000000000DAEMON";
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: fixture("dry-work-unit-command", "select", "echo", {
+      transport: { type: "command", command: process.execPath, args: [FIXTURE, "echo", "env=WORK_UNIT_ID"], env: ["WORK_UNIT_ID"] },
+    }) });
+    await put({ kind: "upsert", shaper: {
+      id: "dry-work-unit-mcp", label: "Echo work unit", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url, headers: { "x-work-unit-id": "wu-configured" } } },
+    } });
+    const command = await (await dryRun({ id: "dry-work-unit-command", repository })).json() as { entries: Array<{ body: string }> };
+    const seen = JSON.parse(command.entries[0]!.body) as { env: Record<string, string | null> };
+    assert.deepEqual(seen.env, { WORK_UNIT_ID: null }, "a command shaper's process has none");
+    const mcp = await (await dryRun({ id: "dry-work-unit-mcp", repository })).json() as { entries: Array<{ body: string }> };
+    assert.deepEqual(mcp.entries.map((entry) => entry.body), ["the server received <missing>"], "an MCP request carries no header, not even the configured one");
+  } finally {
+    if (previous === undefined) delete process.env.WORK_UNIT_ID;
+    else process.env.WORK_UNIT_ID = previous;
+    await server.close();
+  }
 });
 
 test("a dry run never returns a caller identity resolved into a header and echoed back", async () => {

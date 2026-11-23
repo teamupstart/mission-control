@@ -72,13 +72,13 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
-  isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
   taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "@shared/plan-publication.ts";
 import {
   dismissLaunchFailures,
   launchFailureGroupFor,
@@ -7470,11 +7470,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const queue = queues.get(session.id);
     const task = registry.getTask(parsed.data.taskId);
+    // The same live publication read the worker made: a plan is claimable only while its
+    // `foreman_complete` workflow still waits on Foreman's completion claim.
+    const planStartsWorkflow = task?.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
     if (
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !heldGapRecoveryApplies(task.kind, planStartsWorkflow)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
@@ -7484,6 +7488,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // The session can report a blocker while the diff runs; the decision below reads the
     // object taken before the await, so ask the live one first.
     if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan
+    // ownership so a stale foreman_complete answer cannot authorize this attempt.
+    const livePlanStartsWorkflow = task.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
+    if (!heldGapRecoveryApplies(task.kind, livePlanStartsWorkflow)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
     const cfg = getForemanConfig();
@@ -7500,6 +7511,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      planStartsWorkflowOnCompletion: livePlanStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),

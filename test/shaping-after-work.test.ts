@@ -104,16 +104,16 @@ function setup(options: {
 let taskCounter = 0;
 const nextTask = () => `task-${++taskCounter}`;
 
-test("schema 43 adds the prompt table to an upgraded database, keyed by task and session", () => {
+test("schema 44 adds the prompt table to an upgraded database, keyed by task and session", () => {
   db.openDb();
   db.closeDb();
   const raw = new DatabaseSync(join(home, "harness.db"));
   raw.exec("DROP TABLE task_skill_prompts");
-  raw.exec("PRAGMA user_version = 42");
+  raw.exec("PRAGMA user_version = 43");
   raw.close();
   const upgraded = db.openDb();
-  assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 43);
-  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 43);
+  assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 44);
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 44);
   const key = (upgraded.prepare("PRAGMA table_info(task_skill_prompts)").all() as Array<{ name: string; pk: number }>)
     .filter((column) => column.pk > 0).map((column) => column.name);
   assert.deepEqual(key, ["task_id", "session_id"]);

@@ -347,6 +347,23 @@ test("a repo that merely PREFIXES an allowlisted one does not clear the bar", ()
 
 // ---- assign vs dispatch --------------------------------------------------------------
 
+test("an agent started for another work unit is not offered the task, and one started for its own is", () => {
+  // Decision D7 on the selection side: the agent's environment carries the work unit it was
+  // started with, so it is skipped like a busy agent and the task is dispatched instead.
+  const mine = "wu_01JD0000000000000000000001";
+  const t = mkTask({ workUnitId: mine });
+  const other = mkSession({ launchWorkUnitId: "wu_01JD0000000000000000000002" });
+  const skipped = decide({ tasks: [t], sessions: [other], plan: mkPlan([[t.id, []]]) });
+  assert.equal(skipped.kind, "dispatch");
+  // A task with no id yet is given a new one when assigned, which is another work unit too.
+  const older = mkTask({ workUnitId: null });
+  assert.equal(decide({ tasks: [older], sessions: [other], plan: mkPlan([[older.id, []]]) }).kind, "dispatch");
+  for (const agent of [mkSession({ launchWorkUnitId: mine }), mkSession({ launchWorkUnitId: null }), mkSession()]) {
+    const a = decide({ tasks: [t], sessions: [agent], plan: mkPlan([[t.id, []]]) });
+    assert.equal(a.kind === "assign" ? a.session.id : a.kind, agent.id);
+  }
+});
+
 test("a free agent in the right repo is preferred over cutting a new worktree", () => {
   const t = mkTask();
   const free = mkSession();

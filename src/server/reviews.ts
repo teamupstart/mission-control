@@ -431,7 +431,9 @@ export class ReviewManager {
       insertReview(review);
       for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
       // An open form this one revises is withdrawn by the one agent-withdrawal writer, inside
-      // this transaction, so the operator never sees both cards and a failure leaves neither.
+      // this transaction, so the operator never sees both cards and a failure leaves neither. It
+      // is never also in `replaced`: a revision is a plan form, and only a `request_input`
+      // question supersedes, and only a call-mode question.
       revision?.withdrawal?.persist();
     });
     // The replaced form's withdrawal is published before the revision, so no subscriber ever

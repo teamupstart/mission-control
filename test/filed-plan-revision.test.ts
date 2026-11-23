@@ -277,6 +277,21 @@ test("an ask identical to an open form but carrying revises is validated and rep
   await refused(app, d.cwd, first.id, new RegExp(`was already revised by ${revised.id}`));
 });
 
+test("a revision that keeps the title and rewords the body settles its target withdrawn, never superseded", async () => {
+  flags(true);
+  const { registry, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const first = await file(app, d.cwd, { title: "Rollout plan", body: "# Rollout plan\n\nShip the linter in one step." });
+  const upserts: ReviewItem[] = [];
+  const unsubscribe = registry.subscribe((e: ServerEvent) => { if (e.type === "review_upsert") upserts.push(e.review); });
+  await file(app, d.cwd, { title: "Rollout plan", body: "# Rollout plan\n\nShip the linter in two steps, warnings first.", revises: first.id });
+  unsubscribe();
+  assert.equal(row(first.id).status, "withdrawn", "on disk");
+  assert.equal(registry.getReview(first.id)?.status, "withdrawn", "and as published");
+  assert.equal(registry.getReview(first.id)?.response, "Revised: replaced by revision 2 of this plan.");
+  assert.deepEqual(upserts.filter((r) => r.id === first.id).map((r) => r.status), ["withdrawn"], "one settle, never superseded");
+});
+
 test("a chain reaches revision 3, each form is revised once, and an identical re-ask re-attaches", async () => {
   flags(true);
   const { registry, app } = fleet();

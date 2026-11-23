@@ -19,6 +19,8 @@ export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 
 export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
 
+export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: AGENT_ENVIRONMENT_FLAG,
@@ -163,6 +165,13 @@ export const FEATURE_FLAGS = [
       "them on. Settings > Voice shows whether voice is listening and why not.",
     stage: "preview",
     keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
+  },
+  {
+    id: MACOS_TERMINAL_FLAG_ID,
+    label: "macOS Terminal",
+    description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
+    stage: "preview",
+    keywords: ["terminal", "apple", "macos", "dispatch"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

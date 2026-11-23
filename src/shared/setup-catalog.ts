@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "./terminal.ts";
 import { z } from "zod";
 import {
   ENVIRONMENT_CHECK_IDS,
@@ -43,6 +44,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "voice-previews",
   "voice-model",
   "voice-microphone",
+  MACOS_TERMINAL_ID,
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -664,6 +666,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       note: "macOS asks for the microphone when voice first listens. If it was denied, allow Mission Control in System Settings > Privacy & Security > Microphone, then check again.",
     },
     after: "voice-previews",
+  },
+  [MACOS_TERMINAL_ID]: {
+    id: MACOS_TERMINAL_ID,
+    label: "macOS Terminal",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Opens shells and displays detached sessions in the Terminal app built into macOS.",
+    remedy: {
+      kind: "link",
+      url: "https://support.apple.com/guide/terminal/trml1003/mac",
+      label: "Terminal automation guide",
+    },
   },
 };
 

@@ -91,6 +91,7 @@ import {
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
 import { homeRecord, heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type HomeDeps, type SpawnedHome } from "./terminal/home.ts";
+import { configuredTerminalDeps } from "./terminals-config.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -1423,7 +1424,7 @@ export class Dispatcher {
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
       const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null, cur.terminalResourceId) : false
+        cur.homeName ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId) : false
       );
       if (alive !== false) {
         this.patch(taskId, {
@@ -3361,7 +3362,7 @@ export async function teardownWorktree(
     if (!killed.ok) {
       // A refused close is harmless only when the recorded resource is proved absent.
       // Keep the checkout when the terminal is live or its identity cannot be checked.
-      const alive = await homeAlive(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+      const alive = await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null, task.terminalResourceId ?? null);
       if (alive !== false) {
         throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
       }

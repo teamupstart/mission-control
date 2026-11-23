@@ -2,7 +2,13 @@ import { pollIntervalMs } from "../config.ts";
 import type { Registry } from "../registry.ts";
 import { unref } from "../util/timers.ts";
 import { gitInfo } from "../util/git.ts";
-import { discover } from "./correlate.ts";
+import { configuredTerminalDeps } from "../terminals-config.ts";
+import { defaultDiscoverDeps, discover, gatherDiscoveryInput } from "./correlate.ts";
+
+const configuredDiscoverDeps = {
+  ...defaultDiscoverDeps,
+  gather: () => gatherDiscoveryInput(configuredTerminalDeps.emulators),
+};
 
 /**
  * Re-read the live Git facts for every driver-run session's checkout, and adopt them.
@@ -88,7 +94,7 @@ export function startPoller(registry: Registry): () => void {
     if (stopped) return;
     // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the
     // daemon runs itself are both current before the PR poller reads either.
-    await pollOnce(registry);
+    await pollOnce(registry, (admit) => discover(admit, configuredDiscoverDeps));
     if (stopped) return;
     timer = unref(setTimeout(tick, interval));
   };

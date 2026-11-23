@@ -496,6 +496,8 @@ export interface TerminalEmulator {
    * backend with no macOS bundle, which therefore can never be reported as the default.
    */
   macBundleId?: string;
+  /** Reason a terminal can open a window but cannot host an automatic task dispatch. */
+  dispatchUnavailable?: string;
   list: (() => Promise<TerminalInventory<EmulatorPane>>) | null;
   /**
    * How to identify a GUI that must already be running before enumeration.
@@ -531,6 +533,8 @@ export interface TerminalEmulator {
  * all.
  */
 interface BinHostSupport {
+  /** Live preview gate where the backend is opt-in. */
+  enabled?: () => boolean;
   /**
    * An actionable reason this adapter cannot run on the current host, or null when its
    * transport and launch mechanics have been validated there.

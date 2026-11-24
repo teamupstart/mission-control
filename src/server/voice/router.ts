@@ -59,13 +59,18 @@ export class VoiceRouter {
     return [...Array.from(this.open.values(), ({ card }) => card), ...this.delivering.values()];
   }
 
-  private latestActionAt(capturedAt: number): PendingVoiceAction | undefined {
-    let latest: PendingVoiceAction | undefined;
-    for (const action of this.pendingVoiceActions) {
-      // Captures can arrive out of order. For equal timestamps, the last action opened wins.
-      if (action.openedAt <= capturedAt && (!latest || action.openedAt >= latest.openedAt)) latest = action;
+  private cancelLatestAt(capturedAt: number): string | undefined {
+    // Captures can arrive out of order. For equal timestamps, the last action opened wins.
+    const eligible = this.pendingVoiceActions.filter((action) => action.openedAt <= capturedAt)
+      .reverse().sort((a, b) => b.openedAt - a.openedAt);
+    for (const action of eligible) {
+      if (action.kind === "card" && this.open.has(action.id)) {
+        if (!this.cancel(action.id)) continue;
+      } else {
+        action.cancel();
+      }
+      return action.id;
     }
-    return latest;
   }
 
   async accept(utterance: VoiceUtterance): Promise<boolean> {
@@ -95,8 +100,8 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const action = this.latestActionAt(capturedAt);
-        if (action) { entry.detail = action.id; action.cancel(); }
+        const cancelled = this.cancelLatestAt(capturedAt);
+        if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, capturedAt)) {
         entry.outcome = "ignored";
@@ -152,6 +157,7 @@ export class VoiceRouter {
   cancel(id: string, detail?: string): boolean {
     const item = this.open.get(id);
     if (!item) return false;
+    if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
     this.take(item);
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;

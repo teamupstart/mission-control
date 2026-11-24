@@ -205,6 +205,25 @@ test("successive cancels stop exactly one action across kinds; a duplicate captu
   assert.equal((await readHeard())[0]?.rule, "nothing-pending");
 });
 
+test("API and spoken cancels respect the deadline even when the timer callback is late", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  await say("Will keep the first", "api-expired");
+  t.mock.timers.setTime(now + 1000);
+  assert.equal((await act("api-expired", "cancel")).status, 409);
+
+  await say("Steven ask Will", "still-eligible");
+  await say("Will keep the second", "spoken-expired");
+  t.mock.timers.setTime(now + 2001);
+  await say("cancel", "cancel-choice");
+  assert.equal((await readHeard()).find(({ id }) => id === "cancel-choice")?.detail, "still-eligible");
+  await say("cancel", "empty");
+  assert.equal((await readHeard()).find(({ id }) => id === "empty")?.rule, "nothing-pending");
+  t.mock.timers.tick(0);
+  assert.deepEqual(queued("Will").filter((text) => text === "keep the first" || text === "keep the second"),
+    ["keep the first", "keep the second"]);
+});
+
 test("a delayed spoken cancel targets the latest preceding capture even when POSTs arrive out of order", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

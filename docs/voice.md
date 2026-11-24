@@ -31,6 +31,7 @@ The listener posts captures in spoken order, waiting for each response before po
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
 has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
+The cancel window closes at that deadline even if the delivery timer runs late.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { VOICE_HELD_REVISION_HEADER, VOICE_HELLO_INTERVAL_MS } from "../shared/voice.ts";
+import { VOICE_HELLO_INTERVAL_MS } from "../shared/voice.ts";
 import { ListenerClient, type CaptureBounds } from "./client.ts";
 import { tokenWords, type Recognition } from "./words.ts";
 
@@ -41,12 +41,11 @@ export async function playRecording(client: ListenerClient,
       lifetime.signal.throwIfAborted();
       if (!result.text.trim()) continue;
       const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal, segment.value.capture);
-      if (!response.ok) throw new Error("Utterance HTTP " + response.status);
-      if (response.headers.get(VOICE_HELD_REVISION_HEADER) === directive.revision) {
-        await response.body?.cancel();
+      if (!response) {
         console.warn("Voice listener dropped one segment after waiting for push-to-talk release.");
         continue;
       }
+      if (!response.ok) throw new Error("Utterance HTTP " + response.status);
       if (!(await response.json()).accepted) {
         const current = await client.poll(undefined, lifetime.signal);
         if (current.revision === directive.revision) throw new Error("Daemon refused the capture");

@@ -44,8 +44,12 @@ export class ListenerClient {
       ? { ...directive.data, held: true } : directive.data;
   }
 
+  utterance(text: string, words: VoiceUtterance["words"], revision: string, capturedAt?: number, signal?: AbortSignal): Promise<Response>;
+  /** A held capture returns null when its retry budget is exhausted. */
+  utterance(text: string, words: VoiceUtterance["words"], revision: string, capturedAt: number, signal: AbortSignal,
+    capture: CaptureBounds | undefined): Promise<Response | null>;
   async utterance(text: string, words: VoiceUtterance["words"], revision: string, capturedAt = Date.now(), signal?: AbortSignal,
-    capture?: CaptureBounds) {
+    capture?: CaptureBounds): Promise<Response | null> {
     const path = "/voice/utterances?revision=" + encodeURIComponent(revision);
     const body = { text, words, id: crypto.randomUUID(), capturedAt, backend: this.backend };
     if (!capture) return this.request(path, body, signal);
@@ -53,18 +57,16 @@ export class ListenerClient {
     // Match the native helper's budget across all three requests, including the daemon's long polls.
     const deadline = AbortSignal.timeout(55_000);
     const wait = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    let response = await this.request(path, body, wait, capture);
-    for (let attempt = 1; attempt < 3 && response.ok && response.headers.get(VOICE_HELD_REVISION_HEADER) === revision; attempt++) {
-      try {
-        await sleep(250, undefined, { signal: wait });
-        const next = await this.request(path, body, wait, capture);
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const response = await this.request(path, body, wait, capture);
+        if (!response.ok || response.headers.get(VOICE_HELD_REVISION_HEADER) !== revision) return response;
         await response.body?.cancel();
-        response = next;
-      } catch (error) {
-        if (!deadline.aborted || signal?.aborted) throw error;
-        break;
+        if (attempt < 3) await sleep(250, undefined, { signal: wait });
       }
+    } catch (error) {
+      if (!deadline.aborted || signal?.aborted) throw error;
     }
-    return response;
+    return null;
   }
 }

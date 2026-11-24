@@ -274,6 +274,21 @@ test("a still-held response retries the same capture and leaves subsequent speec
   assert.equal(JSON.parse(requests[3]!.body).text, "2");
 });
 
+test("the listener cancels the held response body before a failing retry", async () => {
+  let attempts = 0;
+  let cancelled = false;
+  const client = new ListenerClient("http://localhost", tokenPath(), async () => {
+    if (++attempts === 1) {
+      return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { [VOICE_HELD_REVISION_HEADER]: "hold" } });
+    }
+    assert.ok(cancelled, "release the previous response before the next POST");
+    throw new Error("retry connection closed");
+  });
+  await assert.rejects(client.utterance("speech", [], "hold", Date.now(), new AbortController().signal,
+    { startUs: 1000, endMs: 2 }), /retry connection closed/);
+  assert.equal(attempts, 2);
+});
+
 test("a mute during speech detection pauses the file scan and resumes at the next unread sample", async () => {
   voiceStateStore.reset();
   setVoiceConfig({ muted: false, backend: "sherpa-onnx" });

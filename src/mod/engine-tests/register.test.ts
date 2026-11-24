@@ -658,6 +658,10 @@ test('the registered command completes a dispatch: the dialog answer is a pick, 
   expect(draft.body.words).toBe('add retries')
   expect(draft.body.kind).toBe('ship')
   expect(seen.asked).toEqual(['Confirm'])
+  // The summary is one line: the engine draws a newline in a notice as a replacement character.
+  const summaryNotice = logs.find((t) => t.startsWith('Repo: /repo'))
+  expect(summaryNotice).toBe('Repo: /repo · Kind: ship · Description: add retries')
+  expect(logs.some((t) => t.includes('\n'))).toBe(false)
   expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
   expect(logs.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
   expect(seen.toasts.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
@@ -692,4 +696,34 @@ test('text typed under Other reaches the draft as the description, through the r
   const update = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts/d1'))
   expect(update.body.words).toBe('tidy the logging module')
   expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
+})
+
+test('the pane commands drive the drawn pane: check shows Tasks, inbox shows Needs you again', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const drawn = async () => {
+    const pane = await $.ui.mount(PANE)
+    const lines = texts(await pane.drawn())
+    await pane.unmount()
+    return lines
+  }
+  const waiting = (lines) => lines.includes('Keep?')
+  expect(waiting(await drawn())).toBe(true)
+
+  const open = async (args) => {
+    const before = seen.openArgs.length
+    await $.command.run(COMMAND(args))
+    await settle(() => seen.openArgs.length > before)
+  }
+  await open('check')
+  const onTasks = await drawn()
+  expect(waiting(onTasks)).toBe(false)
+  await open('inbox')
+  expect(waiting(await drawn())).toBe(true)
+  // A task id that needs the person opens that item.
+  await open('check')
+  expect(waiting(await drawn())).toBe(false)
+  await open('mc-1')
+  expect(waiting(await drawn())).toBe(true)
 })

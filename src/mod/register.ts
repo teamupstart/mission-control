@@ -7,6 +7,7 @@ import { FLOW_BUSY_TEXT, createFlowGate, type FlowGate } from "./flows/gate.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
 import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts";
 import { createPaneController, renderPane, type PaneController, type PaneNode, type PaneView } from "./pane/index.ts";
+import { noticeLine } from "./notice-text.ts";
 import { releaseClaim } from "./pane-owner.ts";
 import { runQueued } from "./write-queue.ts";
 
@@ -168,7 +169,7 @@ export function register(on: EngineOn, _options: unknown): void {
   on("command.run", { command: DISPATCH_COMMAND }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { text: FLOW_UNAVAILABLE_TEXT };
     // The dialogs outlive the hook (as the S10 spike ran them), and every line the person needs
-    // is a notice, so the command itself answers nothing.
+    // is a notice, so the command itself answers nothing (an empty result prints no output line).
     const host = flowHost;
     const session = flowSession;
     const gate = flowGate;
@@ -177,7 +178,7 @@ export function register(on: EngineOn, _options: unknown): void {
       .run(() => runDispatchCommand(host, session, args))
       .then((ran) => { if (ran.busy) host.notice(FLOW_BUSY_TEXT); })
       .catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error, session));
-    return { text: "" };
+    return {};
   });
   on("tool.run", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
@@ -418,7 +419,7 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
   return {
     notice: (text) => {
       // One quiet line only the person reads; `$.ui.log` never reaches the model.
-      $.ui.log(text);
+      $.ui.log(noticeLine(text));
     },
     toast: (text) => $.ui.toast(text),
     ask: (question) => askDialog($, question),
@@ -484,6 +485,18 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
         await queuedStateSet($, session.pane, key, value, () => !stale());
       }
       if (stale()) return takeBack();
+      // The pane draws from its controller, not from the stored values above (those are for a reload),
+      // so the controller is told too: a tab asked for is shown, and a task that needs the person is opened.
+      const pane = view.pane;
+      if (pane) {
+        if (opts.taskId !== undefined) {
+          const needsYou = pane.needsYou().some((item) => item.taskId === opts.taskId);
+          pane.selectTab(needsYou ? "needs-you" : "tasks", { persist: false });
+          if (needsYou) pane.select(opts.taskId);
+        } else if (opts.tab !== undefined) {
+          pane.selectTab(opts.tab, { persist: false });
+        }
+      }
       let opened: { isPlaced: boolean };
       try {
         opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });

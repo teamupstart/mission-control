@@ -40,7 +40,12 @@ type Failed = Extract<Outcome<unknown>, { ok: false }>;
 type Refused = Extract<Outcome<unknown>, { ok: false; kind: "refused" }>;
 
 export interface DispatchInput {
-  /** `first-message` is the launcher (Start page first); `command` and `conversation` skip it. */
+  /**
+   * `first-message` asks the Start page first: it is the launcher's entry, and the bare
+   * `/mission-dispatch` command uses it too. `command` (a brief, or a kind and its text) skips Start;
+   * `conversation` is the wire value for a dispatch made in conversation (the `start_dispatch` tool
+   * drafts directly and never asks the options route).
+   */
   entry: HomeDispatchOptionsRequest["entry"];
   kind?: TaskKind;
   words?: string;
@@ -338,8 +343,8 @@ export async function completeDraft(
 }
 
 /**
- * The whole dispatch flow (7.11): Start (launcher entry only), Kind, After work, Repo, the draft,
- * the description, the confirm. The pages come from the daemon; the description and repository
+ * The whole dispatch flow (7.11): Start (the launcher and a bare `/mission-dispatch`), Kind, After
+ * work, Repo, the draft, the description, the confirm. The pages come from the daemon; the description and repository
  * prompts and the Confirm dialog are the mod's own (see the file header).
  */
 export async function runDispatchFlow(host: FlowHost, session: FlowSession, input: DispatchInput): Promise<FlowResult> {

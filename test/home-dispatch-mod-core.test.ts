@@ -727,3 +727,16 @@ test("a refused pane open gives back its claim, and only its own", async () => {
   assert.equal(releaseClaim(holder, 3), false);
   assert.equal(holder.owner, null);
 });
+
+test("a multi-line notice becomes one line: the engine draws newlines as replacement characters", async () => {
+  const { noticeLine } = await import("../src/mod/notice-text.ts");
+  assert.equal(
+    noticeLine("Repo: /repo\nKind: ship\nAfter work: no mistakes review\n\nDescription:\nadd retries to the webhook client"),
+    "Repo: /repo · Kind: ship · After work: no mistakes review · Description: add retries to the webhook client",
+  );
+  // Context Claude added follows the same rule, and a single line, spaces and CRLF are kept sane.
+  assert.equal(noticeLine("Description:\nadd retries\n\nContext Claude added:\nsee client.ts"), "Description: add retries · Context Claude added: see client.ts");
+  assert.equal(noticeLine("Started mc-1: ship, in repo."), "Started mc-1: ship, in repo.");
+  assert.equal(noticeLine("  a  \r\n  b  "), "a · b");
+  assert.equal(noticeLine("\n\n"), "");
+});

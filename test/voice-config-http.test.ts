@@ -20,6 +20,7 @@ const flags = await import("../src/server/feature-flags/index.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
 const { reloadVoiceConfig } = await import("../src/server/voice/config.ts");
+const { onVoiceIndicatorsChanged } = await import("../src/server/ui-config.ts");
 const { VOICE_CONFIG_DEFAULTS, VOICE_INDICATORS_MAX, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
 type VoiceState = import("../src/shared/voice.ts").VoiceState;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
@@ -67,6 +68,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
   }
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.voice), undefined);
   assert.equal("voice" in registry.snapshot(), false);
+  assert.equal("voiceIndicators" in registry.snapshot(), false);
 });
 
 test("GET returns every contract A field with its default", async () => {
@@ -75,7 +77,12 @@ test("GET returns every contract A field with its default", async () => {
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
 });
 
-test("indicator edits merge idempotently with saved preferences and preserve unknown ids", async () => {
+test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
+  const selections: string[][] = [];
+  t.after(registry.subscribe(event => {
+    if (event.type === "voice_indicators") selections.push(event.indicators);
+  }));
+  t.after(onVoiceIndicatorsChanged(indicators => registry.emitVoiceIndicators(indicators)));
   const write = (id: string, enabled: boolean) => json("/api/voice/indicators", "PUT", { id, enabled });
   const initial = { confirmation: "toast", indicators: ["future-style", "status-line"] };
   assert.equal((await json("/api/ui/config", "PUT", { voice: initial })).status, 200);
@@ -86,7 +93,11 @@ test("indicator edits merge idempotently with saved preferences and preserve unk
   assert.equal((await write("unrecognized", true)).status, 400);
   const { config } = await (await json("/api/ui/config")).json();
   assert.equal(config.voice.confirmation, "toast");
+  assert.deepEqual(selections[0], initial.indicators);
+  assert.deepEqual(selections.at(-1), config.voice.indicators);
+  assert.equal(selections.length, 4, "only the initial save and three changes publish");
   assert.deepEqual(config.voice.indicators.sort(), ["edge", "floating", "future-style"]);
+  assert.deepEqual(registry.snapshot().voiceIndicators?.sort(), config.voice.indicators);
 });
 
 test("a full indicator list refuses an addition and still permits removing an indicator", async () => {

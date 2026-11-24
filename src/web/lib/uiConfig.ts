@@ -22,7 +22,7 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * Deliberately not polled, unlike `useHarnesses` / `useForeman`: those hooks are alive
  * only while a rarely-opened modal is, whereas this one is alive for the life of the app,
  * and a request every 4s forever to notice an edit made in a second dashboard tab is a
- * bad trade. Reconciling tabs live is a `ui_config` ServerEvent, noted as follow-up.
+ * bad trade. Voice indicator edits arrive through their own bounded event.
  */
 
 /**
@@ -201,6 +201,14 @@ let indicatorReadGeneration = 0;
 let indicatorRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
 const INDICATOR_REQUEST_TIMEOUT_MS = 5000;
+
+/** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
+export function applyVoiceIndicatorSelection(indicators: string[]): void {
+  indicatorReadGeneration++;
+  clearTimeout(indicatorRetryTimer);
+  indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+  commit({ ...current, voice: { ...current.voice, indicators } });
+}
 
 /** Retry a failed or superseded read without keeping the settings controls disabled. */
 async function reconcileVoiceIndicators(): Promise<void> {

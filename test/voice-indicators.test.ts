@@ -19,6 +19,10 @@ for (const id of VOICE_INDICATOR_IDS) {
         assert.ok(html.includes("<svg"));
         assert.ok(html.includes(`>${word}<`));
         assert.equal(html.includes("⌃⌥M"), !!chord);
+        if (chord && (id === "status-line" || id === "floating")) {
+          assert.ok(html.includes(`Click to ${action.toLowerCase()}`));
+          assert.match(html, /Hold <kbd[^>]*>⌃⌥M<\/kbd> to talk/);
+        }
       }
     }
   });

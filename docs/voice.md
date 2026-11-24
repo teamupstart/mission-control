@@ -258,7 +258,7 @@ The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `to
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
 The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. Click any indicator to mute or unmute. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
-If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection from the daemon.
+If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 
 **Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. A read that takes over five seconds shows an error and keeps the last known rows until polling succeeds. Clear empties the daemon’s in-memory history, even when the table is empty or cannot refresh. If Clear times out, the table reports that deletion is unconfirmed, resumes polling and lets you retry. Audio is never stored.
 

@@ -74,22 +74,23 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick }: {
 }): React.JSX.Element {
   const [word, hint, path] = modes[mode];
   const action = mode === "muted" ? "Unmute" : mode === "unavailable" ? "Open Setup" : "Mute";
-  const keycap = chord && <Keycap chord={chord} />;
-  const hold = mode === "auto-muted" && chord;
-  const shortcut = hold ? <>Hold {keycap} to talk</> : <>{action} {keycap}</>;
+  const clickAction = `Click to ${action.toLowerCase()}`;
+  const holdAction = mode === "auto-muted" || mode === "push-to-talk" ? "to talk" : "to talk during call auto-mute";
+  const shortcut = chord && <>Hold <Keycap chord={chord} /> {holdAction}</>;
+  const actions = <>{clickAction}{shortcut && <> · {shortcut}</>}</>;
   const name = `Voice: ${word.toLowerCase()}. ${action}`;
-  const tip = `${hint} Click to ${action.toLowerCase()}.`;
+  const tip = `${hint} ${clickAction}.`;
   const cls = `vi vi-${id} vi-${mode}${id === "topbar" ? " pulse-seg pulse-btn" : ""}`;
   const face = <>
     <svg width="14" height="14" aria-hidden="true" viewBox="0 0 16 16"><path d={path} /></svg>
     <span className={id === "topbar" ? "tb-label" : "vi-word"}>{word}</span>
-    {id === "status-line" && onClick && <><span className="vi-hint">{hint}</span><span className="vi-action">{chord ? shortcut : `Click to ${action.toLowerCase()}`}</span></>}
-    {id === "floating" && onClick && <span className="vi-expanded">{hold ? <>· hold to talk {keycap}</> : <>· click to {action.toLowerCase()} {keycap}</>}</span>}
+    {id === "status-line" && onClick && <><span className="vi-hint">{hint}</span><span className="vi-action">{actions}</span></>}
+    {id === "floating" && onClick && <span className="vi-expanded">· {actions}</span>}
   </>;
   const button = onClick ? <Tooltip label={{
-    description: `${tip}${chord ? " " + formatChord(chord) : ""}`,
+    description: `${tip}${chord ? ` Hold ${formatChord(chord)} ${holdAction}. Tap the shortcut to toggle mute.` : ""}`,
     // The floating control expands into its own hint on hover or focus.
-    content: id === "floating" ? null : <>{tip} {chord && shortcut}</>,
+    content: id === "floating" ? null : <>{tip}{shortcut && <> {shortcut}. Tap the shortcut to toggle mute.</>}</>,
   }}><button type="button" className={cls} aria-label={name} onClick={onClick}>{face}</button></Tooltip>
     : <span className={cls}>{face}</span>;
   return id === "edge" ? <div className={`vi-edge-line vi-${mode}`}>{button}</div> : button;
@@ -109,7 +110,7 @@ export function useVoiceComposerHint(sessionId: string): string | null {
     case "push-to-talk": return "Listening while held";
     case "auto-muted": {
       const chord = confirmedVoiceHotkey(state, settings.config);
-      return chord ? `On a call · hold ${formatChord(chord)}` : "On a call";
+      return chord && ui.keybindingHints ? `On a call · hold ${formatChord(chord)} to talk` : "On a call";
     }
     default: return null;
   }
@@ -120,7 +121,7 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
   const ui = useUiConfig();
   if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes(id)) return null;
   const { state, settings, openSetup, setMuted } = voice;
-  const chord = state.mode === "unavailable" ? null : confirmedVoiceHotkey(state, settings.config);
+  const chord = ui.keybindingHints && state.mode !== "unavailable" ? confirmedVoiceHotkey(state, settings.config) : null;
   const activate = () => {
     if (state.mode === "unavailable") openSetup();
     else void setMuted(id, state.mode !== "muted");

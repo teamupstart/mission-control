@@ -10,7 +10,7 @@ import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { VOICE_FLAG, VOICE_INDICATORS_MAX, type VoiceIndicatorId } from "@shared/voice.ts";
+import { VOICE_FLAG, VOICE_INDICATORS_MAX, VOICE_UI_DEFAULTS, VoiceUiConfigSchema, type VoiceIndicatorId } from "@shared/voice.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -23,6 +23,18 @@ import { rememberWindowBackground, windowBackgroundPath } from "./window-backgro
 // to keep them somewhere that is actually per-machine - which the daemon already is.
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
+const indicatorListeners = new Set<(indicators: string[]) => void>();
+
+export function onVoiceIndicatorsChanged(listener: (indicators: string[]) => void): () => void {
+  indicatorListeners.add(listener);
+  return () => { indicatorListeners.delete(listener); };
+}
+
+/** Reading the event-stream snapshot must not depend on unrelated dashboard preferences. */
+export function storedVoiceIndicators(): string[] {
+  const voice = VoiceUiConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY)?.voice);
+  return voice.success ? voice.data.indicators : [...VOICE_UI_DEFAULTS.indicators];
+}
 
 /**
  * Cards was persisted as `grid` before that layout was retired. Keep the compatibility
@@ -156,6 +168,12 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   const stored = getAppConfig(CONFIG_ENTRY);
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
   persistUiConfig(next, stored, patch.skin !== undefined);
+  if (patch.voice) {
+    for (const listener of indicatorListeners) {
+      try { listener(next.voice.indicators); }
+      catch (error) { console.warn("[voice] indicator listener failed:", error); }
+    }
+  }
   if (patch.skin !== undefined) syncWindowBackground(next.skin);
   return next;
 }

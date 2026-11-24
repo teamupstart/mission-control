@@ -4075,6 +4075,8 @@ export type ServerEvent =
        * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
+      /** Current indicator selection on connect or reconnect, only while voice is enabled. */
+      voiceIndicators?: string[];
       /** Cards still awaiting delivery or a pick when this window connects. */
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /**
@@ -4260,6 +4262,7 @@ export type ServerEvent =
    */
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
+  | { type: "voice_indicators"; indicators: string[] }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces

@@ -48,6 +48,7 @@ import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -488,6 +489,7 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which reads as off.
           setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(msg.voice ?? null);
+          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -749,6 +751,9 @@ export function useEventStream(): MissionState {
         case "voice_state":
           setVoice(msg.state);
           if (msg.state.mode === "off") setVoiceCards(new Map());
+          break;
+        case "voice_indicators":
+          applyVoiceIndicatorSelection(msg.indicators);
           break;
         case "voice_card":
           setVoiceCards((prev) => {

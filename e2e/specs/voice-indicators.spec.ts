@@ -63,6 +63,13 @@ test("five selected indicators follow the daemon and advertise only a registered
     });
     expect((await report(null)).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveText("⌃⌥M");
+    await expect(status).toContainText("Click to mute");
+    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await status.click();
+    await expect(status).toContainText("Click to unmute");
+    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    if (capture) await status.screenshot({ path: join(capture, "muted-shortcut.png") });
+    await status.click();
     expect((await report(null, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(status).toContainText("Hold ⌃⌥M to talk");
@@ -493,6 +500,34 @@ test("a failed indicator save shows an alert and restores the previous selection
   await topbar.check();
   await expect(error).toHaveCount(0);
   await expect(segment).toBeVisible();
+});
+
+test("a timed-out indicator write that commits after the first refresh reaches both windows", async ({ page, context, daemon }) => {
+  await enableVoice(daemon);
+  const url = daemon.baseURL + "/#/settings/voice";
+  const peer = await context.newPage();
+  await Promise.all([page.waitForResponse("**/api/ui/config"), page.goto(url), peer.goto(url)]);
+  const edge = page.getByRole("checkbox", { name: "Edge light" });
+  const peerEdge = peer.getByRole("checkbox", { name: "Edge light" });
+  await expect(peerEdge).toBeVisible();
+  const pending = page.waitForRequest("**/api/voice/indicators");
+  await page.route("**/api/voice/indicators", () => { /* Forward after the reconciliation read. */ }, { times: 1 });
+  await edge.check();
+  const write = await pending;
+  const firstRefresh = await page.waitForResponse("**/api/ui/config");
+  expect((await firstRefresh.json()).config.voice.indicators).not.toContain("edge");
+  await expect(edge).toBeEnabled();
+  await expect(edge).not.toBeChecked();
+  expect((await page.request.fetch(write)).ok()).toBe(true);
+  for (const window of [page, peer]) {
+    await expect(window.getByRole("checkbox", { name: "Edge light" })).toBeChecked({ timeout: 8000 });
+    await expect(window.locator("button.vi-edge")).toBeVisible();
+  }
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await page.getByRole("group", { name: "In the window" }).screenshot({ path: join(mkdtempSync(join(root, "late-commit-")), "settings.png") });
+  }
 });
 
 for (const applied of [false, true]) {

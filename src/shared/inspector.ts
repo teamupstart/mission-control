@@ -5,7 +5,9 @@ import type { InspectorConfig } from "./protocol.ts";
 import type { CodeRabbitSummary } from "./code-rabbit.ts";
 import type { InspectorInspection, InspectorSummary } from "./types.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
+import { resolveLlmEffort } from "./llm.ts";
 import type { LlmRunnerId } from "./llm.ts";
+import type { ThinkingLevel } from "./types.ts";
 
 const INSPECTOR_MAX_ROUNDS = 100;
 const INSPECTOR_MAX_COMMENTS_PER_ROUND = 20;
@@ -87,6 +89,56 @@ export function reviewNeedsLiveRerun(
   reviewed: InspectorPosture | null,
 ): boolean {
   return current === "live" && reviewed !== "live";
+}
+
+/**
+ * The reasoning effort a full review asks for when the operator has not chosen one.
+ *
+ * A review is asked for every finding that clears the bar in its first round, and later
+ * rounds only check the repair, so the first read has to be the thorough one. At the
+ * provider's default effort a round returned one or two findings and the rest surfaced a
+ * push at a time.
+ */
+export const INSPECTOR_REVIEW_EFFORT: ThinkingLevel = "xhigh";
+
+/** The two calls the Inspector makes: a full review, and an answer in one of its threads. */
+export type InspectorCall = "review" | "reply";
+
+/**
+ * The effort an Inspector call wants, before the provider is asked whether it offers it.
+ *
+ * `saved` is the operator's setting, and its three states mean three things. A level is
+ * their choice and applies to both calls. `null` is their choice of the provider's default.
+ * `undefined` means they never chose, and then a review takes `INSPECTOR_REVIEW_EFFORT`
+ * while a reply, which answers one thread, keeps the provider's default.
+ *
+ * One definition because the settings page must show what the review will run at: reading
+ * "never chosen" as "provider default" there would print a level the review does not use.
+ */
+export function inspectorEffortChoice(
+  saved: ThinkingLevel | null | undefined,
+  call: InspectorCall,
+): ThinkingLevel | null {
+  if (saved !== undefined) return saved;
+  return call === "review" ? INSPECTOR_REVIEW_EFFORT : null;
+}
+
+/**
+ * The value the settings row shows for the Inspector's review effort.
+ *
+ * A saved choice is shown as saved; the row itself marks a level the model does not offer.
+ * With nothing saved the row shows what a review will actually run at, which is the review
+ * default only when this provider and model offer it. Showing an unoffered default would
+ * print a level nobody chose and the review does not use.
+ */
+export function inspectorEffortShown(
+  saved: ThinkingLevel | null | undefined,
+  runner: LlmRunnerId | undefined,
+  model: string | undefined,
+): ThinkingLevel | null {
+  if (saved !== undefined) return saved;
+  if (runner === undefined || model === undefined) return null;
+  return resolveLlmEffort(runner, model, inspectorEffortChoice(saved, "review")).level;
 }
 
 /**

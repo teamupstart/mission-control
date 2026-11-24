@@ -52,8 +52,10 @@ As of `2088bd522`:
    saves through the config route. When the shell reports `hotkeyError`, the row shows the
    warning and names the chord still in force. Without the `hotkey` capability the row reads
    "Needs the desktop app". The auto-mute row gains the unavailable reason.
-6. **Capabilities.** Report `hotkey` and `call-detection`. Reporting `hotkey` is what makes
-   Phase 7's indicators print the keycap, through `hotkeyShown`; a `hotkeyError` hides it again.
+6. **Capabilities.** Report `hotkey` and `call-detection`. Include the native registrar's current
+   chord in `registeredHotkey` on each shell report, or `null` when no chord is registered.
+   Phase 7 shows the keycap when that chord matches the configured chord, the capability is
+   available, and the report is current and free of registration errors.
 7. **Docs.** `docs/voice.md` (what auto-mute can and cannot know about a call), `docs/ui.md`.
 
 ## 6. Data and compatibility
@@ -65,7 +67,9 @@ keep-awake addon is.
 
 - `test/voice-hotkey.test.ts`: the tap and hold rule with a fake clock; a failed registration
   keeps the old chord; a failed first registration leaves none in force; a null `hotkey`
-  registers nothing.
+  registers nothing. Exercise the desktop report producer and assert its outgoing
+  `registeredHotkey` and `hotkeyError` after a successful registration, a failed replacement,
+  and unregistration.
 - Additions to `test/voice-state.test.ts`: push-to-talk during a call, a tap during a call,
   auto-mute off.
 - `test/native-addon-publish.test.ts` covers the two new builders.

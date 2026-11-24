@@ -24,6 +24,11 @@ export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
+export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
+
+/** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
+
 export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
 
 export const FEATURE_FLAGS = [
@@ -181,6 +186,22 @@ export const FEATURE_FLAGS = [
     description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
     keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
+  {
+    id: BACKGROUND_REASONING_EFFORT_FLAG_ID,
+    label: "Background reasoning effort",
+    description: "Choose the reasoning effort for each background model call in Settings > Models.",
+    stage: "preview",
+    keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
+  },
+  {
+    id: MARKDOWN_QUESTIONS_FLAG_ID,
+    label: "Markdown questions",
+    description:
+      "Render the context an agent sends with request_input as Markdown, so its lists, headings and code " +
+      "read as they were written: on the question card, in the attention inbox and in the conversation.",
+    stage: "preview",
+    keywords: ["request_input", "question", "context", "markdown", "bullets", "inbox"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

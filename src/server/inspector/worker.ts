@@ -37,7 +37,7 @@ import type {
 } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
+import { getInspectorConfig, inspectorExecution } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
@@ -134,19 +134,25 @@ function notifyInspection(
  *
  * Measured on one 10.7KB, five-file diff (44.6KB prompt): 225s / 13 turns on Opus, 272s
  * / 23 turns on Sonnet. So the floor is ~4-5 MINUTES for a small PR on a repo with a
- * standards bundle, and a bigger diff is worse. 600s leaves real headroom above that
+ * standards bundle, and a bigger diff is worse. 600s left real headroom above that
  * while still bounding a run that has genuinely hung.
+ *
+ * Those timings are at the provider's default effort. A review now runs at
+ * `INSPECTOR_REVIEW_EFFORT`, which takes longer and has not been measured, so the ceiling
+ * is doubled to 1200s rather than left where a thorough review of a large diff would
+ * plausibly reach it.
  *
  * The reason a generous ceiling is affordable: nothing waits on this. One PR is reviewed
  * at a time (`createLimiter(1)`), the sweep is 90s, and a slow round delays the next
  * poll rather than a person. A timeout here should mean "something is wrong", not
  * "review of an ordinary pull request".
  */
-export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 600_000);
+export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 1_200_000);
 /**
  * A follow-up reply is a smaller job than a review - one thread to answer rather than a
- * whole diff to judge - so it keeps its own, tighter wire. Half the review's, and moved
- * with it: the 90s here came from the same guess as the 180s above, and it carries the
+ * whole diff to judge - so it keeps its own, tighter wire. It runs at the provider's
+ * default effort, so it did not move when the review's ceiling doubled for `xhigh`. It was
+ * half the review's and moved with it before that: the 90s here came from the same guess as the 180s above, and it carries the
  * SAME shape (the diff in the prompt, the same three tools, the same repo to read), so
  * whatever made the review overrun applies to it too. Unmeasured, unlike the review, and
  * marked as such rather than dressed up.
@@ -184,18 +190,6 @@ const MAX_REPLIES_PER_THREAD = 6;
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
 /**
- * The model both the review and the follow-up replies run on: config, then
- * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
- *
- * One resolver, in `config.ts`, because the settings panel prints this same answer
- * through `/api/inspector/status` and the two must not be able to disagree about it. See
- * `INSPECTOR_MODEL_SPEC` for why the default is named at all rather than left to the CLI.
- */
-function reviewModel(cfg: InspectorConfig): string {
-  return inspectorModel(cfg).id;
-}
-
-/**
  * `role` rides alongside `timeoutMs` rather than being derived here, because the two calls
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
@@ -208,14 +202,14 @@ function inspectorRunOptions(
   role: LlmSpendRole,
   schema?: Record<string, unknown>,
 ) {
-  // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
-  // ladder, and resolving it here a second way is how the worker and the panel come to print
-  // different providers for the same call.
-  const runner = llmRunner(inspectorRunner(cfg).id);
+  // A full review and a follow-up reply default to different efforts, so the role decides.
+  const execution = inspectorExecution(cfg, role === "inspector:reply" ? "reply" : "review");
+  const runner = llmRunner(execution.runner.id);
   return {
     runner,
     options: {
-      model: reviewModel(cfg),
+      model: execution.model.id,
+      effort: execution.effort,
       timeoutMs,
       role,
       ...(schema ? { schema } : {}),

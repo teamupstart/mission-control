@@ -2260,7 +2260,7 @@ rl.on("line", (line) => {
       waiting.unref();
       return;
     }
-    appendTurn("user", prompt);
+    appendTurn("user", prompt, frame.uuid ? { uuid: frame.uuid } : {});
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;

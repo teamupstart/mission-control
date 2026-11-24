@@ -47,12 +47,13 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { WORK_UNIT_ID_PATTERN } from "./work-unit.ts";
 import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
+import { FOREMAN_MODEL_ROLES } from "./foreman-models.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
-import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
+import { VOICE_UI_DEFAULTS, VoiceRevisionSchema, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
 import { SpokenNameSchema } from "./voice-names.ts";
 import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
@@ -246,6 +247,17 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+const EffortOverrideSchema = EffortLevelSchema.nullable();
+
+function effortOverridesPatch(ids: readonly string[]) {
+  return boundedRecord(z.string(), EffortOverrideSchema, ids.length)
+    .refine((entries) => Object.keys(entries).every((id) => ids.includes(id)), {
+      message: "unknown background model slot",
+    });
+}
+
+const StoredEffortOverridesSchema = z.record(z.string(), EffortOverrideSchema.catch(null))
+  .optional().catch(undefined);
 /** A Library Persona id, as a task names it. The same bound a resident profile's pin has. */
 const TaskPersonaIdSchema = z.string().trim().min(1).max(200);
 /** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
@@ -1679,12 +1691,11 @@ export const SetSessionModelSchema = z.object({ model: ModelIdSchema });
 export type SetSessionModelInput = z.infer<typeof SetSessionModelSchema>;
 
 /**
- * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ * Turn the Keep Awake mode on or off: `PUT /api/keep-awake`.
  *
- * Strict and exactly one boolean on purpose. Keep Awake is daemon-run-scoped by an
- * approved human decision - there is no persisted preference to patch here, and a body
- * carrying anything beyond `enabled` is a caller confused about that contract, refused
- * rather than partially honoured.
+ * Strict and exactly one boolean on purpose. The daemon remembers this switch itself - the
+ * request IS the choice, with nothing else to patch - and a body carrying anything beyond
+ * `enabled` is a caller confused about that contract, refused rather than partially honoured.
  */
 export const KeepAwakeRequestSchema = z
   .object({
@@ -2704,6 +2715,8 @@ export const ForemanConfigSchema = z.object({
   backlogModel: z.string().optional(),
   /** Provider for the backlog dependency planner alone. Empty inherits `runner`, then app-wide. */
   backlogRunner: z.string().optional().catch(undefined),
+  /** Per-role reasoning effort. Empty entries use the provider default. */
+  efforts: StoredEffortOverridesSchema,
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
@@ -2728,6 +2741,7 @@ export const ForemanConfigPatchSchema = partialPatch(ForemanConfigSchema)
     verifyRunner: ForemanRunnerOverrideSchema.optional(),
     triageRunner: ForemanRunnerOverrideSchema.optional(),
     backlogRunner: ForemanRunnerOverrideSchema.optional(),
+    efforts: effortOverridesPatch(FOREMAN_MODEL_ROLES).optional(),
     backlogDefaultModel: z
       .object({
         claude: ModelIdSchema.nullable().optional(),
@@ -3070,6 +3084,8 @@ export const InspectorConfigSchema = z.object({
    * as absent, so `--model ""` is unreachable.
    */
   model: z.union([ModelIdSchema, z.literal("")]).optional(),
+  /** Reasoning effort for reviews and follow-up replies. */
+  effort: EffortOverrideSchema.optional().catch(undefined),
   /**
    * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
    * push is one nobody reads, and the cap is what turns "be thorough" into "lead with
@@ -3081,7 +3097,10 @@ export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
 
 /** Partial update of the Inspector config from the dashboard. Strict provider, as Foreman's. */
 export const InspectorConfigPatchSchema = partialPatch(InspectorConfigSchema)
-  .extend({ runner: ForemanRunnerOverrideSchema.optional() })
+  .extend({
+    runner: ForemanRunnerOverrideSchema.optional(),
+    effort: EffortOverrideSchema.optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
@@ -5035,6 +5054,7 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
+  voiceIndicatorVersion: VoiceRevisionSchema.optional(),
   /**
    * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
    * voice surface, so the response is the one an install without voice gave.
@@ -5172,6 +5192,8 @@ export const LlmConfigSchema = z.object({
    * here" than to "use whatever ships".
    */
   runners: z.record(z.string(), z.string().catch("")).catch({}).default({}),
+  /** Per-job reasoning effort. Empty entries use the provider default. */
+  efforts: StoredEffortOverridesSchema,
 });
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
@@ -5192,6 +5214,7 @@ export const LlmConfigPatchSchema = z
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),
+    efforts: effortOverridesPatch(LLM_JOB_IDS),
     /** Per-job providers. Strict on both halves, for `models`' reason: a typo is a 400. */
     runners: boundedRecord(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]), LLM_JOB_IDS.length)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
@@ -8370,6 +8393,7 @@ export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
       }),
     runner: z.enum(LLM_RUNNER_IDS).nullable(),
     model: ModelIdSchema.nullable(),
+    effort: EffortLevelSchema.optional(),
   }),
 ]);
 

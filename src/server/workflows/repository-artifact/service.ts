@@ -373,7 +373,8 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     if (existsSync(join(pending, "artifact"))) return;
     await verifyDirectory(path, digest, AbortSignal.timeout(600_000));
     if (!this.ownership.cleanup(digest, () => {
-      renameSync(path, join(pending, "artifact"));
+      this.storage.reclaimPublished(pending, (publishedFiles(path) ?? unavailable()).bytes,
+        () => renameSync(path, join(pending, "artifact")));
       syncDirectory(pending);
       this.syncDigestParent(root);
     })) unavailable();
@@ -520,6 +521,17 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     return this.exclusive(async () => {
       let deleted = 0,
         orphans = 0;
+      const promotions: string[] = [];
+      const cleanupFailed = async (error: unknown, owned: string | undefined, kind: "pending" | "leases") => {
+        workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });
+        if (owned) {
+          try { await this.storage.restoreAbandoned(owned, kind); }
+          catch (sizeError) {
+            workflowLog("warn", { event: "repository_orphan_accounting", error: workflowErrorCode(sizeError) });
+          }
+        }
+        orphans++;
+      };
       if (!this.started) this.ownership.recoverProvisional();
       for (const kind of ["pending", "leases"] as const) {
         const directory = this.namespace(kind, false);
@@ -548,21 +560,24 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             owned = this.marked(kind, id);
             if (kind === "pending" && existsSync(join(owned, "promotion"))) {
               await this.storage.restoreAbandoned(owned, kind);
-              await this.recoverPromotion(owned);
+              promotions.push(owned);
+              continue;
             }
             this.removeDirectory(owned);
             deleted++;
           } catch (error) {
-            workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });
-            if (owned) {
-              try { await this.storage.restoreAbandoned(owned, kind); }
-              catch (sizeError) {
-                workflowLog("warn", { event: "repository_orphan_accounting", error: workflowErrorCode(sizeError) });
-              }
-            }
-            orphans++;
+            await cleanupFailed(error, owned, kind);
           }
         }
+      }
+      // Account for surviving candidates and leases before a rollback moves
+      // any published bytes back into the shared temporary allowance.
+      for (const pending of promotions) {
+        try {
+          await this.recoverPromotion(pending);
+          this.removeDirectory(pending);
+          deleted++;
+        } catch (error) { await cleanupFailed(error, pending, "pending"); }
       }
       this.ownership.queueUnclaimed();
       const rows = this.ownership.artifacts();

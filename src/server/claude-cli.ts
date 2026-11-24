@@ -119,6 +119,10 @@ export interface ClaudeRunOptions {
   model?: string;
   /** Maps to the harness's own launch flag (`--effort`); omit for the CLI default. */
   effort?: ThinkingLevel;
+  /** `off` disables extended thinking for this run (`MAX_THINKING_TOKENS=0`). */
+  thinking?: "off";
+  /** `--system-prompt`: replaces Claude Code's own system prompt for this run. */
+  systemPrompt?: string;
   timeoutMs?: number;
   /** Cancels the run and its detached process group. A pre-aborted signal prevents spawning. */
   signal?: AbortSignal;
@@ -256,7 +260,10 @@ async function runClaudeRaw(
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push(...(capabilitiesFor("claude").effort?.launchArgs(opts.effort) ?? []));
     if (opts.settings) args.push("--settings", opts.settings);
+    if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
     const env = headlessEnv();
+    // The CLI reads this before any settings layer, and zero turns extended thinking off.
+    if (opts.thinking === "off") env.MAX_THINKING_TOKENS = "0";
     const child = (() => {
       try {
         return spawn(executable.path, args, {

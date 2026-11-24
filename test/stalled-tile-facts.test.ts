@@ -22,13 +22,14 @@ const NOTE = {
   updatedAt: 1,
 };
 
-function card(facts: StallFacts, over: Partial<Session> = {}, dismiss = true): string {
+function card(facts: StallFacts, over: Partial<Session> = {}, dismiss = true, complete = true): string {
   const session = mkSession({ id: "s1", name: "amber-lynx", state: "idle", activity: "Ran npm test (2 failing)", ...over });
   const stall: Stall = { sessionId: session.id, kind: facts.kind, forMs: 30 * 60_000, reason: "idle 30m", facts, fingerprint: "fp" };
   return renderToStaticMarkup(createElement(StalledTileFacts, {
     session,
     stall,
     onOpenRun: () => {},
+    ...(complete ? { onComplete: () => {} } : {}),
     ...(dismiss ? { onDismiss: () => {} } : {}),
   }));
 }
@@ -63,6 +64,12 @@ test("a queue alone: no Mark done, because there is no task to complete", () => 
   const html = card({ kind: "unfinished-work", task: null, queueOpen: 1 }, { activity: null });
   assert.deepEqual(rows(html), ["Queue: 1 open item", "Last: No activity reported"]);
   assert.deepEqual(actions(html), ["nudge", "dismiss"]);
+});
+
+test("Mark done is the session's Complete dialog, so a host that cannot open it draws none", () => {
+  const open = { kind: "unfinished-work" as const, task: { id: "t1", title: "Fix login redirect loop" }, queueOpen: 0 };
+  assert.deepEqual(actions(card(open)), ["nudge", "mark-done", "dismiss"]);
+  assert.deepEqual(actions(card(open, {}, true, false)), ["nudge", "dismiss"]);
 });
 
 test("a parked run: what it waits on, the missing step, and the one fix that moves it, plus Open run", () => {

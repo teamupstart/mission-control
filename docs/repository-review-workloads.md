@@ -93,12 +93,18 @@ before copying any blob. Both the boundary sample and sealing count unique allow
 working blobs as they are read and stop at the first blob that exceeds the allowance.
 Independently, each worktree scan reads at most 512 MiB of payload across all paths.
 Denied files, repeated content and literal link targets all consume this allowance.
+During sealing, a staged blob read to check automatic CRLF conversion also consumes
+the scan allowance. Capture checks its declared size before reading the payload
+and reuses the result for other paths with the same staged content.
 Sealing makes two bounded passes, one to measure the checkout and one to copy it.
 Pending candidates and private reader leases share a 2 GiB
 allowance for object files, manifests and lease data. Each write reserves its bytes
 before it starts. A candidate or lease holds its share until its directory is removed.
 A repair also reserves the actual size of the old digest before moving it into the
 pending directory. Failed cleanup retains this charge for the next maintenance pass.
+Recovery accounts for surviving candidates and leases before moving a published
+digest back into pending storage. If the digest does not fit, it stays published
+until cleanup frees enough space for the move.
 After restart, capture and materialization wait for reconciliation. It measures the
 payload left in each owned candidate or lease that cleanup could not remove. If it
 cannot measure that payload, new writes wait for a successful measurement or cleanup.

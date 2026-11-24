@@ -223,13 +223,14 @@ export async function openObjectReader(
   }
   return {
     base,
-    async get(id: string, type: string, info = false) {
+    async get(id: string, type: string, info = false, beforePayload?: (size: number) => void) {
       oid.parse(id);
-      const loose = await readLoose(root, id, type, info, signal);
+      const loose = await readLoose(root, id, type, info, signal, beforePayload);
       if (loose) return loose;
       const size = await readHeader("info", id, type);
       if (info) return { size, data: Buffer.alloc(0) };
       checkedObjectSize(size);
+      beforePayload?.(size);
       if (await readHeader("contents", id, type) !== size) unavailable();
       const data = Buffer.allocUnsafe(size);
       for (let offset = 0; offset < size;) {

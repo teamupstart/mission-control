@@ -26,7 +26,7 @@ import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
 import { RevisionTag } from "./ReviewRevision.tsx";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { CheckoutPathText } from "./CheckoutPathText.tsx";
+import { QuestionBody } from "./QuestionBody.tsx";
 import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
 import { useNow } from "../useNow.ts";
 import { useAgentName, useAgentNamesEnabled } from "../lib/agent-names.ts";
@@ -301,7 +301,7 @@ export function ReviewCard({
         But suppressing the body outright would flatten a long or multi-line free-text
         question into a bold heading with its newlines collapsed. Past the clip the body says
         something the header does not, and it is rendered in full as the readable paragraph it
-        should be. The whole block is
+        should be (Markdown, with the `markdown-questions` preview on). The whole block is
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
@@ -315,9 +315,12 @@ export function ReviewCard({
             <PlanView markdown={review.body} />
           )}
           {review.kind === "input" && (
-            <p className="question">
-              <CheckoutPathText text={inputBody(review)} paths={checkoutPaths} onOpen={onOpenPath} />
-            </p>
+            <QuestionBody
+              className="question"
+              text={inputBody(review)}
+              paths={checkoutPaths}
+              onOpenPath={onOpenPath}
+            />
           )}
         </div>
       )}

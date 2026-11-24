@@ -634,6 +634,7 @@ export function originOf(sessionId: string, text: string): TurnOrigin | undefine
  * restart between a delivery and its echo lets one duplicate revision through.
  */
 interface ExpectedHumanEcho {
+  spokenWords?: string;
   readonly sessionId: string;
   /** `injectionFingerprint` of the sent text. */
   readonly key: string;
@@ -666,7 +667,7 @@ export type HumanEchoTicket = { readonly [humanEchoTicket]: true };
 /** What a prompt-hook echo should do about the follow-ups it might be the echo of. */
 export type HumanEchoClaim =
   | { kind: "skip" }
-  | { kind: "capture"; ticket: HumanEchoTicket }
+  | { kind: "capture"; ticket: HumanEchoTicket; spokenWords?: string }
   | { kind: "none" };
 
 /**
@@ -727,7 +728,7 @@ function settled(entry: ExpectedHumanEcho): boolean {
 export function expectHumanEcho(
   sessionId: string,
   text: string,
-  options: { noteKey: string; cycle: WorkCycleSummary | undefined; now?: number },
+  options: { noteKey: string; cycle: WorkCycleSummary | undefined; now?: number; spokenWords?: string },
 ): HumanEchoTicket {
   const now = options.now ?? Date.now();
   let list = liveEchoes(sessionId, now);
@@ -744,6 +745,7 @@ export function expectHumanEcho(
   const entry: ExpectedHumanEcho = {
     sessionId,
     key: injectionFingerprint(text),
+    spokenWords: options.spokenWords,
     noteKey: options.noteKey,
     baseGeneration: base,
     turnGeneration: base + (queued ? 2 : 1),
@@ -882,7 +884,7 @@ export function claimHumanEcho(
     drop(entry);
     return { kind: "skip" };
   }
-  return { kind: "capture", ticket: asTicket(entry) };
+  return { kind: "capture", ticket: asTicket(entry), ...(entry.spokenWords !== undefined && { spokenWords: entry.spokenWords }) };
 }
 
 /**

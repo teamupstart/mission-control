@@ -17,6 +17,7 @@ import type {
   SdkSpec,
   TranscriptMessages,
   TranscriptSpec,
+  TranscriptSession,
   TuiSpec,
   UsageSpec,
 } from "./types.ts";
@@ -288,7 +289,7 @@ export function allHarnesses(): Harness[] {
 }
 
 /** A session's transcript capability, or null when its harness records nothing readable. */
-export function transcriptFor(session: Session): TranscriptSpec | null {
+export function transcriptFor(session: Pick<Session, "agent">): TranscriptSpec | null {
   return HARNESSES[session.agent].transcript;
 }
 
@@ -463,7 +464,7 @@ export interface SessionMessages {
  * Order matters: the capability is checked BEFORE the file is located, so a harness that
  * cannot answer never pays for the search.
  */
-export function sessionMessages(session: Session): SessionMessages | null {
+export function sessionMessages(session: TranscriptSession): SessionMessages | null {
   const spec = transcriptFor(session);
   if (!spec?.messages) return null;
   const path = spec.locate(session);

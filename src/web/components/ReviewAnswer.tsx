@@ -163,19 +163,19 @@ export function ReviewDeliveryNote({ delivery }: { delivery: ReviewCardDelivery 
         Delivered to the agent
         <ConversationTimestamp at={delivery.at} className="turn-time" />
       </p>
-      {delivery.received && (
-        <details
-          className="review-received"
-          aria-label="What the agent received"
-          open={delivery.received.open || undefined}
-        >
-          <Tooltip label="Show the exact message Mission Control sent the agent">
-            <summary>What the agent received</summary>
-          </Tooltip>
-          <div className="review-received-text">{delivery.received.text}</div>
-        </details>
-      )}
+      {delivery.received && <ReceivedMessage {...delivery.received} />}
     </>
+  );
+}
+
+export function ReceivedMessage({ text, open }: { text: React.ReactNode; open?: boolean }): React.JSX.Element {
+  return (
+    <details className="review-received" aria-label="What the agent received" open={open || undefined}>
+      <Tooltip label="Show the exact message Mission Control sent the agent">
+        <summary>What the agent received</summary>
+      </Tooltip>
+      <div className="review-received-text">{text}</div>
+    </details>
   );
 }
 

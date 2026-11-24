@@ -355,7 +355,8 @@ test("built-in repository access has its own CAS revision and leaves shipped gra
   }
 });
 
-test("the v54 upgrade fingerprints historical graph bytes and gives existing Personas no access", async () => {
+for (const priorVersion of [54, 55])
+test(`the v${priorVersion} upgrade fingerprints historical graph bytes and gives existing Personas no access`, async () => {
   const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
   seed();
   assert.ok(store.publishWorkflow("w1", 1, "legacy").ok);
@@ -371,9 +372,14 @@ test("the v54 upgrade fingerprints historical graph bytes and gives existing Per
     DROP TABLE workflow_repository_local_owners;
     DROP TABLE workflow_repository_workloads;
     DROP TABLE persona_builtin_overrides;
-    PRAGMA user_version=54;`);
+    DROP TRIGGER repository_capture_failed;
+    CREATE TRIGGER repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
+      WHEN OLD.status='capturing' AND NEW.status='failed' BEGIN SELECT 1; END;
+    PRAGMA user_version=${priorVersion};`);
   for (let i = 0; i < 2; i++) {
     upgradeDatabaseToCurrentSchema(db);
+    assert.match(String(db.prepare("SELECT sql FROM sqlite_schema WHERE name='repository_capture_failed'").get()?.sql),
+      /waiting_for_evidence_readiness/);
     const migrated = db.prepare("SELECT graph_json, source_snapshot_fingerprint FROM workflow_versions WHERE id='legacy'").get()!;
     assert.equal(migrated.graph_json, raw);
     assert.match(String(migrated.source_snapshot_fingerprint), /^[a-f0-9]{64}$/);

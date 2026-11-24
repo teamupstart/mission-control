@@ -199,15 +199,15 @@ export function sdkSessionIsLive(row: SdkSessionRow): boolean {
   return row.status !== null && LIVE_STATUSES.includes(row.status);
 }
 
-/** Every persisted embedded session, oldest first. Read once, on restore. */
-export function listSdkSessions(): SdkSessionRow[] {
+/** Persisted embedded sessions, oldest first. Receipt cleanup needs only one native conversation. */
+export function listSdkSessions(conversationId?: string): SdkSessionRow[] {
   return openDb()
     .prepare(
       `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
               status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
-         FROM sdk_sessions ORDER BY created_at ASC`,
+         FROM sdk_sessions ${conversationId === undefined ? "" : "WHERE agent_session_id = ?"} ORDER BY created_at ASC`,
     )
-    .all()
+    .all(...(conversationId === undefined ? [] : [conversationId]))
     .map((r) => mapRow(r as unknown as Row));
 }
 

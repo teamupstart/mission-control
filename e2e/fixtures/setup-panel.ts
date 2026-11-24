@@ -21,8 +21,10 @@ export async function openSetupFamily(page: Page, family: SetupFamilyId): Promis
   const label = SETUP_FAMILY_INFO[family].label;
   // The rail item's accessible name is "<label>: N of M ready", or bare while its rows are
   // still loading, so anchor on the label and accept either.
-  await page.getByRole("button", { name: new RegExp(`^${label}(:|$)`) }).click();
-  await expect(page.locator(`#setup-family-${family}`)).toHaveAttribute("aria-current", "true");
+  const rail = page.getByRole("navigation", { name: "Setup families" });
+  const item = rail.getByRole("button", { name: new RegExp(`^${label}(:|$)`) });
+  await item.click();
+  await expect(item).toHaveAttribute("aria-current", "true");
 }
 
 /**

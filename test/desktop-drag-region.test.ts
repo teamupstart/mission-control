@@ -86,6 +86,10 @@ const EXEMPT: Record<string, { because: string; declares: RegExp }> = {
     because: "pointer-events: none - it is a visual canvas guide, never a control",
     declares: /pointer-events:\s*none/,
   },
+  "vi-edge-line": {
+    because: "the edge light is a pointer-transparent strip; its child mute button declares no-drag",
+    declares: /pointer-events:\s*none/,
+  },
 };
 
 /**

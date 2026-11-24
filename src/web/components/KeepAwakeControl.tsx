@@ -15,8 +15,8 @@ import { Tooltip } from "./Tooltip.tsx";
  *
  * Truthfulness contract, the same one the daemon's manager keeps: nothing here renders
  * `awake` from a request. The trigger and the switch read only the OBSERVED status the
- * SSE stream carries, so `on` appears when the OS child spawned and disappears when it
- * exited - and while the stream is down the status is null, the switch disables, and
+ * SSE stream carries, so `on` appears when the OS assertion was confirmed and disappears when
+ * it was released - and while the stream is down the status is null, the switch disables, and
  * `reconnecting` takes precedence over any stale claim.
  *
  * Dismissal follows the Foreman/Alerts/Spend popovers (outside mousedown, Escape that
@@ -31,7 +31,7 @@ export const KEEP_AWAKE_COPY = {
   sub: "Keep this Mac awake",
   lock: "The screen can dim and lock normally. Prevents idle sleep.",
   lid: "Lid close and manual Sleep still work. Uses more battery power.",
-  lifecycle: "On until Mission Control quits or restarts.",
+  lifecycle: "Stays on across restarts and upgrades until you switch it off.",
   reconnecting: "Mission Control is reconnecting - the switch is disabled until the live state returns.",
 } as const;
 
@@ -198,7 +198,7 @@ export function KeepAwakePanel({
           {/* ONE short line, for the reason SpendChip's tooltip is one line: this close to
               the viewport top the bubble opens DOWNWARD, over the panel's own copy - which
               already carries the full explanation this tooltip must not repeat. */}
-          <Tooltip label="Prevent idle system sleep - on until Mission Control quits or restarts">
+          <Tooltip label="Prevent idle system sleep - stays on until you switch it off">
             <button
               type="button"
               role="switch"

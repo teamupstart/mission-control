@@ -78,7 +78,7 @@ async function scanWorking(
   state: CheckoutState,
   signal: AbortSignal,
   readLimit: number,
-  accept?: (id: string, bytes: Buffer, key: string, mode: string) => void | Promise<void>,
+  accept?: (id: string, bytes: Buffer, key: string, mode: string, chargeRead: (size: number) => void) => void | Promise<void>,
 ) {
   const layer: Layer = new Map();
   const embedded = new Set(state.embedded);
@@ -98,7 +98,7 @@ async function scanWorking(
         .update(file.data)
         .digest("hex");
       layer.set(key, { id, mode: file.mode });
-      if (accept) await accept(id, file.data, key, file.mode);
+      if (accept) await accept(id, file.data, key, file.mode, chargeRead);
     }
   }
   return layer;
@@ -336,7 +336,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     const changedStatSize = new Set<string>();
     const indexHasCrlf = new Map<string, boolean>();
     const chargeBlob = storage.requiredBlobBudget(pending);
-    const worktree = await scanWorking(executable, state, signal, worktreeReadLimit, async (id, bytes, key, mode) => {
+    const worktree = await scanWorking(executable, state, signal, worktreeReadLimit, async (id, bytes, key, mode, chargeRead) => {
       sizes.set(id, bytes.length);
       if (allowed(key)) chargeBlob(id, bytes.length);
       const cachedSize = state.indexStatSizes[key];
@@ -348,7 +348,11 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
         const staged = index.get(key);
         if (staged && staged.mode !== "160000") {
           if (!indexHasCrlf.has(staged.id)) {
-            const data = staged.id === id ? bytes : (await reader.get(staged.id, "blob")).data;
+            const data = staged.id === id ? bytes : (await reader.get(staged.id, "blob", false, size => {
+              chargeRead(size);
+              if (allowed(key)) chargeBlob(staged.id, size);
+              sizes.set(staged.id, size);
+            })).data;
             indexHasCrlf.set(staged.id, data.includes("\r\n") && autoText(data));
           }
           if (indexHasCrlf.get(staged.id)) return;

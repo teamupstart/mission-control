@@ -180,7 +180,7 @@ test("reset cleanup can preserve only an ambiguous claimed row", () => {
     21,
   )!;
 
-  assert.equal(clearPendingTurns(key, [uncertain.id]), 1);
+  assert.deepEqual(clearPendingTurns(key, [uncertain.id]), { count: 1, spokenIds: [] });
   assert.deepEqual(
     listPendingTurns(key).map((turn) => [turn.id, turn.state]),
     [[uncertain.id, "uncertain"]],

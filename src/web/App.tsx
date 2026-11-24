@@ -10,6 +10,7 @@ import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
@@ -50,6 +51,7 @@ import { markAllReportsRead } from "./lib/report-state.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useVoiceConfig } from "./useVoiceConfig.ts";
 import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -406,6 +408,8 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
+    voiceCards,
+    acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -448,6 +452,7 @@ export function App(): React.JSX.Element {
   );
   // Call signs and reference names are voice's names: they name an agent only while it is on.
   const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  const voiceConfig = useVoiceConfig(spokenNames && route.page === "settings" && route.category === "voice");
   // Muted report authors: left out of the fold and its to read figure, and never notified.
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
@@ -904,6 +909,7 @@ export function App(): React.JSX.Element {
     },
     [navigate],
   );
+  const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),
     [openSettingsAnchor],
@@ -2673,6 +2679,18 @@ export function App(): React.JSX.Element {
     },
     [],
   );
+  const previousVoiceCards = useRef(voiceCards);
+  useEffect(() => {
+    const messages: string[] = [];
+    for (const card of voiceCards.values()) {
+      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
+        const previous = previousVoiceCards.current.get(card.id);
+        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
+      }
+    }
+    previousVoiceCards.current = voiceCards;
+    if (messages.length) showFleetActionError(messages.join(" "));
+  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
@@ -4990,6 +5008,7 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
+      <VoiceWindowProvider enabled={spokenNames} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
@@ -5001,6 +5020,7 @@ export function App(): React.JSX.Element {
       >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
+        <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}
           layout={topbarLayout}
@@ -5297,6 +5317,7 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
               reportMutes={reportMutes}
@@ -5689,6 +5710,7 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onComplete={setCompleteSessionId}
                   onReplyBox={noteInboxReplyBox}
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
@@ -5886,12 +5908,15 @@ export function App(): React.JSX.Element {
           onShow={showLaunchFailure}
           onReport={setReportingLaunchFailure}
         />
+        <VoiceIndicator id="floating" />
+        <VoiceIndicator id="status-line" />
       </div>
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
       </VoiceRosterContext.Provider>
+      </VoiceWindowProvider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>

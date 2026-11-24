@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
@@ -11,7 +12,7 @@ import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -38,14 +39,16 @@ import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
+  backgroundReasoningEffortEnabled,
   claudeTransportChoice,
   codexTransportChoice,
   getLlmConfig,
+  llmJobModel,
+  llmJobRunner,
   llmRunnerChoice,
 } from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
-import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
@@ -86,6 +89,7 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
+import { keepAwakePreferenceStore } from "./keep-awake-preference.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
 import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
@@ -261,6 +265,7 @@ const voiceNames = new VoiceNameRegistry(registry, {
 const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const stopVoiceIndicators = onVoiceIndicatorsChanged((indicators) => registry.emitVoiceIndicators(indicators));
 // The shapers folder is read at start, and again at every shaping run: never watched.
 if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
@@ -309,7 +314,9 @@ const pauses: PauseManager = new PauseManager({
 });
 pauses.start();
 const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
-const pendingTurns = new PendingTurnManager(registry, sdkSessions);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions, {
+  unseenReports: session => unseenReportsNote(reports.openReportsBy(reports.authorFor(session).key)),
+});
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
 // reconciliation reclaims the worktree of every task whose agent did not survive the restart,
@@ -607,6 +614,7 @@ ensembles = new EnsembleManager(registry, undefined, {
           guidanceMarkdown: persona.guidanceMarkdown,
           runner: persona.runner,
           model: persona.model,
+          ...(persona.effort && { effort: persona.effort }),
           archived: persona.archivedAt !== null,
         }
       : null;
@@ -619,18 +627,16 @@ ensembles = new EnsembleManager(registry, undefined, {
       return resolveEvaluatorExecution(guidance, pins, {
         appRunner: llmRunnerChoice(cfg),
         personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
-        jobModel: (runnerId) =>
-          resolveLlmJobModel(
-            "ensemble-comparison",
-            cfg.models,
-            envVar(LLM_JOB_SPECS["ensemble-comparison"].envKey),
-            runnerId,
-          ).id,
+        jobRunner: llmJobRunner("ensemble-comparison", cfg),
+        jobModel: (runnerId) => llmJobModel("ensemble-comparison", cfg, runnerId).id,
+        effortEnabled: backgroundReasoningEffortEnabled(),
+        jobEffort: cfg.efforts?.["ensemble-comparison"],
       });
     },
     runModel: (runnerId, prompt, opts) =>
       llmRunner(runnerId).run(prompt, {
         model: opts.modelId,
+        effort: opts.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
       }),
@@ -821,12 +827,14 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 let stopSnoozeClock = () => {};
 
-// The transient Keep Awake owner. Constructed before the app so the routes never see a
-// daemon without it, and SEEDED into the registry before the server accepts traffic so
-// the very first snapshot already carries a truthful status - which, on every boot, is
-// `off`: the mode is deliberately never persisted or reacquired across restarts.
+// The Keep Awake owner. Constructed before the app so the routes never see a daemon without
+// it, and SEEDED into the registry before the server accepts traffic so the very first
+// snapshot already carries a truthful status - which is `off` until the operator's saved
+// choice has been applied. That happens in the listening callback below, once this process
+// has won the port: a daemon that lost it must not take a power assertion.
 const keepAwake = new KeepAwakeManager({
   onStatus: (status) => registry.setKeepAwakeStatus(status),
+  preference: keepAwakePreferenceStore(),
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
@@ -993,6 +1001,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Settle resident runs a previous process left pending, from session-start evidence, then
   // follow run ends. After the port for the reason the schedules above are: it writes rows.
   residents.start();
+  // Put the Mac back in the state the operator chose before this daemon (or the one an
+  // upgrade replaced) went away. The assertion died with that process; the choice did not.
+  // After the port, like every other writer, because it takes a process-owned OS assertion.
+  if (!shutdownStarted) {
+    void keepAwake.restore().catch((error: unknown) => {
+      console.warn("[mission-control] could not restore the Keep awake choice:", error);
+    });
+  }
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
@@ -1123,7 +1139,9 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  registry.voiceRouter?.reset();
   stopVoiceState();
+  stopVoiceIndicators();
   stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
@@ -1199,9 +1217,10 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
-  // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
-  // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
-  // orderly half of a two-part cleanup, not the only one.
+  // Release the idle-sleep assertion while we can still do it gracefully. This releases the
+  // assertion only: the operator's saved choice stays, so the next daemon puts it back.
+  // `caffeinate`'s own `-w <daemon PID>` covers every exit that never reaches this line, so
+  // this is the orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
   // Stop taking new export work, commit whatever is captured but unprojected, and release this
   // process's leases. Time-bounded by construction: the local commit gets a budget and the

@@ -23,6 +23,7 @@
 import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spend.ts";
 import type { ModelSource } from "./model-choice.ts";
 import type { ThinkingLevel } from "./types.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
 import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
 
 /**
@@ -275,7 +276,27 @@ export function llmRunInputBytes(
   );
 }
 
+export interface ResolvedLlmEffort {
+  /** Null leaves the provider's own default in effect. */
+  level: ThinkingLevel | null;
+  /** A saved override that the selected provider and model do not offer. */
+  unsupported: ThinkingLevel | null;
+}
+
+export function resolveLlmEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+  effort: ThinkingLevel | null | undefined,
+): ResolvedLlmEffort {
+  if (!effort) return { level: null, unsupported: null };
+  return launchEffortLevels(runner, model).includes(effort)
+    ? { level: effort, unsupported: null }
+    : { level: null, unsupported: effort };
+}
+
 export interface LlmRunOptions {
+  /** Cancel this call, including any running provider process. */
+  signal?: AbortSignal;
   /**
    * The model id. Omit to inherit whatever the provider defaults to, which is both the
    * priciest and the least predictable choice - every cheap caller should name one.
@@ -288,6 +309,18 @@ export interface LlmRunOptions {
    * rather than checking it again.
    */
   effort?: ThinkingLevel;
+  /**
+   * `off` asks the provider to answer without a reasoning pass: Claude's thinking disabled,
+   * Codex's reasoning effort `none`. Omit for the provider's default. For a short classification
+   * whose budget is a few seconds, the thinking is most of the delay (voice routing, Phase 4).
+   */
+  thinking?: "off";
+  /**
+   * A system prompt that REPLACES the provider's own default one, for a call that needs no agent
+   * framing. A runner whose provider has no system prompt slot puts it ahead of the prompt.
+   * Omit for the provider's default, which is every other caller's behaviour.
+   */
+  systemPrompt?: string;
   /** Wall-clock budget for the whole call. Omit to take the runner's own default. */
   timeoutMs?: number;
   /**

@@ -8,14 +8,13 @@ import { Tooltip } from "./Tooltip.tsx";
 import { InboxActionButton } from "./AgentName.tsx";
 import { parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 
-/** What a task completed from a Stalled card records as its outcome. */
-const MARK_DONE_OUTCOME = "Marked done from the Stalled section";
-
 type StalledFactsProps = {
   session: Session;
   stall: Stall;
   onMessage?: () => void;
   onOpenQueue?: () => void;
+  /** Open the session's Complete dialog. Absent where nothing can host it, and Mark done is not drawn. */
+  onComplete?: () => void;
   onOpenRun?: (runId: string) => void;
   /** Hide this stall until its facts change; absent where nothing can record a dismissal. */
   onDismiss?: () => void;
@@ -30,7 +29,9 @@ type StalledFactsProps = {
  * so this adds only what the stall rule observed and the session's own last words on it.
  *
  * The fixes are the Stuck row's, from the same `INBOX_ACTIONS` entries and the same
- * `useStallActions`, so a fix cannot come to mean two things. Only the two idle kinds reach here.
+ * `useStallActions`, so a fix cannot come to mean two things. Mark done goes through `onComplete`
+ * here and on the Stuck row, so a stalled session completes like any other. Only the two idle kinds
+ * reach here.
  * Clicks stop at this panel: the tile's own click opens the session, and a fix pressed on a card
  * must not also drill into it.
  */
@@ -40,6 +41,7 @@ export function StalledTileFacts({
   onOpenRun,
   onMessage,
   onOpenQueue,
+  onComplete,
   onDismiss,
 }: StalledFactsProps): React.JSX.Element | null {
   const { busy, error, done, run, fixed } = useStallActions(session.id, stall);
@@ -91,13 +93,13 @@ export function StalledTileFacts({
             <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
           </Tooltip>
         )}
-        {facts?.kind === "unfinished-work" && facts.task && (
+        {facts?.kind === "unfinished-work" && facts.task && onComplete && (
           <InboxActionButton
             action="mark-done"
             name={name}
-            tooltip="Complete this session's task: the work is finished and nothing more is owed"
+            tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
             disabled={disabled}
-            onClick={run("mark-done", () => api.completeTask(facts.task!.id, MARK_DONE_OUTCOME))}
+            onClick={onComplete}
           />
         )}
         {facts?.kind === "workflow-parked" && parkedStep(facts) === "resubmit" && (

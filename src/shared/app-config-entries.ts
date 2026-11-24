@@ -216,6 +216,7 @@ const foremanFields = {
   maxSessions: "setting",
   backlogModel: "setting",
   backlogRunner: "setting",
+  efforts: "setting",
 } satisfies Record<keyof ForemanConfig, AppConfigValueClass>;
 
 const workflowFields = {
@@ -237,6 +238,7 @@ const llmFields = {
   codexTransport: "setting",
   models: "setting",
   runners: "setting",
+  efforts: "setting",
 } satisfies Record<keyof LlmConfig, AppConfigValueClass>;
 
 const awayFields = {
@@ -259,6 +261,7 @@ const inspectorFields = {
   mode: "setting",
   repoAllowlist: "setting",
   model: "setting",
+  effort: "setting",
   maxCommentsPerRound: "setting",
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 
@@ -373,6 +376,14 @@ const TelemetryIdentitySchema = z.object({
 const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number() });
 
 /**
+ * The Keep awake switch as the operator last left it on this Mac. A saved CHOICE, never an
+ * observation: whether the OS holds the assertion is `KeepAwakeStatus`, which the daemon
+ * derives fresh on every run and never stores.
+ */
+export const KeepAwakePreferenceSchema = z.object({ enabled: z.boolean() });
+export type KeepAwakePreference = z.infer<typeof KeepAwakePreferenceSchema>;
+
+/**
  * The complete supported `app_config` partition.
  *
  * Config owners import their descriptor from here for every read and write. The backup
@@ -440,6 +451,13 @@ export const APP_CONFIG_ENTRIES = {
    */
   dispatchLauncherPrompt: wholeEntry("dispatch.launcher.prompt", z.boolean(), "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
+  /**
+   * Whether this Mac should be kept awake (`src/server/keep-awake.ts`). `operational` with no
+   * backup domain, as `away.away` and `voice.muted` are: it is a live power mode of THIS
+   * machine, and a settings snapshot restored from another installation must not be able to
+   * hold a laptop awake that its owner never asked to hold awake.
+   */
+  keepAwake: wholeEntry("keepAwake", KeepAwakePreferenceSchema, "operational", null),
   /**
    * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`
    * with no backup domain: it names this machine's live processes by pid, and restored onto

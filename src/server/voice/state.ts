@@ -257,14 +257,17 @@ export class VoiceStateStore {
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
     const stamp = pushToTalk ? report.pushToTalkPressedAtHostMs : report.pushToTalkReleasedAtHostMs;
     const eventAt = stamp !== undefined && snapshotMs !== null && stamp <= snapshotMs ? stamp : undefined;
-    if (eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
-        (eventAt === lastChange && pushToTalk && !this.report?.report.pushToTalk))) return;
-    const held = !pushToTalk && heldSince !== null && this.state().mode === "push-to-talk"
+    const staleKey = eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
+      (eventAt === lastChange && pushToTalk && !this.report?.report.pushToTalk));
+    // Snapshot order was already checked. A recovered old key event cannot undo
+    // a newer transition, but the call, permission and lease readings are fresh.
+    const down = staleKey ? heldSince !== null : pushToTalk;
+    const held = !down && heldSince !== null && this.state().mode === "push-to-talk"
       ? this.directive() : null;
     let keyChangedAt = lastChange;
-    if (eventAt !== undefined) keyChangedAt = eventAt;
-    else if (pushToTalk !== (heldSince !== null)) keyChangedAt = snapshotMs;
-    this.report = { at, keyChangedAt, report: { ...report, pushToTalk } };
+    if (!staleKey && eventAt !== undefined) keyChangedAt = eventAt;
+    else if (down !== (heldSince !== null)) keyChangedAt = snapshotMs;
+    this.report = { at, keyChangedAt, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
       this.directive();

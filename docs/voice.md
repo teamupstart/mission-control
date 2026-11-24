@@ -97,6 +97,8 @@ The shell timestamps every snapshot, including idle heartbeats, at observation t
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
 across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
 older and duplicate snapshots before applying state or renewing its 15-second lifetime.
+A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
+when it repeats a key event older than the daemon’s last key transition.
 
 On macOS use the Core Audio host clock (`mach_absolute_time` converted with its timebase).
 Key events use the same origin and round down to whole milliseconds. During a hold send

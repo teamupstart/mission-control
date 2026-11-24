@@ -326,6 +326,26 @@ test("ordered shell reports ignore a delayed idle heartbeat and release on host 
   assert.equal(voiceStateStore.directive().capture, false, "an unsequenced launcher cannot open a hold");
 });
 
+test("a fresh snapshot with a stale key event renews call state and applies permission without authorizing audio", async (t) => {
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  const report = async (body: object) => (await (await post("/voice/shell-report", { callActive: true, ...body }, token)).json()).state;
+  await report({ reportedAtHostUs: 100_000, pushToTalk: true });
+  const held = voiceStateStore.directive().revision;
+  assert.equal((await report({ reportedAtHostUs: 300_000, pushToTalk: false })).mode, "auto-muted");
+
+  // The shell recovered the physical key-up after its first idle report.
+  const idle = { pushToTalk: false, pushToTalkReleasedAtHostMs: 250 };
+  elapsed += 10_000;
+  await report({ ...idle, reportedAtHostUs: 10_300_000 });
+  elapsed += 6000;
+  assert.equal(voiceStateStore.state().mode, "auto-muted", "the fresh heartbeat kept the active call live");
+  assert.equal((await report({ ...idle, reportedAtHostUs: 16_300_000, callActive: false })).mode, "listening");
+  assert.equal((await report({ ...idle, reportedAtHostUs: 16_310_000, microphone: "denied" })).mode, "unavailable");
+  assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "denied", source: "shell" });
+  assert.equal(voiceStateStore.releasedCapture(held), undefined, "a discarded hold cannot be revived");
+});
+
 test("a rapid second press preserves the first release, until a privacy or recipient change", async () => {
   const press = (down: boolean) => orderedShellReport({
     callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAtHostMs: Date.now() }),

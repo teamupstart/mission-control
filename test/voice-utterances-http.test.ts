@@ -354,12 +354,12 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
 });
 
-test("a quoted candidate leaves the unsure card and queue untouched until an unquoted pick", async () => {
+test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async () => {
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const before = queued("Will");
   await say("Steven ask Will about the results", "choice");
-  for (const text of ["“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
+  for (const text of [",Will", " ?Will.", "Will,", "(Will)", "“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.rule, "no-message");
     assert.deepEqual(queued("Will"), before);

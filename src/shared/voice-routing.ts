@@ -49,19 +49,14 @@ type Decision =
   | { kind: "needs-model"; command?: VoiceAddressedCommand; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
-const QUOTATION_MARK = /\p{Quotation_Mark}/u;
 const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
 
 function normalized(text: string): string {
   return normalizeSpokenName(text).replace(BOUNDARY_PUNCTUATION, "").trim();
 }
 
-function hasBoundaryQuote(text: string): boolean {
-  return text.trim().match(BOUNDARY_PUNCTUATION)?.some((boundary) => QUOTATION_MARK.test(boundary)) ?? false;
-}
-
-function bareCommand(text: string): string | undefined {
-  return /^(stop|cancel)\s*[\p{Sentence_Terminal}…]*$/u.exec(text.trim().toLowerCase())?.[1];
+function barePhrase(text: string): string {
+  return normalizeSpokenName(text).replace(/[\p{Sentence_Terminal}…]+$/u, "").trimEnd();
 }
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
@@ -126,8 +121,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, token.index + token[0].length);
   const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
-  if (bareCommand(text) === "cancel") return { kind: "control", command: "cancel" };
-  const pickName = phrase !== null && !hasBoundaryQuote(text) ? phrase : null;
+  const controlPhrase = barePhrase(text);
+  if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
+  const pickName = phrase !== null ? controlPhrase : null;
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === pickName)
     .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
@@ -175,7 +171,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = bareCommand(body) === "stop" ? { command: "stop" as const } : {};
+  const command = barePhrase(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {

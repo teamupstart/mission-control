@@ -99,7 +99,7 @@ function IdentitySection({ draft, update, disabled, profileId = null }: Resident
     [voiceRoster, profileId],
   );
   return (
-    <div className="resident-fields">
+    <div className={voiceNames ? "resident-fields resident-spoken-identity" : "resident-fields"}>
       <label className="field">
         <span className="field-label">Name</span>
         <input
@@ -111,7 +111,22 @@ function IdentitySection({ draft, update, disabled, profileId = null }: Resident
           onChange={(event) => update("identity", { ...draft.identity, name: event.target.value })}
         />
       </label>
-      <label className="field">
+      {/* Behind the voice preview. A saved reference name stays on the profile either way. */}
+      {voiceNames && (
+        <SpokenNameField
+          className="resident-reference-name"
+          label="Reference name"
+          example="cut the release"
+          value={draft.identity.referenceName ?? ""}
+          disabled={disabled}
+          roster={roster}
+          placeholder={`Said instead of ${draft.identity.name.trim() || "the name"}`}
+          // Saved blank when cleared, never dropped: a save that omits the key would keep the
+          // previous revision's reference name.
+          onChange={(value) => update("identity", { ...draft.identity, referenceName: value })}
+        />
+      )}
+      <label className="field resident-description">
         <span className="field-label">
           Description <span className="field-hint">optional</span>
         </span>
@@ -124,20 +139,6 @@ function IdentitySection({ draft, update, disabled, profileId = null }: Resident
           onChange={(event) => update("identity", { ...draft.identity, description: event.target.value })}
         />
       </label>
-      {/* Behind the voice preview. A saved reference name stays on the profile either way. */}
-      {voiceNames && (
-        <SpokenNameField
-          className="resident-reference-name"
-          label="Reference name"
-          value={draft.identity.referenceName ?? ""}
-          disabled={disabled}
-          roster={roster}
-          placeholder={`Said instead of ${draft.identity.name.trim() || "the name"}`}
-          // Saved blank when cleared, never dropped: a save that omits the key would keep the
-          // previous revision's reference name.
-          onChange={(value) => update("identity", { ...draft.identity, referenceName: value })}
-        />
-      )}
     </div>
   );
 }

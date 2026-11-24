@@ -101,8 +101,18 @@ test("control-word: a name that is, or sounds like, a word voice listens for on 
   assert.match(spokenNameWarningText({ kind: "control-word", word: "stop" }, "Stop"), /“stop” is a word voice listens for/);
 });
 
+test("a mixed-script name checks the actual first word and never skips an unkeyed word", () => {
+  assert.deepEqual(kinds("サクラ Stop", [{ name: "Stop" }]), []);
+  assert.equal(phoneticKey("サクラ Stop"), "");
+  assert.deepEqual(kinds("Stop サクラ"), ["control-word"]);
+  assert.ok(namesSoundAlike("Steve サクラ", "Stevie"));
+  assert.deepEqual(kinds("サクラ", [{ name: "サクラ" }]), ["sounds-like"]);
+});
+
 test("a name with no letters a to z is still warned when another agent answers to the same name", () => {
   assert.deepEqual(validateSpokenName("サクラ", [{ name: "サクラ" }, { name: "Steve" }]), [{ kind: "sounds-like", names: ["サクラ"] }]);
+  for (const name of ["!!!", "✨"]) assert.deepEqual(validateSpokenName(name), [{ kind: "symbols-only" }]);
+  assert.deepEqual(validateSpokenName("١٢"), []);
   assert.deepEqual(validateSpokenName(" サクラ ", [{ name: "サクラ" }]), [{ kind: "sounds-like", names: ["サクラ"] }], "compared trimmed");
   assert.deepEqual(validateSpokenName("サクラ", [{ name: "ハナ" }]), [], "it has no key to sound like anything by");
   assert.deepEqual(validateSpokenName("   ", [{ name: "サクラ" }]), [], "a blank name still draws nothing");
@@ -127,7 +137,7 @@ test("every warning says the name can be kept", () => {
   ] as const) {
     assert.match(spokenNameWarningText(warning, "Name"), /You can keep it/, warning.kind);
   }
-  assert.match(spokenNameWarningText({ kind: "common-word" }, " Will "), /starts with “Will” goes to this agent/);
+  assert.match(spokenNameWarningText({ kind: "common-word" }, " Will "), /“Will you grab the door[?]”/);
 });
 
 test("a stored spoken name is trimmed, single-spaced, one line and at most 40 characters", () => {

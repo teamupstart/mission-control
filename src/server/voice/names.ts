@@ -81,19 +81,6 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Whether a task is an agent that answers to its call sign: it has one, it has been launched at
- * least once, and it is not a resident's task, which answers to its profile's name instead.
- *
- * Launched means `dispatchedAt`, which the dispatcher stamps as a launch attempt starts, whatever
- * the status: a task created to launch now sits in `dispatching` with none until the dispatcher
- * reaches it, and listing it then would start its 24 hours before it ever ran.
- */
-export function taskHasSpokenName(task: Task): boolean {
-  if (!task.callSign || !taskKindTakesCallSign(task.kind) || task.status === "backlog") return false;
-  return task.dispatchedAt !== null;
-}
-
 function taskState(task: Task, sessionId: string | null): SpokenNameState {
   if (sessionId) return "running";
   return task.status === "hibernated" ? "hibernated" : "not-running";
@@ -147,11 +134,14 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
   const candidates: Candidate[] = [];
   const retiredNames = new Map<string, string>();
   for (const task of inputs.tasks) {
-    if (!taskHasSpokenName(task)) continue;
+    if (!taskKindTakesCallSign(task.kind) || task.dispatchedAt === null || task.status === "backlog") continue;
     const live = sessionForTask.get(task.id) ?? null;
+    // Provisioning or cancelling an attempt before it had a session cannot claim a name.
+    if (!live && !task.sessionId && (task.status === "dispatching" || task.status === "cancelled" || task.launchFailure)) continue;
     const state = taskState(task, live);
     const stoppedAt = state === "not-running" ? inputs.stoppedAt(task) : null;
-    const name = normalizeSpokenName(task.callSign!);
+    if (!task.callSign) continue;
+    const name = normalizeSpokenName(task.callSign);
     if (stoppedAt !== null && inputs.retiredNames?.get(task.id) === name) {
       retiredNames.set(task.id, name);
       continue;
@@ -162,7 +152,7 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
       stoppedAt,
       entry: {
         key: taskSpokenNameKey(task.id),
-        name: task.callSign!,
+        name: task.callSign,
         kind: "session",
         taskId: task.id,
         sessionId: live ?? task.sessionId ?? null,
@@ -297,15 +287,14 @@ export class VoiceNameRegistry {
         if (!this.sessionTasks.delete(event.id)) return;
         break;
       case "task_upsert":
-        // Only a task that has a call sign, or had one when last listed, can move the roster;
-        // a resident's own task moves it through its run and session frames.
-        if (!event.task.callSign && !this.listed.has(event.task.id) && !this.retained.has(event.task.id) && !this.retiredNames.has(event.task.id)) return;
+        // An unnamed task may receive its call sign after its session has stopped.
+        if (!taskKindTakesCallSign(event.task.kind)) return;
         this.retained.delete(event.task.id);
         break;
       case "task_remove": {
         const listed = this.listed.get(event.id);
         if (listed && this.deps.taskStored(event.id)) this.retained.set(event.id, listed);
-        else if (!this.retained.delete(event.id) && !listed && !this.retiredNames.has(event.id)) return;
+        else if (!this.retained.delete(event.id) && !listed && !this.retiredNames.has(event.id) && !this.stopped.has(event.id)) return;
         break;
       }
       default:
@@ -321,7 +310,8 @@ export class VoiceNameRegistry {
     const tasks = [...inMemory, ...[...this.retained.values()].filter((task) => !ids.has(task.id))];
     for (const task of tasks) {
       if (task.callSign && !this.retiredNames.has(task.id)) {
-        this.retiredNames.set(task.id, this.deps.retirement?.read(task.id) ?? null);
+        const stored = this.deps.retirement?.read(task.id);
+        this.retiredNames.set(task.id, stored ? normalizeSpokenName(stored) : null);
       }
     }
     const stoppedNow = new Set<string>();

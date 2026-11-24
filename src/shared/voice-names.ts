@@ -104,9 +104,9 @@ export function taskKindTakesCallSign(kind: TaskKind): boolean {
 export const RESIDENT_CALL_SIGN_REFUSAL =
   "A resident is addressed by the reference name on its profile, so its task takes no call sign.";
 
-/** A name as it is compared: trimmed, whitespace collapsed, lowercase. */
+/** A name as it is compared: trimmed, whitespace collapsed, lowercase and in Unicode NFC. */
 export function normalizeSpokenName(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLowerCase();
+  return name.trim().replace(/\s+/g, " ").toLowerCase().normalize("NFC");
 }
 
 // ---- what a name sounds like ----
@@ -122,7 +122,7 @@ function spokenWords(name: string): string[] {
     .toLowerCase()
     .replace(/[‘’`]/g, "'")
     .split(/[\s\-_/.,]+/)
-    .map((word) => word.replace(/'s$|s'$|'$/, "").replace(/[^a-z]/g, ""))
+    .map((word) => word.replace(/'s$|s'$|'$/, "").replace(/[^\p{L}\p{M}\p{N}]/gu, ""))
     .filter(Boolean);
 }
 
@@ -136,8 +136,8 @@ const isVowel = (letter: string | undefined): boolean => letter !== undefined &&
  * which keeps Bo (`P`) apart from Bobby (`PP`).
  */
 function metaphone(input: string): string {
+  if (!/^[a-z]+$/.test(input)) return "";
   let word = input.toUpperCase();
-  if (!word) return "";
   if (/^(AE|GN|KN|PN|WR)/.test(word)) word = word.slice(1);
   if (word.startsWith("X")) word = `S${word.slice(1)}`;
   if (word.startsWith("WH")) word = `W${word.slice(2)}`;
@@ -222,7 +222,8 @@ function metaphone(input: string): string {
  * punctuation, accents and a possessive do not change it, so "steve's" keys as Steve.
  */
 export function phoneticKey(name: string): string {
-  return spokenWords(name).map(metaphone).filter(Boolean).join(" ");
+  const keys = spokenWords(name).map(metaphone);
+  return keys.every(Boolean) ? keys.join(" ") : "";
 }
 
 /** The edit distance between two short strings. */
@@ -262,9 +263,10 @@ export function namesSoundAlike(a: string, b: string): boolean {
   const keyA = phoneticKey(a);
   const keyB = phoneticKey(b);
   if (keysSoundAlike(keyA, keyB)) return true;
-  const firstA = keyA.split(" ")[0] ?? "";
-  const firstB = keyB.split(" ")[0] ?? "";
-  return (keyA.includes(" ") || keyB.includes(" ")) && keysSoundAlike(firstA, firstB);
+  const wordsA = spokenWords(a);
+  const wordsB = spokenWords(b);
+  return (wordsA.length > 1 || wordsB.length > 1)
+    && keysSoundAlike(metaphone(wordsA[0] ?? ""), metaphone(wordsB[0] ?? ""));
 }
 
 /** Syllables in one word, by vowel groups less a silent final e. Never fewer than one. */
@@ -276,24 +278,25 @@ function syllables(word: string): number {
 
 // ---- validation ----
 
-/** The four warnings, in the order they are reported: the riskiest first. */
-export const SPOKEN_NAME_WARNING_KINDS = ["control-word", "sounds-like", "common-word", "short"] as const;
+/** The warnings, in the order they are reported: the riskiest first. */
+export const SPOKEN_NAME_WARNING_KINDS = ["control-word", "sounds-like", "common-word", "short", "symbols-only"] as const;
 export type SpokenNameWarningKind = (typeof SPOKEN_NAME_WARNING_KINDS)[number];
 
 export type SpokenNameWarning =
   | { kind: "control-word"; word: VoiceControlWord }
   | { kind: "sounds-like"; names: readonly string[] }
   | { kind: "common-word" }
-  | { kind: "short" };
+  | { kind: "short" }
+  | { kind: "symbols-only" };
 
 /** The steps of the distinctiveness meter: four, less one per warning. */
-export const SPOKEN_NAME_METER_STEPS = SPOKEN_NAME_WARNING_KINDS.length;
+export const SPOKEN_NAME_METER_STEPS = 4;
 
 /**
  * Why a name may be hard to address by voice, against the names already on the roster. Empty
  * when it is distinctive, and for a blank name. The caller leaves the agent's own entry out of
  * `roster`, so a name is never warned against itself. A name with no letters a to z has no
- * phonetic key, so of these it can only be the same as a roster name, and that is still warned.
+ * phonetic key, so it is checked for an exact roster match. Symbols alone also draw a warning.
  *
  * - `control-word`: the name's first word is, or sounds like (`keysSoundAlike`, as routing will
  *   compare it), one of `VOICE_CONTROL_WORDS`;
@@ -307,6 +310,7 @@ export function validateSpokenName(name: string, roster: readonly Pick<SpokenNam
   const words = spokenWords(name);
   const first = words[0];
   const warnings: SpokenNameWarning[] = [];
+  if (!/[\p{L}\p{N}]/u.test(normalized)) warnings.push({ kind: "symbols-only" });
   if (first) {
     const firstKey = metaphone(first);
     const control = VOICE_CONTROL_WORDS.find((word) => word === first || keysSoundAlike(metaphone(word), firstKey));
@@ -319,7 +323,7 @@ export function validateSpokenName(name: string, roster: readonly Pick<SpokenNam
   }
   if (alike.length > 0) warnings.push({ kind: "sounds-like", names: alike });
   if (first && words.length === 1 && VOICE_COMMON_WORDS.has(first)) warnings.push({ kind: "common-word" });
-  if (first && words.length === 1 && first.length <= 4 && syllables(first) === 1) warnings.push({ kind: "short" });
+  if (first && /^[a-z]{1,4}$/.test(first) && words.length === 1 && syllables(first) === 1) warnings.push({ kind: "short" });
   return warnings;
 }
 
@@ -343,6 +347,8 @@ export function spokenNameWarningLabel(warning: SpokenNameWarning): string {
       return `Sounds like ${either(warning.names)}`;
     case "common-word":
       return "Everyday word";
+    case "symbols-only":
+      return "Symbols only";
     case "short":
       return "Very short";
   }
@@ -357,7 +363,11 @@ export function spokenNameWarningText(warning: SpokenNameWarning, name: string):
     case "sounds-like":
       return `It can be heard as ${either(warning.names)}, which another agent answers to. You can keep it; a name that sounds different is safer.`;
     case "common-word":
-      return `Anything you say that starts with “${said}” goes to this agent, and everyday sentences can start that way. You can keep it; a rarer name is safer.`;
+      return said.toLowerCase() === "will"
+        ? "Sentences like “Will you grab the door?” start the same way. You can keep it; a rarer name is safer."
+        : `Everyday sentences can start with “${said}”. You can keep it; a rarer name is safer.`;
+    case "symbols-only":
+      return "This name has no letters or numbers to say. You can keep it or choose a spoken word.";
     case "short":
       return "One short syllable is easy to miss or mishear. You can keep it; two syllables or more is safer.";
   }

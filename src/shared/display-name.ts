@@ -75,6 +75,7 @@ export function agentDisplayName(input: AgentDisplayNameInput): AgentDisplayName
  * its reference name (see `withCurrentReferenceNames`).
  */
 export type ResidentNameSource = Pick<ResidentRunSummary, "taskId"> & {
+  currentProfileName?: string;
   settings: {
     identity: Pick<ResidentRunSummary["settings"]["identity"], "name" | "referenceName">;
     board: Pick<ResidentRunSummary["settings"]["board"], "colorId">;
@@ -88,22 +89,24 @@ export type ResidentNameSource = Pick<ResidentRunSummary, "taskId"> & {
  * A reference name is a spoken name, not a launch setting: nothing is provisioned from it, and
  * the voice roster reads it from the profile as it stands. Reading it the same way here keeps
  * the name a card prints the name the operator says, from the moment it is saved, without a
- * relaunch. The profile name stays pinned, as it always has been. A run whose profile is not in
+ * relaunch. With voice off the profile name stays pinned to the run. A run whose profile is not in
  * `profiles` keeps its pinned revision's reference name.
  */
 export function withCurrentReferenceNames(
   runs: readonly (ResidentNameSource & Pick<ResidentRunSummary, "profileId">)[],
-  profiles: readonly { id: string; settings: { identity: { referenceName?: string } } }[],
+  profiles: readonly { id: string; settings: { identity: { name: string; referenceName?: string } } }[],
 ): ResidentNameSource[] {
   if (profiles.length === 0) return [...runs];
-  const current = new Map(profiles.map((profile) => [profile.id, profile.settings.identity.referenceName]));
+  const current = new Map(profiles.map((profile) => [profile.id, profile.settings.identity]));
   return runs.map((run) => {
-    if (!current.has(run.profileId)) return run;
-    const referenceName = current.get(run.profileId);
-    if (referenceName === run.settings.identity.referenceName) return run;
+    const profile = current.get(run.profileId);
+    if (!profile) return run;
+    const { referenceName } = profile;
+    if (referenceName === run.settings.identity.referenceName && profile.name === run.settings.identity.name) return run;
     const { referenceName: _pinned, ...identity } = run.settings.identity;
     return {
       ...run,
+      currentProfileName: profile.name,
       settings: { ...run.settings, identity: referenceName ? { ...identity, referenceName } : identity },
     };
   });
@@ -132,7 +135,7 @@ export function sessionDisplayNameInput(
     resident: run
       ? {
           referenceName: spokenNames ? run.settings.identity.referenceName ?? null : null,
-          name: run.settings.identity.name,
+          name: spokenNames ? run.currentProfileName ?? run.settings.identity.name : run.settings.identity.name,
           colorId: residentMarkerColor(run.settings.board.colorId),
         }
       : null,

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
-import { INSPECTOR_MODEL_SPEC, inspectorEffortChoice } from "@shared/inspector.ts";
+import { INSPECTOR_MODEL_SPEC, inspectorEffortShown } from "@shared/inspector.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
@@ -383,8 +383,9 @@ function InspectorModelGroup({
             reset,
             effort: showEffort ? {
               // Never chosen is not "Provider default" here: a review then runs at the
-              // Inspector's own default, and the control shows what will be used.
-              value: config ? inspectorEffortChoice(config.effort, "review") : null,
+              // Inspector's own default where this model offers it, and the control shows
+              // what will be used.
+              value: config ? inspectorEffortShown(config.effort, runner?.id, model?.id) : null,
               onCommit: (effort) => void update({ effort }),
             } : undefined,
             onCommit: (patch) => {

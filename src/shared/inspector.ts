@@ -5,6 +5,7 @@ import type { InspectorConfig } from "./protocol.ts";
 import type { CodeRabbitSummary } from "./code-rabbit.ts";
 import type { InspectorInspection, InspectorSummary } from "./types.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
+import { resolveLlmEffort } from "./llm.ts";
 import type { LlmRunnerId } from "./llm.ts";
 import type { ThinkingLevel } from "./types.ts";
 
@@ -120,6 +121,24 @@ export function inspectorEffortChoice(
 ): ThinkingLevel | null {
   if (saved !== undefined) return saved;
   return call === "review" ? INSPECTOR_REVIEW_EFFORT : null;
+}
+
+/**
+ * The value the settings row shows for the Inspector's review effort.
+ *
+ * A saved choice is shown as saved; the row itself marks a level the model does not offer.
+ * With nothing saved the row shows what a review will actually run at, which is the review
+ * default only when this provider and model offer it. Showing an unoffered default would
+ * print a level nobody chose and the review does not use.
+ */
+export function inspectorEffortShown(
+  saved: ThinkingLevel | null | undefined,
+  runner: LlmRunnerId | undefined,
+  model: string | undefined,
+): ThinkingLevel | null {
+  if (saved !== undefined) return saved;
+  if (runner === undefined || model === undefined) return null;
+  return resolveLlmEffort(runner, model, inspectorEffortChoice(saved, "review")).level;
 }
 
 /**

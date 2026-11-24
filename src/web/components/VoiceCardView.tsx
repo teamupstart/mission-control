@@ -100,8 +100,8 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   }, [deadline, hidden]);
   // Standalone routes present one card at a time. Keep the operation and retry ID mounted.
   if (hidden) return null;
-  const button = (label: string, hint: string, click: () => void, style = "", disabled = false) =>
-    <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button></Tooltip>;
+  const button = (label: string, hint: string, click: () => void, style = "", disabled = false, describedBy?: string) =>
+    <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click} aria-describedby={describedBy}>{label}</button></Tooltip>;
   const act = (action: "cancel" | "send-now") => {
     const time = performance.now();
     if (card.state === "pending" && (deadline === null || time >= deadline)) {
@@ -134,10 +134,12 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         // A filed plan still gates the task, but its call no longer blocks spoken delivery.
         const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && r.waitMode !== "message");
         const turn = session?.pendingTurns.find(t => t.id === part.turnId);
+        const wordsId = part.turnId && `voice-recall-words-${part.turnId}`;
         return <><div className="vc-row"><VoiceIcon name="clock" /><b className="vc-grow">Held for {named(target)}</b>
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
-            "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn)}</div>
+            "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn, wordsId)}</div>
+          <q id={wordsId}>{turn?.spokenWords ?? part.text}</q>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>

@@ -365,6 +365,41 @@ test("a queued card becomes held and stays recallable past its original expiry w
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
+test("two dashboard cards held by the same question identify and recall their own spoken words", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const question = "Which build should I check?";
+  const ask = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+  });
+  expect(ask.ok()).toBe(true);
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  const turns = [
+    { id: "first-held", words: "check the staging build" },
+    { id: "second-held", words: "check the production build" },
+  ];
+  for (const { id, words } of turns) {
+    await say(daemon, "Steve, " + words, { id });
+    await page.getByRole("button", { name: "Send now" }).click();
+  }
+  await expect(held.filter({ hasText: question })).toHaveCount(2);
+  const byWords = (words: string) => held.filter({ has: page.getByText(words, { exact: true }) });
+  for (const { words } of turns) {
+    await expect(byWords(words).getByText(words, { exact: true })).toBeVisible();
+    await expect(byWords(words).getByRole("button", { name: "Cancel message" })).toHaveAccessibleDescription(new RegExp(words));
+  }
+  await page.mouse.move(0, 0);
+  await captureCard(page.locator(".voice-card-stack"), "distinct-held-messages");
+  for (const { id, words } of turns) {
+    const response = page.waitForResponse(r => r.url().endsWith("/pending-turns/" + encodeURIComponent("voice:" + id) + "/recall"));
+    await byWords(words).getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await response).json()).toEqual({ ok: true, text: words });
+    await expect(byWords(words)).toHaveCount(0);
+  }
+  await expect(held).toHaveCount(0);
+});
+
 test("a held card identifies the blocking question and recalls the queued words", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const session = await runningAgent(page, daemon, "Steve");

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
+import { logMain } from "./main-log.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
 
@@ -47,6 +48,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   };
   const lifetime = new AbortController();
   let reportRequested = false;
+  let reportFailed = false;
   let sending: Promise<boolean> | undefined;
 
   async function sendReports() {
@@ -62,10 +64,16 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
           },
           microphone, hotkeyError: null, callActive: false, pushToTalk: false,
         };
-        accepted = await connection.request("/voice/shell-report", {
+        const current = connection;
+        const response = await current.request("/voice/shell-report", {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-        }).then(response => response.ok, () => false);
+        }).catch(() => undefined);
+        accepted = response?.ok ?? false;
+        if (connection === current) {
+          if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
+          reportFailed = !accepted;
+        }
       }
       return accepted;
     } finally {
@@ -114,6 +122,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     }
     connection?.close();
     connection = undefined;
+    reportFailed = false;
   }
   function requestSnapshot() {
     disconnect();

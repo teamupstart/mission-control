@@ -34,8 +34,10 @@ commands. Left-click to mute or unmute. While a change awaits confirmation, furt
 are ignored. If confirmation fails, the menu opens with the last reported status and the action
 to retry. The handset and microphone with waves represent the
 call and push-to-talk modes when the daemon reports them. The need-you count stays beside the
-icon in every mode. If the listener fails to start or exits unexpectedly, the desktop app
-records the launch error code, exit status or signal in `daemon.log`.
+icon in every mode. In `daemon.log`, the desktop app records the model revision at launch,
+the child PID and exit status or signal at close, and the attempt number and delay for each
+retry. A failed launch includes the OS error code. The first failed shell report in an
+outage records its HTTP status when available.
 
 ## Running the listener on a development Mac
 

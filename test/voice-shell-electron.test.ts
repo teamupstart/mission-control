@@ -38,6 +38,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
   let holdReport = false;
+  let refuseReport = false;
   let heldReport: ServerResponse | undefined;
   const publicRequests: { path?: string; credential: boolean }[] = [];
   const server = createServer((req, res) => {
@@ -76,6 +77,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       if (muteResponse === "refused") res.statusCode = 503;
     }
     if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
+      if (refuseReport) { res.writeHead(503).end(); return; }
       reports.push(JSON.parse(body));
       if (holdReport) {
         holdReport = false;
@@ -238,6 +240,21 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode: "unavailable" } }) + "\n\n");
   await until(async () => (await read()).mode === "unavailable");
+  await t.test("a shell report outage logs its HTTP status once until delivery recovers", async () => {
+    const check = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone());
+    const failures = () => readFileSync(join(root, "daemon.log"), "utf8").match(/Voice shell report failed status=503/g)?.length ?? 0;
+    try {
+      refuseReport = true;
+      await assert.rejects(check(), /report was not accepted/);
+      await assert.rejects(check(), /report was not accepted/);
+      assert.equal(failures(), 1);
+      refuseReport = false;
+      assert.equal(await check(), "checked");
+      refuseReport = true;
+      await assert.rejects(check(), /report was not accepted/);
+      assert.equal(failures(), 2);
+    } finally { refuseReport = false; }
+  });
   await t.test("microphone repair retries a rejected prompt, reports denial, opens Privacy settings and reports a grant", async () => {
     const fix = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.fixMicrophone());
     const configure = (status: string, answer: string) => app.evaluate((_, args) => {
@@ -332,6 +349,17 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     await until(() => connects === 2);
     assert.equal(refusals, 3);
     assert.equal((await read()).mode, "off");
+    const duringReconnect = await app.evaluate(async () => {
+      const f = (globalThis as unknown as {fixture: Fixture}).fixture;
+      const before = f.calls.length;
+      f.configurePermission("not-determined", "granted");
+      const ask = await f.voice.fixMicrophone();
+      f.configurePermission("denied", "denied");
+      const settings = await f.voice.fixMicrophone();
+      f.configurePermission("granted", "granted");
+      return { ask, settings, osCalls: f.calls.length - before };
+    });
+    assert.deepEqual(duringReconnect, { ask: "unavailable", settings: "unavailable", osCalls: 0 });
     assert.deepEqual(pids(), [first]);
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");
     await until(() => pids().length === 2);

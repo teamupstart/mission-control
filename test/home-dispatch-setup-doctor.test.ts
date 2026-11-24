@@ -867,3 +867,29 @@ test("a mod-calls record that is null, an array or a scalar is a failed check, n
     await r.cleanup();
   }
 });
+
+test("a backup folder that cannot be removed after a successful publish does not turn it into a failure", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-backup-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "1.1.0");
+    // The old build cannot be deleted: its hooks folder is read-only.
+    const hooks = join(dest, "mission-control", "hooks");
+    chmodSync(hooks, 0o500);
+    try {
+      const staged = await stageMod({ source, dest });
+      assert.equal(staged.version, "1.1.0", "the publish is reported as the success it was");
+      assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.1.0");
+    } finally {
+      for (const name of readdirSync(join(dir, "state"))) {
+        const old = join(dir, "state", name, "mission-control", "hooks");
+        if (name.startsWith("mod.old-") && existsSync(old)) chmodSync(old, 0o700);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

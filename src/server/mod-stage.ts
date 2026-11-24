@@ -108,7 +108,9 @@ export async function stageMod(options: {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
-  if (movedAside) await rm(previous, { recursive: true, force: true });
+  // The new mod is live. A backup folder that cannot be removed is not a reason to report the
+  // publish as failed, and the caller must still go on to install what was published.
+  if (movedAside) await rm(previous, { recursive: true, force: true }).catch(() => undefined);
   return { dest, pluginDir: join(dest, PLUGIN_NAME), version };
 }
 

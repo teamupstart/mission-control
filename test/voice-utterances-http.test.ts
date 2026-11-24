@@ -629,7 +629,7 @@ test("a replacement session receives neither a pending message nor a pending int
   voiceStateStore.useRoster(() => [will, name("Steve")]);
   t.after(() => voiceStateStore.useRoster(() => roster));
   await say("Will, stop", "stop-original");
-  await say("Steven ask Will about the deployment", "picked-message");
+  await say("Steve, check the build, and Will, review the PR", "picked-message");
   await resolved("picked-message");
   t.mock.timers.tick(1);
   await say("Will.");
@@ -640,20 +640,21 @@ test("a replacement session receives neither a pending message nor a pending int
 
   assert.equal((await act("stop-original", "send-now")).status, 200);
   t.mock.timers.tick(1000);
-  await Promise.resolve();
-  assert.deepEqual(queued("Steve"), firstQueue);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(queued("Steve"), [...firstQueue, "check the build"]);
   assert.deepEqual(queued("Bill"), replacementQueue);
   assert.deepEqual(interrupts, beforeInterrupts);
-  assert.deepEqual(cards.slice(-2).map(c => [c.id, c.reason === "delivering" ? c.reason : c.state, c.parts.map(p => p.target?.sessionId)]), [
-    ["stop-original", "not-running", ["sdk:Will"]],
-    ["picked-message", "not-running", ["sdk:Steve", "sdk:Will"]],
+  assert.deepEqual(cards.filter(c => c.state === "not-running").map(c => [c.id, c.parts.map(p => p.target?.sessionId)]), [
+    ["stop-original", ["sdk:Will"]],
+    ["picked-message", ["sdk:Steve", "sdk:Will"]],
   ]);
   const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");
   assert.equal(deliveries.length, 2);
   for (const entry of deliveries) {
     assert.equal(entry.outcome, "not-running");
-    assert.equal(entry.detail, "The selected session is unavailable.");
   }
+  assert.equal(deliveries.find(entry => entry.id === "stop-original")?.detail, "The selected session is unavailable.");
+  assert.match(deliveries.find(entry => entry.id === "picked-message")!.detail, /Part 1 \(Steve\) queued\. Part 2 \(Will\) unavailable\./);
 });
 
 test("a reconnect sees an in-flight interrupt until its final event and cannot act on it again", async (t) => {

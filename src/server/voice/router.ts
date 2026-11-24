@@ -455,7 +455,7 @@ export class VoiceRouter {
     this.take(item);
     const { mode, roster } = this.state();
     if (mode === "off") return false;
-    if (item.card.parts.some(({ target }) => !this.checkedTarget(roster, target))) {
+    if (item.card.parts.length === 1 && !this.checkedTarget(roster, item.card.parts[0]!.target)) {
       item.entry.outcome = "not-running";
       item.entry.detail = "The selected session is unavailable.";
       this.publish({ ...item.card, state: "not-running", deadline: null });

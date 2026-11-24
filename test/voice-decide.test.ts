@@ -1206,6 +1206,26 @@ test("an errored provider body cannot replace its sanitized HTTP status", async 
   assert.doesNotMatch(result.detail, /private gateway diagnostic/);
 });
 
+for (const [remaining, expected, detail] of [
+  ["Steve", [["Steve", "check the build", "part"]], "Part 1 (Steve) queued. Part 2 (Alice) unavailable."],
+  ["Alice", [["Alice", "review the PR", "part#2"]], "Part 1 (Steve) unavailable. Part 2 (Alice) queued."],
+  ["neither", [], "Part 1 (Steve) unavailable. Part 2 (Alice) unavailable."],
+] as const) {
+  test(`a confirmed split delivers each available part when ${remaining} remains before dispatch`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const { router, say, delivered, cards } = routerRig(() => answered("split"), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "part");
+    assert.equal(cards.at(-1)?.reason, "split");
+    for (const target of roster) if (target.name !== remaining) target.state = "not-running";
+    assert.ok(await router.sendNow("part"));
+    assert.deepEqual(delivered, expected);
+    assert.equal(cards.at(-1)?.state, "not-running");
+    assert.equal(router.heard.list()[0]?.detail.split("\n").at(-1), detail);
+    assert.equal(await router.sendNow("part"), false);
+  });
+}
+
 for (const change of ["not-running", "unavailable"] as const) {
   test(`a later split part is withheld when its target becomes ${change} during the first delivery`, async (t) => {
     const roster = [name("Steve"), name("Alice")];

@@ -159,9 +159,11 @@ step runs. It is published as `resolving` only once the step has taken a second.
 answers, the card keeps its place in the cancel order and becomes `pending` (one target, or
 two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
 both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
-cancelled, is dropped: nothing is ever sent late. A split delivers each part in order and the
-card carries the worse of the two outcomes. Recently heard's `detail` says which rung answered
-and what it decided, for example `job on codex answered: split`.
+cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
+each captured session immediately before delivering its part, in spoken order. If a session
+has left or been replaced, the other recipient can still receive their part. Recently heard
+lists each recipient and delivery result. The card carries the worse of the two outcomes.
+The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
 
 Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. None of
 the five moments in the selected **Roster rows** design (variant B) has a rendered outcome card

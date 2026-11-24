@@ -313,7 +313,8 @@ test("desktop Setup explains an unavailable microphone controller and hides acti
     const supported = sessionStorage.getItem("unsupportedDesktop") !== "1";
     Object.defineProperty(window, "missionDesktop", {value: {
       ...window.missionDesktop, isDesktop: true, onOpenSettings: () => () => {},
-      fixVoiceMicrophone: supported ? async () => "unavailable" : undefined,
+      fixVoiceMicrophone: supported ? () => new Promise(resolve =>
+        window.addEventListener("voice-controller-unavailable", () => resolve("unavailable"), { once: true })) : undefined,
     }, configurable: true});
   });
   await page.reload();
@@ -321,6 +322,8 @@ test("desktop Setup explains an unavailable microphone controller and hides acti
   const row = setupRow(page, MICROPHONE_ROW);
   const ask = row.getByRole("button", {name: "Ask macOS"});
   await ask.click();
+  await expect(ask).toBeDisabled();
+  await page.evaluate(() => window.dispatchEvent(new Event("voice-controller-unavailable")));
   await expect(row.getByRole("alert")).toContainText("Desktop microphone controls are unavailable");
   await capture(page, "controller-unavailable");
   await page.evaluate(() => sessionStorage.setItem("unsupportedDesktop", "1"));

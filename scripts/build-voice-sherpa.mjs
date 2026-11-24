@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readdir, readFile, rename, rm } from "node:fs/promises"
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { publishNativeAddon } from "./native-addon-publish.mjs";
+import { buildStateLockNative } from "./build-state-lock-native.mjs";
+import { loadVoiceHostClock } from "../src/server/voice/native-clock.ts";
 
 function probeRuntime(dir) {
   // A fresh loader cannot satisfy a missing library from another runtime already in memory.
@@ -62,12 +64,17 @@ if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(
     await build({
       entryPoints: ["src/voice-listener/sherpa.ts"], outfile: bundle,
       bundle: true, platform: "node", format: "esm", target: "node24",
-      banner: { js: 'import {createRequire} from "node:module"; const require = createRequire(import.meta.url);' },
+      banner: { js: 'const require = process.getBuiltinModule("node:module").createRequire(import.meta.url);' },
       plugins: [{ name: "published-addon", setup(build) {
         build.onResolve({ filter: /^\.\/addon(?:\.js)?$/ }, args =>
           args.importer.includes("/sherpa-onnx-node/") ? { path: `../native/sherpa-onnx/${runtime}/sherpa-onnx.node`, external: true } : undefined);
       } }],
     });
+    const clockAddon = resolve("dist/native/state-lock.node");
+    try { loadVoiceHostClock(clockAddon)(); }
+    catch { await buildStateLockNative(); }
+    const publishedClock = resolve(dist, "native", "state-lock.node");
+    if (publishedClock !== clockAddon) await publishNativeAddon(clockAddon, publishedClock);
     await rename(bundle, entry);
   } finally {
     await rm(stage, { recursive: true, force: true });

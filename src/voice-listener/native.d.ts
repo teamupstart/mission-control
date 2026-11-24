@@ -34,7 +34,7 @@ declare module "sherpa-onnx-node" {
     acceptWaveform(samples: Float32Array): void;
     flush(): void;
     isEmpty(): boolean;
-    front(): { samples: Float32Array };
+    front(): { start: number; samples: Float32Array };
     pop(): void;
     reset(): void;
   }

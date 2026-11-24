@@ -14,11 +14,12 @@ import { voiceStateStore } from "../src/server/voice/state.ts";
 import { voiceModelManager } from "../src/server/voice/models.ts";
 import { setVoiceConfig } from "../src/server/voice/config.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "../src/server/voice/routes.ts";
-import { VOICE_REQUIRED_FLAGS } from "../src/shared/voice.ts";
+import { VOICE_CAPTURE_START_HEADER, VOICE_REQUIRED_FLAGS, VoiceShellReportSchema } from "../src/shared/voice.ts";
 import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 import { VoiceUtteranceSchema, type VoiceUtterance } from "../src/shared/voice-routing.ts";
 import { stateDir, tokenPath } from "../src/shared/harness-runtime.mjs";
 import { voiceTestModel } from "./helpers/voice-test-model.ts";
+import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
 const run = promisify(execFile);
 test("the published sherpa addon transcribes a recording through the listener and daemon", async t => {
@@ -51,12 +52,27 @@ test("the published sherpa addon transcribes a recording through the listener an
   const captures: VoiceUtterance[] = [];
   let posts = 0;
   let hellos = 0;
+  let acceptedAfterRelease = false;
   app.use("/voice/listener/hello", async (_c, next) => { hellos++; await next(); });
   app.use("/voice/utterances", async (c, next) => {
     posts++;
     const payload = await c.req.raw.clone().json();
+    if (c.req.header(VOICE_CAPTURE_START_HEADER) && voiceStateStore.state().mode === "push-to-talk") {
+      setTimeout(() => {
+        const released = voiceHostTimeUs();
+        voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({
+          reportedAtHostUs: released, callActive: true, pushToTalkReleasedAtHostUs: released,
+        }));
+      }, 5);
+    }
     await next();
-    if ((await c.res.clone().json()).accepted) captures.push(VoiceUtteranceSchema.parse(payload));
+    if ((await c.res.clone().json()).accepted) {
+      captures.push(VoiceUtteranceSchema.parse(payload));
+      if (voiceStateStore.state().mode === "auto-muted") {
+        acceptedAfterRelease = true;
+        voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ reportedAtHostUs: voiceHostTimeUs(), callActive: false }));
+      }
+    }
   });
   registerVoiceRoutes(app);
   const deliveries: { target: string; text: string }[] = [];
@@ -181,5 +197,15 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.ok(hellos > before);
     assert.equal(captures.length, 2);
     assert.equal(normalize(captures[1]!.text), "steve check the build");
+  });
+  await t.test("the native WAV segment remains admissible when key-up arrives during its POST", async () => {
+    voiceStateStore.reset();
+    voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({
+      reportedAtHostUs: voiceHostTimeUs(), callActive: true, pushToTalk: true,
+    }));
+    await play(fixture, "--backend", "sherpa-onnx");
+    assert.equal(acceptedAfterRelease, true);
+    assert.equal(captures.length, 3);
+    assert.equal(normalize(captures[2]!.text), "steve check the build");
   });
 });

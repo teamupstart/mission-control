@@ -327,16 +327,19 @@ test("extra message punctuation is queued verbatim and cannot turn stop into an 
 
 test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
   const before = interrupts.length;
-  for (const text of ["“Will, ” stop", "“ Will ” , stop"]) {
+  for (const text of ["“Will, ” stop", "“ Will ” , stop", "“Will, ”! stop"]) {
     const id = randomUUID();
     await say(text, id);
     assert.equal((await act(id, "send-now")).status, 200);
   }
-  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will", "sdk:Will"]);
   await say("“Will, ” “stop”", "message-quote");
   assert.equal((await act("message-quote", "send-now")).status, 200);
   assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
-  assert.equal(interrupts.length, before + 2);
+  await say("“Will, ” ! stop", "message-exclamation");
+  assert.equal((await act("message-exclamation", "send-now")).status, 200);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "! stop"]);
+  assert.equal(interrupts.length, before + 3);
 });
 
 test("mismatched address wrappers stay in the queued message and cannot trigger a stop", async () => {

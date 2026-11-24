@@ -92,6 +92,7 @@ async function harness(
     evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
     head?: { sha: string };
     cwd?: string;
+    repositoryAccess?: "read";
     readContextRaw?: typeof readWorkflowContextRaw;
     resumptionPolicy?: "auto" | "manual";
     deliveryMode?: "live" | "preview";
@@ -114,6 +115,7 @@ async function harness(
     normalizedName: normalizePersonaName(`Preflight ${id}`),
     description: "",
     guidanceMarkdown: "Review.",
+    repositoryAccess: options.repositoryAccess,
     runner: "claude",
     model: "fake",
     createdAt: 1,
@@ -260,6 +262,35 @@ async function harness(
   if (!binding.ok) throw new Error("binding was refused");
   return { registry, store, manager, binding: binding.value, injected };
 }
+
+test("a cancelled submission keeps its capture result when candidate cleanup fails", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  const root = realpathSync(mkdtempSync(join(home, "cancel-candidate-")));
+  execFileSync("git", ["init", "-q", "-b", "main", root]);
+  writeFileSync(join(root, "submitted.txt"), "captured");
+  const h = await harness(t, "cancel-candidate", undefined, {
+    cwd: root, repositoryAccess: "read", deliveryMode: "preview", readContextRaw: readWorkflowContextRaw,
+  });
+  const service = h.manager.repositoryArtifacts;
+  const stillCurrent = service.stillCurrent.bind(service);
+  t.mock.method(service, "stillCurrent", async (...args: Parameters<typeof stillCurrent>) => {
+    const current = await stillCurrent(...args);
+    assert.equal(current, true);
+    h.store.cancelRun(h.store.activeRunForBinding(h.binding.id)!.id, "Operator cancelled");
+    return current;
+  });
+  const discard = service.discard.bind(service);
+  const cleanup = t.mock.method(service, "discard", async (...args: Parameters<typeof discard>) => {
+    await discard(...args);
+    throw Object.assign(new Error("Candidate cleanup failed"), { code: "EIO" });
+  });
+  const result = await h.manager.submit(h.binding.id, { requestId: "cancel-during-seal" });
+  assert.equal(cleanup.mock.callCount(), 1);
+  assert.ok(!result.ok && result.reason === "conflict", JSON.stringify(result));
+  assert.equal(h.store.submissionByTrigger(`manual:${h.binding.id}:cancel-during-seal`)?.status, "cancelled");
+});
 
 for (const limit of ["count", "bytes"] as const) {
   test(`a full reserved text ${limit} budget leaves local reports required without failing capture`, async (t) => {

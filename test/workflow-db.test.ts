@@ -76,7 +76,7 @@ test("the complete Phase 1 table family and required indexes exist", () => {
   assert.ok(uniqueIndexes("workflow_versions").some((columns) => columns.join(",") === "workflow_id,version"));
   assert.ok(
     uniqueIndexes("workflow_versions").some(
-      (columns) => columns.join(",") === "workflow_id,source_draft_revision",
+      (columns) => columns.join(",") === "workflow_id,source_draft_revision,source_snapshot_fingerprint",
     ),
   );
   assert.ok(uniqueIndexes("workflow_submissions").some((columns) => columns.join(",") === "trigger_key"));
@@ -123,16 +123,18 @@ test("one active binding owns a note key while archived history may coexist", ()
   insert.run("b3", "archived");
 });
 
-test("published version identities are idempotent at both version and source revision", () => {
+test("published version numbers and frozen snapshots within a draft revision are unique", () => {
   const insert = db.prepare(
     `INSERT INTO workflow_versions (
-       id, workflow_id, version, source_draft_revision, graph_json,
+       id, workflow_id, version, source_draft_revision, source_snapshot_fingerprint, graph_json,
        completion_policy_json, binding_defaults_json, published_at
-     ) VALUES (?, 'w1', ?, ?, ?, ?, ?, 1)`,
+     ) VALUES (?, 'w1', ?, ?, ?, ?, ?, ?, 1)`,
   );
-  insert.run("v1", 1, 7, publishedGraph, policy, defaults);
-  assert.throws(() => insert.run("v2", 1, 8, publishedGraph, policy, defaults));
-  assert.throws(() => insert.run("v3", 2, 7, publishedGraph, policy, defaults));
+  insert.run("v1", 1, 7, "one", publishedGraph, policy, defaults);
+  assert.throws(() => insert.run("v2", 1, 8, "one", publishedGraph, policy, defaults));
+  assert.throws(() => insert.run("v3", 2, 7, "one", publishedGraph, policy, defaults));
+  insert.run("v4", 2, 7, "two", publishedGraph, policy, defaults);
+  insert.run("v5", 3, 8, "one", publishedGraph, policy, defaults);
 });
 
 test("submission trigger keys and rounds cannot multiply on retry", () => {

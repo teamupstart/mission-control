@@ -38,6 +38,8 @@ gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
+The card names a question that still blocks delivery. A plan already filed for a later answer
+can remain open while the agent receives the message.
 If the daemon takes more than two seconds to confirm a held message’s recall, the card
 shows that recall is unconfirmed and lets you retry or open the blocking question.
 Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
@@ -47,7 +49,8 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+for those windows. If a save times out, you can select another placement. A delayed request
+cannot replace the newer saved choice. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
@@ -455,7 +458,10 @@ endpoints with `startDecisionServer()`.
 
 An idle agent starts a turn. A busy agent receives the message after its current turn ends.
 Only non-spoken outbox rows offer **Steer now** and **Interrupt and deliver**.
-A blocking question holds delivery until it is answered. A hibernated task resumes its
+When the agent is waiting inside a question or plan form, spoken delivery files the ask and releases
+the tool call with its receipt. The message lists the agent’s open questions. A filed plan still gates
+work on the plan. If any waiting child lacks conversion support, its call stays open and the message
+waits behind it. Typed messages leave the call open. A hibernated task resumes its
 conversation before the daemon queues the message. Messages that arrive while that task is waking
 share the resume. Each message still has its own outbox row and receipt. Recently heard and the card show `queued` (or
 `held` for a blocking question, including after resume) until the outbox confirms the handoff.

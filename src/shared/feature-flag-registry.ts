@@ -31,7 +31,16 @@ export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort"
 /** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
+export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: PERSONA_REPOSITORY_ACCESS_FLAG_ID,
+    label: "Persona repository access",
+    description: "Give selected workflow reviewers read-only access to the submitted checkout.",
+    stage: "preview",
+    keywords: ["workflows", "review", "repository", "persona"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

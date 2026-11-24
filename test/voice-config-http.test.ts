@@ -411,6 +411,31 @@ test("a confirmed placement advances the selection revision without changing ind
   assert.deepEqual(registry.snapshot().voiceIndicatorVersion, saved.voiceIndicatorVersion);
 });
 
+test("a placement body that arrives late cannot undo a newer save, including for an unversioned caller", async t => {
+  const path = "/api/voice/confirmation";
+  const initial = await (await json(path, "PUT", { confirmation: "toast" })).json();
+  const published: string[][] = [];
+  t.after(onVoiceIndicatorsChanged(indicators => published.push(indicators)));
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const newer = await json(path, "PUT", { confirmation: "popover", expectedVersion: initial.voiceIndicatorVersion });
+      assert.equal(newer.status, 200);
+      controller.enqueue(new TextEncoder().encode(JSON.stringify({ confirmation: "pill" })));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const stale = await app.request(path, { method: "PUT", headers, body, duplex: "half" } as RequestInit & { duplex: "half" });
+  assert.equal(stale.status, 409);
+  const current = await stale.json();
+  assert.equal(current.confirmation, "popover");
+  assert.deepEqual(current.voiceIndicatorVersion, registry.snapshot().voiceIndicatorVersion);
+  assert.deepEqual(current.indicators, initial.indicators);
+  assert.equal(published.length, 1);
+  const previousDaemon = { ...current.voiceIndicatorVersion, source: "previous-daemon" };
+  assert.equal((await json(path, "PUT", { confirmation: "pill", expectedVersion: previousDaemon })).status, 409);
+  assert.equal((await (await json("/api/ui/config")).json()).config.voice.confirmation, "popover");
+});
+
 test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
   const selections: string[][] = [];
   const revisions: number[] = [];

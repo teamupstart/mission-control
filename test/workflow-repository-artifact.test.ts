@@ -331,6 +331,32 @@ for (const changed of [false, true]) {
   });
 }
 
+test("recovery inheritance refuses a child's conflicting digest even after its claim is released", async (t) => {
+  const f = fixture(t);
+  f.write("review.txt", "original");
+  const parent = await f.service.promote(await f.prepare(), f.submission());
+  f.activate(parent);
+  f.write("review.txt", "changed");
+  const child = await f.service.promote(await f.prepare(), f.submission());
+  assert.notEqual(child.digest, parent.digest);
+  f.db.prepare(`UPDATE workflow_submissions SET run_id=?, segment=1,
+    parent_submission_id=?, refinement_reason='evidence_recovery' WHERE id=?`)
+    .run(parent.submissionId, parent.submissionId, child.submissionId);
+  try {
+    for (const state of ["provisional", "released"]) {
+      if (state === "released") await f.service.release(child.submissionId);
+      assert.throws(() => f.store.inheritRepositoryClaim(child.submissionId), /repository artifact is unavailable/);
+      const row = f.db.prepare("SELECT digest,state FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(child.submissionId);
+      assert.equal(row?.digest, child.digest);
+      assert.equal(row?.state, state);
+    }
+  } finally {
+    await f.service.release(child.submissionId);
+    await f.service.release(parent.submissionId);
+    await f.service.reconcile();
+  }
+});
+
 test("one service per root protects live candidates, provisional claims and leases across callers", async (t) => {
   const f = fixture(t);
   f.write("a", "submitted");
@@ -974,6 +1000,30 @@ for (const kind of ["pending", "leases"] as const) {
     await f.service.reconcile();
   });
 }
+
+test("an unmeasurable retained lease blocks allocation while independent digests are reclaimed", async t => {
+  const { RepositoryOwnership } = await import("../src/server/workflows/repository-artifact/ownership.ts");
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
+  f.write("file", "checkout");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  await f.service.release(snapshot.submissionId);
+  const id = randomUUID();
+  const dir = join(f.root, "leases");
+  const ticket = join(dir, id + ".1.1.cleanup");
+  mkdirSync(join(dir, id), { recursive: true });
+  writeFileSync(ticket, "");
+  t.mock.method(RepositoryOwnership.prototype, "localLease", (key: string) => key === id ? { group_pid: null } : undefined);
+  const result = await f.service.reconcile();
+  assert.equal(result.orphans, 1);
+  assert.equal(f.service.artifacts().some(row => row.digest === snapshot.digest), false);
+  assert.ok(existsSync(ticket));
+  await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  rmSync(join(dir, id), { recursive: true });
+  rmSync(ticket);
+  await f.service.releaseLocalLease(id, randomUUID());
+  assert.equal((await f.service.reconcile()).orphans, 0);
+  await f.service.discard(await f.prepare());
+});
 
 test("reader leases share storage with pending candidates until their directories are removed", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));

@@ -1,3 +1,9 @@
+import type { EvidenceRef } from "@shared/workflow.ts";
+import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repository-access.ts";
+import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
+import { workflowGraphFingerprint } from "./graph-fingerprint.ts";
 import type { InspectorBranchActivity } from "../inspector/github.ts";
 import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
@@ -229,6 +235,13 @@ const utf8 = new TextEncoder();
 const DEFAULT_DETAIL_PAGE_SIZE = 200;
 const PERSONA_DIRECTIVES_JSON_BYTES =
   WORKFLOW_LIMITS.personaDirectiveBytes * WORKFLOW_LIMITS.graphNodes + 100_000;
+// Cleanup can outlive a cancelled run. Its durable process and lease ownership
+// must survive until the executor or local supervisor confirms termination.
+const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
+  JOIN workflow_repository_workloads w ON w.id=l.id
+  LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
+  WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
+
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 /**
@@ -428,6 +441,7 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 }
 
 export const WORKFLOW_TABLES = [
+  "persona_builtin_overrides",
   "personas",
   "session_actions",
   "builtin_session_action_overrides",
@@ -436,6 +450,7 @@ export const WORKFLOW_TABLES = [
   "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
+  "workflow_publish_requests",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
@@ -447,6 +462,11 @@ export const WORKFLOW_TABLES = [
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
+  "workflow_repository_workloads",
+  "workflow_repository_local_owners",
+  "workflow_repository_events",
+  "workflow_repository_queries",
+  "workflow_repository_handles",
   "workflow_events",
   "workflow_submission_readiness_overrides",
   "workflow_binding_claims",
@@ -789,7 +809,10 @@ function readDeliveryMode(raw: unknown): WorkflowDeliveryMode {
     : "preview";
 }
 
+import { PERSONA_REPOSITORY_ACCESS_MODES } from "@shared/workflow.ts";
+
 const PersonaRowSchema = z.object({
+  repository_access: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("none"),
   id: nonempty,
   name: nonempty.max(WORKFLOW_LIMITS.personaName),
   normalized_name: nonempty,
@@ -890,6 +913,8 @@ export function parsePersonaRow(value: unknown): Persona {
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
     effort: readPersonaEffort(row.effort),
+    repositoryAccess: row.repository_access,
+    repositoryAccessRevision: row.revision,
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -1235,7 +1260,9 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
   };
 }
 
-const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true });
+const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true }).extend({
+  read_personas: z.string().optional(),
+});
 
 export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersionMetadata {
   const row = parseShape("workflow_versions", WorkflowVersionMetadataRowSchema, value);
@@ -1260,6 +1287,7 @@ export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersion
       row.binding_defaults_json,
       WorkflowBindingDefaultsSchema,
     ),
+    ...(row.read_personas ? { readPersonaIds: JSON.parse(row.read_personas) as string[] } : {}),
     publishedAt: row.published_at,
   };
 }
@@ -2619,7 +2647,7 @@ export type WorkflowPublishWrite =
   | { ok: true; workflow: WorkflowDefinition; version: WorkflowVersion; idempotent: boolean }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "archived" | "validation" | "builtin";
+      reason: "not_found" | "revision_conflict" | "publish_request_id_required" | "archived" | "validation" | "builtin";
       current: WorkflowDefinition | null;
       diagnostics?: WorkflowDiagnostic[];
     };
@@ -3167,18 +3195,28 @@ export class WorkflowStore {
       || a.id.localeCompare(b.id));
   }
 
+  private resolvedBuiltins(): Persona[] {
+    const overrides = this.db.prepare("SELECT * FROM persona_builtin_overrides").all();
+    const byId = new Map(overrides.map(row => [row.persona_id, row]));
+    return this.builtins.map(persona => {
+      const override = byId.get(persona.id);
+      return { ...persona, repositoryAccess: override?.repository_access === "read" ? "read" : "none",
+        repositoryAccessRevision: Number(override?.revision ?? 0) };
+    });
+  }
+
   private withBuiltins(rows: Persona[]): Persona[] {
     return this.sortPersonas(
-      personasForDisplay(rows.concat(this.builtins)),
+      personasForDisplay(rows.concat(this.resolvedBuiltins())),
     );
   }
 
   private withAddressableBuiltins(rows: Persona[]): Persona[] {
-    return this.sortPersonas(rows.concat(this.builtins));
+    return this.sortPersonas(rows.concat(this.resolvedBuiltins()));
   }
 
   private builtinPersona(id: string): Persona | null {
-    return this.builtins.find((persona) => persona.id === id) ?? null;
+    return this.resolvedBuiltins().find((persona) => persona.id === id) ?? null;
   }
 
   private builtinPersonaNamed(normalizedName: string): Persona | null {
@@ -3287,9 +3325,9 @@ export class WorkflowStore {
       this.db
         .prepare(
           `INSERT INTO personas (
-             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
+             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort, repository_access,
              revision, archived_at, created_at, updated_at, import_provenance_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -3300,11 +3338,30 @@ export class WorkflowStore {
           input.runner,
           input.model,
           input.effort ?? null,
+          input.repositoryAccess ?? "none",
           input.createdAt,
           input.updatedAt,
           serializePersonaProvenance(input.provenance ?? null),
         );
       return { ok: true, persona: this.mustPersona(input.id) };
+    });
+  }
+
+  setPersonaRepositoryAccess(id: string, revision: number, access: NonNullable<Persona["repositoryAccess"]>, now: number): PersonaStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.getPersona(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.repositoryAccessRevision !== revision) return { ok: false, reason: "revision_conflict", current };
+      if (current.builtin) {
+        this.db.prepare(`INSERT INTO persona_builtin_overrides(persona_id, repository_access, revision)
+          VALUES (?, ?, ?) ON CONFLICT(persona_id) DO UPDATE SET
+          repository_access=excluded.repository_access, revision=excluded.revision`).run(id, access, revision + 1);
+      } else {
+        this.db.prepare(`UPDATE personas SET repository_access=?, revision=revision+1, updated_at=? WHERE id=?`)
+          .run(access, now, id);
+      }
+      return { ok: true, persona: this.getPersona(id)! };
     });
   }
 
@@ -3994,9 +4051,9 @@ export class WorkflowStore {
     const personaContent = (value: Persona | SettingsBackupPersona): unknown => {
       const {
         id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
-        builtin: _builtin, ...content
+        builtin: _builtin, repositoryAccessRevision: _accessRevision, ...content
       } = value;
-      return content;
+      return { ...content, repositoryAccess: value.repositoryAccess ?? "none" };
     };
     const actionContent = (value: SessionAction | SettingsBackupSessionAction): unknown => {
       const {
@@ -4025,13 +4082,13 @@ export class WorkflowStore {
     const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
     const writePersona = this.db.prepare(
       `INSERT INTO personas (
-         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
+         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort, repository_access,
          revision, archived_at, created_at, updated_at, import_provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, guidance_md=excluded.guidance_md,
-         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort,
+         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort, repository_access=excluded.repository_access,
          revision=excluded.revision, archived_at=excluded.archived_at,
          updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
     );
@@ -4047,6 +4104,7 @@ export class WorkflowStore {
         row.runner,
         row.model,
         row.effort ?? null,
+        row.repositoryAccess ?? "none",
         revision,
         row.archivedAt,
         current?.createdAt ?? row.createdAt,
@@ -4230,14 +4288,14 @@ export class WorkflowStore {
       `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
     );
     const versionByDraft = this.db.prepare(
-      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ? AND source_snapshot_fingerprint = ?`,
     );
     const insertVersion = this.db.prepare(
       `INSERT INTO workflow_versions (
-         id, workflow_id, version, source_draft_revision, graph_json,
+         id, workflow_id, version, source_draft_revision, source_snapshot_fingerprint, graph_json,
          completion_policy_json, resumption_policy, evidence_readiness_policy,
          binding_defaults_json, published_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of staged.workflowVersions) {
       const byId = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(row.id);
@@ -4248,7 +4306,7 @@ export class WorkflowStore {
         continue;
       }
       const sameNumber = versionByNumber.get(row.workflowId, row.version);
-      const sameDraft = versionByDraft.get(row.workflowId, row.sourceDraftRevision);
+      const sameDraft = versionByDraft.get(row.workflowId, row.sourceDraftRevision, workflowGraphFingerprint(row.graph));
       if (sameNumber || sameDraft) {
         throw new Error(`Immutable workflow version uniqueness changed during restore`);
       }
@@ -4257,6 +4315,7 @@ export class WorkflowStore {
         row.workflowId,
         row.version,
         row.sourceDraftRevision,
+        workflowGraphFingerprint(row.graph),
         JSON.stringify(row.graph),
         JSON.stringify(row.completionPolicy),
         row.resumptionPolicy,
@@ -4793,7 +4852,11 @@ export class WorkflowStore {
     const rows = this.db.prepare(
       `SELECT id, workflow_id, version, source_draft_revision,
               completion_policy_json, resumption_policy, evidence_readiness_policy,
-              binding_defaults_json, published_at
+              binding_defaults_json, published_at,
+              (SELECT json_group_array(json_extract(n.value,'$.persona.sourcePersonaId'))
+               FROM json_each(CASE WHEN json_valid(graph_json) THEN graph_json END,'$.nodes') n
+               WHERE CASE WHEN n.type='object' THEN json_extract(n.value,'$.kind')='persona'
+                 AND json_extract(n.value,'$.persona.repositoryAccess')='read' END) AS read_personas
          FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
     ).all(workflowId) as unknown[];
     const out: WorkflowVersionMetadata[] = [];
@@ -4820,21 +4883,31 @@ export class WorkflowStore {
     expectedDraftRevision: number,
     versionId: string,
     publishedAt = Date.now(),
+    requestId?: string,
   ): WorkflowPublishWrite {
     return this.mutate(() => {
       // A built-in arrives published. Refusing here rather than at the route is what stops a
       // second caller from minting a row version against an id that owns no rows.
       const shipped = this.builtinWorkflowById(id);
       if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
-      const existing = this.db.prepare(
-        `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
-      ).get(id, expectedDraftRevision);
-      if (existing) {
-        const version = parseWorkflowVersionRow(existing);
-        return { ok: true, workflow: this.mustWorkflow(id), version, idempotent: true };
-      }
       const workflow = this.getWorkflowInTransaction(id);
       if (!workflow) return { ok: false, reason: "not_found", current: null };
+      if (requestId) {
+        const receipt = this.db.prepare(`SELECT v.* FROM workflow_publish_requests r
+          JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id
+          WHERE r.workflow_id=? AND r.request_id=?`).get(id, requestId);
+        if (receipt) {
+          const version = parseWorkflowVersionRow(receipt);
+          if (version.sourceDraftRevision !== expectedDraftRevision) return { ok: false, reason: "revision_conflict", current: workflow };
+          return { ok: true, workflow, version, idempotent: true };
+        }
+      } else {
+        // A legacy retry identifies only the draft revision. Resolve it before reading live grants.
+        const versions = this.db.prepare(`SELECT * FROM workflow_versions
+          WHERE workflow_id=? AND source_draft_revision=? LIMIT 2`).all(id, expectedDraftRevision);
+        if (versions.length === 1) return { ok: true, workflow, version: parseWorkflowVersionRow(versions[0]), idempotent: true };
+        if (versions.length > 1) return { ok: false, reason: "publish_request_id_required", current: workflow };
+      }
       if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
@@ -4889,20 +4962,37 @@ export class WorkflowStore {
         }),
         edges: workflow.draft.edges,
       };
+      const fingerprint = workflowGraphFingerprint(graph);
+      const publishResult = (version: WorkflowVersion, idempotent: boolean) => {
+        if (requestId) this.db.prepare(`INSERT INTO workflow_publish_requests(workflow_id,request_id,version_id)
+          VALUES(?,?,?)`).run(id, requestId, version.id);
+        return { ok: true as const, workflow: this.mustWorkflow(id), version, idempotent };
+      };
+      const existing = this.db.prepare(
+        `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ? AND source_snapshot_fingerprint = ?`,
+      ).get(id, expectedDraftRevision, fingerprint);
+      if (existing) {
+        const version = parseWorkflowVersionRow(existing);
+        if (workflow.currentVersionId !== version.id) {
+          this.db.prepare("UPDATE workflow_definitions SET current_version_id=?, updated_at=? WHERE id=?").run(version.id, publishedAt, id);
+        }
+        return publishResult(version, true);
+      }
       const next = Number((this.db.prepare(
         `SELECT COALESCE(MAX(version), 0) AS value FROM workflow_versions WHERE workflow_id = ?`,
       ).get(id) as { value: number }).value) + 1;
       this.db.prepare(
         `INSERT INTO workflow_versions (
-           id, workflow_id, version, source_draft_revision, graph_json,
+           id, workflow_id, version, source_draft_revision, source_snapshot_fingerprint, graph_json,
            completion_policy_json, resumption_policy, evidence_readiness_policy,
            binding_defaults_json, published_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         versionId,
         id,
         next,
         expectedDraftRevision,
+        fingerprint,
         JSON.stringify(graph),
         JSON.stringify(workflow.completionPolicy),
         // Frozen from the draft at publish time, exactly like the completion policy: a later
@@ -4915,12 +5005,7 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_definitions SET current_version_id = ?, updated_at = ? WHERE id = ?`,
       ).run(versionId, publishedAt, id);
-      return {
-        ok: true,
-        workflow: this.mustWorkflow(id),
-        version: this.mustWorkflowVersion(id, next),
-        idempotent: false,
-      };
+      return publishResult(this.mustWorkflowVersion(id, next), false);
     }, (result) => result.ok ? { kind: "version", id: result.version.id, now: publishedAt } : null);
   }
 
@@ -8285,6 +8370,173 @@ export class WorkflowStore {
     });
   }
 
+  /** A recovery child reviews the parent's frozen checkout even if the workspace has moved. */
+  inheritRepositoryClaim(submissionId: string): string {
+    return transaction(this.db, () => {
+      const child = this.mustSubmission(submissionId);
+      if (child.status !== "capturing" || child.refinementReason !== "evidence_recovery")
+        throw new Error("Repository claim inheritance requires a capturing recovery child");
+      const row = this.db.prepare(`INSERT INTO workflow_repository_snapshot_claims(submission_id,digest,state,created_at)
+        SELECT ?, c.digest, 'provisional', ? FROM workflow_repository_snapshot_claims c
+        JOIN workflow_repository_artifacts a ON c.digest=a.digest AND a.state='ready'
+        WHERE c.submission_id=? AND c.state IN ('active','provisional')
+        ON CONFLICT(submission_id) DO UPDATE SET state='provisional', released_at=NULL, activated_at=NULL
+        WHERE workflow_repository_snapshot_claims.digest=excluded.digest
+          AND workflow_repository_snapshot_claims.state IN ('provisional','released')
+        RETURNING digest`).get(submissionId, Date.now(), child.parentSubmissionId);
+      if (!row) throw new Error("The original submission's repository artifact is unavailable");
+      return String(row.digest);
+    });
+  }
+
+  pendingRepositoryCancellations(runId: string, nodeId: string) {
+    return this.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
+      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state IN ('cancellation_pending','interrupted') AND l.run_id=? AND n.node_id=?`)
+      .all(runId, nodeId)) as { id: string; generation: number }[];
+  }
+
+  terminalRunRepositoryCancellations() {
+    return this.db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_llm_calls l ON l.id=w.id
+      JOIN workflow_runs r ON r.id=l.run_id
+      WHERE r.status IN ('completed','cancelled','failed') AND w.state IN ('cancellation_pending','interrupted')`)
+      .all() as { id: string; generation: number }[];
+  }
+
+  repositoryLocalOwner(id: string) {
+    return this.db.prepare("SELECT * FROM workflow_repository_local_owners WHERE workload_id=?").get(id);
+  }
+
+  confirmRepositoryCancellation(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+      WHERE id=? AND state IN ('cancellation_pending','interrupted') AND cancellation_generation=?`).run(id, generation));
+  }
+
+  confirmLocalRepositoryCleanup(id: string) {
+    this.transact(db => {
+      if (db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+        WHERE id=? AND state IN ('cancellation_pending','interrupted')`).run(id).changes)
+        db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+    });
+  }
+
+  currentRepositoryWorkload(id: string) {
+    return this.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
+      s.id AS submissionId, w.digest, a.locator FROM workflow_repository_workloads w
+      JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
+      JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
+      JOIN workflow_runs r ON r.id=s.run_id AND r.status='running'
+      JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE w.id=? AND w.state='running'`).get(id)) as
+      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string } | undefined;
+  }
+
+  interruptRepositoryWorkloads() {
+    return this.transact(db => {
+      db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+        cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
+      return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
+        ON workload_id=id WHERE state='cancellation_pending'`).all();
+    });
+  }
+
+  startRepositoryWorkload(request: PersonaWorkloadRequest, local: boolean) {
+    this.transact(db => {
+      db.prepare(`INSERT INTO workflow_repository_workloads (id,attempt_id,digest,state,deadline)
+        VALUES(?,?,?,'running',?)`).run(request.workloadId, request.attemptId, request.artifact.digest, request.deadline);
+      if (local) db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(request.workloadId);
+    });
+  }
+
+  markRepositoryCancellationPending(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+      cancellation_generation=?, error_code='cancellation_unconfirmed' WHERE id=? AND state='running'`).run(generation, id));
+  }
+
+  repositoryEventHash(id: string, sequence: number) {
+    return this.db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?").get(id, sequence)?.hash;
+  }
+
+  recordRepositoryEvent(request: PersonaWorkloadRequest, event: PersonaWorkloadEvent, hash: string, authorized: () => boolean) {
+    const id = request.workloadId;
+    this.transact(db => {
+      if (!authorized()) throw new Error("Repository workload ownership expired");
+      db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
+      if (event.type === "terminal" && event.result.usage) {
+        db.prepare("UPDATE workflow_repository_workloads SET usage_json=? WHERE id=?").run(JSON.stringify(event.result.usage), id);
+        const cost = event.result.usage.total_cost_usd;
+        if (cost !== undefined && cost >= 0) db.prepare("UPDATE workflow_llm_calls SET cost_usd=? WHERE id=?").run(cost, id);
+      }
+      if (event.type === "repository_query") {
+        const audit = event.audit;
+        if (audit.workloadId !== id || audit.attemptId !== request.attemptId || audit.snapshotDigest !== request.artifact.digest)
+          throw new Error("Repository query ownership mismatch");
+        db.prepare(`INSERT INTO workflow_repository_queries(workload_id,operation_id,audit_json) VALUES(?,?,?)`)
+          .run(id, audit.operationId, JSON.stringify(audit));
+        const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
+        for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
+      }
+    });
+  }
+
+  verifyRepositoryCitations(id: string, refs: EvidenceRef[]) {
+    this.transact(db => {
+      const find = db.prepare(`SELECT 1 FROM workflow_repository_queries q
+        JOIN workflow_repository_handles h ON h.operation_id=q.operation_id
+        WHERE q.workload_id=? AND q.operation_id=? AND h.id=?`);
+      for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
+        throw new Error("Repository citation does not belong to this review");
+    });
+  }
+
+  finishRepositoryWorkload(id: string, generation: number, errorCode: string, local: boolean, authorizeVerdict: () => boolean) {
+    return this.transact(db => {
+      // Cleanup can yield. Check ownership and commit the verdict in one transaction.
+      const completed = authorizeVerdict();
+      const changed = db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
+        WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
+      if (local) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+      return completed && changed.changes === 1;
+    });
+  }
+
+  repositoryQueries(runId: string, after: number, limit: number) {
+    if (!this.getRun(runId)) return null;
+    const rows = this.db.prepare(`SELECT q.id, q.audit_json FROM workflow_repository_queries q
+      JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=? AND q.id>?
+      ORDER BY q.id LIMIT ?`).all(runId, after, Math.min(limit, 20) + 1);
+    const items = rows.slice(0, limit).map(row => ({ id: Number(row.id), audit: RepositoryQueryAuditMetadataSchema.parse(JSON.parse(String(row.audit_json))) }));
+    return { items, nextAfter: rows.length > limit ? items.at(-1)?.id : null };
+  }
+
+  hasActiveRepositoryClaim(submissionId: string) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_repository_snapshot_claims c
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE c.submission_id=? AND c.state='active'`).get(submissionId));
+  }
+
+  private activateReadySubmissionClaim(submission: WorkflowSubmission, now: number): void {
+    if (submission.status === "running") {
+      if (!this.hasActiveRepositoryClaim(submission.id)) throw new Error("The submitted repository claim is unavailable");
+      return;
+    }
+    const claim = this.db.prepare("SELECT digest FROM workflow_repository_snapshot_claims WHERE submission_id=? AND state='provisional'").get(submission.id);
+    if (!claim || !submission.repositoryFingerprint) throw new Error("The submitted repository claim is unavailable");
+    // Both callers hold the readiness decision transaction. Re-enter the capture
+    // transition with its already frozen inputs before activating the waiting claim.
+    if (submission.status === "waiting_for_evidence_readiness") this.setSubmissionState(submission.id, "capturing", now);
+    this.commitRepositoryCaptureActivation({
+      submissionId: submission.id, digest: String(claim.digest),
+      capture: {
+        context: submission.context, evidence: submission.evidence, fingerprint: submission.evidenceFingerprint,
+        repositoryFingerprint: submission.repositoryFingerprint, readiness: submission.readiness ?? null,
+      },
+    }, now);
+  }
+
   commitRepositoryCaptureActivation(
     input: { submissionId: string; digest: string; capture: Required<SubmissionCapture> },
     now = Date.now(),
@@ -10147,9 +10399,9 @@ export class WorkflowStore {
             ? input.now + WORKFLOW_MAPPING_RECOVERY_DELAYS[attempts]! : null,
         } } : {}),
       };
-      this.setSubmissionState(submission.id, "failed", input.now);
       const run = this.setRunState(submission.runId, "blocked",
         input.kind === "capture" ? "image_evidence_capture" : "evidence_reconciliation_error", detail, input.now);
+      this.setSubmissionState(submission.id, "failed", input.now);
       this.appendEvent(run.id, "evidence_preparation_failed", detail, input.now,
         `evidence-preparation-failed:${submission.id}`);
       return run;
@@ -10418,7 +10670,7 @@ export class WorkflowStore {
           && submission.status === "running") {
         return Boolean(this.db.prepare("SELECT 1 FROM workflow_events WHERE event_id = ?").get(eventId));
       }
-      const capturing = run.status === "capturing" && submission.status === "running";
+      const capturing = run.status === "capturing" && (submission.status === "running" || submission.status === "capturing");
       const waiting = submission.status === "waiting_for_evidence_readiness"
         && (run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE));
@@ -10436,6 +10688,7 @@ export class WorkflowStore {
         SET state = 'cancelled', error = 'preflight_exhausted', updated_at = ?
         WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
           AND state = 'prepared'`).run(now, run.id, submission.id);
+      if (version && workflowRequiresRepositoryCapture(version.graph)) this.activateReadySubmissionClaim(submission, now);
       // Preserve the frozen gaps. This is an engine decision, never an operator override.
       this.setSubmissionState(submission.id, "running", now);
       this.setRunState(run.id, "running", "activating", null, now);
@@ -10503,10 +10756,11 @@ export class WorkflowStore {
       const readiness = submission.readiness
         ? { ...submission.readiness, status: "overridden" as const }
         : null;
+      if (version && workflowRequiresRepositoryCapture(version.graph)) this.activateReadySubmissionClaim(submission, input.now);
       this.db.prepare(
         `UPDATE workflow_submissions
             SET status = 'running', readiness_json = ?, updated_at = ?
-          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
+          WHERE id = ? AND status IN ('waiting_for_evidence_readiness','running')`,
       ).run(readiness ? JSON.stringify(readiness) : null, input.now, submission.id);
       assertRunLifecycle(run.id, "running", "activating", null);
       this.db.prepare(
@@ -11042,6 +11296,7 @@ export class WorkflowStore {
            FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
             AND r.completed_at IS NOT NULL
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
                WHERE d.run_id = r.id AND d.state = 'uncertain'
@@ -11080,7 +11335,7 @@ export class WorkflowStore {
             `SELECT 1 FROM workflow_deliveries
               WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
           ).get(runId);
-          if (uncertain) return false;
+          if (uncertain || this.db.prepare(`SELECT 1 FROM workflow_runs r WHERE r.id=? AND EXISTS (${repositoryCleanupForRun})`).get(runId)) return false;
           this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
           this.db.prepare(
@@ -11294,13 +11549,14 @@ export class WorkflowStore {
       retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
       // The `ranked` population in `runRetention` above, counted rather than windowed -
       // finished, with a completion time, and not pinned by an uncertain delivery. This is
-      // deliberately the SAME three predicates and not an approximation of them: the number
+      // deliberately the SAME predicates and not an approximation of them: the number
       // exists so the settings panel can show `maxCompletedRuns` against the rows that limit
       // actually ranks, and a count over a slightly different set would be a gauge that
       // disagrees with the sweep it claims to describe.
       completedRunCount: scalar(
         `SELECT COUNT(*) AS count FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND r.completed_at IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
@@ -11343,6 +11599,9 @@ export class WorkflowStore {
     const events = this.listEvents(id);
     return {
       ...detail,
+      ...(detail.repositoryReview ? { repositoryQueries: this.db.prepare(`SELECT q.audit_json FROM workflow_repository_queries q
+        JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=? ORDER BY q.id`).all(id)
+        .map(row => RepositoryQueryAuditMetadataSchema.parse(JSON.parse(String(row.audit_json)))) } : {}),
       events,
       eventCount: events.length,
       nextEventAfter: null,
@@ -11533,6 +11792,31 @@ export class WorkflowStore {
     return null;
   }
 
+  repositoryCitations(attempts: WorkflowNodeAttempt[]) {
+    const requested = new Set<string>();
+    for (const attempt of attempts) {
+      const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
+      if (!parsed.success) continue;
+      const verdict = parsed.data;
+      const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(change => change.evidence);
+      for (const ref of refs) if (ref.kind === "repository")
+        requested.add(JSON.stringify([attempt.id, ref.operationId, ref.evidenceHandleId]));
+    }
+    const citations: NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"] = {};
+    if (!requested.size) return citations;
+    const rows = this.db.prepare(`SELECT q.id, json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
+      FROM json_each(?) refs
+      JOIN workflow_repository_handles h ON h.id=json_extract(refs.value,'$[2]') AND h.operation_id=json_extract(refs.value,'$[1]')
+      JOIN workflow_repository_queries q ON q.operation_id=h.operation_id
+      JOIN workflow_repository_workloads w ON w.id=q.workload_id AND w.attempt_id=json_extract(refs.value,'$[0]')`)
+      .all("[" + [...requested].join(",") + "]");
+    for (const row of rows) {
+      const handle = RepositoryEvidenceHandleSchema.parse(JSON.parse(String(row.value)));
+      citations[handle.evidenceHandleId] = { ...handle, queryId: Number(row.id) };
+    }
+    return citations;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -11553,7 +11837,30 @@ export class WorkflowStore {
     ).get(id) as { count: number };
     const eventCount = Number(eventCountRow.count);
     const llmCallCount = Number(llmCallCountRow.count);
+    let repositoryReview: WorkflowRunDetail["repositoryReview"];
+    if (version && workflowRequiresRepositoryCapture(version.graph)) {
+      const snapshot = this.db.prepare(`SELECT c.digest, a.state,
+        json_extract(a.metadata_json,'$.retainedCommitCount') AS retained,
+        json_array_length(a.metadata_json,'$.frontier') AS frontier
+        FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
+        WHERE c.submission_id=?`).get(submissions.at(-1)?.id ?? "");
+      const count = this.db.prepare(`SELECT COUNT(*) AS n, sum(json_extract(q.audit_json,'$.bytes')) AS bytes,
+        sum(json_extract(q.audit_json,'$.truncated')) AS truncated,
+        sum(json_extract(q.audit_json,'$.status')='denied') AS denied,
+        sum(json_extract(q.audit_json,'$.status')='failed') AS failed,
+        sum(json_extract(q.audit_json,'$.status')='cancelled') AS cancelled FROM workflow_repository_queries q
+        JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=?`).get(id);
+      const citations = this.repositoryCitations(attempts);
+      repositoryReview = {
+        queries: Number(count?.n ?? 0), bytes: Number(count?.bytes ?? 0), denied: Number(count?.denied ?? 0),
+        truncated: Number(count?.truncated ?? 0), failed: Number(count?.failed ?? 0), cancelled: Number(count?.cancelled ?? 0),
+        snapshot: snapshot ? { digest: String(snapshot.digest), state: String(snapshot.state),
+          retainedCommits: Number(snapshot.retained), bounded: Number(snapshot.frontier) > 0 } : null,
+        citations,
+      };
+    }
     return {
+      ...(repositoryReview ? { repositoryReview } : {}),
       summary,
       binding,
       version,
@@ -11784,6 +12091,12 @@ export class WorkflowStore {
     }
   }
 
+  workflowResetBlocker(noteKey: string): string | null {
+    const pending = this.db.prepare(`SELECT 1 FROM workflow_runs r JOIN workflow_bindings b ON b.id=r.binding_id
+      WHERE b.note_key=? AND EXISTS (${repositoryCleanupForRun}) LIMIT 1`).get(noteKey);
+    return pending ? "Repository reviewer cleanup must finish before this session can be reset" : null;
+  }
+
   /**
    * Everything a reset removed, so the caller can retire it from the fleet stream too.
    *
@@ -11795,6 +12108,8 @@ export class WorkflowStore {
    */
   resetForNoteKey(noteKey: string): { runIds: string[]; bindingIds: string[] } {
     return transaction(this.db, () => {
+      const blocker = this.workflowResetBlocker(noteKey);
+      if (blocker) throw new Error(blocker);
       const runRows = this.db.prepare(
         `SELECT r.id FROM workflow_runs r
           JOIN workflow_bindings b ON b.id = r.binding_id

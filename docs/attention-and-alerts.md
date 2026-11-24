@@ -302,6 +302,10 @@ Stuck and not again under Waiting on you; a session with open questions keeps it
 well. If you dismissed its Stuck row and the session then turns amber, it is listed under Waiting
 on you, so an amber session always has a row.
 
+Speaking to an agent waiting inside a question or plan form can file the ask in the inbox.
+The agent receives the filed receipt and can list or withdraw the ask. Answering it sends the
+decision to the agent as a message. Older MCP children keep waiting for the answer in the call.
+
 ### Snoozed questions
 
 After the sections above, a **Snoozed** section lists the `request_input` questions you chose

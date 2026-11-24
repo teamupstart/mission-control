@@ -1,7 +1,7 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
@@ -3132,4 +3132,371 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
       }
     }
   } finally { await engine.stop(); store.cancelRun(`run-${id}`, "test cleanup", clock); }
+});
+
+async function captureRepositoryFixture(t: TestContext, store: InstanceType<typeof WorkflowStore>, submissionId: string) {
+  const { execFileSync } = await import("node:child_process");
+  const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+  const directory = mkdtempSync(join(tmpdir(), "mission-repository-review-supervision-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", directory]);
+  writeFileSync(join(directory, "submitted.txt"), "submitted\n");
+  const service = WorkflowRepositoryArtifactService.forRoot(store);
+  const signal = new AbortController().signal;
+  store.setSubmissionState(submissionId, "capturing");
+  const snapshot = await service.promote(await service.prepare({ checkout: directory, sourceBase: null }, signal), submissionId);
+  store.commitRepositoryCaptureActivation({ ...snapshot, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: null,
+    fingerprint: "frozen", repositoryFingerprint: "repository",
+  } });
+  return service;
+}
+
+test("recovery capture replays the inherited parent digest before and after startup reconciliation", async (t) => {
+  const { RepositoryOwnership } = await import("../src/server/workflows/repository-artifact/ownership.ts");
+  const id = "inherited-checkout", parent = `submission-${id}`, runId = `run-${id}`;
+  const store = seedSubmission(id, providerRetryGraph);
+  const service = await captureRepositoryFixture(t, store, parent);
+  const digest = service.activeSnapshot(parent)!.digest;
+  const claim = (submissionId: string) => openDb().prepare(
+    "SELECT digest,state,released_at FROM workflow_repository_snapshot_claims WHERE submission_id=?",
+  ).get(submissionId);
+  // Mapping recovery starts with the provisional claim held by the failed parent.
+  store.setRunState(runId, "blocked", "evidence_reconciliation_error", { submissionId: parent, error: "Unavailable mapping" });
+  store.setSubmissionState(parent, "failed");
+  openDb().prepare("UPDATE workflow_repository_snapshot_claims SET state='provisional', activated_at=NULL WHERE submission_id=?").run(parent);
+  const child = randomUUID();
+  assert.ok(store.reserveEvidenceRecovery({ id: child, runId, parentId: parent, requestId: randomUUID(), reason: "Retry mapping", now: Date.now() }));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  // Startup first interrupts the capturing submission, then reconciles artifact ownership.
+  store.setSubmissionState(child, "failed");
+  store.setRunState(runId, "blocked", "capture_interrupted", { error: "Restart" });
+  new RepositoryOwnership(store).recoverProvisional();
+  assert.equal(claim(parent)?.state, "provisional");
+  assert.equal(claim(child)?.state, "released");
+  assert.ok(store.resumeCapture(runId, child, ["capture_interrupted"]));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(claim(child)?.released_at, null);
+  store.commitRepositoryCaptureActivation({ submissionId: child, digest, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), fingerprint: "frozen", repositoryFingerprint: "repo", readiness: null,
+  } });
+  assert.equal(service.activeSnapshot(child)?.digest, digest);
+  assert.throws(() => store.inheritRepositoryClaim(child), /capturing recovery child/);
+  store.cancelRun(runId, "test complete", Date.now());
+});
+
+test("terminal-run maintenance verifies local lease and home ownership without restarting", async t => {
+  const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+  const id = "local-terminal-cleanup", runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, graph);
+  const service = await captureRepositoryFixture(t, store, submissionId);
+  const snapshot = service.activeSnapshot(submissionId)!;
+  const attemptId = randomUUID(), callId = randomUUID();
+  store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt: 1, state: "running",
+    persona: persona("p1", "Reviewer", "claude", "Review"), inputFingerprint: "frozen", now: 5 });
+  store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+    runner: "claude", model: "fixture", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+    durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+  const db = openDb();
+  db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES(?,?,?,'running',?)`).run(callId, attemptId, snapshot.digest, Date.now() + 30_000);
+  db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(callId);
+  const request = { workloadId: callId, attemptId, submissionId, digest: snapshot.digest, locator: snapshot.locator };
+  service.setActiveRequestLookup(key => key === callId ? request : null);
+  const lease = await service.materialize(request, new AbortController().signal);
+  const providerHome = mkdtempSync(join(tmpdir(), "mission-repository-workload-"));
+  t.after(() => rmSync(providerHome, { recursive: true, force: true }));
+  new LocalRepositoryWorkloadOwnership(store, () => false).recordHome(callId, providerHome);
+  const nonce = store.repositoryLocalOwner(callId)!.lease_nonce!;
+  store.markRepositoryCancellationPending(callId, 1);
+  store.cancelRun(runId, "Operator cancelled");
+  const engine = new WorkflowEngine(store, () => {});
+  const setNonce = db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?");
+  setNonce.run(randomUUID(), callId);
+  const binding = store.getBinding(store.getRun(runId)!.bindingId)!;
+  assert.throws(() => store.resetForNoteKey(binding.noteKey), /cleanup must finish/);
+  // An already exited group is independently confirmed even if lease cleanup then fails.
+  db.prepare("UPDATE workflow_repository_local_owners SET group_pid=?, group_identity=? WHERE workload_id=?")
+    .run(2147483647, "fixture-exited", callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.ok(existsSync(lease.objectDirectory) && existsSync(providerHome));
+  assert.equal(store.repositoryLocalOwner(callId)?.group_pid, null);
+  assert.equal(store.repositoryLocalOwner(callId)?.group_identity, null);
+  setNonce.run(nonce, callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.equal(store.repositoryLocalOwner(callId), undefined);
+  assert.equal(existsSync(lease.objectDirectory), false);
+  assert.equal(existsSync(providerHome), false);
+  assert.equal(store.getRun(runId)?.status, "cancelled");
+  assert.equal(store.listLlmCallPage(runId).items.length, 1);
+});
+
+for (const restartState of ["cancellation_pending", "running", "interrupted", "cancelled run"] as const)
+test(`external repository workload left ${restartState} blocks retries across restart until confirmed terminal`, async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  const id = "failed-cancel-" + restartState, runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, { ...providerRetryGraph, nodes: providerRetryGraph.nodes.map(node =>
+    node.kind === "persona" ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node) });
+  await captureRepositoryFixture(t, store, submissionId);
+  const launches: string[] = [];
+  let oldState: "unknown" | "running" | "terminal" = "unknown";
+  const executor: import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor = {
+    repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
+    async *dispatch(request) {
+      launches.push(request.workloadId);
+      const envelope = { workloadId: request.workloadId, attemptId: request.attemptId, timestamp: Date.now() };
+      if (launches.length === 1) {
+        yield { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 2 };
+        return;
+      }
+      yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 1, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+        result: { status: "failed", code: "provider_unavailable", providerFailure: "token_exhausted" } };
+    },
+    async cancel(workloadId, generation) {
+      assert.equal(workloadId, launches[0]);
+      assert.equal(generation, 1);
+      throw new Error("Provider cleanup offline");
+    },
+    async reconcile(workloadId) {
+      assert.equal(workloadId, launches[0]);
+      return { workloadId, state: oldState, events: [] };
+    },
+  };
+  const makeEngine = () => new WorkflowEngine(store, () => {}, { repositoryExecutor: executor });
+  let engine = makeEngine();
+  t.after(() => engine.stop());
+  engine.activateSubmission(submissionId);
+  engine.start();
+  const waitBlocked = () => waitFor(() => store.getRun(runId)?.status === "blocked");
+  const prior = () => openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(launches[0]!);
+  await waitBlocked();
+  assert.match(store.latestAttemptForNode(submissionId, "p")!.error!, /failed to confirm cancellation.*Provider cleanup offline/);
+  assert.equal(prior()?.state, "cancellation_pending");
+  assert.equal(launches.length, 1);
+  if (restartState === "cancelled run") {
+    store.cancelRun(runId, "Operator cancelled");
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "cancellation_pending");
+    oldState = "terminal";
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "failed");
+    assert.equal(store.getRun(runId)?.status, "cancelled");
+    assert.equal(launches.length, 1);
+    return;
+  }
+  await engine.stop();
+  // The same external job can survive an abrupt crash before cancellation, or a
+  // previous daemon that classified it as interrupted without contacting the executor.
+  openDb().prepare("UPDATE workflow_repository_workloads SET state=?, cancellation_generation=? WHERE id=?")
+    .run(restartState, restartState === "running" ? 0 : 1, launches[0]!);
+  engine = makeEngine();
+  engine.start();
+  for (const state of ["unknown", "running", "terminal"] as const) {
+    oldState = state;
+    store.manualInfrastructureRetry(runId, submissionId, store.latestAttemptForNode(submissionId, "p")!, randomUUID(), randomUUID());
+    engine.activateSubmission(submissionId);
+    await waitBlocked();
+    assert.equal(launches.length, state === "terminal" ? 2 : 1);
+    assert.equal(store.listLlmCallPage(runId).items.length, launches.length);
+    assert.equal(prior()?.state, state === "terminal" ? "failed"
+      : restartState === "interrupted" ? "interrupted" : "cancellation_pending");
+  }
+  assert.equal(store.getRun(runId)?.currentPhase, "provider_token_exhausted");
+});
+
+for (const timing of ["before initial dispatch", "before provider retry", "during executor setup"] as const) {
+  test(`repository preview disabled ${timing} blocks the frozen read grant`, async (t) => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+    const setPreview = (enabled: boolean) => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled });
+    setPreview(true);
+    t.after(() => setPreview(false));
+    const id = timing.replaceAll(" ", "-");
+    const runId = `run-${id}`;
+    const submissionId = `submission-${id}`;
+    const store = seedSubmission(id, {
+      ...providerRetryGraph,
+      nodes: providerRetryGraph.nodes.map(node => node.kind === "persona"
+        ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node),
+    });
+    await captureRepositoryFixture(t, store, submissionId);
+    let clock = Date.now();
+    let launches = 0;
+    const ordinaryRunner = t.mock.fn(() => { throw new Error("Unexpected prompt-only dispatch"); });
+    const engine = new WorkflowEngine(store, () => {}, {
+      now: () => clock,
+      runnerFor: ordinaryRunner,
+      repositoryExecutor: {
+        get repositoryEvidenceCapability() {
+          // Apply the live change after setup begins, just before the executor is handed the request.
+          if (timing === "during executor setup") setPreview(false);
+          return REPOSITORY_EVIDENCE_CAPABILITY;
+        },
+        async *dispatch(request) {
+          launches++;
+          yield {
+            type: "terminal", eventId: randomUUID(), sequence: 1, timestamp: clock,
+            workloadId: request.workloadId, attemptId: request.attemptId, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+            result: { status: "failed", code: "provider_unavailable", providerFailure: "retryable" },
+          };
+        },
+        async cancel() {},
+        async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
+      },
+    });
+    engine.activateSubmission(submissionId);
+    if (timing === "before initial dispatch") setPreview(false);
+    engine.start();
+    try {
+      if (timing === "before provider retry") {
+        await waitFor(() => store.latestAttemptForNode(submissionId, "p")?.state === "retry_wait");
+        setPreview(false);
+        clock = store.latestAttemptForNode(submissionId, "p")!.retryAt!;
+        engine.wake();
+      }
+      await waitFor(() => store.getRun(runId)?.status === "blocked");
+      const attempt = store.latestAttemptForNode(submissionId, "p")!;
+      assert.equal(ordinaryRunner.mock.callCount(), 0);
+      assert.equal(launches, timing === "before provider retry" ? 1 : 0);
+      assert.equal(store.listLlmCallPage(runId).items.length, timing === "before initial dispatch" ? 0 : 1);
+      assert.equal(openDb().prepare("SELECT id FROM workflow_repository_workloads WHERE attempt_id=?").get(attempt.id), undefined);
+      assert.equal(attempt.state, "error");
+      assert.equal(attempt.attempt, timing === "before provider retry" ? 2 : 1);
+      assert.match(attempt.error ?? "", /Persona repository access preview is off/);
+      assert.deepEqual(store.listReceipts(submissionId).map(receipt => receipt.edgeId), ["s-p"]);
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("repository review verifies executor capability, the live grant at materialization, event order, and attempt ownership", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { RepositoryReview } = await import("../src/server/workflows/repository-review.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  const id = "repository-supervision";
+  const store = seedSubmission(id, graph);
+  const submissionId = `submission-${id}`;
+  const runId = `run-${id}`;
+  const reviewer = { ...persona("p1", "Reviewer", "claude", "Review"), repositoryAccess: "read" as const };
+  const signal = new AbortController().signal;
+  const service = await captureRepositoryFixture(t, store, submissionId);
+  store.setRunState(runId, "running", "persona_review", null);
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
+  // AbortSignal.timeout is unref'ed. Model the live daemon while testing a transport
+  // that owns no event-loop handles and never settles its promises.
+  const keepAlive = setTimeout(() => {}, 15_000);
+  t.after(() => clearTimeout(keepAlive));
+  const scenarios = ["unsupported", "cancel acknowledged", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "stale"] as const;
+  // The permission decision must hold even when the supervisor's watchdog has never fired.
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  for (const [index, scenario] of scenarios.entries()) {
+    const attempt = index + 1;
+    const attemptId = randomUUID(), callId = randomUUID();
+    store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt, state: "running",
+      persona: reviewer, inputFingerprint: "frozen", now: 5 });
+    store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+      runner: "claude", model: "fake-model", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+      durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+    let launches = 0;
+    const cancellations: { workloadId: string; generation: number }[] = [];
+    let cancellationRequested = false;
+    let leaseOpened = false;
+    const executor: Executor = {
+      repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
+      async *dispatch(request, workloadSignal) {
+        launches++;
+        const envelope = { workloadId: request.workloadId, attemptId, timestamp: 7 };
+        const accepted = { ...envelope, type: "accepted" as const, eventId: randomUUID(), sequence: 1 };
+        yield accepted;
+        if (scenario === "revoked before materialization" || scenario === "equal replay") {
+          if (scenario === "revoked before materialization") {
+            applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+          }
+          const lease = await service.materialize({
+            workloadId: request.workloadId, attemptId, submissionId, ...request.artifact,
+          }, workloadSignal);
+          leaseOpened = true;
+          await lease.release();
+        }
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
+        if (scenario === "conflict" || scenario === "cancel acknowledged") yield { ...accepted, timestamp: 8 };
+        if (scenario === "equal replay") yield accepted;
+        try {
+          yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
+        } finally {
+          if (scenario === "gap") assert.ok(cancellationRequested, "cancel before closing the iterator");
+        }
+        yield { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 };
+        if (scenario === "failed query") yield {
+          ...envelope, type: "repository_query", eventId: randomUUID(), sequence: 4, audit: {
+            workloadId: request.workloadId, attemptId, operationId: randomUUID(), operation: "read",
+            snapshotDigest: request.artifact.digest, inputHash: "1".repeat(64), status: "failed", code: "unavailable",
+            bytes: 0, items: 0, durationMs: 1, truncated: false, handles: [],
+          },
+        };
+        if (scenario === "stale") store.cancelRun(runId, "operator cancelled", Date.now());
+        yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+          result: { status: "completed", usage: {}, result: { kind: "persona_verdict", verdict: {
+            verdict: "pass", approvalDetails: { reason: "Verified", evidence: [] }, summary: "Verified", confidence: 1,
+          } } } };
+      },
+      async cancel(workloadId, generation) {
+        cancellationRequested = true;
+        await new Promise<void>(resolve => setImmediate(resolve));
+        cancellations.push({ workloadId, generation });
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
+      },
+      async reconcile(workloadId) { return { workloadId, state: scenario === "cancel acknowledged" ? "running" : "terminal", events: [] }; },
+    };
+    if (scenario === "revoked during cleanup") {
+      const { LocalPersonaWorkloadExecutor } = await import("../src/server/workflows/persona-workload/executor.ts");
+      const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+      t.mock.method(LocalPersonaWorkloadExecutor.prototype, "dispatch", executor.dispatch);
+      const close = LocalRepositoryWorkloadOwnership.prototype.confirmClosed;
+      t.mock.method(LocalRepositoryWorkloadOwnership.prototype, "confirmClosed", async function (
+        this: InstanceType<typeof LocalRepositoryWorkloadOwnership>, ...args: Parameters<typeof close>
+      ) {
+        await close.apply(this, args);
+        applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+      });
+    }
+    const response = new RepositoryReview(store, scenario === "revoked during cleanup" ? undefined : executor).run({
+      attemptId, submissionId, persona: reviewer, execution: { provider: "claude", model: "fake-model" },
+      accounting: { runId, purpose: "persona_review", attempt: 1, callId }, images: [], prompt: "Review",
+      deadline: Date.now() + (scenario === "unresponsive" ? 100 : 30_000),
+    }, signal);
+    if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
+    else await assert.rejects(response, {
+      unsupported: /executor capability mismatch/i, "cancel acknowledged": /has not confirmed cleanup/i, conflict: /conflicting repository event/i,
+      gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
+      "revoked before materialization": { code: "artifact_unavailable" },
+      "revoked during cleanup": /ownership expired before verdict acceptance/i,
+      unresponsive: /failed to confirm cancellation/i,
+    }[scenario]);
+    assert.equal(launches, scenario === "unsupported" ? 0 : 1);
+    assert.equal(leaseOpened, scenario === "equal replay", scenario);
+    if (scenario === "unresponsive" || scenario === "cancel acknowledged") {
+      assert.ok(store.pendingRepositoryCancellations(runId, "p1").some(row => row.id === callId && row.generation === 1));
+    }
+    if (scenario === "revoked during cleanup") {
+      assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
+    }
+    if (scenario === "revoked before materialization" || scenario === "revoked during cleanup") {
+      applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+    }
+    assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay" || scenario === "revoked during cleanup"
+      ? [] : [{ workloadId: callId, generation: 1 }], scenario);
+    const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
+    assert.deepEqual(rows.map(row => row.sequence), {
+      unsupported: [], "cancel acknowledged": [1], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
+      unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
+    }[scenario]);
+  }
 });

@@ -1,6 +1,7 @@
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
-import { RepositoryQueryHistory, repositoryCitationLabel } from "./RepositoryQueryHistory.tsx";
+import { repositoryCitationLabel } from "@shared/repository-access.ts";
+import { RepositoryQueryHistory } from "./RepositoryQueryHistory.tsx";
 import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";

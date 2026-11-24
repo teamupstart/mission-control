@@ -387,5 +387,6 @@ capture means a stable submitted state could not be sealed. Resubmit after the c
 stable. A workload failure after capture uses the original artifact on retry. Check the
 provider executable, its supported build, and the preview setting before choosing **Retry
 the failed call**. A denied path or a history boundary can be an ordinary query outcome.
-A missing artifact, capability mismatch or invalid citation prevents a successful verdict.
+If the error is `artifact_unavailable`, choose **Cancel run**, then submit the checkout
+again to capture a new artifact. Confirm the checkout contains the work you want reviewed.
 [Provider isolation and the executable gate](repository-review-workloads.md#provider-isolation-and-the-executable-gate)

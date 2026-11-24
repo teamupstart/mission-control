@@ -135,7 +135,7 @@ for (const { title, provider, marker } of scenarios) {
   test(title, async ({ dashboard, daemon }) => {
     test.setTimeout(120_000);
     const { execFileSync } = await import("node:child_process");
-    const { writeFileSync } = await import("node:fs");
+    const { readFileSync, writeFileSync } = await import("node:fs");
     const post = async (path: string, data: unknown) => {
       const response = await dashboard.request.post(daemon.baseURL + path, { data });
       expect(response.ok(), `${path}: ${await response.text()}`).toBe(true);
@@ -212,6 +212,9 @@ for (const { title, provider, marker } of scenarios) {
       const lease = join(daemon.home, "workflow-repositories", "leases", String(owner.lease_id));
       expect(existsSync(lease)).toBe(true);
       expect(existsSync(String(owner.home_path))).toBe(true);
+      const started = join(daemon.home, "repository-provider-started");
+      const originalPid = Number(readFileSync(started, "utf8"));
+      expect(originalPid).toBeGreaterThan(1);
       await daemon.crash();
       // Model a cancellation whose acknowledgement was lost just before the crash.
       withDaemonDb(daemon, db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
@@ -219,7 +222,6 @@ for (const { title, provider, marker } of scenarios) {
       if (marker === "E2E_LOCAL_CLEANUP_RESTART_MISMATCH")
         withDaemonDb(daemon, db => db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?")
           .run(crypto.randomUUID(), owner.workload_id!));
-      writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
       await daemon.restart();
       if (marker === "E2E_LOCAL_CLEANUP_RESTART_MISMATCH") {
         await expect.poll(async () => (await detail()).run.status, { timeout: 40_000 }).toBe("blocked");
@@ -230,6 +232,10 @@ for (const { title, provider, marker } of scenarios) {
           .run(owner.lease_nonce!, owner.workload_id!));
         await post(`/api/workflow-runs/${run.id}/retry`, { requestId: "retry-confirmed-local-owner" });
       }
+      await expect.poll(() => Number(readFileSync(started, "utf8")), { timeout: 40_000 }).not.toBe(originalPid);
+      const replacementPid = Number(readFileSync(started, "utf8"));
+      expect(() => process.kill(originalPid, 0)).toThrow(/ESRCH/);
+      writeFileSync(join(daemon.home, `repository-review-ready-${replacementPid}`), "ready");
       await expect.poll(async () => (await detail()).run.status, { timeout: 40_000 }).toBe("completed");
       const result = await detail();
       expect(result.llmCalls.filter((call: { purpose: string }) => call.purpose === "persona_review")).toHaveLength(2);
@@ -243,6 +249,9 @@ for (const { title, provider, marker } of scenarios) {
     writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
     if (marker === "E2E_QUERY_SNAPSHOTS") {
       await expect.poll(async () => (await detail()).run.status).toBe("waiting_for_session");
+      await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
+        "SELECT payload FROM workflow_deliveries WHERE run_id=? AND kind='persona_feedback'",
+      ).get(run.id)?.payload)).toContain("[repository] submitted.txt · lines [1, 2)");
       const first = (await detail()).repositoryReview.snapshot.digest as string;
       await post(`/api/workflow-runs/${run.id}/resubmit`, { requestId: "changed-checkout" });
       await expect.poll(async () => (await detail()).run.status).toBe("completed");
@@ -323,6 +332,14 @@ for (const { title, provider, marker } of scenarios) {
       const ownership = withDaemonDb(daemon, db => db.prepare(`SELECT count(*) AS workloads,
         count(DISTINCT digest) AS snapshots FROM workflow_repository_workloads WHERE attempt_id=?`).get(reviewed.id));
       expect(ownership).toEqual({ workloads: 2, snapshots: 1 });
+      await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+      const history = dashboard.getByRole("region", { name: "Repository queries" });
+      await dashboard.route(/repository-queries\?after=[1-9]/, route => route.fulfill({ status: 503, body: "Unavailable" }), { times: 1 });
+      await history.getByRole("button", { name: "Next queries" }).click();
+      await history.getByRole("button", { name: "Retry loading queries" }).click();
+      await expect(history.getByRole("alert")).toHaveCount(0);
+      await expect(history.getByRole("button", { name: "Next queries" })).toHaveCount(0);
+      await expect(history.getByText(/git_log · revision_out_of_range/)).toBeVisible();
       return;
     }
     await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
@@ -350,6 +367,12 @@ for (const { title, provider, marker } of scenarios) {
       const frozen = dashboard.getByText("Read-only repository access", { exact: true });
       await expect(frozen).toBeVisible();
       await captureState(dashboard, "frozen-outdated", frozen);
+      await dashboard.context().addInitScript(() => {
+        Object.defineProperty(navigator, "locks", { value: undefined });
+      });
+      await dashboard.evaluate(id => localStorage.setItem("mission.workflow.publish." + id, "{broken"), workflow.id);
+      await dashboard.reload();
+      await dashboard.getByRole("button", { name: "Discard unreadable publish request" }).click();
       const publishRequests: { requestId: string; expectedDraftRevision: number }[] = [];
       const firstResponse = Promise.withResolvers<void>();
       await dashboard.route(`**/api/workflows/${workflow.id}/publish`, async route => {

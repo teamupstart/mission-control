@@ -2,6 +2,7 @@
 if (process.env.CODEX_HOME?.endsWith("/provider") && process.env.CODEX_HOME.includes("/mission-repository-workload-")) {
   const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
   await runFakeRepositoryReview("codex", process.argv.slice(2));
+  await new Promise(resolve => process.stdout.write("", resolve));
   process.exit(0);
 }
 

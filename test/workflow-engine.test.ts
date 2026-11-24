@@ -3332,7 +3332,11 @@ test("repository review verifies executor capability, the live grant at material
   applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
   type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
-  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "stale"] as const;
+  // AbortSignal.timeout is unref'ed. Model the live daemon while testing a transport
+  // that owns no event-loop handles and never settles its promises.
+  const keepAlive = setTimeout(() => {}, 15_000);
+  t.after(() => clearTimeout(keepAlive));
+  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "stale"] as const;
   // The permission decision must hold even when the supervisor's watchdog has never fired.
   t.mock.timers.enable({ apis: ["setInterval"] });
   for (const [index, scenario] of scenarios.entries()) {
@@ -3364,6 +3368,7 @@ test("repository review verifies executor capability, the live grant at material
           leaseOpened = true;
           await lease.release();
         }
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
         if (scenario === "conflict") yield { ...accepted, timestamp: 8 };
         if (scenario === "equal replay") yield accepted;
         try {
@@ -3389,6 +3394,7 @@ test("repository review verifies executor capability, the live grant at material
         cancellationRequested = true;
         await new Promise<void>(resolve => setImmediate(resolve));
         cancellations.push({ workloadId, generation });
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
       },
       async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
     };
@@ -3407,7 +3413,7 @@ test("repository review verifies executor capability, the live grant at material
     const response = new RepositoryReview(store, scenario === "revoked during cleanup" ? undefined : executor).run({
       attemptId, submissionId, persona: reviewer, execution: { provider: "claude", model: "fake-model" },
       accounting: { runId, purpose: "persona_review", attempt: 1, callId }, images: [], prompt: "Review",
-      deadline: Date.now() + 30_000,
+      deadline: Date.now() + (scenario === "unresponsive" ? 100 : 30_000),
     }, signal);
     if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
     else await assert.rejects(response, {
@@ -3415,9 +3421,13 @@ test("repository review verifies executor capability, the live grant at material
       gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
       "revoked before materialization": { code: "artifact_unavailable" },
       "revoked during cleanup": /ownership expired before verdict acceptance/i,
+      unresponsive: /failed to confirm cancellation/i,
     }[scenario]);
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
     assert.equal(leaseOpened, scenario === "equal replay", scenario);
+    if (scenario === "unresponsive") {
+      assert.deepEqual(store.pendingRepositoryCancellations(runId, "p1").map(row => ({ ...row })), [{ id: callId, generation: 1 }]);
+    }
     if (scenario === "revoked during cleanup") {
       assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
     }
@@ -3429,7 +3439,7 @@ test("repository review verifies executor capability, the live grant at material
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
       unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
-      stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
+      unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
     }[scenario]);
   }
 });

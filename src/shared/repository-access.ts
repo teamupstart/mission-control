@@ -597,3 +597,10 @@ export const PersonaWorkloadReconciliationSchema = z.strictObject({
 export type PersonaWorkloadReconciliation = z.infer<
   typeof PersonaWorkloadReconciliationSchema
 >;
+
+export function repositoryCitationLabel(handle: RepositoryEvidenceHandle): string {
+  const range = handle.range;
+  if (range.kind === "line") return `${handle.path} · lines [${range.startLine}, ${range.endLineExclusive})`;
+  if (range.kind === "byte") return `${handle.path} · bytes [${range.startByte}, ${range.endByteExclusive})`;
+  return `${handle.path} · old [${range.oldStartLine}, ${range.oldEndLineExclusive}), new [${range.newStartLine}, ${range.newEndLineExclusive})`;
+}

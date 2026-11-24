@@ -9,9 +9,11 @@ const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
 const tools = ["read", "search", "glob", "git_status", "git_diff", "git_show", "git_log", "git_blame"];
 async function review(mcp, prompt) {
   // The browser changes the live checkout after the capture event, then releases this fixture.
-  const release = new URL("../repository-review-ready", import.meta.url);
-  if (prompt.includes("E2E_LOCAL_CLEANUP_RESTART"))
-    writeFileSync(new URL("../repository-provider-started", import.meta.url), "started");
+  let release = new URL("../repository-review-ready", import.meta.url);
+  if (prompt.includes("E2E_LOCAL_CLEANUP_RESTART")) {
+    release = new URL(`../repository-review-ready-${process.pid}`, import.meta.url);
+    writeFileSync(new URL("../repository-provider-started", import.meta.url), String(process.pid));
+  }
   const expires = Date.now() + 30_000;
   while (!existsSync(release)) {
     if (Date.now() >= expires) throw Error("Timed out waiting for the fixture checkout change");

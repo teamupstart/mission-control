@@ -3880,16 +3880,25 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_versions", "source_snapshot_fingerprint", "TEXT");
-  for (const row of d.prepare(`SELECT id, graph_json FROM workflow_versions WHERE source_snapshot_fingerprint IS NULL`).all()) {
-    const raw = String(row.graph_json);
-    let fingerprint: string;
-    try {
-      fingerprint = workflowGraphFingerprint(JSON.parse(raw));
-    } catch {
-      // Preserve unreadable historical rows for diagnosis without blocking database startup.
-      fingerprint = "unreadable:" + createHash("sha256").update(raw).digest("hex");
+  const pending = d.prepare(`SELECT id, graph_json FROM workflow_versions
+    WHERE source_snapshot_fingerprint IS NULL AND id > ? ORDER BY id LIMIT 32`);
+  const setFingerprint = d.prepare("UPDATE workflow_versions SET source_snapshot_fingerprint=? WHERE id=?");
+  let after = "";
+  for (;;) {
+    const rows = pending.all(after);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const raw = String(row.graph_json);
+      let fingerprint: string;
+      try {
+        fingerprint = workflowGraphFingerprint(JSON.parse(raw));
+      } catch {
+        // Preserve unreadable historical rows for diagnosis without blocking database startup.
+        fingerprint = "unreadable:" + createHash("sha256").update(raw).digest("hex");
+      }
+      after = String(row.id);
+      setFingerprint.run(fingerprint, after);
     }
-    d.prepare("UPDATE workflow_versions SET source_snapshot_fingerprint=? WHERE id=?").run(fingerprint, row.id!);
   }
   d.exec(`DROP INDEX IF EXISTS idx_workflow_versions_draft;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_snapshot

@@ -2,6 +2,7 @@
 if (process.cwd().endsWith("/provider") && process.cwd().includes("/mission-repository-workload-")) {
   const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
   await runFakeRepositoryReview("claude", process.argv.slice(2));
+  await new Promise(resolve => process.stdout.write("", resolve));
   process.exit(0);
 }
 

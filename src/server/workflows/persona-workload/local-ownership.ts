@@ -11,7 +11,7 @@ import type { WorkflowRepositoryArtifactService } from "../repository-artifact/s
 import { RepositoryCapabilityError, type RepositoryProviderLaunch } from "./providers.ts";
 
 export class LocalRepositoryWorkloadOwnership {
-  constructor(private readonly store: WorkflowStore) {}
+  constructor(private readonly store: WorkflowStore, private readonly authorized: (id: string) => boolean) {}
 
   recordHome(workloadId: string, path: string) {
     const stat = lstatSync(path, { bigint: true });
@@ -32,10 +32,12 @@ export class LocalRepositoryWorkloadOwnership {
       input: JSON.stringify({ request: launch.request, binary: launch.binary, mcp: launch.mcp }),
       maxOutputBytes: 0, capture: { push: (kind, chunk) => { if (kind === "stdout") reply.push(chunk); } },
       onSupervisorReady: ({ pid, identity }) => {
-        const changed = this.store.transact(db => db.prepare(`UPDATE workflow_repository_local_owners
-          SET group_pid=?, group_identity=? WHERE workload_id=? AND group_pid IS NULL AND lease_id IS NOT NULL
-          AND EXISTS (SELECT 1 FROM workflow_repository_workloads WHERE id=? AND state='running')`).run(pid, identity, id, id));
-        if (!changed.changes) throw new Error("Repository workload lost ownership before provider launch");
+        this.store.transact(db => {
+          if (!this.authorized(id) || Date.now() >= launch.request.deadline) throw new Error("Repository provider launch authorization expired");
+          const changed = db.prepare(`UPDATE workflow_repository_local_owners SET group_pid=?, group_identity=?
+            WHERE workload_id=? AND group_pid IS NULL AND lease_id IS NOT NULL`).run(pid, identity, id);
+          if (!changed.changes) throw new Error("Repository workload lost ownership before provider launch");
+        });
       },
     });
     if (outcome.emptiness !== "empty") throw new Error("Repository provider group cleanup is unconfirmed");
@@ -56,7 +58,7 @@ export class LocalRepositoryWorkloadOwnership {
 
   /** A gated but never launched provider has no PID. Unknown identities and foreign directories stay held. */
   async confirmClosed(id: string, service: WorkflowRepositoryArtifactService) {
-    const row = this.store.transact(db => db.prepare("SELECT * FROM workflow_repository_local_owners WHERE workload_id=?").get(id));
+    const row = this.store.repositoryLocalOwner(id);
     if (!row) throw new Error("Missing repository workload cleanup record");
     if (row.group_pid !== null || row.group_identity !== null) {
       const pid = Number(row.group_pid);

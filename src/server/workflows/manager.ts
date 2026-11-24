@@ -2333,6 +2333,10 @@ export class WorkflowManager {
           && binding.state === "active"
           && existingRun.status === "waiting_for_session"
         ) {
+          const version = this.store.getWorkflowVersionById(existingRun.workflowVersionId);
+          if (!version || (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(existing.id))) {
+            return { ok: false, reason: "conflict", message: "The original submitted checkout is unavailable. Submit a new capture." };
+          }
           const revived = this.store.reviveFailedSubmission(
             existing.id,
             existingRun.id,
@@ -5460,12 +5464,14 @@ export class WorkflowManager {
       || !summary
       || !binding.sessionId
     ) return;
+    const attempts = this.store.listAttempts(submission.id);
     const rendered = renderWorkflowFeedback({
       workflowName: summary.workflowName,
       version,
       run,
       submission,
-      attempts: this.store.listAttempts(submission.id),
+      attempts,
+      citations: this.store.repositoryCitations(attempts),
     });
     if (rendered.failedPersonaCount === 0) return;
     const prepared = this.store.prepareDelivery({
@@ -7940,7 +7946,10 @@ export class WorkflowManager {
         : Boolean(previousFingerprint) && fingerprint === previousFingerprint;
       if (unchanged && !allowUnchanged) {
         const refusedAt = Date.now();
-        this.store.setSubmissionState(submission.id, "failed", refusedAt);
+        this.store.transact(() => {
+          if (digest) this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture }, refusedAt);
+          this.store.setSubmissionState(submission.id, "failed", refusedAt);
+        });
         // Append BEFORE counting, so the count includes this refusal and the two reads can
         // never disagree about whether the current one is in it.
         this.store.appendEvent(run.id, "resubmit_refused_unchanged", {
@@ -7972,7 +7981,10 @@ export class WorkflowManager {
         // delivered work's next natural completed generation. That is what supplies the NEXT
         // legitimate claim; resetting the prompted guard here would spin capture against a
         // session that is not changing.
-        if (!exhausted) this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
+        if (!exhausted) {
+          releaseClaim = false;
+          this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
+        }
         return {
           ok: false,
           reason: "unchanged_evidence",
@@ -8117,7 +8129,10 @@ export class WorkflowManager {
         message: `Workflow evidence capture failed: ${message}`,
       };
     } finally {
-      if (candidate) await this.repositoryArtifacts.discard(candidate);
+      if (candidate) {
+        try { await this.repositoryArtifacts.discard(candidate); }
+        catch (error) { workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) }); }
+      }
       if (releaseClaim) await this.repositoryArtifacts.release(submission.id);
     }
   }

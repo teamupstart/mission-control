@@ -1098,7 +1098,11 @@ export function WorkflowLibrary({
                     })}>Restore</button>
                   </Tooltip>
                 )}
-                <Tooltip label={retryingPublish ? "Retry the original publish request" : workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                {draft.discardUnreadablePublish ? <Tooltip label="The saved publish request is unreadable. Discard it before publishing again.">
+                  <button className="btn" disabled={transitioning} onClick={() => void runTransition(draft.discardUnreadablePublish!)}>
+                    Discard unreadable publish request
+                  </button>
+                </Tooltip> : <Tooltip label={retryingPublish ? "Retry the original publish request" : workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
                   <button className="btn" ref={tourPublishRef} disabled={transitioning || workflowPublishBlocked({
                     dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict),
                     valid: retryingPublish || Boolean(validation?.valid), alreadyPublished: alreadyPublished && !retryingPublish,
@@ -1106,7 +1110,7 @@ export function WorkflowLibrary({
                   })} onClick={() => void runTransition(async () => { await draft.publish(); })}>
                     {retryingPublish ? `Retry publish (revision ${draft.publishRetryRevision})` : "Publish"}
                   </button>
-                </Tooltip>
+                </Tooltip>}
               </div>
             </header>
             <WorkflowStateNotice

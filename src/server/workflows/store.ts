@@ -1,3 +1,5 @@
+import type { EvidenceRef } from "@shared/workflow.ts";
+import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repository-access.ts";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
 import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
@@ -232,6 +234,13 @@ const utf8 = new TextEncoder();
 const DEFAULT_DETAIL_PAGE_SIZE = 200;
 const PERSONA_DIRECTIVES_JSON_BYTES =
   WORKFLOW_LIMITS.personaDirectiveBytes * WORKFLOW_LIMITS.graphNodes + 100_000;
+// Cleanup can outlive a cancelled run. Its durable process and lease ownership
+// must survive until the executor or local supervisor confirms termination.
+const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
+  JOIN workflow_repository_workloads w ON w.id=l.id
+  LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
+  WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
+
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 /**
@@ -8252,6 +8261,112 @@ export class WorkflowStore {
     });
   }
 
+  pendingRepositoryCancellations(runId: string, nodeId: string) {
+    return this.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
+      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state IN ('cancellation_pending','interrupted') AND l.run_id=? AND n.node_id=?`)
+      .all(runId, nodeId)) as { id: string; generation: number }[];
+  }
+
+  repositoryLocalOwner(id: string) {
+    return this.db.prepare("SELECT * FROM workflow_repository_local_owners WHERE workload_id=?").get(id);
+  }
+
+  confirmRepositoryCancellation(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+      WHERE id=? AND state IN ('cancellation_pending','interrupted') AND cancellation_generation=?`).run(id, generation));
+  }
+
+  confirmLocalRepositoryCleanup(id: string) {
+    this.transact(db => {
+      if (db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+        WHERE id=? AND state='cancellation_pending'`).run(id).changes)
+        db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+    });
+  }
+
+  currentRepositoryWorkload(id: string) {
+    return this.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
+      s.id AS submissionId, w.digest, a.locator FROM workflow_repository_workloads w
+      JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
+      JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
+      JOIN workflow_runs r ON r.id=s.run_id AND r.status='running'
+      JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE w.id=? AND w.state='running'`).get(id)) as
+      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string } | undefined;
+  }
+
+  interruptRepositoryWorkloads() {
+    return this.transact(db => {
+      db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+        cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
+      return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
+        ON workload_id=id WHERE state='cancellation_pending'`).all();
+    });
+  }
+
+  startRepositoryWorkload(request: PersonaWorkloadRequest, local: boolean) {
+    this.transact(db => {
+      db.prepare(`INSERT INTO workflow_repository_workloads (id,attempt_id,digest,state,deadline)
+        VALUES(?,?,?,'running',?)`).run(request.workloadId, request.attemptId, request.artifact.digest, request.deadline);
+      if (local) db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(request.workloadId);
+    });
+  }
+
+  markRepositoryCancellationPending(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+      cancellation_generation=?, error_code='cancellation_unconfirmed' WHERE id=? AND state='running'`).run(generation, id));
+  }
+
+  repositoryEventHash(id: string, sequence: number) {
+    return this.db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?").get(id, sequence)?.hash;
+  }
+
+  recordRepositoryEvent(request: PersonaWorkloadRequest, event: PersonaWorkloadEvent, hash: string, authorized: () => boolean) {
+    const id = request.workloadId;
+    this.transact(db => {
+      if (!authorized()) throw new Error("Repository workload ownership expired");
+      db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
+      if (event.type === "terminal" && event.result.usage) {
+        db.prepare("UPDATE workflow_repository_workloads SET usage_json=? WHERE id=?").run(JSON.stringify(event.result.usage), id);
+        const cost = event.result.usage.total_cost_usd;
+        if (cost !== undefined && cost >= 0) db.prepare("UPDATE workflow_llm_calls SET cost_usd=? WHERE id=?").run(cost, id);
+      }
+      if (event.type === "repository_query") {
+        const audit = event.audit;
+        if (audit.workloadId !== id || audit.attemptId !== request.attemptId || audit.snapshotDigest !== request.artifact.digest)
+          throw new Error("Repository query ownership mismatch");
+        db.prepare(`INSERT INTO workflow_repository_queries(workload_id,operation_id,audit_json) VALUES(?,?,?)`)
+          .run(id, audit.operationId, JSON.stringify(audit));
+        const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
+        for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
+      }
+    });
+  }
+
+  verifyRepositoryCitations(id: string, refs: EvidenceRef[]) {
+    this.transact(db => {
+      const find = db.prepare(`SELECT 1 FROM workflow_repository_queries q
+        JOIN workflow_repository_handles h ON h.operation_id=q.operation_id
+        WHERE q.workload_id=? AND q.operation_id=? AND h.id=?`);
+      for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
+        throw new Error("Repository citation does not belong to this review");
+    });
+  }
+
+  finishRepositoryWorkload(id: string, generation: number, errorCode: string, local: boolean, authorizeVerdict: () => boolean) {
+    return this.transact(db => {
+      // Cleanup can yield. Check ownership and commit the verdict in one transaction.
+      const completed = authorizeVerdict();
+      const changed = db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
+        WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
+      if (local) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+      return completed && changed.changes === 1;
+    });
+  }
+
   repositoryQueries(runId: string, after: number, limit: number) {
     if (!this.getRun(runId)) return null;
     const rows = this.db.prepare(`SELECT q.id, q.audit_json FROM workflow_repository_queries q
@@ -8261,7 +8376,17 @@ export class WorkflowStore {
     return { items, nextAfter: rows.length > limit ? items.at(-1)?.id : null };
   }
 
+  hasActiveRepositoryClaim(submissionId: string) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_repository_snapshot_claims c
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE c.submission_id=? AND c.state='active'`).get(submissionId));
+  }
+
   private activateReadySubmissionClaim(submission: WorkflowSubmission, now: number): void {
+    if (submission.status === "running") {
+      if (!this.hasActiveRepositoryClaim(submission.id)) throw new Error("The submitted repository claim is unavailable");
+      return;
+    }
     const claim = this.db.prepare("SELECT digest FROM workflow_repository_snapshot_claims WHERE submission_id=? AND state='provisional'").get(submission.id);
     if (!claim || !submission.repositoryFingerprint) throw new Error("The submitted repository claim is unavailable");
     // Both callers hold the readiness decision transaction. Re-enter the capture
@@ -11035,6 +11160,7 @@ export class WorkflowStore {
            FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
             AND r.completed_at IS NOT NULL
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
                WHERE d.run_id = r.id AND d.state = 'uncertain'
@@ -11073,7 +11199,7 @@ export class WorkflowStore {
             `SELECT 1 FROM workflow_deliveries
               WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
           ).get(runId);
-          if (uncertain) return false;
+          if (uncertain || this.db.prepare(`SELECT 1 FROM workflow_runs r WHERE r.id=? AND EXISTS (${repositoryCleanupForRun})`).get(runId)) return false;
           this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
           this.db.prepare(
@@ -11529,6 +11655,31 @@ export class WorkflowStore {
     return null;
   }
 
+  repositoryCitations(attempts: WorkflowNodeAttempt[]) {
+    const requested = new Set<string>();
+    for (const attempt of attempts) {
+      const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
+      if (!parsed.success) continue;
+      const verdict = parsed.data;
+      const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(change => change.evidence);
+      for (const ref of refs) if (ref.kind === "repository")
+        requested.add(JSON.stringify([attempt.id, ref.operationId, ref.evidenceHandleId]));
+    }
+    const citations: NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"] = {};
+    if (!requested.size) return citations;
+    const rows = this.db.prepare(`SELECT json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
+      FROM json_each(?) refs
+      JOIN workflow_repository_handles h ON h.id=json_extract(refs.value,'$[2]') AND h.operation_id=json_extract(refs.value,'$[1]')
+      JOIN workflow_repository_queries q ON q.operation_id=h.operation_id
+      JOIN workflow_repository_workloads w ON w.id=q.workload_id AND w.attempt_id=json_extract(refs.value,'$[0]')`)
+      .all("[" + [...requested].join(",") + "]");
+    for (const row of rows) {
+      const handle = RepositoryEvidenceHandleSchema.parse(JSON.parse(String(row.value)));
+      citations[handle.evidenceHandleId] = handle;
+    }
+    return citations;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -11562,21 +11713,7 @@ export class WorkflowStore {
         sum(json_extract(q.audit_json,'$.status')='failed') AS failed,
         sum(json_extract(q.audit_json,'$.status')='cancelled') AS cancelled FROM workflow_repository_queries q
         JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=?`).get(id);
-      const citations: NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"] = {};
-      const findHandle = this.db.prepare(`SELECT json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
-        FROM workflow_repository_handles h JOIN workflow_repository_queries q ON q.operation_id=h.operation_id
-        JOIN workflow_repository_workloads w ON w.id=q.workload_id
-        WHERE w.attempt_id=? AND q.operation_id=? AND h.id=?`);
-      for (const attempt of attempts) {
-        const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
-        if (!parsed.success) continue;
-        const verdict = parsed.data;
-        const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(c => c.evidence);
-        for (const ref of refs) if (ref.kind === "repository") {
-          const row = findHandle.get(attempt.id, ref.operationId, ref.evidenceHandleId);
-          if (row) citations[ref.evidenceHandleId] = RepositoryEvidenceHandleSchema.parse(JSON.parse(String(row.value)));
-        }
-      }
+      const citations = this.repositoryCitations(attempts);
       repositoryReview = {
         queries: Number(count?.n ?? 0), bytes: Number(count?.bytes ?? 0), denied: Number(count?.denied ?? 0),
         truncated: Number(count?.truncated ?? 0), failed: Number(count?.failed ?? 0), cancelled: Number(count?.cancelled ?? 0),

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { pullRequestPolicyContract } from "../skills/pull-request-policy.ts";
 import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
+import { repositoryCitationLabel, type RepositoryEvidenceHandle } from "@shared/repository-access.ts";
 import { WORKFLOW_LIMITS, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import type {
   EvidenceRef,
@@ -57,6 +58,7 @@ export interface WorkflowFeedbackInput {
   run: WorkflowRun;
   submission: WorkflowSubmission;
   attempts: WorkflowNodeAttempt[];
+  citations?: Record<string, RepositoryEvidenceHandle>;
 }
 
 export interface InspectorFeedbackInput {
@@ -190,8 +192,12 @@ export interface EvidenceReadinessPacketInput {
   workflowEvidence: boolean;
 }
 
-function evidenceLine(reference: EvidenceRef): string {
-  if (reference.kind === "repository") return `[repository] ${reference.operationId} / ${reference.evidenceHandleId}`;
+function evidenceLine(reference: EvidenceRef, citations: WorkflowFeedbackInput["citations"], attemptId?: string): string {
+  if (reference.kind === "repository") {
+    const handle = citations?.[reference.evidenceHandleId];
+    return handle && handle.operationId === reference.operationId && handle.attemptId === attemptId ? `[repository] ${repositoryCitationLabel(handle)} (${reference.operationId} / ${reference.evidenceHandleId})`
+      : `[repository] ${reference.operationId} / ${reference.evidenceHandleId}`;
+  }
   const location = reference.path
     ? ` (${reference.path}${reference.line ? `:${reference.line}` : ""})`
     : reference.line
@@ -482,7 +488,7 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
       lines.push(`${index + 1}. ${bounded(change.title)}`);
       lines.push(`   Why: ${bounded(change.rationale)}`);
       for (const reference of change.evidence) {
-        lines.push(`   Evidence: ${bounded(evidenceLine(reference))}`);
+        lines.push(`   Evidence: ${bounded(evidenceLine(reference, input.citations, attempt?.id))}`);
       }
     });
     if (node.kind === "persona" && isTestEvidenceAuditorPersona(node.persona)) {

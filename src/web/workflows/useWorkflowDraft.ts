@@ -7,7 +7,7 @@ import type {
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
-import { reservePublish, settlePublish, usePendingPublish } from "./workflowPublishIntent.ts";
+import { discardUnreadablePublish, reservePublish, settlePublish, usePendingPublish } from "./workflowPublishIntent.ts";
 
 interface WorkflowWriteResponse {
   workflow: WorkflowDefinition;
@@ -159,6 +159,7 @@ export interface WorkflowDraftState {
   reload: () => Promise<void>;
   publish: () => Promise<WorkflowVersion | null>;
   publishRetryRevision: number | null;
+  discardUnreadablePublish: (() => Promise<void>) | null;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   /** A built-in's maximum repair rounds, its one in-place setting. `null` restores the shipped value. */
   saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
@@ -528,6 +529,9 @@ export function useWorkflowDraft(
     reload,
     publish,
     publishRetryRevision,
+    discardUnreadablePublish: workflowId && pendingPublish !== null && publishRetryRevision === null
+      ? () => discardUnreadablePublish(workflowId, pendingPublish)
+      : null,
     duplicate,
     saveRoundLimit,
     savingRoundLimit,
@@ -542,5 +546,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, publishRetryRevision, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, pendingPublish, publish, publishRetryRevision, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

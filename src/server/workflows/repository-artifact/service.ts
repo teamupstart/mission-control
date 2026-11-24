@@ -542,7 +542,15 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           const ticket = cleanupTicket.exec(name);
           if (!ticket) continue;
           removing.add(ticket[1]!);
-          if (kind === "leases" && this.ownership.localLease(ticket[1]!)) continue;
+          if (kind === "leases" && this.ownership.localLease(ticket[1]!)) {
+            const path = join(directory, ticket[1]!);
+            const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+            if (stat) {
+              if (!stat.isDirectory() || String(stat.dev) !== ticket[2] || String(stat.ino) !== ticket[3]) unavailable();
+              await this.storage.restoreAbandoned(path, kind);
+            }
+            continue;
+          }
           try {
             if (this.live.has(ticket[1]!)) unavailable();
             const path = finishRemoval(directory, name);
@@ -554,7 +562,12 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           }
         }
         for (const id of names) {
-          if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id) || (kind === "leases" && this.ownership.localLease(id))) continue;
+          if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id)) continue;
+          if (kind === "leases" && this.ownership.localLease(id)) {
+            // Retain the lease and its storage charge until provider cleanup is confirmed.
+            await this.storage.restoreAbandoned(this.marked(kind, id), kind);
+            continue;
+          }
           let owned: string | undefined;
           try {
             owned = this.marked(kind, id);

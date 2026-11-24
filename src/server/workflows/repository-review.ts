@@ -18,6 +18,19 @@ import type { PersonaWorkloadExecutor } from "./persona-workload/contracts.ts";
 import { LocalRepositoryWorkloadOwnership } from "./persona-workload/local-ownership.ts";
 import { workflowLog } from "./log.ts";
 
+// A transport may ignore abort while reading or closing its iterator. Its deadline
+// releases the scheduler slot; the durable cancellation row still gates any retry.
+const cleanupTimeoutMs = 5_000;
+
+function untilAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+  });
+}
+
 async function binary(id: "node" | "git" | "claude" | "codex") {
   const resolved = await locateExecutable(id);
   if (!resolved) throw new Error(`Repository reviewer requires ${id}`);
@@ -32,32 +45,30 @@ export class RepositoryReview {
   private readonly recoveringLocal = new Map<string, Promise<void>>();
   private readonly local: LocalRepositoryWorkloadOwnership;
   constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {
-    this.local = new LocalRepositoryWorkloadOwnership(store);
+    this.local = new LocalRepositoryWorkloadOwnership(store, id => Boolean(this.current(id)));
   }
 
   pendingCancellations(runId: string, nodeId: string) {
-    return this.store.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
-      FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
-      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state IN ('cancellation_pending','interrupted') AND l.run_id=? AND n.node_id=?`)
-      .all(runId, nodeId)) as { id: string; generation: number }[];
+    return this.store.pendingRepositoryCancellations(runId, nodeId);
   }
 
   async confirmCancellations(runId: string, nodeId: string): Promise<void> {
     for (const { id, generation } of this.pendingCancellations(runId, nodeId)) {
-      if (this.store.transact(db => db.prepare("SELECT 1 FROM workflow_repository_local_owners WHERE workload_id=?").get(id))) {
+      if (this.store.repositoryLocalOwner(id)) {
         await this.recoverLocal(id);
         continue;
       }
       const executor = this.cleanupExecutors.get(id) ?? this.injected;
-      let status = await executor?.reconcile(id, 0);
-      if (executor && status?.workloadId === id && status.state === "running") {
-        await executor.cancel(id, generation);
-        status = await executor.reconcile(id, 0);
+      if (!executor) throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+      const timeout = AbortSignal.timeout(cleanupTimeoutMs);
+      let status = await untilAbort(executor.reconcile(id, 0), timeout);
+      if (status?.workloadId === id && status.state === "running") {
+        await untilAbort(executor.cancel(id, generation), timeout);
+        status = await untilAbort(executor.reconcile(id, 0), timeout);
       }
       if (status?.workloadId !== id || status.state !== "terminal")
         throw new Error(`Repository workload ${id} has not confirmed cleanup`);
-      this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
-        WHERE id=? AND state IN ('cancellation_pending','interrupted') AND cancellation_generation=?`).run(id, generation));
+      this.store.confirmRepositoryCancellation(id, generation);
       this.cleanupExecutors.delete(id);
     }
   }
@@ -66,11 +77,7 @@ export class RepositoryReview {
     const active = this.recoveringLocal.get(id);
     if (active) return active;
     const recovery = this.local.confirmClosed(id, WorkflowRepositoryArtifactService.forRoot(this.store)).then(() => {
-      this.store.transact(db => {
-        if (db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
-          WHERE id=? AND state='cancellation_pending'`).run(id).changes)
-          db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
-      });
+      this.store.confirmLocalRepositoryCleanup(id);
       this.cleanupExecutors.delete(id);
     }).finally(() => this.recoveringLocal.delete(id));
     this.recoveringLocal.set(id, recovery);
@@ -80,24 +87,11 @@ export class RepositoryReview {
   private current(id: string) {
     // The materializer calls this before opening the checkout and before returning its lease.
     if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return undefined;
-    return this.store.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
-      s.id AS submissionId, w.digest, a.locator FROM workflow_repository_workloads w
-      JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
-      JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
-      JOIN workflow_runs r ON r.id=s.run_id AND r.status='running'
-      JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
-      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
-      WHERE w.id=? AND w.state='running'`).get(id)) as
-      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string } | undefined;
+    return this.store.currentRepositoryWorkload(id);
   }
 
   interrupt() {
-    const local = this.store.transact(db => {
-      db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
-        cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
-      return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
-        ON workload_id=id WHERE state='cancellation_pending'`).all();
-    });
+    const local = this.store.interruptRepositoryWorkloads();
     for (const row of local) void this.recoverLocal(String(row.id)).catch(() => {
       workflowLog("warn", { event: "repository_workload_cleanup_pending", call: String(row.id) });
     });
@@ -137,11 +131,7 @@ export class RepositoryReview {
     if (executor.repositoryEvidenceCapability !== request.requiredCapability) throw new Error("Repository executor capability mismatch");
     // Executable lookup can yield after the engine's check. Recheck before granting workload ownership.
     if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) throw new Error("Persona repository access preview is off");
-    this.store.transact(db => {
-      db.prepare(`INSERT INTO workflow_repository_workloads (id,attempt_id,digest,state,deadline)
-        VALUES(?,?,?,'running',?)`).run(id, input.attemptId, snapshot.digest, input.deadline);
-      if (!this.injected) db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(id);
-    });
+    this.store.startRepositoryWorkload(request, !this.injected);
     const cancel = new AbortController();
     const signal = AbortSignal.any([shutdown, cancel.signal, AbortSignal.timeout(Math.max(1, input.deadline - Date.now()))]);
     const timer = setInterval(() => {
@@ -156,16 +146,15 @@ export class RepositoryReview {
     const stop = () => {
       if (stopping) return;
       stopping = (async () => {
-        this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
-          cancellation_generation=?, error_code='cancellation_unconfirmed' WHERE id=? AND state='running'`).run(generation, id));
+        this.store.markRepositoryCancellationPending(id, generation);
         try {
-          await executor.cancel(id, generation);
+          await untilAbort(executor.cancel(id, generation), AbortSignal.timeout(cleanupTimeoutMs));
         } catch (error) {
           throw new Error(`Repository executor failed to confirm cancellation of ${id}: ${String(error)}`, { cause: error });
         }
       })();
-      // Observe rejection even while iterator teardown is pending. Cleanup awaits the original promise.
-      void stopping.catch(() => { this.cleanupExecutors.set(id, executor); });
+      // Observe rejection while the iterator is unwinding. closeDispatch handles the original result.
+      void stopping.catch(() => {});
     };
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
@@ -180,7 +169,7 @@ export class RepositoryReview {
       signal.throwIfAborted();
       events = executor.dispatch(request, signal)[Symbol.asyncIterator]();
       while (true) {
-        const next = await events.next();
+        const next = await untilAbort(events.next(), signal);
         if (next.done) {
           streamFinished = true;
           break;
@@ -189,8 +178,8 @@ export class RepositoryReview {
         if (event.workloadId !== id || event.attemptId !== input.attemptId) throw new Error("Repository event identity mismatch");
         const hash = createHash("sha256").update(canonicalJson(event)).digest("hex");
         if (event.sequence <= sequence) {
-          const prior = this.store.transact(db => db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?").get(id, event.sequence));
-          if (prior?.hash === hash) continue;
+          const prior = this.store.repositoryEventHash(id, event.sequence);
+          if (prior === hash) continue;
           throw new Error("Conflicting repository event");
         }
         if (terminal || event.sequence !== ++sequence) throw new Error("Repository event sequence mismatch");
@@ -218,25 +207,7 @@ export class RepositoryReview {
             break;
         }
         signal.throwIfAborted();
-        this.store.transact(db => {
-          if (!this.current(id)) throw new Error("Repository workload ownership expired");
-          db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
-            VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
-          if (event.type === "terminal" && event.result.usage) {
-            db.prepare("UPDATE workflow_repository_workloads SET usage_json=? WHERE id=?").run(JSON.stringify(event.result.usage), id);
-            const cost = event.result.usage.total_cost_usd;
-            if (cost !== undefined && cost >= 0) db.prepare("UPDATE workflow_llm_calls SET cost_usd=? WHERE id=?").run(cost, id);
-          }
-          if (event.type === "repository_query") {
-            const audit = event.audit;
-            if (audit.workloadId !== id || audit.attemptId !== input.attemptId || audit.snapshotDigest !== snapshot.digest)
-              throw new Error("Repository query ownership mismatch");
-            db.prepare(`INSERT INTO workflow_repository_queries(workload_id,operation_id,audit_json) VALUES(?,?,?)`)
-              .run(id, audit.operationId, JSON.stringify(audit));
-            const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
-            for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
-          }
-        });
+        this.store.recordRepositoryEvent(request, event, hash, () => Boolean(this.current(id)));
         if (event.type === "repository_query" && ["unavailable","audit_unavailable","budget_exhausted","timeout","cancelled"].includes(event.audit.code ?? ""))
           throw new Error(`Repository query failed: ${event.audit.code}`);
         if (event.type === "terminal") terminal = event;
@@ -250,47 +221,41 @@ export class RepositoryReview {
       }
       const verdict = terminal.result.result.verdict;
       const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(c => c.evidence);
-      this.store.transact(db => {
-        const find = db.prepare(`SELECT 1 FROM workflow_repository_queries q
-          JOIN workflow_repository_handles h ON h.operation_id=q.operation_id
-          WHERE q.workload_id=? AND q.operation_id=? AND h.id=?`);
-        for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
-          throw new Error("Repository citation does not belong to this review");
-      });
+      this.store.verifyRepositoryCitations(id, refs);
       verdictJson = JSON.stringify(verdict);
     } finally {
       clearInterval(timer);
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
       if (!streamFinished || !terminal) cancel.abort();
       signal.removeEventListener("abort", stop);
-      try {
-        if (!streamFinished) await events?.return?.();
-      } finally {
-        await stopping;
-        if (!this.injected) await this.finishLocal(id, service);
-        this.store.transact(db => {
-          // Cleanup can yield after the last event. Authorize the verdict in the same
-          // transaction that commits it, while the attempt still owns the workload.
-          if (verdictJson !== undefined && (signal.aborted || Date.now() >= input.deadline || !this.current(id))) {
-            verdictJson = undefined;
-          }
-          const completed = verdictJson !== undefined;
-          db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
-            WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
-          if (!this.injected) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
-        });
-      }
+      await this.closeDispatch(id, executor, streamFinished ? undefined : events, stopping);
+      if (!this.injected) await this.finishLocal(id, service);
+      const accepted = this.store.finishRepositoryWorkload(id, generation, errorCode, !this.injected, () =>
+        verdictJson !== undefined && !signal.aborted && Date.now() < input.deadline && Boolean(this.current(id)));
+      if (!accepted) verdictJson = undefined;
     }
     if (verdictJson === undefined) throw new Error("Repository workload ownership expired before verdict acceptance");
     return verdictJson;
+  }
+
+  private async closeDispatch(id: string, executor: PersonaWorkloadExecutor, events: AsyncIterator<PersonaWorkloadEvent> | undefined, stopping: Promise<void> | undefined) {
+    const close = async () => {
+      if (events?.return) await untilAbort(events.return(), AbortSignal.timeout(cleanupTimeoutMs));
+    };
+    const cleanup = await Promise.allSettled([stopping, close()]);
+    for (const result of cleanup) {
+      if (result.status === "rejected") {
+        this.cleanupExecutors.set(id, executor);
+        throw result.reason;
+      }
+    }
   }
 
   private async finishLocal(id: string, service: WorkflowRepositoryArtifactService) {
     try {
       await this.local.confirmClosed(id, service);
     } catch (error) {
-      this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
-        error_code='cancellation_unconfirmed', cancellation_generation=MAX(1,cancellation_generation) WHERE id=?`).run(id));
+      this.store.markRepositoryCancellationPending(id, 1);
       throw error;
     }
   }

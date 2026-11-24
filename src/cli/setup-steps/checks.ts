@@ -31,7 +31,7 @@ export const MOD_PLUGIN_ID = `${MOD_NAME}@${MOD_NAME}`;
 
 /** `path` as one shell argument: left bare when it is plainly safe, else single-quoted. */
 export function shellArg(path: string): string {
-  return /^[A-Za-z0-9_\/.:@%+=,-]+$/.test(path) ? path : "'" + path.replace(/'/g, "'\\''") + "'";
+  return /^[A-Za-z0-9_/.:@%+=,-]+$/.test(path) ? path : "'" + path.replace(/'/g, "'\\''") + "'";
 }
 
 /** The two commands that install the mod by hand, printed whenever setup could not. */

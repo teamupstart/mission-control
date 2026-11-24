@@ -2863,7 +2863,10 @@ The MCP tools are:
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
   needs to decide on their own, including why the decision came up, what the agent found, and the tradeoffs.
   Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
-  pick. The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
+  pick. The rule also asks the agent to write `context` as Markdown, and says nothing about how
+  to lay it out: that choice stays with each operator and their own agent's instructions. With the
+  [Markdown questions](#markdown-questions-preview) preview on, the card renders it as Markdown.
+  The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
   and the dispatch-scoped Claude and Codex prompts repeat it in the same words. Either shape
   can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
   card could not carry is refused
@@ -3087,6 +3090,21 @@ the first is evidence of your intent.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+#### Markdown questions (preview)
+
+With the **Markdown questions** preview flag (`markdown-questions`) on, the part of a
+`request_input` question printed beneath its heading, usually its `context`, renders as Markdown
+with the renderer plans use. Bullets become a list, headings and code read as written, and a
+single newline is still a line break, so a plain-text context looks as it always did. A path in
+the session's checkout still opens the file in Files. The same rendering applies wherever that
+text appears: the review card, the attention inbox, and the question's entry in the conversation.
+Raw HTML is shown as text and never rendered.
+
+Turning the flag off brings back the plain paragraph immediately, in every open window. It
+changes no question and no answer. The rule that asks agents to write `context` as Markdown is
+unconditional, so an agent writes the same text either way. With the flag off, that text shows
+as typed.
 
 #### Chat about it
 

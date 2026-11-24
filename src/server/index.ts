@@ -9,6 +9,8 @@ import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
+import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -23,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, getAppConfig, openDb, setAppConfig } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, getTask as getDurableTask, loadFinishedTasksWithCallSign, taskNameRetirement, openDb, setAppConfig } from "./db.ts";
 import { PauseManager } from "./pause/manager.ts";
 import { processFreezer } from "./pause/freezer.ts";
 import { StoredPauseStateSchema } from "@shared/protocol.ts";
@@ -36,14 +38,16 @@ import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
+  backgroundReasoningEffortEnabled,
   claudeTransportChoice,
   codexTransportChoice,
   getLlmConfig,
+  llmJobModel,
+  llmJobRunner,
   llmRunnerChoice,
 } from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
-import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
@@ -247,6 +251,16 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
+// the voice state, which reads its roster from it on its first publish.
+const voiceNames = new VoiceNameRegistry(registry, {
+  now: () => Date.now(),
+  enabled: () => featureEnabled(VOICE_FLAG),
+  taskStored: (id) => getDurableTask(id) !== undefined,
+  retirement: taskNameRetirement,
+  finishedNamedTasks: (since) => loadFinishedTasksWithCallSign(since),
+});
+const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
 // The shapers folder is read at start, and again at every shaping run: never watched.
@@ -595,6 +609,7 @@ ensembles = new EnsembleManager(registry, undefined, {
           guidanceMarkdown: persona.guidanceMarkdown,
           runner: persona.runner,
           model: persona.model,
+          ...(persona.effort && { effort: persona.effort }),
           archived: persona.archivedAt !== null,
         }
       : null;
@@ -607,18 +622,16 @@ ensembles = new EnsembleManager(registry, undefined, {
       return resolveEvaluatorExecution(guidance, pins, {
         appRunner: llmRunnerChoice(cfg),
         personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
-        jobModel: (runnerId) =>
-          resolveLlmJobModel(
-            "ensemble-comparison",
-            cfg.models,
-            envVar(LLM_JOB_SPECS["ensemble-comparison"].envKey),
-            runnerId,
-          ).id,
+        jobRunner: llmJobRunner("ensemble-comparison", cfg),
+        jobModel: (runnerId) => llmJobModel("ensemble-comparison", cfg, runnerId).id,
+        effortEnabled: backgroundReasoningEffortEnabled(),
+        jobEffort: cfg.efforts?.["ensemble-comparison"],
       });
     },
     runModel: (runnerId, prompt, opts) =>
       llmRunner(runnerId).run(prompt, {
         model: opts.modelId,
+        effort: opts.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
       }),
@@ -1111,7 +1124,9 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  registry.voiceRouter?.reset();
   stopVoiceState();
+  stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();

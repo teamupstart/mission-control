@@ -19,9 +19,11 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
-import type { ResidentRunSummary } from "@shared/residents.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { mutedAuthorKeys, type ReportItem, type ReportMute } from "@shared/reports.ts";
+import { withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
@@ -49,6 +51,8 @@ export interface AwaySource {
     pipelineRuns?: PipelineRun[];
     /** Live resident runs, which name a resident's alerts while the `inbox` flag is on. */
     residentRuns?: ResidentRunSummary[];
+    /** Live resident profiles, whose current reference names those alerts use. */
+    residentProfiles?: ResidentProfile[];
     /** Agent reports waiting to be read, present while the `inbox` flag is on. */
     reports?: ReportItem[];
     /** Muted report authors, present while the `inbox` flag is on. Their reports are not counted. */
@@ -150,6 +154,15 @@ export function startAwayWatcher(
   const waitingReports = (): ReportItem[] | null =>
     featureEnabled(INBOX_FLAG) ? listedReports(registry.snapshot()) : null;
 
+  // Project at both read boundaries, so a flag change between the last tick, leaving Away,
+  // and claiming the digest never needs another occurrence (or a still-live session).
+  const displayedBuffer = (source: AwayBuffer | null): AwayBuffer | null => {
+    if (!source) return null;
+    const variant = !featureEnabled(INBOX_FLAG) ? "withoutInbox" : featureEnabled(VOICE_FLAG) ? "spoken" : "fallback";
+    return { ...source, events: source.events.map((event) =>
+      event.sessionTitles ? { ...event, title: event.sessionTitles[variant] } : event) };
+  };
+
   /** When each parked gate was first seen parked - the gate rule's only honest clock. */
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
   const closeWindow = (): void => {
@@ -230,6 +243,7 @@ export function startAwayWatcher(
         pipelineRuns: snap.pipelineRuns,
         // Read each pass, like the browser's gate, so a toggle names the next alert alike on
         // both sides without a restart.
+        // Call signs and reference names name an agent only while voice is on as well.
         //
         // Reports ride the same gate: while away a report's alert is buffered rather than
         // delivered, and the digest names who posted. `takenAt` lets a report posted and stamped
@@ -237,7 +251,13 @@ export function startAwayWatcher(
         //
         // A muted author's reports are left out of this scope, so they are never buffered and the
         // digest never counts them; one buffered before the mute leaves at the next reconcile.
-        ...(featureEnabled(INBOX_FLAG) ? { names: snap.residentRuns ?? [], reports: listedReports(snap) } : {}),
+        ...(featureEnabled(INBOX_FLAG)
+          ? {
+              names: withCurrentReferenceNames(snap.residentRuns ?? [], snap.residentProfiles ?? []),
+              spokenNames: featureEnabled(VOICE_FLAG),
+              reports: listedReports(snap),
+            }
+          : {}),
         takenAt: t,
       };
 
@@ -281,7 +301,7 @@ export function startAwayWatcher(
       if (buffer) {
         buffer = refreshAlerts(
           buffer,
-          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names)),
+          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names, scope.spokenNames)),
         );
         // Reports read or replaced since they were buffered leave it, so the Away card's
         // preview does not count them. Unannounced ones join only when the window closes.
@@ -309,7 +329,7 @@ export function startAwayWatcher(
       if (timer) clearTimeout(timer);
     },
     stalls: () => stalls,
-    buffer: () => buffer,
+    buffer: () => displayedBuffer(buffer),
     takePending: () => {
       const p = pending;
       pending = null;
@@ -322,7 +342,7 @@ export function startAwayWatcher(
           console.error("[away] keeping the digest's report marks failed:", err);
         }
       }
-      return p;
+      return displayedBuffer(p);
     },
     flush: closeWindow,
     tick: pass,

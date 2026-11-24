@@ -26,7 +26,6 @@ const DONE: Record<string, string> = {
   continue: "Asked it to continue.",
   push: "Told it to push.",
   stop: "Interrupted.",
-  "mark-done": "Task marked done.",
   resubmit: "Resubmitted the run.",
   message: "Message sent.",
 };

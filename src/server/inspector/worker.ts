@@ -26,7 +26,6 @@ import { unref } from "../util/timers.ts";
 import {
   INSPECTOR_LIMITS,
   inspectorPosture,
-  inspectorReviewEffort,
   reviewNeedsLiveRerun,
 } from "@shared/inspector.ts";
 import type { PrOpened, Registry } from "../registry.ts";
@@ -38,7 +37,7 @@ import type {
 } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
+import { getInspectorConfig, inspectorExecution } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
@@ -191,18 +190,6 @@ const MAX_REPLIES_PER_THREAD = 6;
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
 /**
- * The model both the review and the follow-up replies run on: config, then
- * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
- *
- * One resolver, in `config.ts`, because the settings panel prints this same answer
- * through `/api/inspector/status` and the two must not be able to disagree about it. See
- * `INSPECTOR_MODEL_SPEC` for why the default is named at all rather than left to the CLI.
- */
-function reviewModel(cfg: InspectorConfig): string {
-  return inspectorModel(cfg).id;
-}
-
-/**
  * `role` rides alongside `timeoutMs` rather than being derived here, because the two calls
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
@@ -215,20 +202,14 @@ function inspectorRunOptions(
   role: LlmSpendRole,
   schema?: Record<string, unknown>,
 ) {
-  // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
-  // ladder, and resolving it here a second way is how the worker and the panel come to print
-  // different providers for the same call.
-  const runnerId = inspectorRunner(cfg).id;
-  const runner = llmRunner(runnerId);
-  const model = reviewModel(cfg);
-  // Only the full review: it is the one thorough read a pull request gets. A reply answers
-  // one thread and keeps the provider's default.
-  const effort = role === "inspector:review" ? inspectorReviewEffort(runnerId, model) : undefined;
+  // A full review and a follow-up reply default to different efforts, so the role decides.
+  const execution = inspectorExecution(cfg, role === "inspector:reply" ? "reply" : "review");
+  const runner = llmRunner(execution.runner.id);
   return {
     runner,
     options: {
-      model,
-      ...(effort ? { effort } : {}),
+      model: execution.model.id,
+      effort: execution.effort,
       timeoutMs,
       role,
       ...(schema ? { schema } : {}),

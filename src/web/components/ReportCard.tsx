@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
-import type { ReportPublishState } from "../lib/sessionReports.ts";
+import { useReportAuthorName, type ReportPublishState } from "../lib/sessionReports.ts";
 import { relativeTime } from "../lib/format.ts";
 import { InboxActionButton } from "./AgentName.tsx";
 import { useReportDraft } from "../lib/reportDrafts.ts";
@@ -88,7 +88,7 @@ export function ReportCard({
   /** Injectable so a render test can own the clock. */
   now?: number;
 }): React.JSX.Element {
-  const name = report.author.name;
+  const name = useReportAuthorName(report.author);
   const updated = reportUpdatedNote(report.version);
   const bodyId = `report-body-${report.id}`;
   return (
@@ -185,7 +185,7 @@ function ReportAnswer({
   onReply: (text: string) => Promise<string | null>;
   onFollowUp: (text: string) => Promise<string | null>;
 }): React.JSX.Element {
-  const name = report.author.name;
+  const name = useReportAuthorName(report.author);
   // Held by chain outside React state (`lib/reportDrafts.ts`): a replacement report keeps the
   // words, and a keystroke re-renders this card alone.
   const [draft, onDraft] = useReportDraft(report.rootId);
@@ -318,7 +318,7 @@ function ReportDocumentControls({
   publishState: ReportPublishState;
   onOpenArchive: () => void;
 }): React.JSX.Element {
-  const name = report.author.name;
+  const name = useReportAuthorName(report.author);
   const { busy, refusal } = publishState;
   const published = report.publishedArchiveKey !== null;
   return (

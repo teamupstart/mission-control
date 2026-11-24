@@ -61,6 +61,30 @@ positively known to belong to the *other* provider is replaced with this provide
 default and the row says which id was dropped. An id in no catalog is a new or custom model and
 passes through untouched, because model ids are free text.
 
+## Reasoning effort for background work
+
+Turn on **Background reasoning effort** in **Settings > Feature flags**, then open
+**Settings > Models**. Each background job, Foreman role, and GitHub Inspector review has
+a **Reasoning effort** setting. **Provider default** lets the selected provider and model choose.
+An override takes effect on the next evaluation. Foreman picks up changes when it next reads
+its settings at the start of a worker pass. Retries within one evaluation keep the effort from
+the first attempt.
+
+The available levels follow the effective provider and model. If either changes and the new
+combination cannot use a saved level, the row shows the unsupported level and the call uses
+**Provider default**. The saved choice applies again if the combination later supports it.
+Turning the preview off hides the controls and suspends the overrides while keeping them saved.
+Calls already in progress keep the effort they started with.
+
+Foreman's Review effort also applies to its ship-recovery reviewer. GitHub Inspector uses one
+setting for full reviews and follow-up replies, with one difference from the other rows: until
+you choose, a full review runs at `xhigh` and the row shows `xhigh`, while replies use the
+provider's default. A level you choose applies to both. Choosing **Provider default** is a
+choice too, and turns the `xhigh` review default off. With the preview off, reviews run at
+`xhigh` and replies at the provider's default. A judging Persona's pinned effort takes precedence
+over the Ensemble evaluation setting. Workflow Persona and reviewer-node settings continue to
+control Workflow reviews.
+
 ## The background jobs
 
 **The model** is per job:

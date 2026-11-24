@@ -1866,6 +1866,8 @@ export interface DispatchInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** Library Persona the agent launches with; omitted launches with none. */
   personaId?: string;
+  /** A short spoken name that addresses the session by voice; omitted is none. */
+  callSign?: string;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;

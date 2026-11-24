@@ -965,6 +965,7 @@ export function ConsoleDetail({
                 stall={stall}
                 onMessage={focusReply}
                 onOpenQueue={() => setTab("queue")}
+                onComplete={() => view.onComplete(session.id)}
                 onOpenRun={view.onOpenWorkflowRun}
                 onDismiss={view.onDismissStall ? () => view.onDismissStall!(session.id, stall) : undefined}
               />

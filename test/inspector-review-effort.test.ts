@@ -1,30 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { INSPECTOR_REVIEW_EFFORT, inspectorReviewEffort } from "../src/shared/inspector.ts";
-import { launchEffortLevels } from "../src/shared/harness-capabilities.ts";
-import { LLM_RUNNER_IDS } from "../src/shared/llm.ts";
-import { providerModelDefault } from "../src/shared/model.ts";
+import { INSPECTOR_REVIEW_EFFORT, inspectorEffortChoice } from "../src/shared/inspector.ts";
 
 // A review is the one thorough read a pull request gets, so it asks for more than the
-// provider's default effort. A runner forwards the level unchecked, so the level must be
-// one the provider offers for the model, or nothing at all.
+// provider's default effort unless the operator chose otherwise. The saved setting has three
+// states, and "never chosen" must not be read as "provider default".
 
-test("a review asks for xhigh effort", () => {
+test("a review nobody configured asks for xhigh, and a reply keeps the provider default", () => {
   assert.equal(INSPECTOR_REVIEW_EFFORT, "xhigh");
+  assert.equal(inspectorEffortChoice(undefined, "review"), "xhigh");
+  assert.equal(inspectorEffortChoice(undefined, "reply"), null);
 });
 
-test("every provider's default review model is offered the review effort", () => {
-  for (const runner of LLM_RUNNER_IDS) {
-    const model = providerModelDefault(runner, "balanced");
-    assert.equal(inspectorReviewEffort(runner, model), INSPECTOR_REVIEW_EFFORT, runner);
-  }
+test("a chosen level applies to reviews and replies alike", () => {
+  assert.equal(inspectorEffortChoice("medium", "review"), "medium");
+  assert.equal(inspectorEffortChoice("medium", "reply"), "medium");
 });
 
-test("the review effort is passed only where the provider offers it", () => {
-  for (const runner of LLM_RUNNER_IDS) {
-    for (const model of [null, providerModelDefault(runner, "cheap"), providerModelDefault(runner, "deep")]) {
-      const offered = launchEffortLevels(runner, model).includes(INSPECTOR_REVIEW_EFFORT);
-      assert.equal(inspectorReviewEffort(runner, model), offered ? INSPECTOR_REVIEW_EFFORT : undefined);
-    }
-  }
+test("choosing the provider default turns the review default off", () => {
+  assert.equal(inspectorEffortChoice(null, "review"), null);
+  assert.equal(inspectorEffortChoice(null, "reply"), null);
 });

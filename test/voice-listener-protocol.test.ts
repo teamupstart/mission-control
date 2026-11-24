@@ -113,3 +113,28 @@ test("a granted listener takes over immediately from a live helper without micro
     assert.deepEqual(await (await replacement.utterance("fresh", [], current.revision)).json(), { accepted: true });
   }
 });
+
+test("switching backends releases the previous owner and refuses its heartbeats", async (t) => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "auto" });
+  t.after(() => { setVoiceConfig({ backend: "auto" }); });
+  const sherpa = new FakeVoiceListener("http://localhost", tokenPath(), async (url, init) => app.request(url, init), "sherpa-onnx");
+  assert.ok((await listener.hello()).ok);
+  const active = await listener.poll();
+  assert.equal(active.capture, true);
+  const stopped = assert.rejects(listener.poll(active.revision), /409/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  setVoiceConfig({ backend: "sherpa-onnx" });
+  await stopped;
+  assert.deepEqual(await (await listener.utterance("old", [], active.revision)).json(), { accepted: false });
+  const refused = await listener.hello();
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, "backend_not_selected");
+  assert.ok((await sherpa.hello()).ok);
+  const selected = await sherpa.poll();
+  assert.equal(selected.capture, true);
+  assert.notEqual(selected.revision, active.revision);
+  assert.deepEqual(await (await sherpa.utterance("new", [], selected.revision)).json(), { accepted: true });
+  setVoiceConfig({ backend: "auto" });
+  assert.equal((await (await listener.hello()).json()).error, "listener_in_use");
+});

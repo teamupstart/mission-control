@@ -1,5 +1,5 @@
 {
-  "originHash" : "589a35131b13aaf17e19ab2b53c822a736efaef9a73fd8d9a1af32e661cc89c9",
+  "originHash" : "12832493a2bdaba01ef05b1f169fe1d22ff22b5b3e50f4a56a816c03ef0d4d05",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -7,6 +7,14 @@
       "location" : "https://github.com/FluidInference/FluidAudio.git",
       "state" : {
         "revision" : "eb280cede001a9a35f2187d4a117537777eca756"
+      }
+    },
+    {
+      "identity" : "libfvad-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MatsMoll/libfvad-swift.git",
+      "state" : {
+        "revision" : "d2afc80a7dfc5a2ec42c16df9eb913ba9fe4fd2f"
       }
     }
   ],

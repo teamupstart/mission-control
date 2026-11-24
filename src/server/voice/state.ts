@@ -17,6 +17,7 @@ import {
   voiceProtocolMajor,
   voiceStateOff,
   voiceUnavailableReasons,
+  type VoiceBackend,
   type VoiceCapabilities,
   type VoiceConfig,
   type VoiceInputDevice,
@@ -44,7 +45,7 @@ export interface VoiceStateDeps {
 
 export type VoiceHelloResult =
   | { ok: true; protocol: string }
-  | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id"; reason: string; protocol: string };
+  | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected"; reason: string; protocol: string };
 
 /**
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
@@ -72,6 +73,11 @@ export class VoiceStateStore {
   private rosterSource: (() => readonly SpokenName[]) | null = null;
 
   constructor(private readonly deps: VoiceStateDeps) {}
+
+  private backendSelected(backend: VoiceBackend): boolean {
+    const configured = this.deps.config().backend;
+    return configured === "auto" || configured === backend;
+  }
 
   private liveHello() {
     return this.hello && this.deps.now() - this.hello.at < VOICE_HELLO_LAPSE_MS ? this.hello : null;
@@ -145,8 +151,7 @@ export class VoiceStateStore {
   routingState() {
     const { mode, roster } = this.state();
     const reported = this.liveHello()?.hello.backend ?? null;
-    const configured = this.deps.config().backend;
-    const backend = configured === "auto" || configured === reported ? reported : null;
+    const backend = reported && this.backendSelected(reported) ? reported : null;
     return { mode, roster, backend };
   }
 
@@ -198,6 +203,9 @@ export class VoiceStateStore {
     if (!id || !VoiceListenerIdSchema.safeParse(id).success) {
       return { ok: false, error: "invalid_listener_id", reason: "Send a UUID for this listener process.", protocol };
     }
+    if (!this.backendSelected(hello.backend)) {
+      return { ok: false, error: "backend_not_selected", reason: "A different voice backend is selected.", protocol };
+    }
     const takesOver = hello.microphone === "granted" && live?.hello.microphone !== "granted";
     if (ownerId && ownerId !== id && !takesOver) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
@@ -222,6 +230,10 @@ export class VoiceStateStore {
 
   /** Recompute and tell every subscriber, then arm the timer for the next lapse. */
   publish(): VoiceState {
+    if (this.hello && !this.backendSelected(this.hello.hello.backend)) {
+      this.hello = null;
+      this.lastDirective = undefined;
+    }
     const state = this.state();
     if (this.lastDirective) this.directive(state);
     for (const listener of Array.from(this.listeners)) {

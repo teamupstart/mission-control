@@ -50,6 +50,9 @@ receives a fresh revision and the previous listener's next poll or heartbeat rec
 A helper reporting an explicit microphone denial releases capture immediately and exits
 with status 2. Setup retains the permission reading, and a newly authorized helper can
 start immediately.
+Selecting a different backend releases the previous owner's lease and wakes its held poll.
+Only the selected backend can acquire or renew the lease. A hello from another backend
+receives HTTP 409 `backend_not_selected`. In `auto`, either backend can acquire a free lease.
 
 Every utterance POST also requires the capture directive's revision. Older protocol majors
 receive HTTP 409 `unsupported_protocol` at hello. The helper sends one hello
@@ -69,8 +72,9 @@ directive after 25 seconds. A heartbeat with identical capture settings leaves t
 `pauseMs` is optional and unused. This daemon sends null.
 
 The default-input audio engine runs with voice processing off. It converts input to mono
-16 kHz samples and gates recognition on speech energy. Parakeet transcribes each segment.
-An utterance ends after 800 ms of continuous silence. If the 30-second buffer fills
+16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
+steady background noise can continue between utterances. Parakeet transcribes each segment
+after 800 ms of frames classified as non-speech. If the 30-second buffer fills
 before that boundary, the listener discards the whole utterance, including any further
 speech before the next silence boundary.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.

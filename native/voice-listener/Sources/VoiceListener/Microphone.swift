@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreAudio
+import Clibfvad
 
 func permission() -> String {
     switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -65,8 +66,7 @@ struct Segment {
     let capturedAt: Int64
 }
 
-// Energy VAD over mono 16 kHz PCM. Keep a short onset lead-in, allow pauses
-// within a phrase, and bound memory if a device supplies continuous loud input.
+// Keep an onset lead-in and bound the audio retained between speech boundaries.
 struct SpeechGate {
     private static let silenceSamples = 12_800
     private static let maxSegmentSamples = 16_000 * 30
@@ -76,9 +76,8 @@ struct SpeechGate {
     private var start: Int64 = 0
     private var discarding = false
 
-    mutating func feed(_ frame: [Float], now: Int64) -> Segment? {
+    mutating func feed(_ frame: [Float], active: Bool, now: Int64) -> Segment? {
         guard !frame.isEmpty else { return nil }
-        let active = frame.reduce(0) { $0 + $1 * $1 } > Float(frame.count) * 0.000016
         if samples.isEmpty && !discarding {
             if !active {
                 lead = Array((lead + frame).suffix(2400))
@@ -109,12 +108,55 @@ struct SpeechGate {
     }
 }
 
+// WebRTC classifies 20 ms of mono PCM at a time. Keep the original samples for
+// Parakeet, including any partial frame left at the end of a converter callback.
+final class SpeechSegmenter {
+    private static let frameLength = 320
+    private let detector: OpaquePointer
+    private var pending: [Float] = []
+    private var gate = SpeechGate()
+
+    init() throws {
+        guard let detector = fvad_new() else { throw CaptureError.format }
+        guard fvad_set_sample_rate(detector, 16_000) == 0, fvad_set_mode(detector, 2) == 0 else {
+            fvad_free(detector)
+            throw CaptureError.format
+        }
+        self.detector = detector
+    }
+
+    deinit { fvad_free(detector) }
+
+    func consume(_ samples: [Float], now: Int64) -> [Segment] {
+        var result: [Segment] = []
+        var offset = 0
+        while offset < samples.count {
+            let count = min(Self.frameLength - pending.count, samples.count - offset)
+            pending.append(contentsOf: samples[offset..<(offset + count)])
+            offset += count
+            guard pending.count == Self.frameLength else { break }
+            let pcm = pending.map { sample in
+                sample.isFinite ? Int16(max(-1, min(1, sample)) * Float(Int16.max)) : 0
+            }
+            // Feed every frame to the classifier so it learns the room noise. Its
+            // internal hangover can mark digital silence as speech; start counting
+            // our own 800 ms boundary immediately when the signal is already quiet.
+            let voiced = fvad_process(detector, pcm, pcm.count) == 1
+            let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * 0.000016
+            let end = now - Int64((samples.count - offset) / 16)
+            if let segment = gate.feed(pending, active: active, now: end) { result.append(segment) }
+            pending.removeAll(keepingCapacity: true)
+        }
+        return result
+    }
+}
+
 // Owned by one tap. Destroying the capture drops the converter's filter history
 // as well as any speech that has not reached the end-of-segment threshold.
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
-    private var gate = SpeechGate()
+    private let segmenter: SpeechSegmenter
 
     init(source: AVAudioFormat) throws {
         guard source.sampleRate > 0, source.channelCount > 0,
@@ -122,11 +164,12 @@ final class InputSegmenter {
               let converter = AVAudioConverter(from: source, to: mono) else { throw CaptureError.format }
         self.mono = mono
         self.converter = converter
+        segmenter = try SpeechSegmenter()
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, now: Int64) -> Segment? {
+    func consume(_ buffer: AVAudioPCMBuffer, now: Int64) -> [Segment] {
         let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * mono.sampleRate / buffer.format.sampleRate)) + 1
-        guard let converted = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) else { return nil }
+        guard let converted = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) else { return [] }
         var supplied = false
         let status = converter.convert(to: converted, error: nil) { _, state in
             if supplied { state.pointee = .noDataNow; return nil }
@@ -134,9 +177,9 @@ final class InputSegmenter {
             state.pointee = .haveData
             return buffer
         }
-        guard status != .error, let channel = converted.floatChannelData?[0] else { return nil }
+        guard status != .error, let channel = converted.floatChannelData?[0] else { return [] }
         let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
-        return gate.feed(samples, now: now)
+        return segmenter.consume(samples, now: now)
     }
 }
 
@@ -172,7 +215,7 @@ final class Microphone {
         guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
         let segmenter = try InputSegmenter(source: source)
         input.installTap(onBus: 0, bufferSize: 1024, format: source) { [continuation] buffer, _ in
-            if let segment = segmenter.consume(buffer, now: Int64(Date().timeIntervalSince1970 * 1000)) {
+            for segment in segmenter.consume(buffer, now: Int64(Date().timeIntervalSince1970 * 1000)) {
                 continuation.yield(segment)
             }
         }

@@ -7,7 +7,8 @@ import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 export class FakeVoiceListener {
   private readonly id = crypto.randomUUID();
   constructor(private readonly url: string, private readonly tokenFile: string,
-    private readonly send: (url: string, init: RequestInit) => Promise<Response> = fetch) {}
+    private readonly send: (url: string, init: RequestInit) => Promise<Response> = fetch,
+    private readonly backend: VoiceListenerHello["backend"] = "fluidaudio") {}
 
   private request(path: string, body?: unknown) {
     return this.send(new URL(path, this.url).href, {
@@ -17,7 +18,7 @@ export class FakeVoiceListener {
   }
 
   hello(overrides: Partial<VoiceListenerHello> = {}) {
-    return this.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION, backend: "fluidaudio",
+    return this.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION, backend: this.backend,
       modelLoaded: true, microphone: "granted", primingAvailable: false, devices: [], ...overrides });
   }
 
@@ -29,7 +30,7 @@ export class FakeVoiceListener {
 
   utterance(text: string, words: VoiceUtterance["words"], revision: string) {
     return this.request("/voice/utterances?revision=" + encodeURIComponent(revision),
-      { text, words, id: crypto.randomUUID(), capturedAt: Date.now(), backend: "fluidaudio" });
+      { text, words, id: crypto.randomUUID(), capturedAt: Date.now(), backend: this.backend });
   }
 }
 

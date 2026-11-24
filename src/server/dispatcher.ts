@@ -101,6 +101,7 @@ import {
   createDisposableAgentStateHome,
   observeTerminalWrapperExit,
   retainPendingTerminalHome,
+  withSubmittedTerminalHome,
   isolatedAgentArgv,
   isolatedAgentEnvironment,
 } from "./agent-subprocess-env.ts";
@@ -3811,11 +3812,13 @@ export async function spawnUniquely(
     }
     // A pane can run its EXIT trap and remove the source before the backend replies.
     receipt = exitRecord.pinReceipt();
+    const submit = () => spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
     if (beforeSubmit) {
       beforeSubmit({ receipt, deadline: pending?.deadline ?? Date.now() + RESUME_START_MS });
       submissionRecorded = true;
+      return await withSubmittedTerminalHome(effectiveStateHome, submit);
     }
-    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
+    return await submit();
   } catch (error) {
     if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord && receipt) {
       pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);

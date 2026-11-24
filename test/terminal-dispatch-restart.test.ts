@@ -38,8 +38,8 @@ test("a schema 62 task survives upgrade without acquiring a terminal submission 
   } finally { db.close(); }
 });
 
-for (const mode of ["unstarted", "exited"]) {
-  test(`restart recovers a dispatching task after a crash during backend submission (${mode})`, { timeout: 30_000 }, async (t) => {
+for (const mode of ["unstarted", "exited", "shutdown"]) {
+  test(`restart recovers a dispatching task interrupted during backend submission (${mode})`, { timeout: 30_000 }, async (t) => {
     const id = "submission-" + mode;
     const { clone } = originAndCloneAt(join(dir, id));
     new Registry().upsertTask(mkTask({ id, status: "dispatching", kind: "ship", agent: "pi", repoRoot: clone }));
@@ -53,8 +53,9 @@ for (const mode of ["unstarted", "exited"]) {
     assert.ok(child.stderr);
     child.stderr.on("data", (data) => { diagnostic += data; });
     await Promise.race([once(child, "message"), closed.then(() => { throw new Error(diagnostic || "daemon exited before submission"); })]);
-    child.kill("SIGKILL");
-    await closed;
+    if (mode === "shutdown") child.stdin!.end();
+    else child.kill("SIGKILL");
+    assert.deepEqual(await closed, mode === "shutdown" ? [0, null] : [null, "SIGKILL"]);
 
     const restarted = new Registry();
     const before = restarted.getTask(id)!;

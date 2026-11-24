@@ -166,6 +166,17 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
   liveDisposableStateHomes.delete(stateHome);
 }
 
+/** While the backend can still start the wrapper, restart recovery owns a journaled home.
+ * Generic process-exit cleanup must leave its receipt and PID claim intact for the next daemon. */
+export async function withSubmittedTerminalHome<T>(stateHome: string, submit: () => Promise<T>): Promise<T> {
+  const tracked = liveDisposableStateHomes.delete(stateHome);
+  try {
+    return await submit();
+  } finally {
+    if (tracked && existsSync(stateHome)) liveDisposableStateHomes.add(stateHome);
+  }
+}
+
 /**
  * Keep a named dispatch home across backend timeouts and interrupted socket reads. At the
  * deadline (or shutdown), the daemon and shell compete to create the same private PID file.

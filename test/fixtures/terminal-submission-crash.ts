@@ -12,6 +12,8 @@ const mux = fakeMultiplexer({ sessions: {
     if (mode === "exited" && spawnSync(argv[0]!, argv.slice(1), { cwd, stdio: "ignore" }).status !== 0) {
       throw new Error("fixture wrapper failed");
     }
+    process.stdin.resume(); // Keep the fixture alive until the parent explicitly ends this daemon.
+    process.stdin.once("end", () => process.exit(0));
     process.send!({ submitted: true });
     return new Promise<never>(() => {}); // The parent kills this daemon before any backend acknowledgement.
   },

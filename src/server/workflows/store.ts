@@ -8,6 +8,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
+import { noteDiscardedWorkflowReceipt, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } from "../delivery-ledgers.ts";
 import type { DeliveredWorkflowTranscriptAnchor } from "./context.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
@@ -2880,6 +2881,8 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  /** Includes targets without a publication of their own when a sibling's probe yielded. */
+  expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
   publicationComparison?: { runId: string; stillMatches: () => boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
@@ -2952,6 +2955,7 @@ export type ForemanCompletionStoreResult =
       run: WorkflowRun;
       submission: WorkflowSubmission | null;
       created: boolean;
+      verifyReusedPublication?: () => boolean;
       previousFingerprint: string | undefined;
     };
 
@@ -7226,12 +7230,27 @@ export class WorkflowStore {
     return transaction(this.db, () => {
       const reservations: ForemanCompletionStoreResult[] = [];
       for (const input of inputs) {
+        if (input.expectedLatestRunId !== undefined
+          && (this.latestRunForBinding(input.binding.id)?.id ?? null) !== input.expectedLatestRunId) {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+      }
+      for (const input of inputs) {
         const stored = this.claimForemanCompletion(input);
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
         }
         reservations.push(stored);
+      }
+      // Bracket the entire set of tentative reservations. Matching revisions on both
+      // sides establish a common checkout snapshot for the shared decision.
+      if (inputs.length > 1) {
+        for (const stored of reservations.toReversed()) {
+          if (stored.run && stored.verifyReusedPublication && !stored.verifyReusedPublication()) {
+            throw new Error("Workflow checkout changed during shared completion claim");
+          }
+        }
       }
       return reservations;
     });
@@ -7461,6 +7480,7 @@ export class WorkflowStore {
         run,
         submission,
         created,
+        ...(comparison && run.id === comparison.runId ? { verifyReusedPublication: comparison.stillMatches } : {}),
         previousFingerprint,
       };
     });
@@ -9207,12 +9227,14 @@ export class WorkflowStore {
   listDeliveredTranscriptAnchors(
     sessionId: string,
     noteKey: string,
-    limit = 200,
+    limit = WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT,
   ): DeliveredWorkflowTranscriptAnchor[] {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
       `SELECT d.payload, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
               json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
+              json_extract(e.payload_json, '$.transcriptTurn.id') AS turn_id,
+              json_extract(e.payload_json, '$.transcriptTurn.ts') AS turn_ts,
               COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
                        json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
               json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
@@ -9231,6 +9253,8 @@ export class WorkflowStore {
     ).all(noteKey, ...sessions, limit) as Array<{
       receipt_id: string | null;
       transcript_path: string | null;
+      turn_id: string | null;
+      turn_ts: number | null;
       payload: string;
       transcript_anchor: number;
       before_send: number | null;
@@ -9238,6 +9262,7 @@ export class WorkflowStore {
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
       ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
+      ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts } } : {}),
       ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
       ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
@@ -9483,7 +9508,7 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
     transcriptStart: number | null = null,
-    attribution: { receiptId?: string; unusableReceiptId?: string; transcriptPath?: string } = {},
+    attribution: { receiptId?: string; unusableReceiptId?: string; postSendTurn?: { path: string; id: string; ts: number } | null } = {},
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
       if (attribution.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
@@ -9553,10 +9578,11 @@ export class WorkflowStore {
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
-        transcriptAnchor,
+        transcriptAnchor: attribution.postSendTurn === null ? null : transcriptAnchor,
         transcriptStart,
         ...(attribution.receiptId ? { receiptId: attribution.receiptId } : {}),
-        ...(attribution.transcriptPath ? { transcriptPath: attribution.transcriptPath } : {}),
+        ...(attribution.postSendTurn ? { transcriptPath: attribution.postSendTurn.path,
+          transcriptTurn: { id: attribution.postSendTurn.id, ts: attribution.postSendTurn.ts } } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);
@@ -10832,6 +10858,13 @@ export class WorkflowStore {
                 AND state IN ('delivered', 'refused')
                 AND payload_pruned_at IS NULL`,
           ).run(input.now, runId);
+          const discardedReceipts = this.db.prepare(
+            `UPDATE workflow_delivery_turns SET discarded_at = ?
+              WHERE discarded_at IS NULL AND delivery_id IN
+                (SELECT id FROM workflow_deliveries WHERE run_id = ? AND payload_pruned_at IS NOT NULL)
+              RETURNING note_key`,
+          ).all(input.now, runId) as { note_key: string }[];
+          for (const key of new Set(discardedReceipts.map(row => row.note_key))) noteDiscardedWorkflowReceipt(key);
           this.db.prepare(
             `UPDATE workflow_runs
                 SET evidence_pruned_at = ?, updated_at = ?

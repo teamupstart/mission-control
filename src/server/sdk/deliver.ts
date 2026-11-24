@@ -54,7 +54,7 @@ export async function deliverToDriver(
   });
   if (!supervisor) return failed("this build has no session supervisor");
   try {
-    const blocked = beforeSend?.();
+    const blocked = beforeSend?.("preflight");
     if (blocked) return failed(blocked);
     // The second guard runs inside the supervisor's per-session serialization. The first
     // catches an already-invalid target without entering its send queue; the second closes

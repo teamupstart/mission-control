@@ -3,7 +3,7 @@ import { workflowErrorCode, workflowLog } from "./log.ts";
 import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
@@ -443,8 +443,27 @@ export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
   transcriptAnchor: number;
   transcriptPath?: string;
+  turn?: { id: string; ts: number };
   beforeSend?: true;
   receiptId?: string;
+}
+
+/** Only a newly created transcript can supply a missing pre-write boundary. */
+export function observedNewWorkflowTurn(
+  transcript: NonNullable<ReturnType<typeof sessionMessages>>, end: number, started: number, fingerprint: string,
+): { path: string; id: string; ts: number } | null {
+  try {
+    const born = statSync(transcript.path).birthtimeMs;
+    if (!born || Math.floor(born) < started) return null;
+    const page = transcript.read.before(transcript.path, end, 12);
+    if (!page.atStart) return null;
+    const matches = page.messages.filter(m => m.role === "user" && injectionFingerprint(m.text) === fingerprint);
+    const turn = matches[0];
+    return matches.length === 1 && turn && turn.ts >= started && turn.ts <= Date.now()
+      ? { path: transcript.path, id: turn.id, ts: turn.ts } : null;
+  } catch {
+    return null;
+  }
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -511,6 +530,10 @@ function deliveredWorkflowTurnIdentities(
     if (delivery.transcriptPath !== undefined && delivery.transcriptPath !== located.path) continue;
     if ((delivery.receiptId && delivery.beforeSend) || !delivery.payload.trim()) continue;
     const payloadFingerprint = injectionFingerprint(delivery.payload);
+    if (delivery.turn) {
+      identities.push({ ...delivery.turn, payloadFingerprint });
+      continue;
+    }
     // Before native turn receipts, verified writes recorded a starting or ending byte offset.
     const match = delivery.beforeSend
       ? located.read.after(located.path, delivery.transcriptAnchor, 12).messages.find(message =>

@@ -75,6 +75,7 @@ export const delegatedLedger = new DeliveryLedger<DelegatedTurnRow>({
 
 /** Each workflow send attempt can bind one native turn, including a delayed echo after restart. */
 type WorkflowDeliveryTurn = BindableDelivery & { deliveryId: string; transcriptPath: string | null };
+export const WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT = 200;
 export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
   label: "a workflow packet",
   acceptsTranscript: (row, transcript) => row.transcriptPath === null || row.transcriptPath === transcript.path,
@@ -82,10 +83,17 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
   maxCachedConversations: 200,
   load: key => {
     const rows = openDb().prepare(
-      `SELECT id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey, fingerprint, delivered_at AS deliveredAt,
+      `WITH eligible AS (
+         SELECT t.rowid AS ordinal, t.*, d.delivered_at AS confirmed_at,
+                ROW_NUMBER() OVER (PARTITION BY d.session_id, d.delivered_at IS NULL
+                                   ORDER BY d.delivered_at DESC, d.id DESC) AS position
+           FROM workflow_delivery_turns t JOIN workflow_deliveries d ON d.id = t.delivery_id
+          WHERE t.note_key = ? AND t.discarded_at IS NULL AND d.payload_pruned_at IS NULL
+       )
+       SELECT id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey, fingerprint, delivered_at AS deliveredAt,
               transcript_offset AS transcriptOffset, contested, message_id AS messageId, message_ts AS messageTs
-         FROM workflow_delivery_turns WHERE note_key = ? AND discarded_at IS NULL ORDER BY rowid`,
-    ).all(key) as unknown as (Omit<WorkflowDeliveryTurn, "contested"> & { contested: number })[];
+         FROM eligible WHERE confirmed_at IS NULL OR position <= ? OR confirmed_at >= ? ORDER BY ordinal`,
+    ).all(key, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT, Date.now() - DELIVERY_LAG_MS) as unknown as (Omit<WorkflowDeliveryTurn, "contested"> & { contested: number })[];
     return rows.map(row => ({ ...row, contested: Boolean(row.contested) }));
   },
   insert: row => {

@@ -168,6 +168,7 @@ import {
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
   probeMatchesRepositoryContent,
+  observedNewWorkflowTurn,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -3932,7 +3933,8 @@ export class WorkflowManager {
     // Only a completed publication needs a git read before the claim. Probe each checkout
     // independently, then revalidate ownership before spending the shared generation.
     const primaryCheckout = workflowCheckoutPath(anchor, session);
-    const probes = targets.flatMap(target => this.publicationComparison(target, session, claim) ?? []);
+    const latestRuns = claim.completionKind === "prompted" ? targets.map(target => this.store.latestRunForBinding(target.id)) : [];
+    const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim) ?? []);
     const comparisons = probes.length ? await Promise.all(probes) : [];
     if (probes.length) {
       session = this.currentCompletionSession(sessionId, claim);
@@ -3953,6 +3955,7 @@ export class WorkflowManager {
     if (!intent) return { claimed: false, reason: "no_binding" };
     const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
       binding,
+      ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
       publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
       completionKind: claim.completionKind,
       marker: claim.marker,
@@ -4039,11 +4042,11 @@ export class WorkflowManager {
   /** A completed publication owns a later idle handoff only while its accepted work still matches. */
   private publicationComparison(
     binding: WorkflowBinding,
+    run: WorkflowRun | null,
     session: Session,
     claim: WorkflowCompletionClaim,
   ): Promise<{ bindingId: string; runId: string; stillMatches: () => boolean }> | null {
     if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
-    const run = this.store.latestRunForBinding(binding.id);
     const source = run?.intent?.intentSource;
     if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
       || source?.objectiveVersion !== claim.expectedIntent.objectiveVersion
@@ -7020,50 +7023,46 @@ export class WorkflowManager {
       return;
     }
     const expectedPane = paneToken(session);
-    const conversation = { key: sending.noteKey, transcript: sessionMessages(session) };
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
-    // Claimed BEFORE the first byte. The agent's prompt hook can report this packet back while
-    // the write is still unresolved, and an echo that arrives with no authorship on file is
-    // captured as the human's Goal - which for a repair packet means the next round reviews
-    // the work against Mission Control's own previous complaint.
-    // A reservation refused because its attribution could not be stored typed nothing: refused
-    // below as a delivery that never reached the pane, without calling the transport.
     let attributionRefused: string | null = null;
     let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
-    try {
-      receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
-        ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
-      }));
-      reserveInjection(session.id, sending.payload, "workflow", () => {
-        // The Registry consumes this receipt after recording the prompt's work episode.
-        // A later human retype has no receipt, even when its text equals this packet.
-        if (sending.kind !== "session_action") return;
-        const episode = this.registry.recordedWorkEpisodeForSession(session.id);
-        if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
-        try {
-          this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
-            deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
-            promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
-          });
-        } catch (error) {
-          workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
-            error: error instanceof Error ? error.name : "unknown" });
-        }
-      });
-    } catch (error) {
-      attributionRefused = error instanceof Error ? error.message : "Could not reserve workflow packet attribution";
-    }
+    const reserveAtWrite = (phase?: "preflight"): string | null => {
+      const block = this.deliveryBlock(sending, expectedPane)
+        ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
+          ? "inspector_feedback_superseded" : null);
+      if (block || phase === "preflight" || receipt) return block;
+      // Sample after the pane mode check or SDK send queue, immediately before writing.
+      // A human copy already in the transcript must stay on the earlier side of the offset.
+      try {
+        const conversation = { key: sending.noteKey, transcript: sessionMessages(this.registry.getSession(session.id)!) };
+        receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
+          ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
+        }));
+        reserveInjection(session.id, sending.payload, "workflow", () => {
+          // The Registry consumes this receipt after recording the prompt's work episode.
+          // A later human retype has no receipt, even when its text equals this packet.
+          if (sending.kind !== "session_action") return;
+          const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+          if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+          try {
+            this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+              deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+              promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+            });
+          } catch (error) {
+            workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+              error: error instanceof Error ? error.name : "unknown" });
+          }
+        });
+        return null;
+      } catch (error) {
+        attributionRefused = error instanceof Error ? error.message : "Could not reserve workflow packet attribution";
+        return attributionRefused;
+      }
+    };
     let result: InjectResult;
-    if (attributionRefused !== null) result = { ok: false, error: attributionRefused, pasted: false, submitVerified: false };
-    else try {
-      result = await this.inject(
-        session,
-        sending.payload,
-        undefined,
-        () => this.deliveryBlock(sending, expectedPane)
-          ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
-            ? "inspector_feedback_superseded" : null),
-      );
+    try {
+      result = await this.inject(session, sending.payload, undefined, reserveAtWrite);
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
       return;
@@ -7081,7 +7080,7 @@ export class WorkflowManager {
         const refused = this.store.finishDeliverySend(sending.id, requeue ? "prepared" : "refused",
           requeue ? null : reason, Date.now(), receipt?.id);
         if (receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
-        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
+        if (result.pasted === false && receipt && attributionRefused === null) releaseInjection(session.id, sending.payload);
         if (requeue) {
           if (refused && result.error === PAUSED_SESSION_REASON) {
             this.pausedDeliveries.add(sending.id);
@@ -7115,20 +7114,23 @@ export class WorkflowManager {
     const live = this.registry.getSession(sending.sessionId);
     const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
-    // A receipt can bind only from a measured offset in this file. When the transcript
-    // first appears during the send, the measured post-send anchor is the available proof.
+    // Switching to another file cannot move an offset or prove which turn was written.
     const usableReceipt = receipt && transcript && receipt.transcriptOffset !== null && receipt.transcriptPath === transcript.path
       ? receipt : null;
+    const postSendTurn = receipt && !receipt.contested && receipt.transcriptOffset === null && transcript && transcriptAnchor !== null && result.submitVerified
+      && (receipt.transcriptPath === null || receipt.transcriptPath === transcript.path)
+      ? observedNewWorkflowTurn(transcript, transcriptAnchor, receipt.deliveredAt, receipt.fingerprint) : null;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
       result.submitVerified,
       Date.now(),
       usableReceipt?.transcriptOffset ?? null,
-      usableReceipt ? { receiptId: usableReceipt.id } : { unusableReceiptId: receipt?.id, transcriptPath: transcript?.path },
+      usableReceipt ? { receiptId: usableReceipt.id } : { unusableReceiptId: receipt?.id, postSendTurn },
     );
     if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;
+    if (usableReceipt) workflowDeliveryLedger.forgetConversation(sending.noteKey);
     // Settles the reservation above rather than adding to it: recording afresh would owe a
     // second echo for one delivery, and the surplus would be spent silencing a later human turn.
     this.confirmInjection(session.id, sending.payload, "workflow");

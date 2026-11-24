@@ -19,6 +19,7 @@ const {
 } = await import("../src/server/workflows/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { workflowDeliveryLedger, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } = await import("../src/server/delivery-ledgers.ts");
 const db = openDb();
 const store = new WorkflowStore(db);
 
@@ -243,6 +244,12 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
                'uncertain', 1, 1)`,
   ).run();
   insertRun("failed", "failed", 1);
+  for (const id of ["delivery", "uncertain-delivery"]) {
+    db.prepare(`INSERT INTO workflow_delivery_turns(id, delivery_id, note_key, fingerprint, delivered_at, contested)
+                VALUES (?, ?, 'note', ?, 1, 0)`).run(id, id, id);
+  }
+  workflowDeliveryLedger.forgetConversation("note");
+  assert.deepEqual(workflowDeliveryLedger.rows("note").map(r => r.id), ["delivery", "uncertain-delivery"]);
   insertRun("blocked", "blocked", null);
   insertRun("active", "running", null);
   insertSubmission("submission-active", "active");
@@ -265,6 +272,8 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     now: 20,
   });
   assert.deepEqual(result.compactedRunIds, ["compact"]);
+  assert.deepEqual(workflowDeliveryLedger.rows("note").map(r => r.id), ["uncertain-delivery"]);
+  assert.equal(db.prepare("SELECT id FROM workflow_delivery_turns WHERE id = 'delivery'").get(), undefined);
   const submission = store.getSubmission("submission-compact")!;
   const compacted = submission.context as unknown as WorkflowContextSnapshot;
   const retention = compacted.evidence.retention;
@@ -319,6 +328,26 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     store.listEvents("compact").filter((event) => event.kind === "evidence_pruned").length,
     1,
   );
+});
+
+test("long conversations retain the capture window and pending receipts on a cold ledger read", () => {
+  const key = "long-receipt-history";
+  const delivery = db.prepare(`INSERT INTO workflow_deliveries
+    (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at, delivered_at)
+    VALUES (?, 'run', 'submission', 'persona_feedback', 'session', ?, 'packet', ?, ?, 1, 1, ?)`);
+  const receipt = db.prepare(`INSERT INTO workflow_delivery_turns
+    (id, delivery_id, note_key, fingerprint, delivered_at, contested) VALUES (?, ?, ?, 'packet', 1, 0)`);
+  for (let i = 0; i < WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 2; i++) {
+    const id = String(i);
+    delivery.run(id, key, id, "delivered", i);
+    receipt.run(id, id, key);
+  }
+  delivery.run("pending", key, "pending", "sending", null);
+  receipt.run("pending", "pending", key);
+  const ids = workflowDeliveryLedger.rows(key).map(r => r.id);
+  assert.equal(ids.length, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 1);
+  assert.deepEqual(ids.slice(0, 2), ["2", "3"]);
+  assert.equal(ids.at(-1), "pending");
 });
 
 test("stage one skips non-evidence contexts and isolates malformed rows by run", () => {

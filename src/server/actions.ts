@@ -375,7 +375,8 @@ async function writeText(
   return fromTerminal(await pane.write.text(text));
 }
 
-export type PromptWriteGuard = () => string | null;
+/** The SDK can reject a queued send before it reaches its serialized write boundary. */
+export type PromptWriteGuard = (phase?: "preflight") => string | null;
 
 async function sendKeys(
   pane: BoundPane,

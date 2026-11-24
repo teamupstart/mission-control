@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   appendFileSync,
   chmodSync,
+  cpSync,
   truncateSync,
   existsSync,
   lstatSync,
@@ -2683,6 +2684,48 @@ test("status reports both sides of file and directory replacements without treat
   await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
 });
+
+for (const which of ["worktree", "admin", "common", "temporarily displaced admin"] as const) {
+  test(`capture rejects a byte-identical replacement of the ${which} directory`, async (t) => {
+    const storage = new RepositoryArtifactStorage();
+    const f = fixture(t, "sha1", storage);
+    f.write("file", "submitted\n");
+    f.git("add", "file");
+    f.git("commit", "-qm", "initial");
+    const checkout = f.checkout + "-session";
+    f.git("worktree", "add", "-q", "--detach", checkout);
+    const prepare = () => f.service.prepare({ checkout, sourceBase: null }, signal);
+    const before = await prepare();
+    const restored = which === "temporarily displaced admin";
+    const path = { worktree: checkout, admin: f.git("-C", checkout, "rev-parse", "--absolute-git-dir"),
+      common: join(f.checkout, ".git") }[restored ? "admin" : which];
+    const saved = f.checkout + "-saved";
+    const write = storage.write.bind(storage);
+    let replaced = false;
+    const hook = t.mock.method(storage, "write", async (...args: Parameters<typeof write>) => {
+      if (!replaced) {
+        renameSync(path, saved);
+        cpSync(saved, path, { recursive: true });
+        if (restored) {
+          renameSync(path, saved + "-copy");
+          renameSync(saved, path);
+        }
+        replaced = true;
+      }
+      return write(...args);
+    });
+    await assert.rejects(prepare(), RepositoryCaptureChanged);
+    hook.mock.restore();
+    assert.ok(replaced);
+    assert.deepEqual(readdirSync(join(f.root, "pending")), [before.id]);
+    assert.equal(await f.service.stillCurrent(before, signal), restored);
+    const retry = await prepare();
+    assert.equal(retry.digest, before.digest);
+    assert.equal(retry.boundary === before.boundary, restored);
+    await f.service.discard(retry);
+    await f.service.discard(before);
+  });
+}
 
 test("checkout ownership requires the Git directory to identify the submitted worktree", async (t) => {
   const f = fixture(t);

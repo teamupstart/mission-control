@@ -109,7 +109,7 @@ export async function checkoutRecords(executable: string, directories: CheckoutD
 export async function openObjectReader(
   executable: string,
   wrapper: string,
-  objects: string,
+  commonDirectory: number,
   sha256: boolean,
   captureSignal: AbortSignal,
 ) {
@@ -122,7 +122,7 @@ export async function openObjectReader(
       join(wrapper, "config"),
       "[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectFormat = sha256\n",
     );
-  const root = openObjectRoot(objects);
+  const root = openObjectRoot(commonDirectory);
   const start = async () => {
     const packs = await pinPacks(root, wrapper, signal);
     try {

@@ -1,10 +1,10 @@
 import { createRequire } from "node:module";
 import { nativeStateLockAddonPath } from "../../state-ownership-native.ts";
 import { createHash } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { open, realpath, lstat, readlink } from "node:fs/promises";
+import { constants, type BigIntStats, type Stats } from "node:fs";
+import { open, realpath, lstat, readlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { checkoutGit, checkoutRecords } from "./git.ts";
+import { checkoutGit, checkoutRecords, type CheckoutDirectories } from "./git.ts";
 import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
@@ -47,29 +47,86 @@ async function checkoutDirectories(executable: string, cwd: string, signal: Abor
   if (!marker.isDirectory() && !marker.isFile()) unavailable();
   const admin = marker.isDirectory() ? dotGit : await realpath(line(await discover(["rev-parse", "--absolute-git-dir"])));
   const common = await realpath(line(await discover(["--git-dir", admin, "rev-parse", "--path-format=absolute", "--git-common-dir"])));
+  return { root, admin, common };
+}
+
+async function verifyOwner(executable: string, directories: CheckoutDirectories, signal: AbortSignal) {
+  const { root, admin, common } = directories;
+  const dotGit = join(root, ".git");
+  const marker = await lstat(dotGit);
+  if (!marker.isDirectory() && !marker.isFile()) unavailable();
   if (marker.isDirectory()) {
-    if (common !== dotGit) unavailable();
-  } else if (admin === common) {
+    if (admin !== dotGit || common !== dotGit) unavailable();
+    return;
+  }
+  const target = await gitPathFile(dotGit, marker, "gitdir: ", signal);
+  if (await realpath(resolve(root, target)) !== admin) throw new RepositoryCaptureChanged();
+  if (admin === common) {
     // A separate Git directory (including an absorbed submodule) must itself
     // name this worktree. An ordinary repository selected by a gitfile cannot.
     const config = join(admin, "config");
     if (!(await lstat(config)).isFile()) unavailable();
-    const owner = await discover(["config", "--file", config, "--no-includes", "--get", "core.worktree"], true);
+    const owner = await checkoutGit(executable, root, ["config", "--file", config, "--no-includes", "--get", "core.worktree"], signal, true);
     if (!owner.length || await realpath(resolve(admin, line(owner))) !== root) unavailable();
   } else {
     if (dirname(admin) !== join(common, "worktrees")) unavailable();
-    const backlink = Buffer.from(join(admin, "gitdir"));
+    const backlink = join(admin, "gitdir");
     const stat = await lstat(backlink);
     if (!stat.isFile()) unavailable();
-    const { data } = await readWorkingFile(backlink, stat, signal, 16_384);
-    const target = resolve(admin, line(data));
-    if (join(await realpath(dirname(target)), basename(target)) !== dotGit) unavailable();
+    const owner = resolve(admin, await gitPathFile(backlink, stat, "", signal));
+    if (join(await realpath(dirname(owner)), basename(owner)) !== dotGit) unavailable();
   }
-  return { root, admin, common };
 }
 
-export async function sample(executable: string, cwd: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
+async function gitPathFile(path: string, stat: Stats, prefix: string, signal: AbortSignal) {
+  const { data } = await readWorkingFile(Buffer.from(path), stat, signal, 16_384);
+  const text = data.toString();
+  if (!Buffer.from(text).equals(data) || !text.startsWith(prefix)) unavailable();
+  const target = text.slice(prefix.length).replace(/\r?\n$/, "");
+  if (!target || target.includes("\0")) unavailable();
+  return target;
+}
+
+function directoryIdentity(stat: BigIntStats) {
+  return [stat.dev, stat.ino, stat.birthtimeNs].join(":");
+}
+
+async function assertSameDirectory(path: string, before: BigIntStats) {
+  const current = await lstat(path, { bigint: true }).catch(error => {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes(error.code)) throw new RepositoryCaptureChanged();
+    throw error;
+  });
+  if (!current.isDirectory() || current.ctimeNs !== before.ctimeNs || directoryIdentity(current) !== directoryIdentity(before))
+    throw new RepositoryCaptureChanged();
+}
+
+export type CheckoutState = Awaited<ReturnType<typeof sample>>;
+export async function withCheckoutSample<T>(executable: string, cwd: string, signal: AbortSignal,
+  limits: Partial<PathBudget> | undefined, read: (state: CheckoutState, commonFd: number) => Promise<T>) {
   const directories = await checkoutDirectories(executable, cwd, signal);
+  const held = new Map<string, { handle: FileHandle; stat: BigIntStats }>();
+  try {
+    for (const path of new Set(Object.values(directories))) {
+      const handle = await openChecked(Buffer.from(path), true);
+      try { held.set(path, { handle, stat: await handle.stat({ bigint: true }) }); }
+      catch (error) { await handle.close(); throw error; }
+    }
+    try {
+      await verifyOwner(executable, directories, signal);
+      const identities = [...held.values()].map(entry => directoryIdentity(entry.stat));
+      return await read(await sample(executable, directories, identities, signal, limits), held.get(directories.common)!.handle.fd);
+    } finally {
+      // A rename can preserve every Git ID and every worktree byte. Checking the
+      // original directory's change time also catches a switch away and back
+      // during this read. Only the stable identity crosses prompt-read boundaries.
+      for (const [path, { stat }] of held) await assertSameDirectory(path, stat);
+    }
+  } finally {
+    await Promise.all([...held.values()].map(entry => entry.handle.close()));
+  }
+}
+
+async function sample(executable: string, directories: CheckoutDirectories, identities: string[], signal: AbortSignal, limits?: Partial<PathBudget>) {
   const { root, common } = directories;
   const git = (args: string[], missing = false) => checkoutGit(executable, root, args, signal, missing, directories);
   const format = line(await git(["rev-parse", "--show-object-format"]));
@@ -158,7 +215,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
   });
-  return { ...directories, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
+  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);

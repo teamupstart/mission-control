@@ -12,7 +12,8 @@ import {
 import { RepositoryPathSchema } from "@shared/repository-policy.ts";
 import {
   allowed as pathAllowed,
-  sample,
+  withCheckoutSample,
+  type CheckoutState,
   validPath,
   workingFile,
   type Layer,
@@ -40,7 +41,6 @@ export interface RepositoryCaptureInput {
   sourceBase: string | null;
 }
 
-type CheckoutState = Awaited<ReturnType<typeof sample>>;
 function metadataBoundary(state: CheckoutState) {
   return JSON.stringify({ ...state, index: [...state.index], skipWorktree: [...state.skipWorktree] });
 }
@@ -75,20 +75,31 @@ async function scanWorking(
 export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
-  const state = await sample(git.path, checkout, signal, limits);
-  const work = await scanWorking(git.path, state, signal);
-  if (metadataBoundary(state) !== metadataBoundary(await sample(git.path, checkout, signal, limits))) {
-    throw new RepositoryCaptureChanged();
-  }
-  return checkoutBoundary(state, work);
+  return withCheckoutSample(git.path, checkout, signal, limits, async state => {
+    const work = await scanWorking(git.path, state, signal);
+    await checkMetadata(git.path, checkout, signal, limits, state);
+    return checkoutBoundary(state, work);
+  });
+}
+
+async function checkMetadata(executable: string, checkout: string, signal: AbortSignal,
+  limits: Partial<PathBudget> | undefined, state: CheckoutState) {
+  await withCheckoutSample(executable, checkout, signal, limits, async after => {
+    if (metadataBoundary(state) !== metadataBoundary(after)) throw new RepositoryCaptureChanged();
+  });
 }
 
 type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage };
 export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
-  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions = {}) {
+  options: SealOptions = {}) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
-  const state = await sample(git.path, input.checkout, signal, limits);
+  return withCheckoutSample(git.path, input.checkout, signal, options, (state, commonFd) =>
+    sealSample(input, pending, signal, options, git.path, state, commonFd));
+}
+
+async function sealSample(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
+  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions, executable: string, state: CheckoutState, commonFd: number) {
   const { index, head, format, common } = state;
   // Workflow displays an abbreviated id. Expand that exact selection while the checkout
   // is still sampled, refusing ambiguous prefixes and never resolving a moving branch.
@@ -104,11 +115,10 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   };
   const output = join(pending, "artifact");
   await mkdir(output);
-  const objects = join(common, "objects");
   const reader = await openObjectReader(
-    git.path,
+    executable,
     join(pending, "wrapper"),
-    objects,
+    commonFd,
     format === "sha256",
     signal,
   );
@@ -284,7 +294,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
     }
-    const worktree = await scanWorking(git.path, state, signal, (id, bytes) => { sizes.set(id, bytes.length); });
+    const worktree = await scanWorking(executable, state, signal, (id, bytes) => { sizes.set(id, bytes.length); });
     collect(index);
     collect(worktree);
     for (const key of Object.keys(state.intentModes)) capturedPaths.add(key);
@@ -341,14 +351,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     // A shared nonempty blob would disclose denied bytes through the allowed path.
     // The canonical empty blob has no payload. Path policy still denies the sensitive name.
     for (const id of denied) if (id !== state.emptyBlob && needed.has(id)) unavailable();
-    const finalWork = await scanWorking(git.path, state, signal, async (id, bytes) => {
+    const finalWork = await scanWorking(executable, state, signal, async (id, bytes) => {
       if (needed.has(id) && !table.has(id)) await save("blob", bytes, id, requiredBlobs.has(id));
     });
     if (JSON.stringify([...finalWork]) !== JSON.stringify([...worktree]))
       throw new RepositoryCaptureChanged();
     for (const id of needed) if (!table.has(id)) await save("blob", (await reader.get(id, "blob")).data, id, requiredBlobs.has(id));
-    const after = await sample(git.path, input.checkout, signal, limits);
-    if (metadataBoundary(state) !== metadataBoundary(after)) throw new RepositoryCaptureChanged();
+    await checkMetadata(executable, input.checkout, signal, limits, state);
 
     type Classifications = RepositoryViewDescriptor["worktree"][number]["classifications"];
     // Include the path policy for every packaged revision, including historical-only names.

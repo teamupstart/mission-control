@@ -100,8 +100,10 @@ filters or textconv to produce status. An unmerged index has no single tree and 
 Before reading the index or history, capture verifies where Git stores the checkout's
 metadata. A linked worktree needs its own registration under the common directory and
 a backlink to its `.git` file. Other separate Git directories need a local
-`core.worktree` setting naming the submitted checkout. Capture pins the validated
-worktree, Git directory and common directory for the remaining Git commands.
+`core.worktree` setting naming the submitted checkout. Capture holds the validated
+directories open while reading and opens the object store relative to the common
+directory handle. Replacing a directory invalidates capture even when all Git
+contents match. Directory identities travel only in the local stability fingerprint.
 
 History starts at HEAD and visits all parents breadth-first in recorded order. The service
 stops before the first revision that would exceed 2,048 commits or 512 MiB of additional

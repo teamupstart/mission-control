@@ -1,4 +1,4 @@
-import { closeSync, constants, createReadStream, fstatSync, openSync } from "node:fs";
+import { closeSync, constants, createReadStream, fstatSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createInflate } from "node:zlib";
@@ -17,14 +17,9 @@ function optionalEntry(parent: number, name: string, flags: number) {
 }
 
 // Each lookup is relative to a held directory, with O_NOFOLLOW on every component.
-export function openObjectRoot(path: string) {
-  let fd = openSync("/", directory);
+export function openObjectRoot(commonDirectory: number) {
+  const fd = nativePlanFiles().openPlanEntry(commonDirectory, "objects", directory);
   try {
-    for (const name of path.split("/").filter(Boolean)) {
-      const child = nativePlanFiles().openPlanEntry(fd, name, directory);
-      closeSync(fd);
-      fd = child;
-    }
     const info = optionalEntry(fd, "info", directory);
     if (info !== null) {
       try {

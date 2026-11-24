@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 import type { VoiceCard } from "../../src/shared/voice-routing.ts";
@@ -52,6 +53,8 @@ test("spoken words and the exact delivered payload in both conversation views", 
   // The fake CLI normally creates its file eagerly. Exercise delivery before a transcript exists.
   const nativePath = join(daemon.home, ".claude", "projects", session.cwd.replace(/[/.]/g, "-"), `${session.agentSessionId}.jsonl`);
   renameSync(nativePath, nativePath + ".before-spoken");
+  withDaemonDb(daemon, db => db.exec(`CREATE TRIGGER delay_sdk_observation BEFORE UPDATE OF message_ts ON session_spoken_turns
+    WHEN OLD.spoken_words = 'check the build' BEGIN SELECT RAISE(ABORT, 'SDK observation delayed'); END`));
 
   expect(await (await say(daemon, "Steve, check the build")).json()).toEqual({ accepted: true });
   await expect.poll(async () => (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries[0]?.outcome).toBe("sent");
@@ -106,7 +109,18 @@ test("spoken words and the exact delivered payload in both conversation views", 
     await expect(payload).toHaveCSS("white-space", "pre-wrap");
     await expect(turn.locator("summary")).toHaveCSS("font-size", "11px");
     await capture("open");
+    if (process.env.MC_E2E_SDK_RECEIPT_EVIDENCE === "1" && view === "terminal") {
+      const dir = artifactsDir("voice-spoken-sdk-observation");
+      mkdirSync(dir, { recursive: true });
+      await page.mouse.move(0, 0);
+      await turn.screenshot({ path: join(dir, "write-unavailable.png") });
+    }
   }
+  const observation = () => withDaemonDb(daemon, db => db.prepare(
+    "SELECT message_ts FROM session_spoken_turns WHERE spoken_words = 'check the build'").get()?.message_ts);
+  expect(observation()).toBeNull();
+  withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_sdk_observation"));
+  await expect.poll(observation).toBeTruthy();
   const resident = await request.post(`${daemon.baseURL}/api/residents/profiles`, { data: { settings: {
     identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
   } } });

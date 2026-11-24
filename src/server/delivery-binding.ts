@@ -73,8 +73,8 @@ export interface DeliveryStore<Row extends BindableDelivery> {
   contest(id: string, contested: boolean): void;
   /** Write-once: false when the row was already bound. */
   bind(id: string, messageId: string, messageTs: number): boolean;
-  /** Persist the first transcript observation of a client-supplied UUID. */
-  observeClientReceipt?(id: string, messageTs: number): void;
+  /** Return the persisted native timestamp, or null if the reservation was already removed. */
+  observeClientReceipt?(id: string, messageTs: number): number | null;
   /**
    * The label a row would show. Two unbound rows of the same words with the same sender
    * cannot be credited to the wrong one, so they race nobody; different senders contest.
@@ -310,6 +310,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   private readonly scanVersions = new Map<string, string>();
   /** A native candidate was visible, but its read or binding could not finish on this revision. */
   private readonly deferredBindings = new Set<string>();
+  /** Only failed writes are retained. Native UUIDs and timestamps outlive the payload cache. */
+  private readonly pendingObservations = new Map<string, number>();
   /** Rows whose window closed with no turn of theirs: never scanned again this process. */
   private readonly expired = new Set<string>();
   /**
@@ -478,10 +480,32 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
   retryDeferredBindings(conversation: DeliveryConversation): void {
+    this.flushClientObservations(conversation.key);
     const cached = this.cache.get(conversation.key);
     if (!cached || (this.deferredBindings.size && cached.some(row => this.deferredBindings.has(row.id)))) {
       bindAll(conversation, Date.now());
     }
+  }
+
+  /** A failed observation never obscures a proven native turn. The pruner requires a successful flush. */
+  flushClientObservations(key?: string): boolean {
+    if (!this.pendingObservations.size || !this.store.observeClientReceipt) return true;
+    // Native UUIDs survive eviction and the first bind from a provisional conversation key.
+    // The hourly sweep also retries observations for conversations with no open reader.
+    const rows = key === undefined ? undefined : new Map(this.rows(key).map(row => [row.id, row]));
+    let complete = true;
+    for (const [id, ts] of this.pendingObservations) {
+      const row = rows?.get(id);
+      if (rows && !row) continue;
+      try {
+        const saved = this.store.observeClientReceipt(id, ts);
+        if (row) row.messageTs = saved;
+        this.pendingObservations.delete(id);
+      } catch {
+        complete = false;
+      }
+    }
+    return complete;
   }
 
   private contest(row: Row, contested = true): void {
@@ -688,8 +712,14 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       if (exact && this.store.requireExactFingerprint && exact.fingerprint !== fingerprint) continue;
       if (exact && (exact.messageId !== exact.id || exact.fingerprint === fingerprint)) {
         if (exact.messageId === exact.id && exact.messageTs === null && this.store.observeClientReceipt) {
-          this.store.observeClientReceipt(exact.id, m.ts);
-          exact.messageTs = m.ts;
+          if (!this.pendingObservations.has(exact.id)) {
+            try {
+              exact.messageTs = this.store.observeClientReceipt(exact.id, m.ts);
+            } catch (error) {
+              this.pendingObservations.set(exact.id, m.ts);
+              console.warn("[transcript] Deferred native receipt observation:", error instanceof Error ? error.message : String(error));
+            }
+          }
         }
         result.rows.set(m.id, exact);
         continue;

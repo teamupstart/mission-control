@@ -527,6 +527,37 @@ test("a late native binding advances attribution past a newer receipt after the 
   assert.equal(db.spokenTranscriptState(key)?.receipt, bound);
 });
 
+test("a failed SDK receipt write leaves the exact disclosure readable and cleanup retries the observation", async () => {
+  const { reserveSpokenTurn, spokenLedger, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const now = Date.now();
+  for (const refusal of ["ABORT, 'unavailable'", "IGNORE"]) {
+    const key = "unwritten-sdk-receipt-" + refusal;
+    const fake = fakeTranscript();
+    const convo = fake.conversation(key);
+    const words = "verify the native receipt";
+    const payload = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+    const attempt = claimSpoken(key, words, payload);
+    const row = reserveSpokenTurn(convo, words, payload, true, attempt, now);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+    const native = fake.append(row.id, payload, now);
+    db.openDb().exec(`CREATE TEMP TRIGGER refuse_observation BEFORE UPDATE OF message_ts ON session_spoken_turns
+      BEGIN SELECT RAISE(${refusal}); END`);
+    try {
+      assert.equal(spokenLedger.bound(convo, [native]).rows.get(native.id)?.received, payload);
+      assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
+      assert.equal(pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, k => k === key ? [convo.transcript] : []), 0);
+      assert.equal(db.loadSpokenTurns(key)[0]?.received, payload);
+      assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
+    } finally {
+      db.openDb().exec("DROP TRIGGER refuse_observation");
+    }
+    spokenLedger.retryDeferredBindings(convo);
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now);
+    assert.equal(spokenLedger.bound(convo, [native]).rows.get(native.id)?.spokenWords, words);
+  }
+});
+
 test("cleanup retries an unreadable prefix before deciding whether a matching terminal turn owns its disclosure", async () => {
   const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");

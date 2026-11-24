@@ -173,6 +173,7 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
     for (;;) {
       const page = transcript.read.after(transcript.path, from, 50, true);
       spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
+      if (!spokenLedger.flushClientObservations(noteKey)) return "retry";
       if (page.start !== from) return "retry";
       if (page.atEnd) {
         // Only a complete walk of the same file revision establishes absence.
@@ -192,7 +193,9 @@ export function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: strin
   unavailableBefore?: number): number {
   const cutoff = now - DELIVERY_LAG_MS;
   let removed = 0;
+  spokenLedger.flushClientObservations();
   for (const group of expiredSpokenReservations(cutoff)) {
+    if (!spokenLedger.flushClientObservations(group.noteKey)) continue;
     const scans = transcriptsFor(group.noteKey, group).map(transcript =>
       transcript ? reconcileSpokenTurns(group.noteKey, transcript, now) : "unavailable");
     if (scans.length && scans.every(scan => scan === "complete")) removed += deleteExpiredSpokenReservations(group, cutoff, cutoff);

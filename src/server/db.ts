@@ -13381,9 +13381,15 @@ function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: str
     .run(now, reservationId);
 }
 
-export function observeSpokenClientReceipt(id: string, messageTs: number): void {
-  openDb().prepare(`UPDATE session_spoken_turns SET message_ts = ?, abandoned_at = NULL
-    WHERE id = ? AND message_id = id AND message_ts IS NULL`).run(messageTs, id);
+export function observeSpokenClientReceipt(id: string, messageTs: number): number | null {
+  const d = openDb();
+  const updated = d.prepare(`UPDATE session_spoken_turns SET message_ts = ?, abandoned_at = NULL
+    WHERE id = ? AND message_id = id AND message_ts IS NULL RETURNING message_ts`).get(messageTs, id);
+  if (updated) return Number(updated.message_ts);
+  const existing = d.prepare("SELECT message_ts FROM session_spoken_turns WHERE id = ? AND message_id = id").get(id);
+  if (!existing) return null;
+  if (existing.message_ts === null) throw new Error("Native spoken receipt observation was not saved");
+  return Number(existing.message_ts);
 }
 
 // Runtime confirmation and native text binding can land in different transactions, in any

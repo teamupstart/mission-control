@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard, type VoiceCardRetention } from "../lib/voice-card-clock.ts";
-import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
@@ -132,14 +131,15 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
         const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId)) ?? sessionOf(target);
-        const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && !agentKeepsWorking(r));
+        // A filed plan still gates the task, but its call no longer blocks spoken delivery.
+        const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && r.waitMode !== "message");
         const turn = session?.pendingTurns.find(t => t.id === part.turnId);
         return <><div className="vc-row"><Icon name="clock" /><b className="vc-grow">Held for {named(target)}</b>
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
             "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn)}</div>
-          <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked · older session" />
-          <div className="vc-meta">{name}'s session started before this was possible, so the question cannot be set aside. Your message is delivered once it is answered.</div>
+          <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
+          <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>
           <div className="vc-right">{button("Open question", "Open the question holding this message", () => session && actions.openQuestion(session.id), "", !question)}</div></>;
       }

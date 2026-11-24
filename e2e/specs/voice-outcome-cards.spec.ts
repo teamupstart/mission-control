@@ -343,18 +343,21 @@ test("a queued card becomes held and stays recallable past its original expiry w
   const title = "Which build should I check?";
   const ask = await page.request.post(daemon.baseURL + "/mcp/reviews", {
     headers: { "x-harness-token": voiceToken(daemon) },
-    data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title, asyncCapable: true, convertible: true },
   });
   expect(ask.ok(), await ask.text()).toBe(true);
   await page.clock.fastForward(9000);
   const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
   await expect(held).toContainText(title);
+  await expect(held).toContainText("Your message stays queued until there are no blocking questions.");
+  await expect(held).not.toContainText("older session");
   await expect(queued).toHaveCount(0);
   await expect(held.getByRole("button", { name: "Open question" })).toBeEnabled();
   const recall = held.getByRole("button", { name: "Cancel message" });
   await expect(recall).toBeEnabled();
   await expectCardGeometry(held, "routing-exceptions", ".rx-card.is-held");
-  await captureCard(held, "held-after-queue");
+  await page.mouse.move(0, 0);
+  await captureCard(held, "held-blocking-question");
   await page.reload();
   const receipt = page.waitForResponse(response => response.url() === sessionURL + "/pending-turns/" + encodeURIComponent("voice:queued-then-held") + "/recall");
   await recall.click();

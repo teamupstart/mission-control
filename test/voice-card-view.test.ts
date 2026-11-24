@@ -4,7 +4,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { VoiceCard } from "../src/shared/voice-routing.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
+import type { ReviewItem } from "../src/shared/types.ts";
 import { VoiceCardView } from "../src/web/components/VoiceCardView.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 const target: SpokenName = { name: "Steve", key: "resident:build", kind: "resident", sessionId: "s", taskId: "t", role: "Maintains CI", colorId: "cyan", agent: "claude", state: "running" };
 const actions = {
@@ -39,4 +41,16 @@ test("a failed immediate stop shows its reason alongside the pending message con
   assert.match(html, /The interrupt was refused\./);
   assert.match(html, /Send to Steve now/);
   assert.match(html, />Cancel</);
+});
+
+test("a held card names the outstanding call even when an earlier filed plan still gates the task", () => {
+  const question: ReviewItem = { id: "call", sessionId: "s", kind: "input", title: "Which build?", body: "",
+    status: "pending", response: null, createdAt: 1, resolvedAt: null };
+  const plan: ReviewItem = { ...question, id: "plan", kind: "plan-decisions", title: "Filed rollout plan", waitMode: "message" };
+  const card: VoiceCard = { id: "held", state: "held", reason: "outbox", deadline: null, candidates: [], openQuestions: 2,
+    parts: [{ target, text: "check the build", outcome: "held", turnId: "voice:held" }] };
+  const html = renderToStaticMarkup(createElement(VoiceCardView, { card, operation,
+    actions: { ...actions, sessions: [mkSession({ id: "s" })], reviews: [plan, question] } }));
+  assert.match(html, /Asked: Which build\?/);
+  assert.doesNotMatch(html, /Filed rollout plan|older session|predates/);
 });

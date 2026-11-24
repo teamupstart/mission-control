@@ -220,3 +220,12 @@ for (const [failure, error] of [
     assert.equal(segments.next().done, true);
   });
 }
+
+test("the listener client accepts HTTP loopback origins and refuses external hosts and other schemes", () => {
+  for (const origin of ["http://localhost:7317", "http://127.0.0.1", "http://[::1]"]) {
+    assert.doesNotThrow(() => new ListenerClient(origin, tokenPath()));
+  }
+  for (const origin of ["http://example.com", "https://localhost"]) {
+    assert.throws(() => new ListenerClient(origin, tokenPath()), { message: "Expected a loopback daemon URL" });
+  }
+});

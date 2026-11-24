@@ -67,8 +67,11 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     order = Number(number);
     const base = Number(revision);
     if (patch.decisionProvider === undefined || !Number.isSafeInteger(order) || order <= applied ||
-        order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) ||
-        ticket !== `${instance}:${order}:${author}:${base}` || !canApply(author, base)) return null;
+        order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) || base < 0 || base > applied ||
+        ticket !== `${instance}:${order}:${author}:${base}`) return null;
+    // A newer opt-out can stop an older writer's provider. Enabling a provider still
+    // requires a current observation, so an intervening Off cannot be undone by surprise.
+    if (patch.decisionProvider !== "off" && !canApply(author, base)) return null;
     writer = author;
   }
   const next = applyVoiceConfigPatch(getVoiceConfig(), patch);

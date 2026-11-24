@@ -123,6 +123,20 @@ test("provider choices from another window invalidate both stale reservations an
   assert.equal((await providerIntent(first, observed)).status, 409);
 });
 
+test("a ticketed Off supersedes an older commit and yields to a newer commit from another window", async () => {
+  const writer = randomUUID(), other = randomUUID();
+  for (const offIsNewer of [true, false]) {
+    const revision = await readProviderRevision();
+    const first = await reserveFor(writer, revision);
+    const second = await reserveFor(other, revision);
+    assert.equal((await choose("jev", offIsNewer ? first : second)).status, 200);
+    const off = await choose("off", offIsNewer ? second : first);
+    assert.equal(off.status, offIsNewer ? 200 : 409);
+    const { config } = await (await json("/api/voice/config")).json() as { config: typeof VOICE_CONFIG_DEFAULTS };
+    assert.equal(config.decisionProvider, offIsNewer ? "off" : "jev");
+  }
+});
+
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {
   let response = await json("/api/voice/config", "PUT", { cancelWindow: { seconds: 8 }, whenUnsure: "ask", planFormsByVoice: false });
   assert.equal(response.status, 200);

@@ -79,6 +79,23 @@ test("the published sherpa addon transcribes a recording through the listener an
   // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
   const wav = await readFile(fixture);
   assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("refuses non-finite float PCM samples before hello", async () => {
+    const float = Buffer.from(wav.subarray(0, 48)); // One mono float32 sample after the header.
+    float.writeUInt32LE(float.length - 8, 4);
+    float.writeUInt16LE(3, 20);
+    float.writeUInt32LE(16000 * 4, 28);
+    float.writeUInt16LE(4, 32);
+    float.writeUInt16LE(32, 34);
+    float.writeUInt32LE(4, 40);
+    const path = join(cwd, "nonfinite.wav");
+    for (const sample of [NaN, Infinity, -Infinity]) {
+      float.writeFloatLE(sample, 44);
+      await writeFile(path, float);
+      await assert.rejects(play(path), /Non-finite WAV sample/);
+      assert.equal(hellos, 0);
+      assert.equal(posts, 0);
+    }
+  });
   await t.test("refuses an oversized file and an overstated WAV data chunk before hello", async () => {
     const path = join(cwd, "oversized.wav");
     await writeFile(path, wav.subarray(0, 44));

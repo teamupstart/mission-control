@@ -51,9 +51,14 @@ export function readRecording(path: string): Float32Array {
       const scale = 2 ** (width * 8 - 1);
       for (let i = 0; i < samples.length; i++) {
         const at = start + i * width;
-        if (floating) samples[i] = wav.readFloatLE(at);
-        else if (width === 1) samples[i] = (wav[at]! - 128) / scale;
-        else samples[i] = wav.readIntLE(at, width) / scale;
+        if (floating) {
+          const sample = wav.readFloatLE(at);
+          if (!Number.isFinite(sample)) throw new Error("Non-finite WAV sample");
+          samples[i] = sample;
+        } else {
+          const integer = width === 1 ? wav[at]! - 128 : wav.readIntLE(at, width);
+          samples[i] = integer / scale;
+        }
       }
       return samples;
     }

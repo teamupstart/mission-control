@@ -4085,6 +4085,8 @@ export type ServerEvent =
       voiceIndicators?: string[];
       voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
+      windowId?: string;
+      voiceAnswers?: import("./voice-answers.ts").VoiceAnswer[];
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
@@ -4267,6 +4269,8 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
+  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null }
+  | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }

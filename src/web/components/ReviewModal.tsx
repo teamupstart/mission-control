@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Ref } from "react";
+import { useContext, useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -30,7 +30,10 @@ import { QuestionBody } from "./QuestionBody.tsx";
 import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
 import { useNow } from "../useNow.ts";
 import { useAgentName, useAgentNamesEnabled } from "../lib/agent-names.ts";
-import { AgentName, SpokenHint } from "./AgentName.tsx";
+import { QuestionVoiceHint, VoiceAnswerFooter } from "./VoiceAnswerFooter.tsx";
+import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../lib/voice-roster.ts";
+import { AgentName } from "./AgentName.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -46,7 +49,7 @@ import { AgentName, SpokenHint } from "./AgentName.tsx";
  */
 export function ReviewModal({
   session,
-  reviews,
+  reviews, focusQuestion,
   dialog = null,
   onClose,
   onMovedToChat,
@@ -55,6 +58,7 @@ export function ReviewModal({
 }: {
   session: Session;
   reviews: ReviewItem[];
+  focusQuestion?: { reviewId: string } | null;
   /**
    * A menu the session is parked on (`activePaneDialog`), answered here by the Conversation's
    * own `PaneDialogPrompt`, so a resident's every requested decision opens in this one modal.
@@ -72,6 +76,9 @@ export function ReviewModal({
   /** Open one checkout file in the session's Files tab. */
   onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  useEffect(() => {
+    if (focusQuestion) document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`)?.focus();
+  }, [focusQuestion]);
   const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
   const openPath = onOpenPath
     ? (path: string) => {
@@ -188,6 +195,37 @@ export function ReviewCard({
   const question = review.kind === "input";
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  const voiceAnswers = useContext(VoiceAnswersContext);
+  const voiceQuestion = question && voiceAnswers !== null && !snoozing && (decisions?.length ?? 0) <= 1;
+  const pendingAnswer = voiceQuestion ? voiceAnswers.get(review.id) : undefined;
+  const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
+  // The daemon owns the deadline. Once the operator edits this preview, the draft
+  // owns the inputs immediately, including while the cancel request is in flight.
+  const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);
+  const cancelStatus = editCancel?.id === pendingAnswer?.id ? editCancel?.status : undefined;
+  const preview = cancelStatus ? undefined : pendingAnswer;
+  const voiceSelection = preview?.selections?.[0];
+  const displayedAnswers = voiceSelection ? { [voiceSelection.decisionId]: {
+    selected: voiceSelection.selected, other: voiceSelection.other ?? "", note: "",
+  } } : draft.decisions;
+  const answerAction = async (action: "cancel" | "send-now", manualEdit = !!cancelStatus) => {
+    if (!pendingAnswer) return;
+    const attempt = manualEdit && action === "cancel" ? { id: pendingAnswer.id, status: "requested" as const } : null;
+    if (attempt) setEditCancel(attempt);
+    const result = await api.voiceCardAction(pendingAnswer.id, action);
+    if (result.ok) return;
+    if (attempt) {
+      // A retry can reach the daemon before the earlier request returns.
+      setEditCancel(current => current === attempt ? { ...attempt, status: "failed" } : current);
+    } else {
+      setErr(result.error ?? "This answer is no longer pending.");
+    }
+  };
+  function cancelForManualEdit() {
+    if (preview) void answerAction("cancel", true);
+  }
+  const footer = pendingAnswer && <VoiceAnswerFooter answer={pendingAnswer} options={decisions?.[0]?.options}
+    act={answerAction} cancelStatus={cancelStatus} />;
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
   const finalBundle = review.standingApprovalEligible === true
     && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
@@ -272,7 +310,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`} data-dialog-action-scope>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-question={voiceQuestion ? review.id : undefined} tabIndex={voiceQuestion ? -1 : undefined}>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
@@ -337,7 +375,7 @@ export function ReviewCard({
         <SnoozeSheet review={review} wait={wait} onBack={() => setSnoozing(false)} />
       ) : decisions ? (
         <>
-        {question && <SpokenHint action="answer-option" name={asker.name} />}
+
         <DecisionForm
           decisions={decisions}
           busy={busy}
@@ -354,10 +392,14 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
-          answers={draft.decisions}
-          onAnswersChange={(change) =>
-            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
-          }
+          voiceLetters={voiceQuestion}
+          voicePending={!!preview}
+          footer={footer}
+          answers={displayedAnswers}
+          onAnswersChange={(change) => {
+            updateDraft((d) => ({ ...d, decisions: change(voiceSelection ? displayedAnswers : d.decisions) }));
+            cancelForManualEdit();
+          }}
           besideSubmit={
             // A snoozable question is a `request_input` ask, never a plan bundle, so at
             // most one of the two ever fills this slot.
@@ -382,12 +424,13 @@ export function ReviewCard({
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (
         <div className="review-actions">
           <textarea
-            className="answer-box"
+            className={preview ? "answer-box av-picked" : "answer-box"}
             placeholder="Your answer…"
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
+            value={preview?.text ?? answer}
+            onChange={(e) => { setAnswer(e.target.value); cancelForManualEdit(); }}
             rows={2}
           />
+          {footer ?? <>
           {dismissButton}
           <Tooltip label="Skip answering for now: the agent explains this question in the conversation and waits for you">
             <button className="btn btn-chat" disabled={busy} onClick={chatAboutQuestion}>
@@ -408,7 +451,7 @@ export function ReviewCard({
               Send answer
             </button>
           </Tooltip>
-          <SpokenHint action="answer" name={asker.name} cardOpen />
+          </>}
         </div>
       ) : (
         <div className="review-actions">
@@ -441,6 +484,7 @@ export function ReviewCard({
           </Tooltip>
         </div>
       )}
+      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} count={decisions?.[0]?.options.length ?? 0} />}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (
         <ForemanRecommendationSidecar

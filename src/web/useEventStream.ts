@@ -2,6 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { VoiceAnswer } from "@shared/voice-answers.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -214,6 +215,9 @@ export interface MissionState {
    */
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
+  voiceWindowId?: string;
+  voiceAnswers: Map<string, VoiceAnswer>;
+  openVoiceQuestion: { sessionId: string; reviewId: string } | null;
   voiceCards: Map<string, VoiceCard>;
   setVoiceCardInUse: (id: string, inUse: boolean) => void;
   /**
@@ -345,6 +349,9 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [voiceWindowId, setVoiceWindowId] = useState<string>();
+  const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, VoiceAnswer>());
+  const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
   const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
   // A null timer holds an outcome while the operator is using it.
   const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null }>()).current;
@@ -391,6 +398,7 @@ export function useEventStream(): MissionState {
   const latestSettingsRestoreRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let windowId: string | undefined;
     const es = new EventSource("/events");
     esRef.current = es;
     function clearVoiceTimers() {
@@ -455,6 +463,8 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          windowId = msg.windowId;
+          setVoiceWindowId(windowId);
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -521,6 +531,7 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
+          setVoiceAnswers(new Map(msg.voiceAnswers?.map(a => [a.reviewId, a])));
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
@@ -797,12 +808,24 @@ export function useEventStream(): MissionState {
         case "voice_state":
           setVoice(current => withNewerVoiceMode(msg.state, current));
           if (msg.state.mode === "off") {
+            setVoiceAnswers(new Map());
             clearVoiceTimers();
             setVoiceCards(new Map());
           }
           break;
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
+          break;
+        case "voice_open_question":
+          if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
+          break;
+        case "voice_answer":
+          setVoiceAnswers(prev => {
+            const next = new Map(prev);
+            if (msg.answer) next.set(msg.reviewId, msg.answer);
+            else next.delete(msg.reviewId);
+            return next;
+          });
           break;
         case "voice_card":
           scheduleVoiceExpiry(msg.card);
@@ -989,7 +1012,7 @@ export function useEventStream(): MissionState {
     subscribeShaping,
     voice,
     acknowledgeVoiceMode,
-    voiceCards,
+    voiceCards, voiceAnswers, openVoiceQuestion, voiceWindowId,
     setVoiceCardInUse,
     settingsStatus,
     keepAwakeStatus,

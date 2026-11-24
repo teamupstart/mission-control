@@ -39,7 +39,12 @@ interface RegistryEventStream {
  */
 export function sseHandler(registry: Registry) {
   return (c: Context) =>
-    streamSSE(c, endedOnShutdown((stream) => streamRegistryEvents(registry, stream)));
+    streamSSE(c, endedOnShutdown(async (stream) => {
+      const windowId = crypto.randomUUID();
+      const disconnect = registry.voiceRouter?.openCards.connect(windowId);
+      try { await streamRegistryEvents(registry, stream, windowId); }
+      finally { disconnect?.(); }
+    }));
 }
 
 /**
@@ -54,6 +59,7 @@ export function sseHandler(registry: Registry) {
 export async function streamRegistryEvents(
   registry: Registry,
   stream: RegistryEventStream,
+  windowId?: string,
 ): Promise<void> {
   const queue: ServerEvent[] = [];
   let wake: (() => void) | null = null;
@@ -78,7 +84,7 @@ export async function streamRegistryEvents(
     const titled = taskTitlePresenter(registry);
     const snapshot = titled.snapshot(registry.snapshot());
     await stream.writeSSE({
-      data: JSON.stringify({ type: "snapshot", ...snapshot, ...snapshotRepoIndexIdentity() } satisfies ServerEvent),
+      data: JSON.stringify({ type: "snapshot", windowId, ...snapshot, ...snapshotRepoIndexIdentity() } satisfies ServerEvent),
     });
 
     while (!stream.aborted) {

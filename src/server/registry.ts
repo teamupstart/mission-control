@@ -1475,6 +1475,7 @@ export class Registry extends EventEmitter {
     voiceIndicators?: string[];
     voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
+    voiceAnswers?: import("@shared/voice-answers.ts").VoiceAnswer[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1528,6 +1529,7 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
+        voiceAnswers: this.voiceRouter?.activeAnswers() ?? [],
         voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi.indicators),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
@@ -1676,6 +1678,10 @@ export class Registry extends EventEmitter {
 
   emitVoiceIndicators(indicators: string[]): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", confirmation: storedVoiceUi().confirmation, indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+  }
+
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" }>): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 
   emitVoiceCard(card: VoiceCard): void {
@@ -7787,6 +7793,7 @@ export class Registry extends EventEmitter {
 
   upsertReview(review: ReviewItem): void {
     this.reviews.set(review.id, review);
+    if (review.status !== "pending") this.voiceRouter?.reviewSettled(review.id);
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session

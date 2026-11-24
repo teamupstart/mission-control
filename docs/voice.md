@@ -692,7 +692,7 @@ flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and sav
 An agent is addressed by a name you can say. A [resident](residents.md) answers to its profile
 name, or to its **reference name** when one is set. A session answers only when its task has a
 **call sign**; a task title is never a spoken name. Any other session is answered through its open
-card by starting with "reply" (a later phase).
+card by starting with "reply".
 
 ### Call signs
 
@@ -975,3 +975,35 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   set** while the suite's fake Codex answers the routing job for split and mention.
   `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
   suite's daemon never inherits either variable, so no spec reaches a provider.
+
+### Answer a question by voice
+
+With a question card open in the focused dashboard, say “Steve, option B” or “Steve, answer: Postgres”.
+“Reply, neither yet” fills the text field of the focused question, including a question from an
+agent without a spoken name. If several cards from one agent are open, focus the one you mean.
+Letters, ordinals and exact option labels match directly. Other wording uses the option matcher.
+Asking for an unavailable option or a recommendation without a single recommended choice
+shows “No matching option.” The Other field stays as you left it and no countdown starts.
+
+From anywhere, “Steve, answer: Postgres”, “Steve, option two” and “Steve, go with your
+recommendation” can select an option on a pending question. For a free-text question,
+“Steve, answer: Postgres” stages “Postgres” even with its card closed. If Steve has no eligible
+question, an explicit answer shows a notice and sends nothing. If an explicit answer matches
+none of a closed question’s options, the dashboard shows “No matching option.” The question
+stays pending and the agent receives no message. With several pending questions
+and no target card, choose a question by clicking its row or saying its ordinal. “Steve, answer”
+opens the question picker without supplying an answer. Ordinary addressed speech, such as
+“Steve, check the build”, goes to the agent as a message even while the question is open.
+
+The selected option or written reply appears on the card for the configured cancel window.
+“Cancel” stops the newest pending voice action. “No, A” switches the newest pending answer
+and restarts its countdown. The footer's **Cancel** and **Submit now** act on that answer.
+Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
+confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
+if the request fails or takes too long. The original answer can still submit at the deadline.
+When the question is closed, its voice card carries
+the countdown. Disabling the cancel window submits a matched answer immediately.
+
+The daemon keeps pending answers in memory, includes them in reconnect snapshots, and
+publishes changes with `voice_answer`. The focused dashboard reports its drawn question
+cards to `PUT /api/voice/open-cards`. A disconnected stream's report expires after ten seconds.

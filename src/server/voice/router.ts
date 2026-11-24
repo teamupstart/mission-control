@@ -1,3 +1,6 @@
+import type { VoiceAnswer } from "@shared/voice-answers.ts";
+import type { ReviewItem } from "@shared/types.ts";
+import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
   type HeardEntry,
@@ -65,6 +68,9 @@ export class RecentlyHeard {
 }
 
 interface OpenCard {
+  answer?: VoiceAnswer;
+  companion?: boolean;
+  questionPick?: { target: SpokenName; words: string; allowText: boolean };
   time: ActionTime;
   card: VoiceCard;
   entry: HeardEntry;
@@ -186,6 +192,17 @@ export function resolveVoiceDecision(
 }
 
 export class VoiceRouter {
+  readonly openCards = new VoiceOpenCards(() => {
+    const pending = this.questions?.pending() ?? [];
+    for (const item of this.open.values()) {
+      if (!item.answer || item.companion) continue;
+      const review = pending.find(q => q.id === item.answer!.reviewId);
+      if (review && !this.openCards.target([review])) {
+        item.companion = true;
+        this.publish(item.card);
+      }
+    }
+  });
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
@@ -212,6 +229,7 @@ export class VoiceRouter {
     private readonly publish: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
+    private readonly questions?: VoiceQuestions,
   ) {}
 
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
@@ -219,8 +237,20 @@ export class VoiceRouter {
     return this.resolutions.get(id);
   }
 
+  reviewSettled(reviewId: string): void {
+    for (const item of this.open.values()) {
+      if (item.answer?.reviewId !== reviewId) continue;
+      this.take(item);
+      this.questionNotice(item, "That question is already settled.");
+    }
+  }
+
+  activeAnswers(): VoiceAnswer[] {
+    return [...this.open.values()].flatMap(item => item.answer ? [item.answer] : []);
+  }
+
   activeCards(): VoiceCard[] {
-    const visible = [...this.open.values()].filter(item => item.card.state !== "resolving" || item.resolvingVisible);
+    const visible = [...this.open.values()].filter(item => (!item.answer || item.companion) && (item.card.state !== "resolving" || item.resolvingVisible));
     const held = new Set<VoiceCard>();
     for (const { delivery } of this.outbox.values()) {
       if (delivery.published?.parts.some(part => part.outcome === "held")) held.add(delivery.published);
@@ -304,6 +334,10 @@ export class VoiceRouter {
     const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
+    if (this.questions) {
+      const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
+      if (routed !== false) return routed;
+    }
     if (decision.kind === "ignored") {
       entry.rule = decision.reason;
       entry.matchedName = decision.closest ?? null;
@@ -335,6 +369,122 @@ export class VoiceRouter {
     };
     this.openCard({ card, entry, time, message: decision.text, commands: [decision.command] });
     return true;
+  }
+
+  private routeQuestion(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry,
+    time: ActionTime, unsure: VoiceCard[]): boolean | Promise<boolean> {
+    const words = utterance.text.trim();
+    const correction = /^no(?:,\s*|\s+)(.+)$/iu.exec(words);
+    if (correction) {
+      const latest = [...this.open.values()].reverse().filter(i => i.answer && offsetUs(i.time, time) <= 0)
+        .sort((a, b) => offsetUs(b.time, a.time)).at(0);
+      if (!latest?.answer) return false;
+      const review = this.questions!.pending().find(q => q.id === latest.answer!.reviewId);
+      entry.outcome = "control";
+      entry.rule = "switch-answer";
+      if (review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[spokenIndex(correction[1]!)]) {
+        return this.prepareAnswer(latest, review, correction[1]!, false, true).then(() => true);
+      }
+      return true;
+    }
+    const picks = unsure.filter(c => c.candidates[0]?.kind === "question");
+    const index = spokenIndex(words);
+    if (picks.length && index >= 0 && !/^(?:option |[a-z][.!?]?$)/iu.test(words)) {
+      const row = picks.length === 1 && picks[0]!.candidates[index];
+      entry.outcome = "control";
+      entry.rule = "pick-question";
+      return row ? this.pick(picks[0]!.id, row.id, time) : true;
+    }
+    if (decision.kind === "control") return false;
+    const reply = /^reply(?:,\s*|\s+)([\s\S]+)$/iu.exec(words);
+    const addressed = (decision.kind === "addressed" && !decision.command) ||
+      (decision.kind === "needs-model" && decision.reason === "second-name") ? decision : null;
+    if (!reply && !addressed) return false;
+    const target = addressed?.target ?? null;
+    const pending = this.questions!.pending().filter(q => q.createdAt <= time.openedAt && (!target || q.sessionId === target.sessionId))
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const open = this.openCards.target(pending, time.openedAt);
+    const body = (reply?.[1] ?? addressed!.text).trim();
+    if (!body) return false;
+    const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    const choiceCommand = requestedChoice(body) !== undefined;
+    const explicit = !!target && (!!answer || choiceCommand);
+    if (!explicit && !(reply && open)) return false;
+    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
+    const content = explicit && answer ? answer[1]!.trim() : body;
+    const item: OpenCard = { entry, time, message: body,
+      card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
+        openQuestions: 0, deadline: null, candidates: [] } };
+    entry.matchedName = target?.name ?? null;
+    if (explicit && !pending.length) {
+      this.questionNotice(item, target!.name + " has no open questions");
+      return true;
+    }
+    if (explicit && (!content || (!open && pending.length > 1))) {
+      item.choicesOfferedAt = laterTime(time, this.now());
+      item.questionPick = { target: target!, words: content, allowText: !choiceCommand };
+      item.card.state = "unsure";
+      item.card.candidates = pending.map((q, i) => ({ kind: "question", id: q.id, title: q.title,
+        detail: (i + 1) + " · asked " + Math.max(0, Math.floor((Date.now() - q.createdAt) / 60000)) + "m ago" }));
+      this.openCard(item);
+      return true;
+    }
+    const review = open ?? (explicit && pending.length === 1 ? pending[0] : undefined);
+    if (!review) return false;
+    const allowText = !choiceCommand && (!!open || (explicit && !review.decisions?.length));
+    return this.prepareAnswer(item, review, content, allowText).then(() => true);
+  }
+
+  private questionNotice(item: OpenCard, detail: string): void {
+    item.entry.detail = detail;
+    item.entry.outcome = "cancelled";
+    this.publish({ ...item.card, state: "cancelled", reason: "question-notice", detail, deadline: null });
+  }
+
+  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean, switched = false): Promise<void> {
+    const id = item.card.id;
+    const signal = this.lifetime.signal;
+    if (!switched) {
+      // Reserve the capture's place while an option question is at the model.
+      item.card = { ...item.card, state: "resolving", candidates: [] };
+      item.modelStep = new AbortController();
+      this.open.set(id, item);
+      this.pendingVoiceActions.push({ id, kind: "card", ...item.time, cancel: () => this.cancel(id) });
+    }
+    const target = item.card.parts[0]?.target ?? null;
+    const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
+    if (signal.aborted || this.open.get(id) !== item || this.state().mode === "off") return;
+    if (!this.questions!.pending().some(q => q.id === review.id)) {
+      this.take(item);
+      this.questionNotice(item, "That question is already settled.");
+      return;
+    }
+    if (!result) {
+      if (switched) return;
+      this.take(item);
+      this.questionNotice(item, "No matching option.");
+      return;
+    }
+    for (const other of this.open.values()) {
+      if (other !== item && other.answer?.reviewId === review.id) {
+        if (offsetUs(other.time, item.time) > 0 || !this.cancel(other.card.id)) { this.take(item); return; }
+      }
+    }
+    clearTimeout(item.timer);
+    const window = this.window();
+    const windowMs = window.enabled ? window.seconds * 1000 : 0;
+    const deadline = Date.now() + windowMs;
+    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched };
+    item.card = { ...item.card, state: "pending", reason: "voice-answer", deadline, windowMs,
+      parts: [{ target, text: result.text }] };
+    item.entry.rule = "voice-answer";
+    item.entry.outcome = "pending";
+    item.companion ||= !this.openCards.target([review]);
+    this.questions!.publish(review.id, item.answer);
+    if (item.companion) this.publish(item.card);
+    if (!windowMs) { await this.sendNow(id); return; }
+    item.timer = setTimeout(() => { void this.sendNow(id); }, windowMs);
+    item.timer.unref();
   }
 
   /**
@@ -475,6 +625,7 @@ export class VoiceRouter {
     this.closeChoices(item, at);
     clearTimeout(item.timer);
     this.open.delete(item.card.id);
+    if (item.answer) this.questions?.publish(item.answer.reviewId, null);
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
   }
@@ -507,7 +658,7 @@ export class VoiceRouter {
           this.publishDelivery(delivery);
         });
       }
-    } else {
+    } else if (!item.answer || item.companion) {
       this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
@@ -516,6 +667,23 @@ export class VoiceRouter {
   async pick(id: string, candidateId: string, time?: ActionTime): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
+    if (item.questionPick) {
+      const { target, words, allowText } = item.questionPick;
+      const review = this.questions!.pending().find(q => q.sessionId === target.sessionId && q.id === candidateId);
+      this.take(item, time);
+      delete item.questionPick;
+      if (!review) this.questionNotice(item, "That question is already settled.");
+      else if (words) {
+        this.publish({ ...item.card, state: "cancelled", deadline: null });
+        item.time = time ?? this.now();
+        await this.prepareAnswer(item, review, words, allowText);
+      } else {
+        const dashboard = this.openCards.dashboard;
+        if (dashboard) this.questions!.open(dashboard, review);
+        this.questionNotice(item, dashboard ? "Opened question." : "Open the dashboard to answer this question.");
+      }
+      return true;
+    }
     const roster = this.state().roster;
     const split = item.splitPicks?.get(candidateId);
     const target = item.splitPicks ? split?.target ?? item.card.parts[0]?.target
@@ -633,6 +801,14 @@ export class VoiceRouter {
     if (item?.card.state !== "pending") return false;
     this.take(item);
     if (this.state().mode === "off") return false;
+    if (item.answer) {
+      const ok = this.questions!.pending().some(q => q.id === item.answer!.reviewId)
+        && await this.questions!.resolve(item.answer).catch(() => false);
+      item.entry.outcome = ok ? "sent" : "failed";
+      if (!ok || item.companion) this.publish({ ...item.card, state: item.entry.outcome, deadline: null,
+        detail: ok ? "Answer submitted." : "The question could not be answered." });
+      return ok;
+    }
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
     const active = () => this.delivering.get(id) === inFlight && this.state().mode !== "off";
@@ -665,6 +841,7 @@ export class VoiceRouter {
       clearTimeout(item.timer);
       item.modelStep?.abort();
     }
+    this.openCards.clear();
     this.open.clear();
     this.resolutions.clear();
     this.lifetime.abort();

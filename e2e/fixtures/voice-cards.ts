@@ -26,7 +26,7 @@ export async function allowStreamDisconnect(page: Page) {
 
 export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: string) {
   const created = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
-    repoRoot: daemon.repo, intent: "Inspect the build", title: callSign + " on builds", callSign,
+    repoRoot: daemon.repo, intent: "Inspect the build", title: callSign ? callSign + " on builds" : "Inspect the build", ...(callSign && { callSign }),
     kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
   } });
   expect(created.ok(), await created.text()).toBe(true);

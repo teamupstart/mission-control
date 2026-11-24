@@ -1,3 +1,5 @@
+import { OpenCardsSchema } from "@shared/voice-answers.ts";
+import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceRouter, type VoiceDeliverer } from "./router.ts";
@@ -282,10 +284,17 @@ export function registerVoiceUtteranceRoutes(
   deliverer: VoiceDeliverer,
   publish: (card: VoiceCard) => void,
   decider: VoiceDecider = defaultVoiceDecider(),
+  questions?: VoiceQuestions,
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
   const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
-    () => voiceStateStore.hostNowUs());
+    () => voiceStateStore.hostNowUs(), questions);
+  app.put("/api/voice/open-cards", gate, limitBody, async c => {
+    const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const ok = router.openCards.report(parsed.data);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });

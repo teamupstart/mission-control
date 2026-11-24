@@ -42,23 +42,42 @@ struct Recognizer {
         return try await VocabularyBoostingSession(vocabulary: CustomVocabularyContext(terms: terms), ctcModels: ctc)
     }
 
-    static func applyCorrection(_ name: String, to words: inout [TimedWord], in range: Range<Int>) {
-        let spelling = name.split(whereSeparator: { $0.isWhitespace })
+    static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String],
+                                       text: inout String, words: inout [TimedWord]) {
+        guard range.lowerBound == 0, !range.isEmpty, range.upperBound <= words.count else { return }
+        let tokens = text.split(maxSplits: range.count, whereSeparator: { $0.isWhitespace }).prefix(range.count)
+        guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
+              let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),
+              let end = last.lastIndex(where: { $0.isLetter || $0.isNumber }), start <= end else { return }
+        // Match the timed address against the original text. A comma inside the span ends
+        // the address, and a known first name already determines the recipient.
+        let address = text[start...end]
+        guard address.allSatisfy({ $0.isLetter || $0.isNumber || $0.isWhitespace || "'’-".contains($0) }) else { return }
+        let source = words[range].map { $0.text.trimmingCharacters(in: .punctuationCharacters).lowercased() }
+        guard address.split(whereSeparator: { $0.isWhitespace }).map({ $0.lowercased() }) == source else { return }
+        if roster.contains(where: { $0.lowercased() == source[0] }), name.lowercased() != source[0] { return }
+        // Without an explicit end to a multi-word address, keep the decoder's words.
+        if range.count > 1, !text[text.index(after: end)...].drop(while: { $0.isWhitespace }).hasPrefix(",") { return }
+
+        var spelling = name.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !spelling.isEmpty else { return }
+        spelling[0] = String(first[..<start]) + spelling[0]
+        spelling[spelling.count - 1] += last[last.index(after: end)...]
+        text.replaceSubrange(start...end, with: name)
         if spelling.count == range.count {
-            for (index, part) in zip(range, spelling) { words[index].text = String(part) }
+            for (index, part) in zip(range, spelling) { words[index].text = part }
             return
         }
 
         // CTC supplies only the corrected spelling. Estimate interior boundaries
         // evenly while retaining the exact decoder endpoints for the whole name.
-        var start = words[range.lowerBound].startMs
-        let end = words[range.upperBound - 1].endMs
-        let duration = (end - start) / Double(spelling.count)
+        var startMs = words[range.lowerBound].startMs
+        let endMs = words[range.upperBound - 1].endMs
+        let duration = (endMs - startMs) / Double(spelling.count)
         let corrected = spelling.enumerated().map { index, part in
-            let next = index == spelling.count - 1 ? end : min(end, start + duration)
-            let word = TimedWord(text: String(part), startMs: start, endMs: next)
-            start = next
+            let next = index == spelling.count - 1 ? endMs : min(endMs, startMs + duration)
+            let word = TimedWord(text: part, startMs: startMs, endMs: next)
+            startMs = next
             return word
         }
         words.replaceSubrange(range, with: corrected)
@@ -70,19 +89,14 @@ struct Recognizer {
         try Task.checkCancellation()
         let tokens = result.tokenTimings ?? []
         let boosted = await boosting?.rescore(text: result.text, tokenTimings: tokens, audioSamples: segment.samples)
-        let text = (boosted?.text ?? result.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         var words = buildWordTimings(from: tokens).map {
             TimedWord(text: $0.word, startMs: $0.startTime * 1000, endMs: $0.endTime * 1000)
         }
-        // Each roster term can replace several decoder words. Consume spans from the
-        // end so indices still refer to the original decoder output.
-        for replacement in (boosted?.replacements ?? []).sorted(by: {
-            ($0.wordRange?.lowerBound ?? -1) > ($1.wordRange?.lowerBound ?? -1)
-        }) {
-            guard replacement.shouldReplace, let range = replacement.wordRange, !range.isEmpty,
-                  range.lowerBound >= 0, range.upperBound <= words.count, let name = replacement.replacementWord else { continue }
-            Self.applyCorrection(name, to: &words, in: range)
+        if let boosting, let address = boosted?.replacements.first(where: { $0.shouldReplace && $0.wordRange?.lowerBound == 0 }),
+           let range = address.wordRange, let name = address.replacementWord {
+            Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), text: &text, words: &words)
         }
         return Utterance(text: text, words: words, capturedAt: segment.capturedAt)
     }

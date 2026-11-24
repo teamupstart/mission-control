@@ -22,13 +22,27 @@ final class Segment {
     static var openings = 0
     let opening: Int
     let segments: AsyncStream<Segment>
+    private(set) var isRunning = true
+    private var disruption: DispatchSourceSignal?
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String) throws {
+    init(selection: String, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         Self.openings += 1
         opening = Self.openings
+        if selection == "unplugged" && opening > 1 { throw CaptureError.device }
         (segments, source) = AsyncStream.makeStream()
         observe("opened \(opening)")
+        if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
+            signal(SIGUSR1, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.isRunning = false
+                onStopped(self)
+            }
+            disruption = source
+            source.resume()
+        }
         if selection == "two-segments" {
             source.yield(Segment("undecodable"))
             source.yield(Segment("next"))
@@ -46,6 +60,8 @@ final class Segment {
     }
 
     func stop() {
+        disruption?.cancel()
+        isRunning = false
         observe("stopped \(opening)")
         source.finish()
     }
@@ -59,7 +75,14 @@ struct FixtureUtterance: Encodable { let text: String }
     static var pendingDecode: CheckedContinuation<Void, Never>?
     let ctc: Bool? = nil
 
-    init(directory: URL) async throws {}
+    init(directory: URL) async throws {
+        if directory.lastPathComponent == "slow-load" {
+            while !FileManager.default.fileExists(atPath: directory.appending(path: "ready").path) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            observe("model loaded")
+        }
+    }
     func prime(_ roster: [String]) async throws -> Bool? {
         let names = try JSONEncoder().encode(roster)
         observe("prime " + String(decoding: names, as: UTF8.self))

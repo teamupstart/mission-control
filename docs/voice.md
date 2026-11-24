@@ -36,9 +36,13 @@ FluidAudio model manifest. The helper reads microphone authorization without pro
 An explicit denial is sent in the hello and exits with status 2. An undetermined permission
 requires granting access from the launching app before capture can begin.
 
-On startup and every ten seconds, the helper posts protocol 1.0 to `/voice/listener/hello`.
-`modelLoaded` becomes true after local CoreML initialization. The hello names input devices
-by stable UID and reports built-in and Bluetooth transport. The built-in selection falls back
+On startup and every ten seconds, the helper posts protocol 2.0 to `/voice/listener/hello`.
+Version 2 requires the capture directive's revision on each utterance POST. A version 1
+hello receives HTTP 409 before the helper opens the microphone. The helper sends one hello
+at a time, so a loading heartbeat completes before it announces CoreML readiness.
+The hello lists inputs by stable UID and reports built-in and Bluetooth transport. It
+omits empty or oversized UIDs and limits display names to 256 UTF-16 code units.
+The built-in selection falls back
 to the system input when no built-in input exists. An unavailable explicit UID stops the
 listener. The optional `primingAvailable` boolean reports whether the local CTC model loaded.
 With only the TDT repository present, transcription continues with priming off.
@@ -52,11 +56,15 @@ directive after 25 seconds. A heartbeat with identical capture settings leaves t
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples and gates recognition on speech energy. Parakeet transcribes each segment.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.
+Only a correction aligned to the leading address can change the transcript and its timing
+labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
 Only text, relative word timings and capture metadata reach the daemon. Samples and pending
 utterances stay in memory. A changed directive ends the current capture segment, discards
 buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
+If a hardware change stops the engine, the helper refreshes its directive and opens a new
+input if capture is still enabled. Losing an explicitly selected UID produces an input error.
 A failed directive poll closes the microphone and exits. The helper writes no recordings or
 transcripts and logs no recognized words.
 
@@ -444,8 +452,8 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does:
 
 - `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
-  listener every 10 seconds. `version` is the listener protocol version; a hello whose major
-  version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
+  listener every 10 seconds. `version` is the listener protocol version. A hello with a different
+  major version from this daemon's (`2`) is refused with 409 `unsupported_protocol`, and the state's
   `listener` capability says why.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build

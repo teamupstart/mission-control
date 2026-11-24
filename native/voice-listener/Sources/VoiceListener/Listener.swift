@@ -1,5 +1,7 @@
 import Foundation
 
+enum CaptureError: Error { case device, format }
+
 struct Directive: Decodable {
     let revision: String
     let capture: Bool
@@ -8,7 +10,7 @@ struct Directive: Decodable {
 }
 
 struct Hello: Encodable {
-    let version = "1.0"
+    let version = "2.0"
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
     let modelLoaded: Bool
@@ -62,8 +64,20 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var recognizer: Recognizer?
     private var mic: Microphone?
     private var decoding: Task<Void, Never>?
+    private var directivePoll: Task<Data, Error>?
+    private var pendingHello: Task<Void, Error>?
 
     func hello() async throws {
+        let previous = pendingHello
+        let send = Task {
+            try await previous?.value
+            try await sendHello()
+        }
+        pendingHello = send
+        try await send.value
+    }
+
+    private func sendHello() async throws {
         let status = permission()
         if status != "granted" { close() }
         let body = Hello(modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
@@ -98,13 +112,26 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         try await hello()
         var revision: String?
         while true {
-            let data = try await daemon.request("voice/listener/directive", revision: revision)
+            let poll = Task { [revision] in try await daemon.request("voice/listener/directive", revision: revision) }
+            directivePoll = poll
+            let response = await poll.result
+            directivePoll = nil
+            if poll.isCancelled {
+                // A hardware change interrupted the long poll. Get current settings before reopening.
+                revision = nil
+                continue
+            }
+            let data = try response.get()
             let next = try JSONDecoder().decode(Directive.self, from: data)
             let capture = next.capture && permission() == "granted"
-            if next.revision != revision || capture != (mic != nil) {
+            if next.revision != revision || (capture ? mic?.isRunning != true : mic != nil) {
                 close()
                 if capture {
-                    let microphone = try Microphone(selection: next.inputDevice)
+                    let microphone = try Microphone(selection: next.inputDevice) { [weak self] stopped in
+                        guard let self, self.mic === stopped else { return }
+                        self.close()
+                        self.directivePoll?.cancel()
+                    }
                     mic = microphone
                     decoding = Task { [segments = microphone.segments] in
                         let boosting = try? await recognizer.prime(next.roster)
@@ -132,6 +159,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 @main struct VoiceListener {
     @MainActor static func main() async {
         do { try await Listener().run() }
+        catch CaptureError.device { fputs("The selected microphone input is unavailable.\n", stderr); exit(1) }
         catch { fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr); exit(1) }
     }
 }

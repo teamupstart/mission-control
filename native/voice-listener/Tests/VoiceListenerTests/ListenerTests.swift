@@ -32,15 +32,30 @@ final class ListenerTests: XCTestCase {
     }
 
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {
+        var text = "maryjane,  ask mare tomorrow!"
         var words = [
-            TimedWord(text: "ask", startMs: 0, endMs: 90),
-            TimedWord(text: "maryjane", startMs: 120, endMs: 375),
-            TimedWord(text: "tomorrow", startMs: 410, endMs: 630)
+            TimedWord(text: "maryjane,", startMs: 120, endMs: 375),
+            TimedWord(text: "ask", startMs: 410, endMs: 490),
+            TimedWord(text: "mare", startMs: 500, endMs: 580),
+            TimedWord(text: "tomorrow!", startMs: 600, endMs: 730)
         ]
-        Recognizer.applyCorrection("Mary Jane", to: &words, in: 1..<2)
-        XCTAssertEqual(words.map(\.text), ["ask", "Mary", "Jane", "tomorrow"])
-        XCTAssertEqual(words.map(\.startMs), [0, 120, 247.5, 410])
-        XCTAssertEqual(words.map(\.endMs), [90, 247.5, 375, 630])
+        let roster = ["Mary Jane", "Mary"]
+        Recognizer.applyAddressCorrection("Mary", in: 2..<3, roster: roster, text: &text, words: &words)
+        Recognizer.applyAddressCorrection("Mary Jane", in: 0..<1, roster: roster, text: &text, words: &words)
+        XCTAssertEqual(text, "Mary Jane,  ask mare tomorrow!")
+        XCTAssertEqual(words.map(\.text), ["Mary", "Jane,", "ask", "mare", "tomorrow!"])
+        XCTAssertEqual(words.map(\.startMs), [120, 247.5, 410, 500, 600])
+        XCTAssertEqual(words.map(\.endMs), [247.5, 375, 490, 580, 730])
+    }
+
+    func testRosterCorrectionCannotCrossTheAddressCommaOrAnExactFirstName() {
+        for original in ["Will, smith can help", "Will smith, can help", "Wyl smith can help"] {
+            var text = original
+            var words = text.split(separator: " ").map { TimedWord(text: String($0), startMs: 0, endMs: 10) }
+            Recognizer.applyAddressCorrection("Will Smith", in: 0..<2, roster: ["Will", "Will Smith"], text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text).joined(separator: " "), original)
+        }
     }
 
     func testContinuousSpeechEmitsAtThirtySeconds() throws {

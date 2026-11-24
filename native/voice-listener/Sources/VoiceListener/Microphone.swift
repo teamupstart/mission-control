@@ -11,8 +11,6 @@ func permission() -> String {
     }
 }
 
-enum CaptureError: Error { case device, format }
-
 struct Device: Encodable {
     let object: AudioDeviceID
     let id: String
@@ -24,12 +22,23 @@ struct Device: Encodable {
     static func inputs() -> [Device] {
         numbers(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices).compactMap { object in
             guard !numbers(object, kAudioDevicePropertyStreams, kAudioDevicePropertyScopeInput).isEmpty,
-                  let id = label(object, kAudioDevicePropertyDeviceUID),
-                  let name = label(object, kAudioObjectPropertyName) else { return nil }
+                  let id = label(object, kAudioDevicePropertyDeviceUID) else { return nil }
             let transport = numbers(object, kAudioDevicePropertyTransportType).first
-            return Device(object: object, id: id, name: name, builtIn: transport == kAudioDeviceTransportTypeBuiltIn,
-                          bluetooth: transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
+            return input(object: object, id: id, name: label(object, kAudioObjectPropertyName), transport: transport)
         }
+    }
+
+    static func input(object: AudioDeviceID, id: String, name: String?, transport: UInt32?) -> Device? {
+        // The daemon's device string limits count UTF-16 code units. UIDs must round-trip exactly.
+        guard !id.isEmpty, id.utf16.count <= 256 else { return nil }
+        var length = 0
+        let displayName = (name ?? "").unicodeScalars.prefix { scalar in
+            length += scalar.utf16.count
+            return length <= 256
+        }
+        return Device(object: object, id: id, name: displayName.isEmpty ? id : String(displayName),
+                      builtIn: transport == kAudioDeviceTransportTypeBuiltIn,
+                      bluetooth: transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
     }
 
     private static func numbers(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
@@ -117,6 +126,8 @@ final class InputSegmenter {
 
 final class Microphone {
     private let engine = AVAudioEngine()
+    var isRunning: Bool { engine.isRunning }
+    private var configurationObserver: NSObjectProtocol?
     private let continuation: AsyncStream<Segment>.Continuation
     let segments: AsyncStream<Segment>
 
@@ -130,7 +141,8 @@ final class Microphone {
         }
     }
 
-    init(selection: String, devices: [Device] = Device.inputs()) throws {
+    init(selection: String, devices: [Device] = Device.inputs(),
+         onStopped: @escaping @MainActor (Microphone) -> Void = { _ in }) throws {
         (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(2))
         try Self.selectInput(selection, from: devices) { device in
             var object = device
@@ -149,9 +161,19 @@ final class Microphone {
         }
         do { try engine.start() }
         catch { stop(); throw error }
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                                                      object: engine, queue: nil) { [weak self] _ in
+            Task { @MainActor in
+                if let self, !self.isRunning { onStopped(self) }
+            }
+        }
     }
 
     func stop() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         continuation.finish()

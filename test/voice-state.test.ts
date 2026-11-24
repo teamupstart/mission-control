@@ -6,6 +6,7 @@ import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
+  VOICE_LISTENER_PROTOCOL_VERSION,
   VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
@@ -82,7 +83,7 @@ test("the config schema holds every contract A field with its default", () => {
 
 const ALL_FLAGS = new Set(["voice", "async-input", "inbox", "filed-plan-decisions"]);
 const HELLO: VoiceListenerHello = {
-  backend: "sherpa-onnx", version: "1.0", devices: [], modelLoaded: true, microphone: "granted",
+  backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted",
 };
 const REPORT: VoiceShellReport = {
   capabilities: {}, microphone: null, callActive: false, pushToTalk: false, hotkeyError: null,
@@ -170,16 +171,16 @@ test("a required flag off reads as the flags reason", () => {
 test("a hello with an unknown major version is refused, and the state says why", () => {
   const h = harness();
   h.store.acceptHello(HELLO);
-  const refused = h.store.acceptHello({ ...HELLO, version: "2.0" });
+  const refused = h.store.acceptHello({ ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 2\.0.*1\.0/);
+  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*2\.0/);
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);
   assert.equal(state.capabilities.listener?.available, false);
-  assert.match(state.capabilities.listener?.reason ?? "", /protocol 2\.0/);
+  assert.match(state.capabilities.listener?.reason ?? "", /protocol 1\.0/);
   // A minor version is not compared.
-  assert.equal(h.store.acceptHello({ ...HELLO, version: "1.7.2" }).ok, true);
+  assert.equal(h.store.acceptHello({ ...HELLO, version: "2.7.2" }).ok, true);
   assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
   // And the refusal lapses like a hello.
   h.store.acceptHello({ ...HELLO, version: "3" });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,8 +9,8 @@ import { createInterface } from "node:readline";
 import { describe, it, before, after, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-async function until(condition: () => boolean, description: string) {
-  const deadline = Date.now() + 5000;
+async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     assert.ok(Date.now() < deadline, "timed out waiting for " + description);
     await delay(10);
@@ -28,8 +28,11 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200 } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, slowLoad = false } = {}) {
     const events: string[] = [];
+    const hellos: { modelLoaded: boolean; version: string }[] = [];
+    const modelDir = slowLoad ? join(dir, "slow-load") : dir;
+    if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
@@ -40,6 +43,15 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
       }
       let body = "";
       for await (const chunk of req) body += chunk;
+      if (url.pathname === "/voice/listener/hello") {
+        const hello = JSON.parse(body);
+        if (slowLoad && hellos.length === 1 && !hello.modelLoaded) {
+          writeFileSync(join(modelDir, "ready"), "");
+          await until(() => events.includes("model loaded"), "model to finish during heartbeat");
+          await delay(200);
+        }
+        hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version });
+      }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (posted.length === 0) res.statusCode = firstPostStatus;
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
@@ -52,7 +64,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.ok(address && typeof address === "object");
     const child = spawn(join(dir, "listener"), [], { env: {
       ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
-      MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: dir,
+      MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: modelDir,
     } });
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => events.push(line));
@@ -66,7 +78,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     });
 
     async function nextPoll(revision: string | null) {
-      await until(() => polls.length > 0, "directive poll after " + revision);
+      await until(() => polls.length > 0, "directive poll after " + revision, slowLoad ? 20000 : 5000);
       const poll = polls.shift()!;
       assert.equal(poll.revision, revision);
       return poll.response;
@@ -75,8 +87,39 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
       response.end(JSON.stringify({ revision, capture, inputDevice, roster: names }));
     }
     apply(await nextPoll(null), "first", true);
-    return { events, posted, child, closed, nextPoll, apply };
+    return { events, posted, child, closed, nextPoll, apply, hellos };
   }
+
+  it("finishes the outstanding loading heartbeat before publishing protocol 2.0 readiness", async (t) => {
+    const { hellos } = await launch(t, { slowLoad: true });
+    await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
+    assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
+    assert.ok(hellos.every(h => h.version === "2.0"));
+  });
+
+  it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {
+    const { child, nextPoll, apply, events, posted } = await launch(t, { inputDevice: "reconfigured" });
+    await nextPoll("first");
+    await until(() => events.includes("decode in-flight"), "old segment in progress");
+    child.kill("SIGUSR1");
+    const refresh = await nextPoll(null);
+    await until(() => events.includes("stopped 1"), "stopped input to close");
+    apply(refresh, "first", true);
+    await until(() => events.includes("released fresh"), "fresh segment delivery");
+    assert.deepEqual(posted, [{ text: "fresh", revision: "first" }]);
+  });
+
+  it("a stopped engine exits if the selected UID is unavailable on reopen", async (t) => {
+    const { child, nextPoll, apply, closed, events } = await launch(t, { inputDevice: "unplugged" });
+    const errors: string[] = [];
+    child.stderr.setEncoding("utf8").on("data", (line: string) => errors.push(line));
+    await nextPoll("first");
+    child.kill("SIGUSR1");
+    apply(await nextPoll(null), "first", true);
+    assert.deepEqual(await closed, [1, null]);
+    assert.match(errors.join(""), /selected microphone input is unavailable/);
+    assert.ok(events.includes("stopped 1"));
+  });
 
   it("capture on/off/on closes the first input and posts only fresh speech when the old decoder completes", async (t) => {
     const { events, posted, nextPoll, apply } = await launch(t);

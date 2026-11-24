@@ -223,9 +223,9 @@ test("a window that connects after a lapse but before its timer fires still sees
   }
 });
 
-test("a hello with an unknown major version is refused with 409 and the state says why", async () => {
+test("protocol 1.0 is refused at hello before unversioned captures can start", async () => {
   await hello();
-  const response = await hello({ version: "2.0" });
+  const response = await hello({ version: "1.0" });
   assert.equal(response.status, 409);
   const body = await response.json() as { error: string; reason: string; protocol: string };
   assert.equal(body.error, "unsupported_protocol");

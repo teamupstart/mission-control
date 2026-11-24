@@ -416,7 +416,7 @@ export function voiceStateOff(): VoiceState {
 // ---- the listener's hello and the shell's report ----
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
-export const VOICE_LISTENER_PROTOCOL_MAJOR = 1;
+export const VOICE_LISTENER_PROTOCOL_MAJOR = 2;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
 
 /** The values macOS reports for a media permission, which a Linux listener can also name. */

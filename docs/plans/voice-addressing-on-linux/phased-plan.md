@@ -2,7 +2,7 @@
 
 ## Entry and release
 
-The approved goal and scope are in [plan.md](plan.md). The operator chose the daemon and browser experience, Wayland support only where the portal proves press and release, and capture backend selection by a real-desktop spike. The operator will arrange the desktop and tester before **any** implementation begins. Keep the first implementation task’s autopilot disabled until the operator confirms access and enables it. Record the confirmation and hardware details in that task. Later tasks inherit this gate through its merge. The operator chose to phase and schedule the work.
+The approved goal and scope are in [plan.md](plan.md). The operator chose the daemon and browser experience, event-based Wayland qualification with tested press/release timestamps, bounded holds and release-time clipping (the operator accepts brief microphone opening after a delayed release), and capture backend selection by a real-desktop spike. The operator will arrange the desktop and tester before **any** implementation begins. Keep the first implementation task’s autopilot disabled until the operator confirms access and enables it. Record the confirmation and hardware details in that task. Later tasks inherit this gate through its merge. The operator chose to phase and schedule the work.
 
 Every task is in mission-control and directly depends on the planning session’s publication by merge. Hardware access, human approval of this bundle, and merge of the planning PR are distinct conditions. The merged implementations of each phase’s direct prerequisites form its technical baseline. Task pointers use this directory on the default branch.
 

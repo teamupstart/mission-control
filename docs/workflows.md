@@ -68,7 +68,8 @@ and `parameters` using the dashboard's existing request body schema:
 | Actions | Target | Additional parameters |
 | --- | --- | --- |
 | `grant-rounds` | `runId` | `rounds` |
-| `cancel`, `prepare-pr`, `recheck-inspector` | `runId` | None |
+| `cancel`, `prepare-pr` | `runId` | None |
+| `recheck-inspector` | `runId` | Optional `recoverStaleGrant` for [legacy grant recovery](#legacy-inspector-grant-recovery) |
 | `retry` | `runId` | Optional `nodeAttemptId` |
 | `resubmit` | `runId` | Optional `resubmitUnchanged` and `evidence` |
 | `restart-full` | `runId` | `confirmation` when required by the server |
@@ -2244,10 +2245,10 @@ Every arm restores a status something watches, because nothing polls a blocked r
 - A **parked round on any other posture** keeps the number alone and stays blocked, correctly:
   a `manual` version or a `Preview` binding has no observer to be handed back to, so the next
   round is the operator's to start and the header says so.
-- A **GitHub Inspector-only gate run** needs `waiting_for_new_head` back, so the gate re-enters
-  on the next observation and picks up the very head it refused. Without that the grant would
-  flip the merge block from "gave up" to "still working" while nothing was working, which is
-  worse than the dead end it replaced.
+- A **GitHub Inspector-only gate run** resumes in `waiting_for_new_head`. The evaluator checks
+  the pinned PR for a durable observation newer than the saved one, including observations
+  made while the budget was exhausted. Otherwise it waits for a positive new read. A null
+  wakeup can trigger this lookup. The saved head alone cannot spend the grant.
 
 **And the grant says what it bought.** It was the one primary on the page with no visible
 result, so a click that worked was indistinguishable from a click that failed. The header now
@@ -2785,6 +2786,40 @@ Shipping remains vetoed. **Adopt clean Inspector head** grants the existing audi
 budget and hands the run back to the same gate evaluator. Only that evaluator may create the
 next immutable Inspector-only submission and complete after exact-head proof. Dirty, stale,
 closed, mismatched, non-live, or unavailable evidence keeps the ordinary grant label.
+
+#### Legacy Inspector grant recovery
+
+After verifying from the timeline that a legacy grant selected the cached head, an authorized
+operator can send `recheck-inspector` with a new `requestId` and the recovery parameter shown below.
+
+```json
+{
+  "recoverStaleGrant": {
+    "grantRequestId": "request-id-from-repair_rounds_granted",
+    "submissionId": "stranded-inspector-only-submission-id",
+    "staleHeadSha": "head-on-that-submission",
+    "currentHeadSha": "current-open-PR-head"
+  }
+}
+```
+
+The daemon checks the named legacy grant, its first bypass receipt, the original failed head
+and findings, the mismatch block, and a current open PR observation after the submission.
+It also requires a stored observation of that same replacement head strictly between the
+round-limit event and the grant. The blocked gate can retain a delayed observation from
+that interval, or the Inspector ledger can retain the head and timestamp of its review.
+For explicit recovery the daemon also reads the open PR from GitHub, resolves its source
+repository and ref (including forks), and checks the latest branch activity across all
+update types. Its resulting head must match the replacement, and its timestamp must fall
+unambiguously before the grant. A push back to an earlier reviewed head after the grant
+therefore keeps the mismatch blocked. Recovery also stays blocked when the historical
+observation or branch history is unavailable. The recovery audit includes the source ref,
+activity ID, resulting head and time alongside the stored observation and round-limit event.
+[GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
+Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
+re-enters the existing repair wait. The stale submission keeps its head and round. Its
+replacement round must fit within the granted cap and requires the usual exact-head review
+and resolution of open findings. A stranded submission already at the cap stays blocked. Retrying the same request returns the run idempotently.
 
 Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
 or safe Live delivery state machine as Persona repair. The published default,

@@ -1,8 +1,9 @@
+import type { InspectorBranchActivity } from "../inspector/github.ts";
 import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
-import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
+import { type RecoverStaleInspectorGrant, WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -192,7 +193,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
 import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { consumePromptedGeneration, openDb } from "../db.ts";
+import { consumePromptedGeneration, getInspectorPr, openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
@@ -7978,6 +7979,107 @@ export class WorkflowStore {
         idempotent: existing !== null,
       };
     });
+  }
+
+  /** Explicit recovery for the first bypass bought by a legacy cached-head grant. */
+  recoverStaleInspectorGrant(
+    runId: string, requestId: string, input: RecoverStaleInspectorGrant, now: number,
+    activity?: InspectorBranchActivity,
+  ): { run: WorkflowRun; idempotent: boolean } | { verifyPrUrl: string } | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(runId);
+      if (!run) return null;
+      const events = this.listEvents(runId);
+      const recovered = events.find((event) => event.kind === "inspector_stale_grant_recovered"
+        && this.eventPayload(event).requestId === requestId);
+      if (recovered) {
+        const payload = this.eventPayload(recovered);
+        return Object.entries(input).every(([key, value]) => payload[key] === value)
+          ? { run, idempotent: true } : null;
+      }
+      const gate = inspectorGateState(run);
+      if (run.status !== "blocked" || run.currentPhase !== "inspector_head_mismatch"
+          || gate?.waitReason !== "head_mismatch" || !gate.prKey || !gate.failedHeadSha
+          || gate.targetHeadSha !== input.staleHeadSha || gate.failedHeadSha === input.staleHeadSha
+          || gate.findingFingerprints.length === 0) return null;
+
+      const policy = this.getWorkflowVersionById(run.workflowVersionId)?.completionPolicy;
+      const submissions = this.listSubmissions(runId);
+      const latest = submissions.at(-1);
+      const prior = submissions.at(-2);
+      if (!workflowInspectorOnlyRepair(policy, gate)
+          || latest?.id !== input.submissionId || latest.mode !== "inspector_only"
+          || latest.status !== "completed" || latest.prHeadSha !== input.staleHeadSha
+          || latest.round + 1 > run.maxRepairRounds || prior?.mode !== "inspector_only"
+          || prior.round !== latest.round - 1 || prior.prHeadSha !== gate.failedHeadSha
+          || submissions.some((sub) => sub.prHeadSha === input.currentHeadSha)) return null;
+      const context = latest.context;
+      if (!context || typeof context !== "object" || Array.isArray(context)
+          || context.failedHeadSha !== gate.failedHeadSha || context.newHeadSha !== latest.prHeadSha
+          || JSON.stringify(context.priorFindingFingerprints) !== JSON.stringify(gate.findingFingerprints)) return null;
+
+      const grant = events.findLast((event) => event.kind === "repair_rounds_granted");
+      const bypass = events.findLast((event) => event.kind === "inspector_persona_bypass_used");
+      if (!grant || !bypass || bypass.id <= grant.id) return null;
+      const receipt = this.eventPayload(grant);
+      const selection = this.eventPayload(bypass);
+      if (receipt.requestId !== input.grantRequestId || receipt.currentObservationRequired !== undefined
+          || receipt.resumed !== "waiting_for_new_head" || receipt.round !== prior.round
+          || receipt.from !== prior.round - 1 || receipt.to !== run.maxRepairRounds
+          || selection.submissionId !== latest.id || selection.failedHeadSha !== gate.failedHeadSha
+          || selection.newHeadSha !== latest.prHeadSha) return null;
+      const ledger = getInspectorPr(gate.prKey);
+      if (ledger?.state !== "open" || ledger.observedState !== "OPEN"
+          || ledger.observedHeadSha !== input.currentHeadSha || ledger.observedAt === null
+          || ledger.observedAt <= latest.createdAt || ledger.observedAt < (gate.lastObservedAt ?? 0)
+          || (ledger.observedAt === gate.lastObservedAt && ledger.observedHeadSha !== gate.observedHeadSha)) return null;
+
+      // A push after a correctly pinned legacy grant produces the very same mismatch.
+      // Require a retained observation of the replacement while the budget was blocked.
+      // Inspector's reviewed head/time pair survives later polls until the next review.
+      const limit = events.findLast((event) => event.kind === "inspector_round_limit" && event.id < grant.id);
+      if (!limit || this.eventPayload(limit).maxRepairRounds !== receipt.from
+          || limit.timestamp < prior.createdAt || grant.timestamp > latest.createdAt) return null;
+      const inSpentWindow = (at: number | null): at is number =>
+        at !== null && at > limit.timestamp && at < grant.timestamp;
+      let witness: { source: "gate_observation" | "inspector_review"; observedAt: number };
+      if (gate.observedHeadSha === input.currentHeadSha && inSpentWindow(gate.lastObservedAt)) {
+        witness = { source: "gate_observation", observedAt: gate.lastObservedAt };
+      } else if (ledger.headSha === input.currentHeadSha && inSpentWindow(ledger.lastReviewedAt)) {
+        witness = { source: "inspector_review", observedAt: ledger.lastReviewedAt };
+      } else return null;
+
+      // Local polls overwrite one another. Even both witnesses for B are compatible
+      // with a return to A at grant time and a later push back to B. Ask outside the
+      // transaction, then repeat all eligibility checks with the provider's ref history.
+      if (!activity) return { verifyPrUrl: ledger.url };
+      if (activity.prKey !== gate.prKey || activity.headSha !== input.currentHeadSha
+          || (ledger.headRefName && activity.ref !== `refs/heads/${ledger.headRefName}`)
+          || !Number.isFinite(activity.changedAt)
+          || activity.changedAt + 1_000 > grant.timestamp) return null;
+
+      const updated = this.updateInspectorGate({
+        runId, expectedState: gate, status: "waiting_for_new_head", phase: "inspector_findings",
+        state: {
+          ...gate, targetHeadSha: gate.failedHeadSha, waitReason: "findings",
+          lastObservedAt: ledger.observedAt, observedHeadSha: null,
+          grantObservation: { minimumObservedAt: ledger.observedAt, requestedAt: now },
+        },
+        now,
+      });
+      if (!updated) return null;
+      this.appendEvent(runId, "inspector_stale_grant_recovered", {
+        ...input, requestId, prKey: gate.prKey, observedAt: ledger.observedAt,
+        branchActivity: { ...activity }, limitEventId: limit.id, grantEventId: grant.id, bypassEventId: bypass.id,
+        failedHeadSha: gate.failedHeadSha, preGrantWitness: { ...witness, headSha: input.currentHeadSha },
+      }, now);
+      return { run: updated, idempotent: false };
+    });
+  }
+
+  private eventPayload(event: WorkflowEvent): Record<string, WorkflowJson> {
+    const payload = event.payload;
+    return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   }
 
   createInspectorOnlySubmission(input: {

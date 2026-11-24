@@ -224,6 +224,54 @@ export function parsePrUrl(
   };
 }
 
+/** Latest ref update for the source branch of one open PR, including fork PRs. */
+export interface InspectorBranchActivity {
+  prKey: string;
+  repository: string;
+  ref: string;
+  headSha: string;
+  activityId: number;
+  changedAt: number;
+}
+
+const recoveryPullRequest = z.object({
+  number: z.number().int(), state: z.literal("open"),
+  base: z.object({ repo: z.object({ full_name: z.string() }) }),
+  head: z.object({ ref: z.string().min(1), sha: z.string().min(1),
+    repo: z.object({ full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }) }),
+});
+
+export async function readInspectorBranchActivity(prUrl: string, expectedHead: string): Promise<InspectorBranchActivity | null> {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return null;
+  const read = async (endpoint: string): Promise<unknown> => {
+    const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint], { timeoutMs: GH_TIMEOUT_MS });
+    if (response.code !== 0 || response.overflowed) return null;
+    return JSON.parse(response.stdout);
+  };
+  try {
+    const base = `${pr.owner}/${pr.repo}`;
+    const pull = recoveryPullRequest.safeParse(await read(`repos/${base}/pulls/${pr.number}`));
+    if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()
+        || pull.data.head.sha !== expectedHead) return null;
+    const repository = pull.data.head.repo.full_name;
+    const ref = `refs/heads/${pull.data.head.ref}`;
+    // No activity_type filter: force pushes, merges and branch recreation also move the tip.
+    const query = new URLSearchParams({ ref, direction: "desc", per_page: "1" });
+    const rows = z.tuple([z.object({
+      id: z.number().int().positive(), ref: z.literal(ref), after: z.literal(expectedHead),
+      timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(),
+    })]).safeParse(await read(`repos/${repository}/activity?${query}`));
+    if (!rows.success) return null;
+    const [activity] = rows.data;
+    const timestamp = activity.timestamp ?? activity.pushed_at;
+    if (!timestamp || (activity.pushed_at && activity.timestamp && activity.pushed_at !== activity.timestamp)) return null;
+    return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: activity.id, changedAt: Date.parse(timestamp) };
+  } catch {
+    return null;
+  }
+}
+
 export interface GitHubRepositoryIdentity {
   owner: string;
   repo: string;

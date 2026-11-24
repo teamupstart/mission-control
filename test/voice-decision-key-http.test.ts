@@ -91,6 +91,23 @@ test("dashboard key snapshots advance across a save and removal without changing
   assert.ok(before.snapshotOrder < saved.snapshotOrder && saved.snapshotOrder < removed.snapshotOrder);
 });
 
+test("a key edit invalidates only that provider's prior dashboard revision", async () => {
+  const path = "/api/voice/decision-key";
+  const response = await app.request(path, { headers: { ...headers, "x-voice-provider-revision": "read" } });
+  const { keyRevisions } = await response.json() as { keyRevisions: Record<"openai" | "jev", string> };
+  const save = (provider: "openai" | "jev", key: string) => app.request(path, {
+    method: "PUT", headers: { ...headers, "x-voice-key-revision": keyRevisions[provider] }, body: JSON.stringify({ provider, key }),
+  });
+  assert.equal((await save("openai", OPENAI_KEY)).status, 200);
+  assert.equal((await save("jev", JEV_KEY)).status, 200);
+  assert.equal((await app.request(path + "?provider=openai", {
+    method: "DELETE", headers: { ...headers, "x-voice-key-revision": keyRevisions.openai },
+  })).status, 409);
+  assert.equal((await request(path + "?provider=openai", "DELETE")).status, 200);
+  assert.equal((await save("openai", OPENAI_KEY)).status, 409);
+  assert.equal((await report()).body.provider, "jev");
+});
+
 test("disabling Voice while a key PUT reads its body prevents saving the credential", async () => {
   const payload = new TextEncoder().encode(JSON.stringify({ provider: "jev", key: JEV_KEY }));
   const body = new ReadableStream<Uint8Array>({

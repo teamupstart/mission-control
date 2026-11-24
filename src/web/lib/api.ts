@@ -510,7 +510,7 @@ export const fetchVoiceConfig = () => fetchJson<VoiceDashboardSnapshot & { confi
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
 export const fetchVoiceDecisionKey = (signal?: AbortSignal) =>
-  fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"] }>("/api/voice/decision-key",
+  fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; keyRevisions: Record<VoiceKeyProvider, string> }>("/api/voice/decision-key",
     { signal, headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
@@ -2526,11 +2526,12 @@ export const api = {
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
-  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, signal: AbortSignal) =>
-    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key }, { signal }),
-  removeVoiceDecisionKey: (provider: VoiceKeyProvider, signal: AbortSignal) =>
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, revision: string, signal: AbortSignal) =>
+    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
+      { signal, headers: { "x-voice-key-revision": revision } }),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider, revision: string, signal: AbortSignal) =>
     request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
-      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, { signal }),
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, { signal, headers: { "x-voice-key-revision": revision } }),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>

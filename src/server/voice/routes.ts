@@ -2,7 +2,7 @@ import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceRouter, type VoiceDeliverer } from "./router.ts";
 import { defaultVoiceDecider, type VoiceDecider } from "./decide.ts";
-import { decisionKeyAvailability, removeDecisionKey, saveDecisionKey, savedDecisionKeys } from "./decision-key.ts";
+import { decisionKeyAvailability, decisionKeyRevisions, removeDecisionKey, saveDecisionKey, savedDecisionKeys } from "./decision-key.ts";
 import {
   VoiceDecisionKeyProviderSchema,
   VoiceDecisionKeyPutSchema,
@@ -120,6 +120,7 @@ export function registerVoiceRoutes(
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
+  const keyConflict = { error: "stale_key", reason: "The key changed since this row was read. Check its current source and try again." };
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
     const saved = savedDecisionKeys();
@@ -129,7 +130,7 @@ export function registerVoiceRoutes(
       ...report,
       ...(saved === null && { savedKeysUnavailable: true }),
       ...(c.req.header("x-voice-provider-revision") === "read" && {
-        selection: config.decisionProvider, ...dashboardSnapshot(),
+        selection: config.decisionProvider, keyRevisions: decisionKeyRevisions(), ...dashboardSnapshot(),
       }),
     });
   });
@@ -144,6 +145,8 @@ export function registerVoiceRoutes(
     if (!parsed.success) {
       return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);
     }
+    const observed = c.req.header("x-voice-key-revision");
+    if (observed !== undefined && observed !== decisionKeyRevisions()[parsed.data.provider]) return c.json(keyConflict, 409);
     let availability: VoiceKeyAvailability;
     try {
       availability = saveDecisionKey(parsed.data.provider, parsed.data.key);
@@ -156,6 +159,8 @@ export function registerVoiceRoutes(
   app.delete("/api/voice/decision-key", gate, (c) => {
     const provider = VoiceDecisionKeyProviderSchema.safeParse(c.req.query("provider"));
     if (!provider.success) return c.json({ error: "invalid_provider", reason: "Name the provider: openai or jev." }, 400);
+    const observed = c.req.header("x-voice-key-revision");
+    if (observed !== undefined && observed !== decisionKeyRevisions()[provider.data]) return c.json(keyConflict, 409);
     let availability: VoiceKeyAvailability;
     try {
       availability = removeDecisionKey(provider.data);

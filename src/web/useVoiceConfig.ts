@@ -350,14 +350,16 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
     };
   }, [enabled, providerRevision, observeProvider]);
 
-  const mutate = useCallback(async (request: (signal: AbortSignal) => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
-    if (writing.current) return "refused";
+  const report = status?.revision === providerRevision ? status.report : undefined;
+  const mutate = useCallback(async (provider: VoiceKeyProvider, request: (revision: string, signal: AbortSignal) => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
+    const revision = report?.keyRevisions?.[provider];
+    if (writing.current || !revision) return "refused";
     writing.current = true;
     setBusy(true);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
     try {
-      const res = await request(deadline.signal);
+      const res = await request(revision, deadline.signal);
       if (res.ok && res.keys && res.provider !== undefined) {
         setError(null);
         return "confirmed";
@@ -374,13 +376,12 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       writing.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [report]);
 
   const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
-    mutate(signal => api.saveVoiceDecisionKey(provider, key, signal)), [mutate]);
+    mutate(provider, (revision, signal) => api.saveVoiceDecisionKey(provider, key, revision, signal)), [mutate]);
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
-    mutate(signal => api.removeVoiceDecisionKey(provider, signal)), [mutate]);
+    mutate(provider, (revision, signal) => api.removeVoiceDecisionKey(provider, revision, signal)), [mutate]);
 
-  const report = status?.revision === providerRevision ? status.report : undefined;
   return { report, save, remove, error, busy };
 }

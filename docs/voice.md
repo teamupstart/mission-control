@@ -357,6 +357,8 @@ Key-status reads expire after 15 seconds. Saving or removing a key cancels earli
 and refreshes the rows. Leaving Voice settings cancels outstanding reads.
 If a save or removal goes unconfirmed for 15 seconds, the dashboard releases both rows and
 reads the current key sources from the daemon.
+The dashboard sends the revision it read for that provider with each save or removal.
+If another edit changed the key, the daemon rejects the stale write and the dashboard refreshes the rows.
 `PUT /api/voice/decision-key` accepts
 `{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
 Decisions key. Both operations return the updated report.

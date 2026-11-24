@@ -1279,6 +1279,37 @@ test("a delayed local save cannot restore a key removed by another window", asyn
   await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "11-delayed-save-after-removal");
 });
 
+test("a timed-out key replacement arriving after removal cannot restore the credential", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await page.clock.install();
+  await openVoiceSettings(page, daemon);
+  await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+  const delayed = Promise.withResolvers<Route>();
+  await page.route("**/api/voice/decision-key", route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    delayed.resolve(route);
+  });
+  await keyField(page, "OpenAI Decisions").fill("synthetic-replacement-key");
+  await row(page, "OpenAI Decisions").getByRole("button", { name: "Save" }).click();
+  const replacement = await delayed.promise;
+  try {
+    await page.clock.fastForward(15_000);
+    const remove = row(page, "OpenAI Decisions").getByRole("button", { name: "Remove" });
+    await expect(remove).toBeEnabled();
+    await remove.click();
+    await expect(line(page)).toHaveText(NOT_SET);
+    // Deliver the captured request independently of the browser's aborted connection.
+    expect((await page.request.fetch(replacement.request())).status()).toBe(409);
+    expect(existsSync(join(daemon.home, "voice", "decision-key.json"))).toBe(false);
+    await page.clock.fastForward(5_000);
+    await expect(row(page, "OpenAI Decisions")).toContainText("Not set");
+    await expect(line(page)).toHaveText(NOT_SET);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "44-stale-key-replacement");
+  } finally {
+    await replacement.abort().catch(() => undefined);
+  }
+});
+
 for (const mutation of ["save", "remove"] as const) {
   test(`a stalled key ${mutation} releases both rows and reads the committed change`, async ({ dashboard: page, daemon }) => {
     await turnVoiceOn(daemon);

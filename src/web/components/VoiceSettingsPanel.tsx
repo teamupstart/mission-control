@@ -232,6 +232,7 @@ function DecisionKeyRow({ provider, keys }: {
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const { busy } = keys;
+  const canWrite = !busy && !!keys.report?.keyRevisions?.[provider];
   const label = VOICE_KEY_PROVIDER_LABEL[provider];
   const source = keys.report?.keys[provider].source;
   const savedKeysUnavailable = keys.report?.savedKeysUnavailable;
@@ -273,11 +274,11 @@ function DecisionKeyRow({ provider, keys }: {
           onChange={(event) => setDraft(event.target.value)}
         />
         <Tooltip label={`Save this key on this Mac. It is never shown again.`}>
-          <button className="btn" type="submit" disabled={busy || !draft.trim()}>Save</button>
+          <button className="btn" type="submit" disabled={!canWrite || !draft.trim()}>Save</button>
         </Tooltip>
         {source === "settings" && (
           <Tooltip label={`Remove the ${label} key saved on this Mac`}>
-            <button className="btn btn-ghost" type="button" disabled={busy}
+            <button className="btn btn-ghost" type="button" disabled={!canWrite}
               onClick={() => void keys.remove(provider)}>
               Remove
             </button>

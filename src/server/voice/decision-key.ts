@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -20,6 +20,11 @@ import {
 
 type SavedKeys = Partial<Record<VoiceKeyProvider, string>>;
 const SavedKeysSchema = z.partialRecord(z.enum(VOICE_KEY_PROVIDERS), z.string().min(1));
+const revisions = { openai: randomUUID(), jev: randomUUID() };
+
+export function decisionKeyRevisions(): Readonly<Record<VoiceKeyProvider, string>> {
+  return revisions;
+}
 
 /** Where the saved keys live. Resolved per call, so a test's state home is honoured. */
 export function decisionKeyPath(): string {
@@ -95,6 +100,7 @@ function writeKeys(keys: SavedKeys, path: string): void {
 export function saveDecisionKey(provider: VoiceKeyProvider, key: string, path = decisionKeyPath()): VoiceKeyAvailability {
   const keys = { ...readKeys(path), [provider]: key };
   writeKeys(keys, path);
+  revisions[provider] = randomUUID();
   return decisionKeyAvailability(keys, process.env);
 }
 
@@ -105,6 +111,7 @@ export function removeDecisionKey(provider: VoiceKeyProvider, path = decisionKey
     delete keys[provider];
     writeKeys(keys, path);
   }
+  revisions[provider] = randomUUID();
   return decisionKeyAvailability(keys, process.env);
 }
 

@@ -168,22 +168,27 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
  * deadline (or shutdown), the daemon and shell compete to create the same private PID file.
  * A winning wrapper has installed its EXIT trap and owns cleanup for the rest of its life.
  */
-export function retainPendingTerminalHome(stateHome: string, timeoutMs: number): () => void {
-  if (!liveDisposableStateHomes.delete(stateHome)) return () => {};
+export function retainPendingTerminalHome(stateHome: string, timeoutMs: number) {
+  if (!liveDisposableStateHomes.delete(stateHome)) return { release() {}, unstarted: Promise.resolve(false) };
+  let reportUnstarted!: (value: boolean) => void;
+  const unstarted = new Promise<boolean>((resolve) => { reportUnstarted = resolve; });
   const release = () => {
     if (!pendingTerminalHomeChecks.delete(release)) return;
     clearTimeout(timer);
     try {
       writeFileSync(join(stateHome, LAUNCH_PID_FILE), "", { flag: "wx", mode: 0o600 });
+      reportUnstarted(true);
       cleanupDisposableAgentStateHome(stateHome);
     } catch (error) {
+      // A missing home can belong to a wrapper that started and already exited.
+      reportUnstarted(false);
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "EEXIST") console.warn("Could not release an unstarted terminal launch home.");
     }
   };
   const timer = setTimeout(release, timeoutMs).unref();
   pendingTerminalHomeChecks.add(release);
-  return release;
+  return { release, unstarted };
 }
 
 /** Release the disposable home named by a child environment. */

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test, type TestContext } from "node:test";
 import { build } from "esbuild";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { originAndCloneAt } from "./helpers/git-fixture.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
@@ -32,7 +32,8 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed") {
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled") {
+  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "settled";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -71,8 +72,7 @@ process.stdin.resume();
   }
 
   const registry = new Registry();
-  const repo = join(dir, scenario);
-  seedGitRepo(repo, { branch: "main" });
+  const { clone: repo } = originAndCloneAt(join(dir, scenario));
   const task = mkTask({ id: `fresh-terminal-${scenario}`, kind, status: "dispatching", agent: "pi", repoRoot: repo });
   const discoveredId = `proc:${task.id}`;
   registry.upsertTask(task);
@@ -82,7 +82,7 @@ process.stdin.resume();
   const mux = fakeMultiplexer({ sessions: {
     names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
     async spawnDetached({ argv, cwd, name }) {
-      if (scenario === "unconfirmed") {
+      if (timesOut) {
         delayed = { argv, cwd };
         return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
       }
@@ -108,18 +108,46 @@ process.stdin.resume();
       return { ...OK, session: name };
     },
   } });
-  await new Dispatcher(registry, undefined, {
+  const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  const retained = new Promise<void>((resolve) => {
+    t.after(registry.subscribe(() => {
+      if (registry.getTask(task.id)?.launchFailure?.sessionKept) resolve();
+    }));
+  });
+  if (timesOut) t.mock.timers.enable({ apis: ["setTimeout"] });
+  const dispatch = new Dispatcher(registry, undefined, {
     resolveRuntime: () => "terminal", resolveTerminalBackend: () => "tmux",
     residentLaunch: (_task, instructions) => instructions,
     homeDeps: fakeTerminals(mux, fakeEmulator()), piExtensionInstalled: () => true,
     verifyMissionMcpTools: async () => ({ ok: true }), sleep: async () => {},
   }).dispatch(task.id);
 
+  if (timesOut) await Promise.race([retained, dispatch]);
+  else await dispatch;
   const launched = registry.getTask(task.id)!;
-  if (scenario === "unconfirmed") {
+  if (timesOut) {
     assert.equal(launched.status, "failed");
     assert.equal(launched.launchFailure?.sessionKept, true);
     assert.ok(delayed && existsSync(delayed.cwd), "an unconfirmed pane retains its checkout");
+    if (scenario === "settled") {
+      registry.upsertTask({ ...launched, status: "done" });
+      t.mock.timers.tick(RESUME_START_MS);
+      await dispatch;
+      assert.equal(registry.getTask(task.id)?.status, "done");
+      assert.equal(registry.getTask(task.id)?.worktreeLeaseId, launched.worktreeLeaseId);
+      assert.ok(existsSync(delayed.cwd));
+      return;
+    }
+    if (scenario === "never-started") {
+      t.mock.timers.tick(RESUME_START_MS);
+      await dispatch;
+      const expired = registry.getTask(task.id)!;
+      assert.equal(expired.status, "failed");
+      assert.equal(expired.launchFailure?.sessionKept, false);
+      assert.equal(expired.worktreePath, null, expired.error ?? undefined);
+      assert.equal(expired.worktreeLeaseId, null);
+      return;
+    }
     const child = spawn(delayed.argv[0]!, delayed.argv.slice(1), { cwd: delayed.cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
     const exited = once(child, "close");
     const lines = createInterface({ input: child.stdout });
@@ -129,6 +157,10 @@ process.stdin.resume();
       const observed = JSON.parse(report.value);
       assert.equal(observed.listedMatches, true);
       assert.ok(existsSync(observed.home));
+      t.mock.timers.tick(RESUME_START_MS);
+      await dispatch;
+      assert.equal(registry.getTask(task.id)?.launchFailure?.sessionKept, true);
+      assert.ok(existsSync(delayed.cwd));
       child.stdin.end();
       assert.deepEqual(await exited, [0, null]);
       assert.equal(existsSync(observed.home), false);
@@ -157,6 +189,12 @@ test("clearing the enabled list gives the next dispatched agent no named environ
 
 test("a pane confirmed only after the backend timeout can still enter its checkout and run its named dispatch wrapper",
   (t) => checkTerminalDispatch(t, "unconfirmed"));
+
+test("a backend timeout releases the failed task's checkout when its wrapper never starts",
+  (t) => checkTerminalDispatch(t, "never-started"));
+
+test("expiry preserves the checkout of a task marked done during the startup window",
+  (t) => checkTerminalDispatch(t, "settled"));
 
 test("dispatch state-home cleanup follows wrapper startup across the handoff deadline", async (t) => {
   const { spawnUniquely } = await import("../src/server/dispatcher.ts");

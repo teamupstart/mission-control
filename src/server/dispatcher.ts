@@ -457,8 +457,8 @@ export class Dispatcher {
       if (owner) registry.refreshTaskProvisioning(owner.taskId);
     });
     this.legacy = deps.legacy ?? new LegacyTreehouseService();
-    this.teardown = teardown ?? ((task, legacy, priority) =>
-      teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
+    this.teardown = teardown ?? ((task, legacy, priority, _manager, beforeReturn) =>
+      teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees, beforeReturn));
   }
 
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
@@ -1448,6 +1448,22 @@ export class Dispatcher {
                 : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
+        if (alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError && await err.unstarted) {
+          const ownsFailure = () => {
+            const latest = this.registry.getTask(taskId);
+            return currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
+              && latest.worktreePath === cur.worktreePath && latest.launchFailure?.at === launchFailure.at
+              && latest.launchFailure.sessionKept;
+          };
+          if (!ownsFailure()) return;
+          this.patch(taskId, { error: message });
+          if (!await this.teardownTaskResources(taskId, cur, message, ownsFailure)) return;
+          const latest = this.registry.getTask(taskId);
+          if (currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
+            && !latest.worktreePath && latest.launchFailure?.at === launchFailure.at) {
+            this.patch(taskId, { launchFailure: { ...latest.launchFailure, sessionKept: false } });
+          }
+        }
       } else {
         this.patch(taskId, {
           status: "failed",
@@ -2799,9 +2815,12 @@ export class Dispatcher {
     taskId: string,
     task: Task,
     baseError: string | null,
+    stillOwned?: () => boolean,
   ): Promise<boolean> {
     try {
-      await this.teardown(task);
+      await this.teardown(task, undefined, undefined, undefined,
+        stillOwned && (async () => stillOwned() ? null : "task ownership changed before cleanup"));
+      if (stillOwned && !stillOwned()) return false;
       this.patch(taskId, {
         ...releasedTaskResources(task, null),
         homeName: null,
@@ -2810,6 +2829,7 @@ export class Dispatcher {
       });
       return true;
     } catch (error) {
+      if (stillOwned && !stillOwned()) return false;
       const detail = error instanceof Error ? error.message : String(error);
       // The trees that DID come back are released even though the teardown failed overall.
       // Anything still standing keeps its record, so it remains reclaimable; anything gone
@@ -3696,22 +3716,28 @@ export async function spawnUniquely(
   deps?: HomeDeps,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
-  let release = () => cleanupDisposableAgentStateHome(effectiveStateHome);
+  let pending: ReturnType<typeof retainPendingTerminalHome> | undefined;
   let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
   try {
     const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named);
-    if (named) release = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+    if (named) pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
     return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
   } catch (error) {
     if (error instanceof TerminalLaunchError && error.outcomeUnknown) {
-      if (!named) retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
-    } else {
-      await handoff?.dispose();
-      release();
+      pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+      throw new UnconfirmedDispatchError(error.message, pending.unstarted);
     }
+    await handoff?.dispose();
+    if (pending) pending.release();
+    else cleanupDisposableAgentStateHome(effectiveStateHome);
     throw error;
   }
+}
+
+/** Only the daemon winning the wrapper's exclusive start record proves that it never ran. */
+class UnconfirmedDispatchError extends TerminalLaunchError {
+  constructor(message: string, readonly unstarted: Promise<boolean>) { super(message, true); }
 }
 
 /** Managed counterpart: preparation is the sole command source and owns launch cleanup. */

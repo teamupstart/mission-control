@@ -73,3 +73,20 @@ for (const selection of ["automatic", "explicit"] as const) {
     assert.deepEqual(JSON.parse(launch.stdout), [process.execPath, binary, "--input-file", recording]);
   });
 }
+
+for (const [description, args, error] of [
+  ["file input with FluidAudio", ["--backend", "fluidaudio", "--input-file", resolve("test/fixtures/voice/steve-check-the-build.wav")],
+    /^Error: --input-file requires sherpa-onnx$/m],
+  ["an unknown backend", ["--backend", "unknown"], /^Error: Unknown voice backend: unknown$/m],
+] as const) {
+  test(`the development launcher rejects ${description}`, t => {
+    const cwd = mkdtempSync(join(tmpdir(), "voice-launch-"));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const native = join(cwd, "dist", "native");
+    mkdirSync(native, { recursive: true });
+    writeFileSync(join(native, "voice-listener"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const launch = spawnSync(process.execPath, [resolve("scripts/run-voice-listener.ts"), ...args], { cwd, encoding: "utf8" });
+    assert.equal(launch.status, 1, launch.stderr);
+    assert.match(launch.stderr, error);
+  });
+}

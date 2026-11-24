@@ -197,6 +197,25 @@ test("sherpa waits for capture, discards a stale decode and posts the next file 
   assert.notEqual(posts[0]!.revision, posts[1]!.revision);
 });
 
+test("sherpa skips a blank decode and posts speech from the next file segment", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const posts: string[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    if (new URL(url).pathname === "/voice/utterances") posts.push(JSON.parse(String(init.body)).text);
+    return app.request(url, init);
+  });
+  const blank = Float32Array.of(1);
+  const speech = Float32Array.of(2);
+  const decoded: Float32Array[] = [];
+  await playRecording(client, [blank, speech].values(), async segment => {
+    decoded.push(segment);
+    return { text: segment[0] === blank[0] ? " \t" : "check the build", tokens: [], timestamps: [], durations: [] };
+  });
+  assert.deepEqual(decoded, [blank, speech]);
+  assert.deepEqual(posts, ["check the build"]);
+});
+
 for (const [failure, error] of [
   ["refused hello", "Listener hello refused: 409"],
   ["failed post", "Utterance HTTP 503"],

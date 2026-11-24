@@ -115,15 +115,18 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         let previous = pendingHello
         let send = Task {
             try await previous?.value
-            try await sendHello()
+            try await sendHello(first: previous == nil)
         }
         pendingHello = send
         try await send.value
     }
 
-    private func sendHello() async throws {
+    private func sendHello(first: Bool) async throws {
         let status = permission()
         if status != "granted" { close() }
+        if first && status == "not-determined" {
+            fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
+        }
         let body = Hello(modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
         defer {
             if status == "denied" {

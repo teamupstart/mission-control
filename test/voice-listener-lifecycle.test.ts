@@ -28,9 +28,10 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false, held = false } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
     const events: string[] = [];
-    const hellos: { modelLoaded: boolean; version: string }[] = [];
+    const diagnostics: string[] = [];
+    const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
     const instanceIds = new Set<string | undefined>();
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
@@ -52,7 +53,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
           await until(() => events.includes("model loaded"), "model to finish during heartbeat");
           await delay(200);
         }
-        hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version });
+        hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version, microphone: hello.microphone });
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (posted.length === 0 && firstPostHeld) res.setHeader("x-voice-held-revision", "first");
@@ -70,11 +71,12 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const child = spawn(join(dir, "listener"), [], { env: {
-      ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
+      ...process.env, VOICE_FIXTURE_PERMISSION: microphone, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
       MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: modelDir,
     } });
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => events.push(line));
+    createInterface({ input: child.stderr }).on("line", (line) => diagnostics.push(line));
     const closed = once(child, "close");
     t.after(async () => {
       child.kill();
@@ -96,8 +98,21 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", true);
-    return { events, posted, child, closed, nextPoll, apply, hellos, instanceIds };
+    return { events, diagnostics, posted, child, closed, nextPoll, apply, hellos, instanceIds };
   }
+
+  it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {
+    const { nextPoll, hellos, events, diagnostics, posted, child, closed } = await launch(t, { microphone: "not-determined" });
+    await nextPoll("first"); // The helper has now applied a directive requesting capture.
+    child.kill();
+    await closed;
+    assert.equal(hellos[0]?.modelLoaded, false);
+    assert.equal(hellos.at(-1)?.modelLoaded, true);
+    assert.ok(hellos.every(hello => hello.microphone === "not-determined"));
+    assert.deepEqual(events.filter(event => event.startsWith("opened ")), []);
+    assert.deepEqual(posted, []);
+    assert.equal(diagnostics.filter(line => line.includes("terminal app that already has microphone access")).length, 1);
+  });
 
   it("finishes the outstanding loading heartbeat before publishing protocol 3.0 readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
@@ -119,14 +134,12 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
 
   it("a stopped engine exits if the selected UID is unavailable on reopen", async (t) => {
-    const { child, nextPoll, apply, closed, events } = await launch(t, { inputDevice: "unplugged" });
-    const errors: string[] = [];
-    child.stderr.setEncoding("utf8").on("data", (line: string) => errors.push(line));
+    const { child, nextPoll, apply, closed, events, diagnostics } = await launch(t, { inputDevice: "unplugged" });
     await nextPoll("first");
     child.kill("SIGUSR1");
     apply(await nextPoll(null), "first", true);
     assert.deepEqual(await closed, [1, null]);
-    assert.match(errors.join(""), /selected microphone input is unavailable/);
+    assert.match(diagnostics.join("\n"), /selected microphone input is unavailable/);
     assert.ok(events.includes("stopped 1"));
   });
 

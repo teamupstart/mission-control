@@ -6,7 +6,7 @@ private func observe(_ event: String) {
     FileHandle.standardOutput.write(Data((event + "\n").utf8))
 }
 
-func permission() -> String { "granted" }
+func permission() -> String { ProcessInfo.processInfo.environment["VOICE_FIXTURE_PERMISSION"] ?? "granted" }
 
 struct Device: Encodable {
     static func inputs() -> [Device] { [] }

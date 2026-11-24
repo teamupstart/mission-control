@@ -32,9 +32,11 @@ Any launcher can run `dist/native/voice-listener` directly with these three vari
 | `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
 
 The development launcher fills missing values from the local daemon configuration and the
-FluidAudio model manifest. The helper reads microphone authorization without prompting.
-An explicit denial is sent in the hello and exits with status 2. An undetermined permission
-requires granting access from the launching app before capture can begin.
+FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper
+prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
+closed. Run the development command from a terminal app that already has microphone access.
+An explicit denial is sent in the hello and exits with status 2. The first-time consent
+prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
 On startup and every ten seconds, the helper posts protocol 3.0 to `/voice/listener/hello`.
 Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,

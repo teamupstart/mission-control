@@ -80,6 +80,7 @@ export function SessionTile({
   selected = false,
   onOpen,
   onOpenQueue,
+  onComplete,
   onCursorTo,
   registerEl,
   draggingRepo,
@@ -110,6 +111,7 @@ export function SessionTile({
   selected?: boolean;
   onOpen: () => void;
   onOpenQueue?: () => void;
+  onComplete?: () => void;
   /** Make this tile the board's cursor without opening it. See `onSurfaceClick` below. */
   onCursorTo?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
@@ -534,6 +536,7 @@ export function SessionTile({
             onOpen();
           }}
           onOpenQueue={onOpenQueue}
+          onComplete={onComplete}
           onOpenRun={onOpenWorkflowRun}
           onDismiss={onDismissStall}
         />

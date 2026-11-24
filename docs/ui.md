@@ -1240,7 +1240,9 @@ available:
   open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
   then the session's **Last** activity line and Foreman's note when it has one. Below it are the
   actions for the open work. **Nudge** asks the agent for a status update. **Message…** opens
-  the task session's composer, **Mark done** completes its task, and **Open queue** opens its work queue.
+  the task session's composer, **Mark done** opens the session's **Complete** dialog (the one its
+  own Complete button opens, so it takes an outcome note and offers **Unblock dependents** and a
+  retro when one is worth running, and completing it closes the session), and **Open queue** opens its work queue.
   A parked run offers **Open run** and the available fix, such as **Resubmit**, **Tell it to push** or
   **Continue**. When the run needs a new pushed head and no unpushed commit is reported,
   **Open run** shows the waiting review, and **Message…** opens the reachable session’s composer

@@ -26,8 +26,6 @@ import { AgentDot } from "./session-bits.tsx";
  * when the session has moved, or when the operator dismisses it.
  */
 
-const MARK_DONE_OUTCOME = "Marked done from the inbox";
-
 /**
  * What a completed Interrupt reports, in the words the session's own Interrupt uses
  * (`interruptReport`): a turn that had already ended stopped nothing and kept the queue, and a
@@ -44,6 +42,7 @@ export function StuckCard({
   subject,
   onOpenSession,
   onOpenRun,
+  onComplete,
   onDismiss,
   onReplyBox,
 }: {
@@ -54,6 +53,8 @@ export function StuckCard({
   subject: AgentNameView;
   onOpenSession: (sessionId: string) => void;
   onOpenRun: (runId: string) => void;
+  /** Absent where nothing can host the Complete dialog, and Mark done is not drawn. */
+  onComplete?: (sessionId: string) => void;
   onDismiss: () => void;
   /**
    * Whether this row is drawing its message box (the escalation's reply box included), reported
@@ -139,13 +140,13 @@ export function StuckCard({
             onClick={fixed("continue")}
           />
         )}
-        {facts?.kind === "unfinished-work" && facts.task && (
+        {facts?.kind === "unfinished-work" && facts.task && onComplete && (
           <InboxActionButton
             action="mark-done"
             name={name}
-            tooltip="Complete this session's task: the work is finished and nothing more is owed"
+            tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
             disabled={disabled}
-            onClick={run("mark-done", () => api.completeTask(facts.task!.id, MARK_DONE_OUTCOME))}
+            onClick={() => onComplete(session.id)}
           />
         )}
         {facts?.kind === "workflow-parked" && facts.resubmittable && (

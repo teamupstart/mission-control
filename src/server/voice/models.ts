@@ -1,3 +1,4 @@
+import { supportsSherpaHelpers } from "@shared/sherpa-platform.ts";
 import { release } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, readFileSync, statSync } from "node:fs";
@@ -682,9 +683,13 @@ export const voiceModelManager = new VoiceModelManager({
   manifests: () => (manifests ??= voiceModelManifestsFromEnv()),
 });
 
+export function speechModelManifests(platform: string, arch: string): VoiceModelManifests {
+  return { fluidaudio: null, "sherpa-onnx": supportsSherpaHelpers(platform, arch) ? VOICE_SPEECH_MODELS["supertonic-3"] : null };
+}
+
 export const speechModelManager = new VoiceModelManager({
   ...productionDeps,
   namespace: "speech",
   backend: () => "sherpa-onnx",
-  manifests: () => ({ fluidaudio: null, "sherpa-onnx": VOICE_SPEECH_MODELS["supertonic-3"] }),
+  manifests: () => speechModelManifests(process.platform, process.arch),
 });

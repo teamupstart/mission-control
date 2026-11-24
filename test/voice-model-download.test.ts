@@ -15,7 +15,7 @@ import { after, afterEach, before, test } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-model-"));
 process.env.HARNESS_HOME = home;
-const { VoiceModelManager, voiceModelManifestsFromEnv, voiceModelBaseUrlFromEnv } = await import("../src/server/voice/models.ts");
+const { VoiceModelManager, speechModelManifests, voiceModelManifestsFromEnv, voiceModelBaseUrlFromEnv } = await import("../src/server/voice/models.ts");
 const { VoiceStateStore } = await import("../src/server/voice/state.ts");
 const { registerVoiceRoutes } = await import("../src/server/voice/routes.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
@@ -730,4 +730,22 @@ test("speech downloads only by POST, cancels independently, and verifies downloa
   restart.manager.sync();
   await restart.manager.idle();
   assert.equal(restart.manager.state().status, "failed");
+});
+
+test("speech model verification and downloads require a supported helper platform", () => {
+  for (const platform of ["darwin", "linux"]) for (const arch of ["x64", "arm64"]) {
+    assert.ok(speechModelManifests(platform, arch)["sherpa-onnx"]);
+  }
+  for (const [platform, arch] of [["win32", "x64"], ["darwin", "ia32"], ["linux", "arm"]] as const) {
+    const manager = new VoiceModelManager({
+      root: () => assert.fail("unsupported hosts must not inspect the disk"),
+      active: () => true, backend: () => "sherpa-onnx", namespace: "speech",
+      manifests: () => speechModelManifests(platform, arch), baseUrl: () => null,
+      fetch: () => assert.fail("unsupported hosts must not download weights"),
+    });
+    manager.sync();
+    assert.equal(manager.state().revision, null);
+    assert.equal(manager.state().status, "missing");
+    assert.equal(manager.download().ok, false);
+  }
 });

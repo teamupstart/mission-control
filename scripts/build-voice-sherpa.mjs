@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { publishNativeAddon } from "./native-addon-publish.mjs";
 import { buildStateLockNative } from "./build-state-lock-native.mjs";
+import { supportsSherpaHelpers } from "../src/shared/sherpa-platform.ts";
 import { loadVoiceHostClock } from "../src/server/voice/native-clock.ts";
 
 function probeRuntime(dir) {
@@ -42,7 +43,7 @@ async function publishRuntime(staged, native, version, files) {
   }
 }
 
-if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(process.arch)) {
+if (supportsSherpaHelpers(process.platform, process.arch)) {
   const require = createRequire(import.meta.url);
   const dist = process.argv[2] ?? "dist";
   const pkg = `sherpa-onnx-${process.platform}-${process.arch}/package.json`;

@@ -165,18 +165,18 @@ final class ListenerTests: XCTestCase {
         }
         // The final callback crossed the cap by 10 ms. Key-up was 5 ms before the cap.
         var gate = overflow()
-        let recovered = try XCTUnwrap(gate.finish(tail: [], at: 30_995))
+        let recovered = try XCTUnwrap(gate.finish(at: 30_995))
         XCTAssertEqual(recovered.samples.count, limit - 80)
         XCTAssertEqual(recovered.samples.suffix(80), crossing.prefix(80))
         XCTAssertEqual(recovered.endedAt, 30_995)
         gate = overflow()
-        XCTAssertNil(gate.finish(tail: [], at: 31_001))
+        XCTAssertNil(gate.finish(at: 31_001))
         gate = overflow()
         let quiet = Array(repeating: Float(0), count: 320)
         for i in 1...100 {
             XCTAssertNil(gate.feed(quiet, active: false, endNs: 31_010_000_000 + Int64(i) * 20_000_000))
         }
-        XCTAssertNil(gate.finish(tail: [], at: 30_995))
+        XCTAssertNil(gate.finish(at: 30_995))
     }
 
     private func fixtureDirectories() throws -> (models: URL, corpus: URL) {
@@ -243,12 +243,35 @@ final class ListenerTests: XCTestCase {
 
     func testKeyReleaseClipsAtTheBoundaryAndCannotFlushDiscardedSpeech() {
         var gate = SpeechGate()
-        XCTAssertNil(gate.finish(tail: [], at: 1000))
+        XCTAssertNil(gate.finish(at: 1000))
         let frame = Array(repeating: Float(0.5), count: 320)
         XCTAssertNil(gate.feed(frame, active: true, endNs: 1020 * 1_000_000))
-        XCTAssertEqual(gate.finish(tail: [0.1, 0.2], at: 1010)?.samples, Array(frame.prefix(160)))
+        XCTAssertEqual(gate.finish(at: 1010)?.samples, Array(frame.prefix(160)))
         XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, endNs: 31_000 * 1_000_000))
-        XCTAssertNil(gate.finish(tail: [], at: 31_000))
+        XCTAssertNil(gate.finish(at: 31_000))
+    }
+
+    func testKeyUpClassifiesOnlyRecordedSamplesOfTheFinalPartialFrame() throws {
+        let tone = (0..<304).map { Float(0.5) * sin(Float($0) * 2 * .pi * 400 / 16_000) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        func release(_ recorded: [Float], known: Bool) throws -> Segment? {
+            let tap = try InputSegmenter(source: format, held: true)
+            // The last eight samples arrive in the same tap and fall beyond key-up.
+            let pcm = recorded + Array(tone.prefix(8))
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
+            frame.frameLength = frame.frameCapacity
+            frame.floatChannelData![0].update(from: pcm, count: pcm.count)
+            let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1))
+            XCTAssertTrue(tap.consume(frame, at: when, cutoff: known ? 1019 : nil).isEmpty)
+            return tap.finish(at: 1019)
+        }
+        for known in [true, false] {
+            let phrase = try XCTUnwrap(release(tone, known: known))
+            XCTAssertEqual(phrase.samples, tone)
+            XCTAssertEqual(phrase.startNs, 1_000_000_000)
+            XCTAssertEqual(phrase.endedAt, 1019)
+            XCTAssertNil(try release(Array(repeating: 0, count: 304), known: known))
+        }
     }
 
     func testFractionalMillisecondStartClipsOnlyCompleteSamplesBeforeRelease() throws {
@@ -257,7 +280,7 @@ final class ListenerTests: XCTestCase {
         let frame = (0..<320).map(Float.init)
         let startNs: Int64 = 1_000_490_000
         XCTAssertNil(gate.feed(frame, active: true, endNs: startNs + Int64(frame.count) * Segment.sampleNs))
-        let clipped = try XCTUnwrap(gate.finish(tail: [], at: 1001))
+        let clipped = try XCTUnwrap(gate.finish(at: 1001))
         XCTAssertEqual(clipped.samples, Array(frame.prefix(8)))
         XCTAssertEqual(clipped.startNs, startNs)
         XCTAssertEqual(clipped.startedAtHostMs, 1000)
@@ -270,7 +293,7 @@ final class ListenerTests: XCTestCase {
         var gate = SpeechGate(held: true)
         XCTAssertNil(gate.feed(quiet, active: false, endNs: 150_000_000))
         XCTAssertNil(gate.feed(voiced, active: true, endNs: 170_000_000))
-        let full = try XCTUnwrap(gate.finish(tail: [], at: 170))
+        let full = try XCTUnwrap(gate.finish(at: 170))
         for cutoff: Int64 in [140, 150, 155] {
             XCTAssertTrue(full.through(cutoff) == nil, "release retained only quiet samples")
         }

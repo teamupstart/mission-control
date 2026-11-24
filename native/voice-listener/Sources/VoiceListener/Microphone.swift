@@ -90,10 +90,12 @@ struct Segment {
     }
 }
 
-private func captureUnixMs(_ startNs: Int64) -> Int64 {
-    let hostNow = AVAudioTime.seconds(forHostTime: mach_absolute_time())
-    let elapsed = hostNow - Double(startNs) / 1e9
-    return Int64(((Date().timeIntervalSince1970 - elapsed) * 1000).rounded(.down))
+private struct CaptureClock {
+    let origin = Date().timeIntervalSince1970 - AVAudioTime.seconds(forHostTime: mach_absolute_time())
+
+    func unixMs(_ hostNs: Int64) -> Int64 {
+        Int64(((origin + Double(hostNs) / 1e9) * 1000).rounded(.down))
+    }
 }
 
 // Keep an onset lead-in and bound the audio retained between speech boundaries.
@@ -125,7 +127,7 @@ struct SpeechGate {
 
     // Key-up is an explicit end of speech. Silence alone or a discarded prefix
     // cannot become a command, even when the operator releases the key.
-    mutating func finish(tail: [Float], at release: Int64) -> Segment? {
+    mutating func finish(at release: Int64) -> Segment? {
         defer { self = SpeechGate(held: held) }
         // The callback that filled the buffer may already contain audio recorded
         // after key-up. Only an explicit release inside this prefix can recover it.
@@ -134,12 +136,12 @@ struct SpeechGate {
             return prefix.through(release)
         }
         guard !discarding, !samples.isEmpty else { return nil }
-        guard let clipped = segment(samples + tail).through(release), clipped.samples.count <= Self.maxSegmentSamples else { return nil }
+        guard let clipped = segment(samples).through(release), clipped.samples.count <= Self.maxSegmentSamples else { return nil }
         return clipped
     }
 
     mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
-                       toUnixMs: (Int64) -> Int64 = captureUnixMs) -> Segment? {
+                       toUnixMs: (Int64) -> Int64 = { CaptureClock().unixMs($0) }) -> Segment? {
         guard !frame.isEmpty else { return nil }
         if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(Self.maxSegmentSamples) * Segment.sampleNs + 2_000_000_000 {
             overflowPrefix = nil
@@ -186,6 +188,7 @@ final class SpeechSegmenter {
     private static let frameLength = 320
     private let detector: OpaquePointer
     private var pending: [Float] = []
+    private var pendingStart: (ns: Int64, clock: CaptureClock)?
     private var gate: SpeechGate
 
     init(held: Bool = false) throws {
@@ -202,12 +205,33 @@ final class SpeechSegmenter {
 
     func interrupt() {
         pending.removeAll()
+        pendingStart = nil
         gate.interrupt()
     }
 
     func finish(at release: Int64) -> Segment? {
-        defer { pending.removeAll() }
-        return gate.finish(tail: pending, at: release)
+        defer { pending.removeAll(); pendingStart = nil }
+        var completed: Segment?
+        if let start = pendingStart {
+            let count = Segment.completeSamples(pending.count, startingAt: start.ns, through: release)
+            if count > 0 {
+                let tail = Array(pending.prefix(count))
+                completed = gate.feed(tail, active: isSpeech(tail), endNs: start.ns + Int64(count) * Segment.sampleNs,
+                                      toUnixMs: start.clock.unixMs)
+            }
+        }
+        let final = gate.finish(at: release)
+        return completed ?? final
+    }
+
+    private func isSpeech(_ samples: [Float]) -> Bool {
+        var pcm = samples.map { sample in
+            sample.isFinite ? Int16(max(-1, min(1, sample)) * Float(Int16.max)) : 0
+        }
+        // WebRTC requires a full frame. Padding belongs only to the classifier.
+        if pcm.count < Self.frameLength { pcm.append(contentsOf: repeatElement(0, count: Self.frameLength - pcm.count)) }
+        let voiced = fvad_process(detector, pcm, pcm.count) == 1
+        return voiced && samples.reduce(0) { $0 + $1 * $1 } > Float(samples.count) * SpeechGate.activityFloor * SpeechGate.activityFloor
     }
 
     func consume(_ samples: [Float], endNs: Int64) -> [Segment] {
@@ -217,18 +241,18 @@ final class SpeechSegmenter {
             let count = min(Self.frameLength - pending.count, samples.count - offset)
             pending.append(contentsOf: samples[offset..<(offset + count)])
             offset += count
-            guard pending.count == Self.frameLength else { break }
-            let pcm = pending.map { sample in
-                sample.isFinite ? Int16(max(-1, min(1, sample)) * Float(Int16.max)) : 0
+            guard pending.count == Self.frameLength else {
+                if pendingStart == nil { pendingStart = (endNs - Int64(pending.count) * Segment.sampleNs, CaptureClock()) }
+                break
             }
             // Feed every frame to the classifier so it learns the room noise. Its
             // internal hangover can mark digital silence as speech; start counting
             // our own 800 ms boundary immediately when the signal is already quiet.
-            let voiced = fvad_process(detector, pcm, pcm.count) == 1
-            let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * SpeechGate.activityFloor * SpeechGate.activityFloor
             let frameEnd = endNs - Int64(samples.count - offset) * Segment.sampleNs
-            if let segment = gate.feed(pending, active: active, endNs: frameEnd) { result.append(segment) }
+            if let segment = gate.feed(pending, active: isSpeech(pending), endNs: frameEnd,
+                                       toUnixMs: { self.pendingStart?.clock.unixMs($0) ?? CaptureClock().unixMs($0) }) { result.append(segment) }
             pending.removeAll(keepingCapacity: true)
+            pendingStart = nil
         }
         return result
     }

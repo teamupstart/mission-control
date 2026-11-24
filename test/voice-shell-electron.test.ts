@@ -31,6 +31,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
+  let holdReport = false;
+  let heldReport: ServerResponse | undefined;
   const server = createServer(async (req, res) => {
     if (req.url === "/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -47,7 +49,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       if (muteResponse === "timeout") return;
       if (muteResponse === "refused") res.statusCode = 503;
     }
-    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === "fixture") reports.push(JSON.parse(body));
+    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === "fixture") {
+      reports.push(JSON.parse(body));
+      if (holdReport) {
+        holdReport = false;
+        heldReport = res;
+        return;
+      }
+    }
     res.end(JSON.stringify({ counts: { needsYou: 2 } }));
   });
   server.listen(0, "127.0.0.1");
@@ -195,6 +204,28 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
   await until(async () => (await read()).mode === "off");
+  await t.test("a delayed shell report coalesces queued updates and samples current permission before the next POST", async t => {
+    const event = (mode: VoiceMode) => "data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n";
+    t.after(async () => {
+      holdReport = false;
+      if (heldReport && !heldReport.writableEnded) heldReport.end();
+      events!.write(event("off"));
+      await until(async () => (await read()).mode === "off");
+      await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.configurePermission("not-determined", "reject"));
+    });
+    const since = reports.length;
+    holdReport = true;
+    events!.write(event("unavailable"));
+    await until(() => !!heldReport);
+    events!.write(event("listening") + event("muted"));
+    await until(async () => (await read()).mode === "muted");
+    // Permission changes after the queued state events and before the first POST completes.
+    await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.configurePermission("granted", "granted"));
+    assert.equal(reports.length, since + 1, "queued reports wait for the outstanding POST");
+    heldReport!.end();
+    await until(() => reports.length >= since + 2);
+    assert.deepEqual(reports.slice(since, since + 2).map(report => report.microphone), ["not-determined", "granted"]);
+  });
   const ready = { ...voiceStateOff(), mode: "unavailable", model: {
     ...voiceStateOff().model, status: "ready", backend: "fluidaudio", directory: "/verified-model",
   } };

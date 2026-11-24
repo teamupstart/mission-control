@@ -28,10 +28,35 @@ export function startShellVoice(binary: string, onState: (state: VoiceState) => 
     }).finally(() => { prompt = undefined; });
   };
   const lifetime = new AbortController();
+  let reportRequested = false;
+  let sending: Promise<void> | undefined;
+
+  async function sendReports() {
+    try {
+      while (reportRequested && state.mode !== "off") {
+        reportRequested = false;
+        const microphone = systemPreferences.getMediaAccessStatus("microphone");
+        const report: VoiceShellReport = {
+          capabilities: {
+            tray: { available: true, reason: null },
+            microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
+          },
+          microphone, hotkeyError: null, callActive: false, pushToTalk: false,
+        };
+        await fetch(BASE_URL + "/voice/shell-report", {
+          method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-harness-token": readToken() },
+          body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
+        }).catch(() => {}); // Next heartbeat retries a daemon that is restarting.
+      }
+    } finally {
+      sending = undefined;
+    }
+  }
 
   async function sync() {
     if (state.mode === "off") {
       listener.update(state, false);
+      reportRequested = false;
       nextPromptAt = 0;
       retryDelay = 5000;
       return;
@@ -42,17 +67,9 @@ export function startShellVoice(binary: string, onState: (state: VoiceState) => 
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
     }
-    const report: VoiceShellReport = {
-      capabilities: {
-        tray: { available: true, reason: null },
-        microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
-      },
-      microphone, hotkeyError: null, callActive: false, pushToTalk: false,
-    };
-    await fetch(BASE_URL + "/voice/shell-report", {
-      method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-harness-token": readToken() },
-      body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-    }).catch(() => {}); // Next heartbeat retries a daemon that is restarting.
+    // Capture reacts immediately. Only delivery to the daemon waits for a prior POST.
+    reportRequested = true;
+    return sending ??= Promise.resolve().then(sendReports);
   }
   function update(next: VoiceState) {
     state = next;

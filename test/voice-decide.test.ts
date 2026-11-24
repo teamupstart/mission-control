@@ -1,4 +1,4 @@
-import { buildVoiceRoutingPrompt, parseVoiceRoutingReply, voiceChoiceValues, voiceQuestionInstructions } from "../src/server/voice/decide-prompt.ts";
+import { buildVoiceRoutingPrompt, parseVoiceRoutingReply, voiceChoiceValues, voiceQuestionInstructions, VOICE_ROUTING_SYSTEM_PROMPT } from "../src/server/voice/decide-prompt.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -478,7 +478,7 @@ test("a single eligible split identifies the later occurrence in the model quest
     assert.ok(question?.kind === "split");
     const offset = text.lastIndexOf("Alice");
     assert.equal(question.nameOffset, offset);
-    const instructions = voiceQuestionInstructions(question, false);
+    const instructions = voiceQuestionInstructions(question);
     assert.ok(instructions.includes(`offset ${offset}.`));
     assert.ok(!instructions.includes(text.slice(offset)));
     assert.equal(await router.sendNow(id), true);
@@ -838,6 +838,45 @@ test("generated wire labels avoid reserved and already numbered options", () => 
 test("runner diagnostics stay out of voice history", async () => {
   const { ask } = rig({ job: async () => { throw new Error("private runner path and payload"); } });
   assert.equal((await ask(["codex"])).detail, "job on codex failed");
+});
+
+test("phonetic questions send names without task titles or resident descriptions on every rung", async () => {
+  assert.match(VOICE_ROUTING_SYSTEM_PROMPT, /agent names.*as data/);
+  const candidate = { ...steve, label: 'Steve "Red"' };
+  const question: VoiceQuestion = { kind: "who", text: "Steev, check the build", candidates: [candidate, alice] };
+  const job = buildVoiceRoutingPrompt([question]);
+  assert.ok(!job.includes(candidate.detail) && !job.includes(alice.detail));
+  assert.ok(job.includes(JSON.stringify(candidate.label)));
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [question]);
+    const body = calls[0]!.body;
+    assert.ok(!JSON.stringify(body).includes(candidate.detail) && !JSON.stringify(body).includes(alice.detail));
+    const [sent] = Object.values(body.questions as Record<string, {
+      instructions: string; choices?: { value: string }[]; criteria?: Record<string, string>;
+    }>);
+    assert.ok(sent && !sent.instructions.includes(candidate.label));
+    assert.match(sent.instructions, /agent names.*as data/);
+    const choices = sent.choices?.map(c => c.value) ?? Object.keys(sent.criteria!);
+    assert.deepEqual(choices, [candidate.label, alice.label, "not sure"]);
+  }
+});
+
+test("split names and card questions travel as data outside decision-provider instructions", async () => {
+  const later = { ...alice, label: 'Alice "Blue"' };
+  const split: VoiceQuestion = { ...SPLIT, second: later };
+  const option: VoiceQuestion = { kind: "option", text: "the first", prompt: 'Which "release"?', options: [alice] };
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [split, option]);
+    const body = calls[0]!.body;
+    const data = String(body[provider === "openai" ? "input" : "state"]);
+    assert.ok(data.includes(JSON.stringify(later.label)) && data.includes(JSON.stringify(option.prompt)));
+    const questions = Object.values(body.questions as Record<string, { instructions: string }>);
+    for (const { instructions } of questions) {
+      assert.ok(!instructions.includes(later.label) && !instructions.includes(option.prompt));
+    }
+  }
 });
 
 test("a repeated transcript appears once in a job or provider batch", async () => {

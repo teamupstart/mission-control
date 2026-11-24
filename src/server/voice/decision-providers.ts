@@ -3,7 +3,7 @@ import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
 import { readCappedBody } from "../origin-fetch.ts";
 import { envVar } from "../../shared/harness-runtime.mjs";
 import type { VoiceKeyProvider, VoiceQuestion } from "@shared/voice-decide.ts";
-import { decisionInput, VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstructions, voiceQuestionName } from "./decide-prompt.ts";
+import { decisionInput, VOICE_INPUT_RULE, VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstructions, voiceQuestionName } from "./decide-prompt.ts";
 
 // The two decision-model providers (contract E), each one HTTPS request per utterance carrying
 // every question it needs. Both answer a typed `choice` question with a choice and a confidence,
@@ -71,7 +71,7 @@ const NOT_SURE_DESCRIPTION = "The words do not settle it.";
 
 function choicesFor(question: VoiceQuestion): { value: string; description: string }[] {
   return [
-    ...voiceChoiceValues(question).map((choice) => ({ value: choice.value, description: choice.detail || choice.value })),
+    ...voiceChoiceValues(question).map((choice) => ({ value: choice.value, description: choice.detail || (question.kind === "who" ? "Candidate name." : choice.value) })),
     { value: VOICE_NOT_SURE, description: NOT_SURE_DESCRIPTION },
   ];
 }
@@ -143,7 +143,7 @@ export const openAiDecisions: DecisionProviderAdapter = {
       questions: questions.map((question, index) => ({
         type: "choice",
         name: voiceQuestionName(index),
-        instructions: voiceQuestionInstructions(question, false),
+        instructions: `${VOICE_INPUT_RULE}\n${voiceQuestionInstructions(question)}`,
         choices: choicesFor(question),
       })),
     }, call);
@@ -166,7 +166,7 @@ export const jevDecisions: DecisionProviderAdapter = {
       state: decisionInput(questions),
       questions: Object.fromEntries(questions.map((question, index) => [voiceQuestionName(index), {
         type: "choice",
-        instructions: voiceQuestionInstructions(question, false),
+        instructions: `${VOICE_INPUT_RULE}\n${voiceQuestionInstructions(question)}`,
         criteria: Object.fromEntries(choicesFor(question).map((choice) => [choice.value, choice.description])),
       }])),
     }, call);

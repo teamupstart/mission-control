@@ -119,7 +119,7 @@ const keyField = (page: Page, provider: string) => panel(page).getByLabel(`${pro
 const providerMenu = (page: Page) => panel(page).getByRole("combobox", { name: "Decision model provider" });
 const NOT_SET = `Not set: ${voiceRoutingWithoutProvider()}`;
 const using = (provider: string) =>
-  `Using ${provider}. Ambiguous sentences and the roster's names and roles are sent to ${provider}.`;
+  `Using ${provider}. Sends the sentence with candidate names or the card question, options and option details.`;
 
 async function openVoiceSettings(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.setViewportSize({ width: 1280, height: 1400 });

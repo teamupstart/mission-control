@@ -223,7 +223,7 @@ export const VOICE_ROUTING_WITHOUT_PROVIDER = `Not set: ${voiceRoutingWithoutPro
 export function fasterRoutingLine(provider: VoiceKeyProvider | null, savedKeysUnavailable = false): string {
   if (!provider) return savedKeysUnavailable ? `Saved key status unavailable: ${voiceRoutingWithoutProvider()}` : VOICE_ROUTING_WITHOUT_PROVIDER;
   const name = VOICE_KEY_PROVIDER_LABEL[provider];
-  return `Using ${name}. Ambiguous sentences and the roster's names and roles are sent to ${name}.`;
+  return `Using ${name}. Sends the sentence with candidate names or the card question, options and option details.`;
 }
 
 function DecisionKeyRow({ provider, keys }: {

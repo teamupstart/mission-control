@@ -244,7 +244,7 @@ export async function startDecisionServer(): Promise<DecisionServer> {
     const speech = input?.split("\n")
       .map(line => /^Speech for (q\d+(?:, q\d+)*): ("[\s\S]*")$/u.exec(line))
       .find(match => name && match?.[1]?.split(", ").includes(name))?.[2];
-    const choice = speech ? fixtureSplitAnswer(instructions, JSON.parse(speech) as string) : "not sure";
+    const choice = speech && name && input ? fixtureSplitAnswer(instructions, JSON.parse(speech) as string, input, name) : "not sure";
     return { choice, confidence: choice === "not sure" ? 0.4 : 0.99 };
   };
   const server = createServer((request, response) => {

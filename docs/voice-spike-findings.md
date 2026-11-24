@@ -471,8 +471,10 @@ time is measured around the whole call, process start included. Expected answers
 labels are never sent. This used the operator's own `claude` login.
 
 The measured split and mention prompts identified the later agent by name. The current
-router and retest also specify the character offset and quote the text starting there, so
-they can distinguish repeated names. The figures below describe the earlier prompt.
+router and retest also identify the occurrence by its character offset. A single split question
+in the job prompt includes a short excerpt starting there. After the retest, phonetic questions
+dropped roles and the router separated roster names from instructions. The figures below
+describe the measured prompt. Haiku remains disabled.
 
 **Tuning set.** The spike's 60 cases recast as these questions (`routing-tuning.json`). No wrong
 answer was accepted at any floor from 0.5 to 0.99; at 0.9, 56 of 60 were accepted. Wall time

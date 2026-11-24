@@ -46,8 +46,8 @@ every egress guard the read path applies applies here unchanged.
 
 With the `voice` preview on, a spoken sentence that names alone cannot settle goes to one model
 step ([Voice addressing](voice.md#the-model-step)). Each model asked receives the spoken sentence
-as text. To resolve an unclear name, it also receives the candidate names and their one-line
-roles (a resident's description or a session's task title). To distinguish a split from a
+as text. To resolve an unclear name, it receives the candidate names and compares their sound.
+Task titles and resident descriptions stay out of the request. To distinguish a split from a
 mention, it receives the first and later names and the location of the later name in the
 sentence when available. For a spoken answer to a card, it receives the card question, the
 offered option labels and any option details. Session transcripts and files stay out of these

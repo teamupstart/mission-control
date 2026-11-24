@@ -608,6 +608,26 @@ test("a sixth unsure card cancels the oldest unsure card and preserves pending d
   assert.equal((await act("unsure-0", "pick", { id: "task:Will" })).status, 409);
 });
 
+test("at capacity the router rejects new cards but preserves deadlines, picks, cancels and retries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await say("Steven ask Will", "choice");
+  for (let i = 1; i < 50; i++) {
+    assert.deepEqual(await (await say("Will wait", "pending-" + i)).json(), { accepted: true });
+  }
+  const snapshot = registry.snapshot().voiceCards;
+  assert.equal(snapshot?.length, 50);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: false });
+  assert.deepEqual(registry.snapshot().voiceCards, snapshot);
+  assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 50);
+  assert.ok(!(await readHeard()).some(({ id }) => id === "overflow"));
+  assert.deepEqual(await (await say("Will")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await say("cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["overflow", "pending"]);
+});
+
 test("out-of-order unsure captures keep the five newest choices, including when the incoming card is oldest", async () => {
   const postUnsure = (id: string, capturedAt: number) =>
     post("/voice/utterances", { ...capture("Steven ask Will", id), capturedAt }, token);

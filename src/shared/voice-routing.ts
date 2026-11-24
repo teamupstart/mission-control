@@ -61,7 +61,7 @@ function barePhrase(text: string): string {
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
   const first = normalized(token[0]);
-  if (!next || text.slice(token.index, next.index).includes(",")) return [first];
+  if (!next || !/^\s+$/u.test(text.slice(token.index + token[0].length, next.index))) return [first];
   return [first, first + " " + normalized(next[0])];
 }
 

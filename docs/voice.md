@@ -37,7 +37,7 @@ first word after normalizing case and boundary punctuation. The exact first word
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
 descriptive only. Recently heard measures from the last address word to the first message word,
 skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
-A two-word call sign must stay on one side of a comma, both in an address and in a later mention.
+Only whitespace can separate the two tokens of a call sign, both in an address and in a later mention.
 “Release Captain, run tests”
 can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
 “Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,
@@ -71,6 +71,9 @@ in a standalone `“cancel”` leaves pending actions open. The daemon uses capt
 timestamps when listener requests arrive out of order. For equal timestamps, the last action
 opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
 An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
+The router allows up to 50 open or delivering cards in total. At capacity a capture that
+would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
+Existing cards keep their deadlines, and the operator can still pick or cancel them.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
 timestamp. For a pick through the card API, the daemon records the host time when it applies
 the pick. A cancel spoken before that instant leaves the picked card pending even if its POST

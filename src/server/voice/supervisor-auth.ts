@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { closeSync, fstatSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { confinedVoiceListener } from "./supervised-listener.ts";
-import { SupervisorRetirements } from "./supervisor-retirements.ts";
+import { reportBeforeDeadline, SupervisorRetirements } from "./supervisor-retirements.ts";
 
 export const VOICE_SUPERVISOR_PROOF_HEADER = "x-mission-voice-supervisor-proof";
 export type SupervisorReportState = "started" | "exited";
@@ -50,12 +50,16 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
   const prefix = name + "_" + der.toString("hex") + "_";
   const signature = (instance: string, state: SupervisorReportState) =>
     sign(null, payload(instance, state), privateKey).toString("hex");
+  const watchProof = (instance: string, pid: number) =>
+    sign(null, Buffer.from(["mission-voice-launch-pid/v1", instance, pid].join("\n")), privateKey).toString("hex");
   const queues = new Map<string, SupervisorRetirements>();
   const retirements = (home: string) => {
     const path = resolve(home);
     let queue = queues.get(path);
     if (!queue) {
-      queue = new SupervisorRetirements(path, name, exit => supervisorIssuer(exit.instance, "exited", exit.proof)?.name === name);
+      queue = new SupervisorRetirements(path, name, exit => supervisorIssuer(exit.instance, "exited", exit.proof)?.name === name,
+        ({ instance, pid, proof }) => instance.startsWith(prefix) && proof === watchProof(instance, pid)
+          ? { instance, proof: signature(instance, "exited") } : null);
       queues.set(path, queue);
     }
     return queue;
@@ -71,21 +75,35 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
       const queue = retirements(stateHome);
       queue.start(report);
       const startProof = signature(instance, "started");
-      const announce = () => report(instance, "started", startProof);
+      const announce = () => reportBeforeDeadline(report, instance, "started", startProof);
+      const watch = (pid: number) => queue.watch({ instance, pid, proof: watchProof(instance, pid) });
+      // Until a child PID replaces this entry, no listener can pass the startup gate.
+      watch(process.pid);
       let refused = false;
+      let released = false;
       try {
         refused = await announce() === false;
-        if (refused) throw new Error("Voice supervisor start was refused.");
+        if (refused) {
+          queue.discardRefused(instance);
+          throw new Error("Voice supervisor start was refused.");
+        }
         const child = start(executable, args, env);
         // An OS spawn error precedes 'spawn'. Once spawned, the launcher owns
         // the live child's handle and must observe its exit before retiring it.
         await once(child, "spawn");
+        try { watch(child.pid!); }
+        catch (error) { child.stdin.destroy(); throw error; }
+        // EOF before this line exits the gate. After release only the OS can establish exit.
+        released = true;
+        const onBrokenGate = () => {};
+        child.stdin.once("error", onBrokenGate);
+        child.stdin.write("go\n", error => { if (!error) child.stdin.off("error", onBrokenGate); });
         return { instance, child, reannounce: async () => {
           if (child.exitCode !== null || child.signalCode !== null) return false;
           return announce();
         } };
       } catch (error) {
-        if (refused) throw error;
+        if (refused || released) throw error;
         // No OS child started. Keep its signed retirement available across launch
         // service restarts while returning the actual launch error to the caller.
         queue.enqueue({ instance, proof: signature(instance, "exited") }, report);

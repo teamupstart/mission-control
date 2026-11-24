@@ -3,33 +3,43 @@ import { join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { announcementName, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
-import type { SupervisorReporter } from "./supervisor-auth.ts";
+import type { SupervisorReporter, SupervisorReportState } from "./supervisor-auth.ts";
 
 const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
 type PendingExit = z.infer<typeof signedExit>;
-const EXIT_REPORT_TIMEOUT_MS = 5000;
+const watchedLaunch = signedExit.extend({ pid: z.number().int().positive() });
+type WatchedLaunch = z.infer<typeof watchedLaunch>;
+const queuedRecord = z.union([signedExit, watchedLaunch]);
+const REPORT_TIMEOUT_MS = 5000;
 
-async function reportExit(report: SupervisorReporter, exit: PendingExit, stop: AbortSignal) {
+export async function reportBeforeDeadline(report: SupervisorReporter, instance: string, state: SupervisorReportState, proof: string, stop?: AbortSignal) {
   const deadline = new AbortController();
-  const signal = AbortSignal.any([stop, deadline.signal]);
+  const signal = stop ? AbortSignal.any([stop, deadline.signal]) : deadline.signal;
   signal.throwIfAborted();
   let onAbort: () => void;
   const aborted = new Promise<never>((_, reject) => {
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-  const timer = setTimeout(() => deadline.abort(), EXIT_REPORT_TIMEOUT_MS).unref();
+  const timer = setTimeout(() => deadline.abort(new Error("Voice supervisor " + state + " report timed out.")), REPORT_TIMEOUT_MS);
+  if (state === "exited") timer.unref();
   try {
     // An adapter may ignore cancellation. Its late response cannot acknowledge this attempt.
-    await Promise.race([aborted, report(exit.instance, "exited", exit.proof, signal)]);
+    const result = await Promise.race([aborted, report(instance, state, proof, signal)]);
     signal.throwIfAborted();
+    return result;
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort!);
   }
 }
 
-/** The launcher owns this queue. No entry is created for a child that might have spawned. */
+function processGone(pid: number) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
+/** Only the originating supervisor can convert a watched launch into a signed exit. */
 export class SupervisorRetirements {
   private readonly pending = new Map<string, PendingExit>();
   private timer?: NodeJS.Timeout;
@@ -38,9 +48,10 @@ export class SupervisorRetirements {
   private retryMs = 250;
 
   constructor(private readonly home: string, private readonly name: string,
-    private readonly verifies: (exit: PendingExit) => boolean) {}
+    private readonly verifies: (exit: PendingExit) => boolean,
+    private readonly recoveredExit: (launch: WatchedLaunch) => PendingExit | null) {}
 
-  private file(exit: PendingExit) { return this.name + "-" + announcementName(exit.instance) + ".json"; }
+  private file(instance: string) { return this.name + "-" + announcementName(instance) + ".json"; }
 
   private directory() {
     const dir = retirementDirectory(this.home);
@@ -49,13 +60,22 @@ export class SupervisorRetirements {
     return dir;
   }
 
-  private persist(file: string, exit: PendingExit) {
+  private persist(file: string, exit: PendingExit | WatchedLaunch) {
     try { return writeVoiceRecord(this.home, join(this.directory(), file), exit); }
     catch { return false; }
   }
 
+  watch(launch: WatchedLaunch) {
+    if (!this.persist(this.file(launch.instance), launch)) throw new Error("Could not persist the supervised voice launch.");
+  }
+
+  discardRefused(instance: string) {
+    try { removeVoiceRecord(this.home, join(this.directory(), this.file(instance))); }
+    catch { /* Recovery can still establish that the launcher is gone. */ }
+  }
+
   enqueue(exit: PendingExit, report: SupervisorReporter) {
-    const file = this.file(exit);
+    const file = this.file(exit.instance);
     if (!this.persist(file, exit)) this.pending.set(file, exit);
     this.enqueued = true;
     this.start(report);
@@ -99,8 +119,18 @@ export class SupervisorRetirements {
       for (const file of readdirSync(dir)) {
         if (!file.startsWith(this.name + "-announced-") || !file.endsWith(".json")) continue;
         try {
-          const exit = signedExit.parse(JSON.parse(readFileSync(join(dir, file), "utf8")));
-          if (this.file(exit) === file && this.verifies(exit)) records.set(file, exit);
+          if (records.has(file)) continue;
+          const path = join(dir, file);
+          const raw = readFileSync(path, "utf8");
+          const entry = queuedRecord.parse(JSON.parse(raw));
+          if (this.file(entry.instance) !== file) continue;
+          if ("pid" in entry) {
+            // A live launcher can replace its PID with the child's before dying.
+            // Re-read after observing death so stale evidence cannot retire that child.
+            if (!processGone(entry.pid) || readFileSync(path, "utf8") !== raw) { retry = true; continue; }
+            const exit = this.recoveredExit(entry);
+            if (exit) records.set(file, exit);
+          } else if (this.verifies(entry)) records.set(file, entry);
         } catch { retry = true; }
       }
     } catch { retry = true; }
@@ -108,7 +138,7 @@ export class SupervisorRetirements {
       if (signal.aborted) return false;
       if (this.pending.has(file)) this.persist(file, exit);
       try {
-        await reportExit(report, exit, signal);
+        await reportBeforeDeadline(report, exit.instance, "exited", exit.proof, signal);
         if (signal.aborted) return false;
         removeVoiceRecord(this.home, join(this.directory(), file));
         this.pending.delete(file);

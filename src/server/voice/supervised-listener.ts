@@ -27,13 +27,18 @@ export function confinedVoiceListener(stateHome: string, instance: string) {
     // The announcement is asynchronous. Check again before the kernel applies the policy.
     validateDirectories();
     const scratch = mkdtempSync(join(realpathSync(tmpdir()), "mission-voice-player-"));
-    const options = { env: { ...env, TMPDIR: scratch, TMP: scratch, TEMP: scratch, MISSION_VOICE_LISTENER_INSTANCE: instance }, stdio: "pipe" as const };
+    // The fixed startup gate must run unmodified before the requested executable.
+    const listenerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^(LD_|DYLD_)/u.test(name)));
+    const options = { env: { ...listenerEnv, TMPDIR: scratch, TMP: scratch, TEMP: scratch, MISSION_VOICE_LISTENER_INSTANCE: instance }, stdio: "pipe" as const };
     const cleanup = () => { void rm(scratch, { recursive: true, force: true }).catch(() => {}); };
     try {
       const macOS = process.platform === "darwin";
       const command = macOS ? FIXED_OS_EXECUTABLES.sandboxExec : FIXED_OS_EXECUTABLES.bubblewrap;
       const policy = macOS ? macPolicy(voice, models, retirements, scratch) : linuxPolicy(voice, models, retirements, scratch);
-      const child = spawn(command, [...policy, executable, ...args], options);
+      // The shell builtin reads one release line from the parent. exec preserves the process
+      // identity and the remaining listener stdin. EOF means the supervisor died before release.
+      const gate = 'IFS= read -r ready && [ "$ready" = go ] || exit 1\nexec "$@"';
+      const child = spawn(command, [...policy, FIXED_OS_EXECUTABLES.sh, "-p", "-c", gate, "voice-launch", executable, ...args], options);
       child.once("close", cleanup);
       return child;
     } catch (error) {

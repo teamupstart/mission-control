@@ -1074,8 +1074,12 @@ lease. Reannouncement restores speech eligibility and leaves any recovered
 Stop in force until silence is confirmed. Sending a signal still allows a live
 child to reannounce until the OS reports its exit. An accepted exit supersedes
 replay. If a launch fails before a child exists, the caller gets its launch
-error immediately. The supervisor persists the signed exit and retries it in
-the background, including after a reconnect or supervisor restart.
+error immediately. A start without an acknowledgement times out after five
+seconds. The supervisor persists the signed exit and retries it in the
+background, including after a reconnect or supervisor restart. It records its
+own PID before announcement and the sandbox child's PID before releasing the
+listener. A replacement launcher can therefore retire a launch interrupted
+between acknowledgement and spawn once the OS confirms the recorded PID is gone.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor
 sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of

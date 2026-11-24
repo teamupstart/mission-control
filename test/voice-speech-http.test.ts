@@ -748,6 +748,95 @@ test("a same-account signing file is rejected even when owner-only", () => {
   rmSync(file);
 });
 
+for (const playing of [false, true]) test("a launcher crash after an accepted start can retire only when safe: " +
+  (playing ? "the released player survives" : "before spawning"), { timeout: 10_000, skip: playing && process.platform !== "darwin" }, async t => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const credential = privateKey.export({ type: "pkcs8", format: "der" });
+  const launcher = fork(new URL("./helpers/voice-restart-supervisor.mjs", import.meta.url), [], {
+    execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc", "pipe"],
+  });
+  t.after(() => {
+    if (launcher.exitCode === null && launcher.signalCode === null) launcher.kill();
+    credential.fill(0); Object.assign(process.env, fixtureSupervisorEnv);
+  });
+  (launcher.stdio[4] as Writable).end(credential);
+  const announced = once(launcher, "message");
+  launcher.send({ state: playing ? "play" : "started", home });
+  const [start] = await announced;
+  Object.assign(process.env, start.env);
+  const peer = player();
+  const file = join(retirementDirectory(home), "shell-" + announcementName(start.instance) + ".json");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, launcher.pid);
+  assert.equal((await peer.report("started", start.instance, start.proof)).status, 200);
+  let playerPid: number | undefined;
+  if (playing) {
+    const ready = once(launcher, "message");
+    launcher.send({ state: "ack" });
+    const [child] = await ready;
+    assert.equal(typeof child.pid, "number");
+    playerPid = child.pid;
+    t.after(() => { if (playerPid) try { process.kill(playerPid, "SIGKILL"); } catch { /* Already reaped. */ } });
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, playerPid);
+  }
+  store.reset(); await peer.hello();
+  assert.equal((await peer.poll()).capture, false);
+  const replacement = createVoiceSupervisor("shell", privateKey);
+  t.after(() => replacement.pauseExitRetries());
+  const reports: string[] = [];
+  const report = async (instance: string, state: "started" | "exited", proof: string) => {
+    reports.push(instance);
+    assert.equal(state, "exited");
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+  };
+  replacement.retryPendingExits(home, report);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reports, []);
+  const crashed = once(launcher, "exit");
+  launcher.kill("SIGKILL"); await crashed;
+  if (playerPid) {
+    replacement.retryPendingExits(home, report);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reports, []);
+    assert.equal((await peer.poll()).capture, false);
+    process.kill(playerPid, "SIGTERM");
+    await t.waitFor(() => assert.throws(() => process.kill(playerPid!, 0), { code: "ESRCH" }));
+    playerPid = undefined;
+  }
+  replacement.retryPendingExits(home, report);
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
+  assert.deepEqual(reports, [start.instance]);
+  assert.equal((await peer.poll()).capture, true);
+});
+
+test("a stalled start times out before spawning and retires the accepted launch even if its acknowledgement arrives late", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => { signer.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
+  Object.assign(process.env, signer.daemonEnv);
+  const peer = player();
+  const reports: string[] = [];
+  let signal: AbortSignal | undefined;
+  let ack!: () => void;
+  const stalled = new Promise<void>(resolve => { ack = resolve; });
+  const failed = assert.rejects(signer.launch(home, process.execPath, ["--version"], {}, async (instance, state, proof, abort) => {
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+    reports.push(state);
+    if (state === "started") { signal = abort; return stalled; }
+  }), /started report timed out/);
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(4999);
+  assert.equal(signal?.aborted, false);
+  assert.deepEqual(reports, ["started"]);
+  t.mock.timers.tick(1);
+  await failed;
+  assert.equal(signal?.aborted, true);
+  ack();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reports, ["started", "exited"]);
+  assert.deepEqual(readdirSync(retirementDirectory(home)), []);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+});
+
 test("a supervised same-account child cannot read or change the daemon's recovery files", async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
   Object.assign(process.env, signer.daemonEnv);
@@ -794,6 +883,8 @@ test("a supervised same-account child cannot read or change the daemon's recover
     return;
   }
   const { instance, child } = launched;
+  const guarded = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
+  assert.equal(guarded.pid, child.pid);
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const completed = once(child, "close");
   const ready = process.platform === "darwin" ? once(child.stderr, "data") : null;

@@ -210,9 +210,18 @@ used as credential descriptors.
 Use the supervisor's `launch(stateHome, executable, args, env, report)` for
 speech-capable children. The report callback receives the instance, event and
 signature, and resolves when the daemon acknowledges that report. It returns
-`false` for a definitive refusal and throws when the outcome is unknown. After the
-start is acknowledged the launcher starts the executable
-under the OS filesystem sandbox. The child can read the voice models and write
+`false` for a definitive refusal and throws when the outcome is unknown.
+Before sending the start, the launcher durably records its own PID and a signature
+binding it to the launch instance under `voice-retirements/`. It waits up to
+five seconds for acknowledgement. On success it starts a confined shell that
+waits on the launcher's pipe. The launcher records the sandbox child's PID and
+signature before releasing the shell to exec the listener. Losing the launcher
+before release closes the pipe and the listener never starts.
+
+A replacement supervisor checks the recorded PID with the OS, rereads the
+record after observing that PID gone, and verifies its signature before signing
+an exit. A live or reused PID or an inconclusive OS result keeps the launch
+pending. The child can read the voice models and write
 to its own temporary directory. It cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
 The macOS launcher uses `/usr/bin/sandbox-exec` and forbids spawning descendants.
@@ -224,9 +233,9 @@ the child and rechecks the directories before spawn. The supervisor uses the
 instance it announced to report the child's exit. If the OS refuses to spawn
 the child, pre-spawn validation fails after announcement, or the start
 acknowledgement is lost, the launch helper returns the original error while
-the supervisor delivers the signed exit independently. It first stages the
-instance and its exit signature under `voice-retirements/` in the state home,
-in an owner-only file hidden from the listener. If storage is unavailable it
+the supervisor delivers the signed exit independently. It replaces the PID record
+with the instance and its exit signature in the same owner-only file hidden
+from the listener. If storage is unavailable it
 retains the exit in memory and retries the write. Each outstanding exit is
 retried with backoff until the daemon acknowledges or definitively refuses it.
 Each delivery attempt has five seconds to respond. A stalled transport leaves

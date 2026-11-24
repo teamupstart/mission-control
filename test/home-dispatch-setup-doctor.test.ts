@@ -1057,7 +1057,14 @@ test("setup has claude validate the marketplace before the swap, and a refusal l
 });
 
 test("a marketplace error that merely mentions it is already registered does not count, and the working install is not uninstalled", async () => {
-  for (const stderr of ["marketplace already registered but manifest is unreadable", "Marketplace 'x' already exists but is invalid", "already added, however the manifest could not be read"]) {
+  for (const stderr of [
+    "marketplace already registered but manifest is unreadable",
+    "Marketplace 'x' already exists but is invalid",
+    "already added, however the manifest could not be read",
+    "marketplace already registered; unable to read manifest",
+    "already added\nfailed to refresh marketplace contents",
+    "marketplace already registered (manifest has a syntax problem)",
+  ]) {
     const r = await rig({ version: "2.3.0" });
     try {
       r.claude.setInstalledVersion("2.1.0");
@@ -1070,5 +1077,37 @@ test("a marketplace error that merely mentions it is already registered does not
     } finally {
       await r.cleanup();
     }
+  }
+});
+
+test("the by-hand recovery for a stale build starts with the user-scope uninstall, whichever step failed", async () => {
+  // Uninstall itself failed, and a marketplace add failed while a stale user install is in place.
+  const failures: Record<string, { exitCode: number; stderr: string; times: number }>[] = [
+    { uninstall: { exitCode: 1, stderr: "plugin is in use", times: 5 } },
+    { "marketplace add": { exitCode: 1, stderr: "cannot read marketplace", times: 5 } },
+  ];
+  for (const failure of failures) {
+    const r = await rig({ version: "2.3.0" });
+    try {
+      r.claude.setInstalledVersion("2.1.0");
+      r.claude.update({ failures: failure });
+      const result = await r.run("setup");
+      assert.equal(result.code, 1);
+      const steps = result.out.split("To finish by hand, run:\n")[1]!.split("\n").slice(0, 3).map((l) => l.trim());
+      assert.equal(steps[0], bin(r) + " plugin uninstall " + MOD_ID + " --scope user");
+      assert.ok(steps[1]!.startsWith(bin(r) + " plugin marketplace add "));
+      assert.equal(steps[2], bin(r) + " plugin install " + MOD_ID + " --scope user");
+    } finally {
+      await r.cleanup();
+    }
+  }
+  // A fresh machine has nothing to uninstall, so its recovery is just add and install.
+  const fresh = await rig();
+  try {
+    fresh.claude.update({ failures: { install: { exitCode: 1, stderr: "nope", times: 5 } } });
+    const result = await fresh.run("setup");
+    assert.ok(!result.out.includes(" plugin uninstall "));
+  } finally {
+    await fresh.cleanup();
   }
 });

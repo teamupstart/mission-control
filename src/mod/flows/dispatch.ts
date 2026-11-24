@@ -8,10 +8,13 @@ import { confirmDraft, createDraft, fetchOptions, updateDraft, type FlowSession,
 /**
  * The dispatch dialogs and the draft (spec 7.5, 7.6, 7.11). P11 owns this file.
  *
- * The mod only relays: the daemon builds every page and every sentence about a draft, and the
- * mod shows them as written. It never reorders or rewords an option, never asks for a harness,
- * and never retries a refusal with changes the person did not ask for. Home-dispatched tasks pass
- * no runtime override anywhere (Focus guard 1): nothing here names one.
+ * Who owns what. The daemon owns the dispatch pages (Start, Kind, After work, Repo: their questions,
+ * options and order), the draft summary text and every refusal sentence; the mod shows those as
+ * written and never reorders or rewords a daemon option, asks for a harness, or retries a refusal
+ * with changes the person did not ask for. The mod owns its own dialogs: the Confirm dialog (Start now,
+ * Save to backlog, Change something, Cancel, with the intent's choice first) and the two free-text
+ * prompts it asks under Other (the task description, and a repository the daemon could not resolve).
+ * Home-dispatched tasks pass no runtime override anywhere (Focus guard 1): nothing here names one.
  */
 
 /** What a flow did, and the one line the person (and, for the tool, the model) is told. */
@@ -171,17 +174,17 @@ async function cancel(host: FlowHost, session: FlowSession, draftId: string): Pr
   return { outcome: "cancelled", line: CANCELLED_LINE };
 }
 
-/** A dismissed dialog counts as Cancel (7.11); before a draft exists there is nothing to cancel. */
-/** The session ended under the flow: there is no one left to tell, so it ends quietly (cf. fail() for `ended`). */
 /** Whether the Claude session that started the flow has ended. */
 function gone(session: FlowSession): boolean {
   return session.live !== undefined && !session.live();
 }
 
+/** The session ended under the flow: there is no one left to tell, so it ends quietly (cf. fail() for `ended`). */
 function ended(): FlowResult {
   return { outcome: "cancelled", line: CANCELLED_LINE };
 }
 
+/** A dismissed dialog counts as Cancel (7.11); before a draft exists there is nothing to cancel at the daemon. */
 function stop(host: FlowHost, session: FlowSession): FlowResult {
   // A session that has ended is not told it was cancelled.
   if (gone(session)) return ended();
@@ -336,7 +339,8 @@ export async function completeDraft(
 
 /**
  * The whole dispatch flow (7.11): Start (launcher entry only), Kind, After work, Repo, the draft,
- * the description, the confirm. Every step that needs the person is a dialog the daemon built.
+ * the description, the confirm. The pages come from the daemon; the description and repository
+ * prompts and the Confirm dialog are the mod's own (see the file header).
  */
 export async function runDispatchFlow(host: FlowHost, session: FlowSession, input: DispatchInput): Promise<FlowResult> {
   const first = await fetchOptions(host, session, {

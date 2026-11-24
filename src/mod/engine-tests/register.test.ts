@@ -266,9 +266,11 @@ test('the glance layer as drawn: banner, band with its 1 button, status, pane, a
 })
 
 // ---------------------------------------------------------------- P11: the command, the tool, the nudge
-// Dialogs (`$.ui.ask`) ride the engine's AskUserQuestion tool call, which this kit answers only
-// through a `tool.call` hook; the flows' dialogs are covered with the fake host in
-// `test/home-dispatch-mod-flows.test.ts`. This proves the registration and the hooks reach them.
+// The command, the tool and the intent nudge reach the flows through the real hooks module. Dialogs
+// (`$.ui.ask`) ride the engine's AskUserQuestion tool call, which this kit answers through a `tool.call`
+// hook; the tests near the end of this file complete a dispatch that way (a pick, and text typed under
+// Other) through both the registered command and the registered tool. The flows' many branches are
+// covered with the fake host in `test/home-dispatch-mod-flows.test.ts`.
 
 function dispatchWorld(on) {
   const seen = world(on, { flag: true })

@@ -34,8 +34,8 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "cancel-inventory" | "cancel-retry" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
-  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty" || scenario === "late-dirty" || scenario === "late-settled";
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "already-exited" | "default-timeout" | "never-started-dirty" | "settled" | "cancel-probe" | "cancel-inventory" | "cancel-retry" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
+  const timesOut = scenario === "already-exited" || scenario === "default-timeout" || scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty" || scenario === "late-dirty" || scenario === "late-settled";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -60,7 +60,7 @@ console.log(JSON.stringify({
   unlistedPresent: Object.hasOwn(process.env, "MC_DISPATCH_UNLISTED"),
   missingPresent: Object.hasOwn(process.env, "MC_DISPATCH_MISSING")
 }));
-process.stdin.resume();
+${scenario === "already-exited" ? "" : "process.stdin.resume();"}
 `, { mode: 0o700 });
   await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: process.env.MISSION_RESUME_GUARD,
     bundle: true, platform: "node", format: "esm", target: "node24" });
@@ -75,6 +75,8 @@ process.stdin.resume();
     saveAgentEnvironment([]);
     assert.equal(await launchAgentEnvironment(), undefined);
   }
+
+  if (scenario === "default-timeout") applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: false });
 
   const registry = new Registry();
   const { clone: repo } = originAndCloneAt(join(dir, scenario));
@@ -116,6 +118,10 @@ process.stdin.resume();
         return { ok: false, outcomeUnknown: false, error: "terminal declined this name" };
       }
       if (timesOut) {
+        if (scenario === "already-exited") {
+          const child = spawn(argv[0]!, argv.slice(1), { cwd, stdio: "ignore" });
+          assert.deepEqual(await once(child, "close"), [0, null]);
+        }
         delayed = { argv, cwd };
         return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
       }
@@ -172,8 +178,11 @@ process.stdin.resume();
     verifyMissionMcpTools: async () => ({ ok: true }), sleep: async () => {},
   }).dispatch(task.id);
 
-  if (timesOut) await Promise.race([retained, dispatch]);
-  else await dispatch;
+  if (timesOut && scenario !== "already-exited") {
+    await Promise.race([retained, dispatch]);
+    const returned = await Promise.race([dispatch.then(() => true), new Promise<boolean>((r) => setImmediate(() => r(false)))]);
+    assert.ok(returned, "the dispatch caller returns before the two-minute startup deadline");
+  } else await dispatch;
   const launched = registry.getTask(task.id)!;
   if (cancelAfterHandoff) {
     assert.ok(socketWasOpen && handoffSocket && launchHome, "the handoff was listening before cancellation");
@@ -189,10 +198,29 @@ process.stdin.resume();
     assert.equal(launched.worktreeLeaseId, null);
     return;
   }
+  if (scenario === "already-exited") {
+    assert.equal(launched.status, "failed");
+    assert.equal(launched.launchFailure?.terminalInactive, true, "the confirmed exit was handled before the startup deadline");
+    assert.equal(launched.worktreePath, null);
+    return;
+  }
   if (timesOut) {
     assert.equal(launched.status, "failed");
     assert.equal(launched.launchFailure?.sessionKept, true);
     assert.ok(delayed && existsSync(delayed.cwd), "an unconfirmed pane retains its checkout");
+    assert.ok(launched.launchFailure.pendingTerminal?.receipt, "the failed dispatch persisted its private observation");
+    const waitForReclaim = async (dirty: boolean) => {
+      const reconciled = () => {
+        const latest = registry.getTask(task.id)!;
+        return dirty ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false && !latest.worktreePath;
+      };
+      if (!reconciled()) await new Promise<void>((resolve) => {
+        const unsubscribe = registry.subscribe(() => {
+          if (reconciled()) { unsubscribe(); resolve(); }
+        });
+        t.after(unsubscribe);
+      });
+    };
     if (scenario === "settled") {
       registry.upsertTask({ ...launched, status: "done" });
       t.mock.timers.tick(RESUME_START_MS);
@@ -202,11 +230,11 @@ process.stdin.resume();
       assert.ok(existsSync(delayed.cwd));
       return;
     }
-    if (scenario === "never-started" || scenario === "never-started-dirty") {
+    if (scenario === "never-started" || scenario === "default-timeout" || scenario === "never-started-dirty") {
       const edit = join(delayed.cwd, "operator-edit.txt");
       if (scenario === "never-started-dirty") writeFileSync(edit, "work during startup");
       t.mock.timers.tick(RESUME_START_MS);
-      await dispatch;
+      await waitForReclaim(scenario === "never-started-dirty");
       const expired = registry.getTask(task.id)!;
       assert.equal(expired.status, "failed");
       if (scenario === "never-started-dirty") {
@@ -238,7 +266,7 @@ process.stdin.resume();
         assert.deepEqual(await exited, [0, null]);
         assert.equal(existsSync(observed.home), false);
         t.mock.timers.tick(RESUME_START_MS);
-        await dispatch;
+        await waitForReclaim(scenario === "exited-dirty");
         const failed = registry.getTask(task.id)!;
         assert.equal(failed.status, "failed");
         if (scenario === "exited-dirty") {
@@ -269,18 +297,7 @@ process.stdin.resume();
         assert.equal(registry.getTask(task.id)?.worktreeLeaseId, launched.worktreeLeaseId);
         return;
       }
-      // The dispatch already returned at the startup deadline. Wait for the registry
-      // to publish the outcome of the late wrapper's checkout safety check.
-      const reconciled = () => {
-        const latest = registry.getTask(task.id)!;
-        return scenario === "late-dirty" ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false && !latest.worktreePath;
-      };
-      if (!reconciled()) await new Promise<void>((resolve) => {
-        const unsubscribe = registry.subscribe(() => {
-          if (reconciled()) { unsubscribe(); resolve(); }
-        });
-        t.after(unsubscribe);
-      });
+      await waitForReclaim(scenario === "late-dirty");
       const latest = registry.getTask(task.id)!;
       if (scenario === "late-dirty") {
         assert.ok(existsSync(work));
@@ -324,6 +341,11 @@ test("a late wrapper exit preserves a task settled after the deadline", { timeou
 
 test("a backend timeout releases the failed task's checkout when its wrapper never starts",
   (t) => checkTerminalDispatch(t, "never-started"));
+
+test("a timed-out backend whose wrapper already exited settles without advancing the launch deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "already-exited"));
+test("a timeout with the preview disabled returns to the caller before the background release deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "default-timeout"));
 
 test("an edit made while waiting for an unstarted terminal wrapper survives the deadline",
   (t) => checkTerminalDispatch(t, "never-started-dirty"));

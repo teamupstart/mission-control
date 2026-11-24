@@ -1,12 +1,9 @@
-import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, readTerminalWrapperProcess, turnOneOutcomePath, type LaunchProcess } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import {
-  closeSync,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -29,6 +26,8 @@ import {
 import { WORK_UNIT_ENV_VAR } from "../shared/work-unit.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
+import { WRAPPER_EXIT_FILE } from "./terminal/dispatch-observation.ts";
+export { observeTerminalWrapperExit } from "./terminal/dispatch-observation.ts";
 import { probePadding, shellCommand } from "./terminal/shell.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
@@ -51,42 +50,9 @@ const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACH
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
 const pendingTerminalHomeChecks = new Set<() => void>();
-const WRAPPER_EXIT_FILE = "terminal-wrapper.exit";
+
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-/** Hold the inode through removal of the home. An unmarked, unlinked file is not proof of exit. */
-export function observeTerminalWrapperExit(stateHome: string, readOwner = readTerminalWrapperProcess) {
-  const fd = openSync(join(stateHome, WRAPPER_EXIT_FILE), "wx", 0o600);
-  const outcome = () => {
-    const file = fstatSync(fd);
-    return file.nlink === 0 ? file.size === 1 : null;
-  };
-  return {
-    confirmed: () => outcome() === true,
-    async waitForExit(stillOwned: () => boolean): Promise<boolean> {
-      let owner: LaunchProcess | null = null;
-      let retriedClaim = false;
-      while (stillOwned()) {
-        const exited = outcome();
-        if (exited !== null) return exited;
-        const current = await readOwner(stateHome, owner?.pid);
-        if (current !== "unknown") {
-          if (owner && (!current || current.pid !== owner.pid || current.startMs !== owner.startMs)) return outcome() === true;
-          if (!current && retriedClaim) return outcome() === true;
-          owner = current;
-          retriedClaim = true;
-        }
-        // The wrapper may have exited while the process table was being read.
-        const observed = outcome();
-        if (observed !== null) return observed;
-        await new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref());
-      }
-      return false;
-    },
-    close: () => closeSync(fd),
-  };
-}
 
 function sharedGoBuildCache(): string {
   mkdirSync(SHARED_GO_BUILD_CACHE, { recursive: true, mode: 0o700 });
@@ -205,17 +171,16 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
  * deadline (or shutdown), the daemon and shell compete to create the same private PID file.
  * A winning wrapper has installed its EXIT trap and owns cleanup for the rest of its life.
  */
-export function retainPendingTerminalHome(stateHome: string, timeoutMs: number) {
-  if (!liveDisposableStateHomes.delete(stateHome)) return { release() {}, unstarted: Promise.resolve(false) };
+export function retainPendingTerminalHome(stateHome: string, timeoutMs: number, revokeUnstarted: () => boolean) {
+  const deadline = Date.now() + timeoutMs;
+  if (!liveDisposableStateHomes.delete(stateHome)) return { deadline, release() {}, unstarted: Promise.resolve(false) };
   let reportUnstarted!: (value: boolean) => void;
   const unstarted = new Promise<boolean>((resolve) => { reportUnstarted = resolve; });
   const release = () => {
     if (!pendingTerminalHomeChecks.delete(release)) return;
     clearTimeout(timer);
     try {
-      writeFileSync(join(stateHome, LAUNCH_PID_FILE), "", { flag: "wx", mode: 0o600 });
-      reportUnstarted(true);
-      cleanupDisposableAgentStateHome(stateHome);
+      reportUnstarted(revokeUnstarted());
     } catch (error) {
       // A missing home can belong to a wrapper that started and already exited.
       reportUnstarted(false);
@@ -225,7 +190,7 @@ export function retainPendingTerminalHome(stateHome: string, timeoutMs: number) 
   };
   const timer = setTimeout(release, timeoutMs).unref();
   pendingTerminalHomeChecks.add(release);
-  return { release, unstarted };
+  return { deadline, release, unstarted };
 }
 
 /** Release the disposable home named by a child environment. */

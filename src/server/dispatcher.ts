@@ -12,6 +12,7 @@ import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import {
   hasOpenLaunchFailure,
+  UNKNOWN_TERMINAL_GUIDANCE,
   launchWorkKey,
   newLaunchFailure,
   type TaskLaunchFailure,
@@ -19,6 +20,7 @@ import {
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import type { NamedAgentEnvironment } from "./executables/named-variable.ts";
 import { launchAgentEnvironment } from "./agent-environment.ts";
+import { discardTerminalReceipt } from "./terminal/dispatch-observation.ts";
 import { RESUME_START_MS } from "./terminal/resume-lease.ts";
 import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
@@ -1448,11 +1450,13 @@ export class Dispatcher {
         ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId)
         : unconfirmedSpawn ? null : false);
       if (alive !== false) {
+        const pendingTerminal = alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError
+          ? err.exitRecord.persist(err.deadline) : undefined;
         this.patch(taskId, {
           status: "failed",
           // Its agent and worktree are kept, so this failure is answered by opening or
           // cancelling it - never by a retry that would reclaim them.
-          launchFailure: { ...launchFailure, sessionKept: true },
+          launchFailure: { ...launchFailure, sessionKept: true, pendingTerminal },
           error:
             alive === true
               ? embedded === true
@@ -1460,7 +1464,7 @@ export class Dispatcher {
                   ? `${message} - its managed session was kept; Focus or Cancel it`
                   : `${message} - its session and worktree were kept; open or Cancel it`
                 : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
-              : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
+              : message + UNKNOWN_TERMINAL_GUIDANCE,
         });
         if (alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError) {
           const ownsFailure = () => {
@@ -1472,26 +1476,30 @@ export class Dispatcher {
           const reclaim = async () => {
             if (!ownsFailure()) return;
             const failure = this.registry.getTask(taskId)!.launchFailure!;
-            this.patch(taskId, { error: message, launchFailure: { ...failure, sessionKept: false, terminalInactive: true } });
+            this.patch(taskId, { error: message, launchFailure: { ...failure, sessionKept: false, terminalInactive: true, pendingTerminal: undefined } });
             const checkCheckout = (path: string) => inactiveTerminalCheckoutBlocker(path,
               taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider);
             await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout);
           };
-          if (await err.unstarted || err.exitRecord.confirmed()) {
+          if (err.exitRecord.confirmed()) {
             await reclaim();
           } else if (ownsFailure()) {
-            // Return the failed dispatch at the deadline. Only this attempt can reconcile
-            // a later exit, and observing it must never keep the daemon alive.
+            // Dispatch has already reported the backend timeout. Neither the launch deadline
+            // nor a surviving wrapper's eventual exit may hold the caller here.
             awaitingLateExit = true;
-            void err.exitRecord.waitForExit(ownsFailure).then(async (exited) => {
-              if (exited) await reclaim();
+            void err.unstarted.then(async (unstarted) => {
+              if (ownsFailure() && (unstarted || await err.exitRecord.waitForExit(ownsFailure))) await reclaim();
             }).catch((error) => {
               console.warn(`[dispatch] could not reconcile late terminal exit for task ${taskId}:`, error);
             }).finally(() => {
               err.exitRecord.close();
+              if (pendingTerminal && this.registry.getTask(taskId)?.launchFailure?.pendingTerminal?.receipt !== pendingTerminal.receipt) {
+                discardTerminalReceipt(pendingTerminal.receipt);
+              }
               if (currentAttempt()) this.dispatchAttempts.delete(taskId);
             });
           }
+          if (!awaitingLateExit && pendingTerminal) discardTerminalReceipt(pendingTerminal.receipt);
         }
       } else {
         this.patch(taskId, {
@@ -3777,17 +3785,17 @@ export async function spawnUniquely(
         fallbackArgv: fallbackAgentArgs && [agentBin, ...fallbackAgentArgs],
       });
       argv = handoff.argv;
-      pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+      pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);
     } else {
       argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     }
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
   } catch (error) {
     if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord) {
-      pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+      pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);
       const record = exitRecord;
       exitRecord = undefined; // The dispatcher owns the observation until the attempt settles.
-      throw new UnconfirmedDispatchError(error.message, pending.unstarted, record);
+      throw new UnconfirmedDispatchError(error.message, pending.deadline, pending.unstarted, record);
     }
     await handoff?.dispose();
     if (pending) pending.release();
@@ -3801,6 +3809,7 @@ export async function spawnUniquely(
 class UnconfirmedDispatchError extends TerminalLaunchError {
   constructor(
     message: string,
+    readonly deadline: number,
     readonly unstarted: Promise<boolean>,
     readonly exitRecord: ReturnType<typeof observeTerminalWrapperExit>,
   ) { super(message, true); }

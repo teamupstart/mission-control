@@ -165,6 +165,7 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { discardTerminalReceipt, pruneTerminalReceipts, restoredTerminalInactive } from "./terminal/dispatch-observation.ts";
 import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
@@ -186,7 +187,7 @@ import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsAr
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
-import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { newLaunchFailure, UNKNOWN_TERMINAL_GUIDANCE, type PendingTerminalLaunch, type TaskLaunchFailure } from "@shared/launch-failure.ts";
 import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
@@ -702,6 +703,12 @@ function taskCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
+}
+
+function pendingTerminalLaunch(task: Task | undefined): PendingTerminalLaunch | undefined {
+  if (task?.status === "failed" && !task.sessionId && !task.homeName && task.launchFailure?.sessionKept) {
+    return task.launchFailure.pendingTerminal;
+  }
 }
 
 function needsStartupReconcile(task: Task): boolean {
@@ -1325,7 +1332,16 @@ export class TaskManager {
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
-    for (const t of registry.listTasks()) {
+    const startupTasks = registry.listTasks();
+    const receipts = new Set<string>();
+    for (const t of startupTasks) {
+      const pending = pendingTerminalLaunch(t);
+      if (pending) {
+        receipts.add(pending.receipt);
+        // An unconfirmed terminal has no backend identity for the regular home probe.
+        void this.restorePendingTerminal(t.id, pending);
+        continue;
+      }
       const recovery = t.pipelineCommissionId
         ? registry.pipelineCommission(t.pipelineCommissionId)?.recovery
         : null;
@@ -1379,6 +1395,8 @@ export class TaskManager {
         },
       });
     }
+
+    pruneTerminalReceipts(receipts);
 
     // A bound session can also go away while the daemon is UP: the (k) kill, a terminal
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
@@ -7455,6 +7473,25 @@ export class TaskManager {
     }
     this.registry.removeTask(id);
     return { ok: true };
+  }
+
+  /** Use only this failed attempt's durable proof. The restart policy retains every checkout,
+   * so changing the launch outcome neither tears down resources nor resets the retention clock. */
+  private async restorePendingTerminal(taskId: string, pending: PendingTerminalLaunch): Promise<void> {
+    const ownsFailure = () => {
+      return !this.stopping && pendingTerminalLaunch(this.registry.getTask(taskId))?.receipt === pending.receipt
+        && !transferForTask(taskId);
+    };
+    const inactive = await restoredTerminalInactive(pending, ownsFailure);
+    if (inactive && ownsFailure()) {
+      const current = this.registry.getTask(taskId)!;
+      this.registry.upsertTask({
+        ...current, updatedAt: Date.now(),
+        error: current.error?.endsWith(UNKNOWN_TERMINAL_GUIDANCE) ? current.error.slice(0, -UNKNOWN_TERMINAL_GUIDANCE.length) : current.error,
+        launchFailure: { ...current.launchFailure!, sessionKept: false, terminalInactive: true, pendingTerminal: undefined },
+      });
+    }
+    if (pendingTerminalLaunch(this.registry.getTask(taskId))?.receipt !== pending.receipt) discardTerminalReceipt(pending.receipt);
   }
 
   /**

@@ -24,6 +24,12 @@ import { dispatchPhase } from "./session.ts";
 export const LAUNCH_FAILURE_PHASES = ["prepare", "launch", "discover", "handover"] as const;
 export type LaunchFailurePhase = (typeof LAUNCH_FAILURE_PHASES)[number];
 
+export const UNKNOWN_TERMINAL_GUIDANCE = " - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it";
+
+export const TERMINAL_RECEIPT_NAME = /^session-[A-Za-z0-9]{6}\.\d+\.\d+$/;
+const PendingTerminalLaunchSchema = z.object({ receipt: z.string().regex(TERMINAL_RECEIPT_NAME), deadline: z.number().int().nonnegative() });
+export type PendingTerminalLaunch = z.infer<typeof PendingTerminalLaunchSchema>;
+
 /**
  * The persisted record, in `tasks.launch_failure` as JSON.
  *
@@ -50,6 +56,8 @@ export const TaskLaunchFailureSchema = z.object({
   sessionKept: z.boolean().default(false),
   /** The daemon confirmed this terminal wrapper exited or never started. A retained checkout still blocks retry. */
   terminalInactive: z.literal(true).optional(),
+  /** Identifies the private exit record for a terminal whose backend timed out before returning a home. */
+  pendingTerminal: PendingTerminalLaunchSchema.optional(),
 });
 export type TaskLaunchFailure = z.infer<typeof TaskLaunchFailureSchema>;
 

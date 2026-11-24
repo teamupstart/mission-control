@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { LlmRunnerId } from "../src/shared/llm.ts";
 import type { AgentType } from "../src/shared/types.ts";
-import type { VoiceDecisionProvider, VoiceState } from "../src/shared/voice.ts";
+import type { VoiceDecisionProvider } from "../src/shared/voice.ts";
 import {
   effectiveDecisionProvider,
   type VoiceDecisionResult,
@@ -331,7 +331,7 @@ function routerRig(answer: (questions: readonly VoiceQuestion[]) => Promise<Voic
   const asked: VoiceQuestion[][] = [];
   const decider: VoiceDecider = { ask: async (questions) => { asked.push([...questions]); return answer(questions); } };
   const router = new VoiceRouter(
-    () => ({ mode: "listening", roster } as unknown as VoiceState),
+    () => ({ mode: "listening", roster, backend: "fluidaudio" }),
     () => ({ enabled: true, seconds: 4 }),
     { deliver: async (target, text, id) => { delivered.push([target.name, text, id]); return "queued"; } },
     (card) => cards.push(structuredClone(card)),
@@ -522,7 +522,7 @@ test("identical spoken names at the start or a possible split show the candidate
 test("a doubtful first name asks who, and the answer is the target", async () => {
   const roster = ["Steve", "Stevie"].map((n) => name(n, "codex"));
   const cards: VoiceCard[] = [];
-  const router = new VoiceRouter(() => ({ mode: "listening", roster } as unknown as VoiceState), () => ({ enabled: true, seconds: 4 }),
+  const router = new VoiceRouter(() => ({ mode: "listening", roster, backend: "fluidaudio" }), () => ({ enabled: true, seconds: 4 }),
     { deliver: async () => "sent" }, (card) => cards.push(structuredClone(card)),
     { ask: async (questions, options) => {
       assert.deepEqual(options?.agents, ["codex", "codex"]);
@@ -563,14 +563,16 @@ test("a quick step publishes no resolving card", async () => {
 
 for (const choice of ["split", null]) {
   test(`model completion preserves cancel order when it becomes ${choice ? "pending" : "unsure"}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
     let finish!: (result: VoiceDecisionResult) => void;
     const { router, cards, delivered } = routerRig(() => new Promise(resolve => { finish = resolve; }));
     t.after(() => router.reset());
-    const accept = (id: string, text: string) => router.accept(VoiceUtteranceSchema.parse({
-      id, text, capturedAt: 100, backend: "fluidaudio",
+    const accept = (id: string, text: string, capturedAt = 100) => router.accept(VoiceUtteranceSchema.parse({
+      id, text, capturedAt, backend: "fluidaudio",
     }));
-    await accept("older", SPLIT.text);
+    await accept("older", SPLIT.text, 101);
     const original = router.pendingVoiceActions[0];
+    assert.equal(original?.openedAt, 100);
     await accept("newer", "Will, check the queue");
     finish(answered(choice));
     await router.resolution("older");

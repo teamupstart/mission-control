@@ -9,7 +9,7 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import type { VoiceConfig, VoiceState } from "@shared/voice.ts";
+import type { VoiceBackend, VoiceConfig, VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
 
@@ -28,6 +28,7 @@ export interface PendingVoiceAction {
 
 const HISTORY_LIMIT = 50;
 const MAX_UNSURE_CARDS = 5;
+const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
@@ -135,7 +136,7 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => VoiceState,
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly publish: (card: VoiceCard) => void,
@@ -159,18 +160,22 @@ export class VoiceRouter {
   }
 
   async accept(utterance: VoiceUtterance): Promise<boolean> {
-    const { mode, roster } = this.state();
-    if (mode !== "listening" && mode !== "push-to-talk") return false;
+    const { mode, roster, backend } = this.state();
+    if ((mode !== "listening" && mode !== "push-to-talk") || backend !== utterance.backend) return false;
+    const now = Date.now();
+    if (utterance.capturedAt > now + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    // A small clock difference must not put an open action in the future of its own controls.
+    const capturedAt = Math.min(utterance.capturedAt, now);
     const { id } = utterance;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
     const unsureCards = Array.from(this.open.values())
-      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= utterance.capturedAt)
+      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= capturedAt)
       .map(({ card }) => card);
     // Bind every potential part to the roster session present when the utterance arrived.
     const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
-    const entry: HeardEntry = { id, time: utterance.capturedAt, text: utterance.text, outcome: "ignored",
+    const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (decision.kind === "ignored") {
@@ -182,10 +187,10 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const action = this.latestActionAt(utterance.capturedAt);
+        const action = this.latestActionAt(capturedAt);
         if (action) { entry.detail = action.id; action.cancel(); }
         else entry.rule = "nothing-pending";
-      } else if (!await this.pick(decision.cardId, decision.candidateId, utterance.capturedAt)) {
+      } else if (!await this.pick(decision.cardId, decision.candidateId, capturedAt)) {
         entry.outcome = "ignored";
         entry.rule = "candidate-unavailable";
       }
@@ -202,7 +207,7 @@ export class VoiceRouter {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
-    await this.openCard({ card, entry, message: decision.text, command: decision.command }, utterance.capturedAt);
+    await this.openCard({ card, entry, message: decision.text, command: decision.command }, capturedAt);
     return true;
   }
 
@@ -228,7 +233,7 @@ export class VoiceRouter {
         parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
     };
     this.open.set(id, item);
-    this.pendingVoiceActions.push({ id, kind: "card", openedAt: utterance.capturedAt, cancel: () => this.cancel(id) });
+    this.pendingVoiceActions.push({ id, kind: "card", openedAt: entry.time, cancel: () => this.cancel(id) });
     item.timer = setTimeout(() => { if (this.open.get(id) === item) this.publish(item.card); }, VOICE_RESOLVING_AFTER_MS);
     item.timer.unref?.();
     const agents = decision.candidates.map((candidate) => candidate.agent);
@@ -256,12 +261,12 @@ export class VoiceRouter {
             card.candidates.push({ kind: "agent", id, title: target.name, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
           }
         }
-        await this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, utterance.capturedAt);
+        await this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, entry.time);
         return;
       }
       if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
       await this.openCard({ ...item, timer: undefined,
-        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } }, utterance.capturedAt);
+        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } }, entry.time);
     };
     const done = settle().finally(() => { this.resolutions.delete(id); });
     this.resolutions.set(id, done);

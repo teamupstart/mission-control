@@ -159,7 +159,7 @@ export function registerVoiceUtteranceRoutes(
   decider: VoiceDecider = defaultVoiceDecider(),
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
-  const router = new VoiceRouter(() => voiceStateStore.state(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider);
+  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider);
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });

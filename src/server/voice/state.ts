@@ -114,6 +114,14 @@ export class VoiceStateStore {
     };
   }
 
+  routingState() {
+    const { mode, roster } = this.state();
+    const reported = this.hello?.hello.backend ?? null;
+    const configured = this.deps.config().backend;
+    const backend = configured === "auto" || configured === reported ? reported : null;
+    return { mode, roster, backend };
+  }
+
   /**
    * The microphone permission the `voice-microphone` Setup row reports. A live denial from either
    * source wins, as it does for the `microphone` reason. Otherwise the newest reading counts, so

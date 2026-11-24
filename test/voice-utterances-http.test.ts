@@ -77,6 +77,40 @@ test("token and schema gates, muted drop, and push-to-talk acceptance", async ()
   assert.deepEqual(await (await say("Steve push to talk")).json(), { accepted: true });
 });
 
+test("only the selected live recognizer can open or cancel a card after switching backends", async (t) => {
+  const configure = (backend: string) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ backend }) });
+  const sayWithSherpa = (text: string, id: string) =>
+    post("/voice/utterances", { ...capture(text, id), backend: "sherpa-onnx" }, token);
+  t.after(async () => { await configure("auto"); });
+  await say("Will keep this", "pending");
+  assert.equal((await configure("sherpa-onnx")).status, 200);
+  assert.deepEqual(await (await say("cancel", "retry")).json(), { accepted: false });
+  assert.deepEqual(await (await sayWithSherpa("cancel", "retry")).json(), { accepted: false });
+  await post("/voice/listener/hello", { backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true }, token);
+  await configure("auto");
+  assert.deepEqual(await (await say("Will stale", "stale")).json(), { accepted: false });
+  assert.deepEqual(await (await say("cancel", "retry")).json(), { accepted: false });
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["pending"]);
+  assert.deepEqual(await (await sayWithSherpa("cancel", "retry")).json(), { accepted: true });
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
+});
+
+test("future captures beyond clock tolerance are dropped and a tolerated capture can be cancelled immediately", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const unsure = capture("Steven ask Will about the build", "clock");
+  const postAt = (capturedAt: number) => post("/voice/utterances", { ...unsure, capturedAt }, token);
+  assert.deepEqual(await (await postAt(now + 1001)).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  assert.equal(cards.length, 0);
+  assert.deepEqual(await (await postAt(now + 1000)).json(), { accepted: true });
+  await resolved(unsure.id);
+  await say("cancel");
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["clock", "unsure"], ["clock", "cancelled"]]);
+});
+
 test("capture IDs must address a single card action URL segment", async () => {
   for (const id of [".", "..", "%2e", "a/b", "x?y", "x#y", "a b"]) {
     assert.equal((await say("Steve check the build", id)).status, 400, id);
@@ -232,6 +266,17 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
     assert.equal((await act(id, "send-now")).status, 200);
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
+});
+
+test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
+  const before = interrupts.length;
+  await say("“Will, ” stop", "address-quote");
+  assert.equal((await act("address-quote", "send-now")).status, 200);
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  await say("“Will, ” “stop”", "message-quote");
+  assert.equal((await act("message-quote", "send-now")).status, 200);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
+  assert.equal(interrupts.length, before + 1);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {

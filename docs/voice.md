@@ -23,6 +23,9 @@ A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+The capture must name the backend in the live listener’s hello and agree with any explicit
+backend selection. The daemon drops captures dated more than one second ahead of its clock.
+For smaller positive clock differences it uses receipt time for ordering and Recently heard.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

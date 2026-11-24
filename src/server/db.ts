@@ -6417,20 +6417,26 @@ export function workCycleForBoundSession(sessionId: string, logicalKey: string):
     AND state IN ('sending', 'uncertain') LIMIT 1`).get(sessionId, logicalKey, sessionId);
   if (held || handoff) {
     const bind = () => {
+      let movedHandoff = false;
       if (handoff) {
         // Each key has its own generation counter. Translate an unfinished handoff before
         // processing the first native event, which can itself be the receiving turn's end.
-        d.prepare(`UPDATE pending_turns SET spoken_handoff_key = ?, spoken_handoff_generation =
+        const moved = d.prepare(`UPDATE pending_turns SET spoken_handoff_key = ?, spoken_handoff_generation =
           COALESCE((SELECT generation FROM session_work_cycles WHERE logical_key = ?), 0)
           WHERE note_key IN (?, ?) AND spoken_handoff_key = ? AND state IN ('sending', 'uncertain')
           AND spoken_handoff_generation = COALESCE((SELECT generation FROM session_work_cycles WHERE logical_key = ?), 0)`)
           .run(logicalKey, logicalKey, sessionId, logicalKey, sessionId, sessionId);
+        movedHandoff = moved.changes > 0;
       }
-      if (!held) return;
+      if (!held && !movedHandoff) return;
+      // The first event on the native key can be Stop. Move the active bit along with
+      // the handoff so that event can complete it before a late receipt arrives.
       d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold)
-        SELECT ?, updated_at, 1, 1 FROM session_work_cycles WHERE logical_key = ? AND spoken_hold = 1
-        ON CONFLICT(logical_key) DO UPDATE SET active = 1, spoken_hold = 1`).run(logicalKey, sessionId);
-      d.prepare("UPDATE session_work_cycles SET spoken_hold = 0 WHERE logical_key = ?").run(sessionId);
+        SELECT ?, updated_at, 1, spoken_hold FROM session_work_cycles WHERE logical_key = ? AND active = 1
+        ON CONFLICT(logical_key) DO UPDATE SET active = 1,
+          updated_at = MAX(updated_at, excluded.updated_at),
+          spoken_hold = MAX(spoken_hold, excluded.spoken_hold)`).run(logicalKey, sessionId);
+      d.prepare("UPDATE session_work_cycles SET active = 0, spoken_hold = 0 WHERE logical_key = ?").run(sessionId);
     };
     if (d.isTransaction) bind();
     else inTransaction(bind);

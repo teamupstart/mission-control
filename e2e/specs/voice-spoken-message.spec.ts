@@ -195,3 +195,59 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
     await feedback.screenshot({ path: join(dir, "earlier-failure.png") });
   }
 });
+
+test("Send now updates the compatible question's spoken card and delivers the words", async ({ dashboard: page, daemon, request }) => {
+  const title = "Which release?";
+  const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
+    repoRoot: daemon.repo, title: "Verify the release", intent: "Verify the release", callSign: "Steve",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  const task = await created.json() as Task;
+  let session!: Session;
+  await expect.poll(async () => {
+    const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    session = sessions.find(s => s.task?.id === task.id)!;
+    return session?.agentSessionId && session.state;
+  }, { timeout: 60_000 }).toBe("idle");
+
+  const headers = { "x-harness-token": voiceToken(daemon) };
+  const flag = (id: string, enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
+    data: { kind: "flag", id, enabled },
+  });
+  expect((await flag("async-input", false)).ok()).toBe(true);
+  const ask = await request.post(`${daemon.baseURL}/mcp/reviews`, { headers, data: {
+    env: {}, sessionId: session.id, kind: "input", title, body: title, snoozable: true, asyncCapable: true, convertible: true,
+  } });
+  expect(ask.ok(), await ask.text()).toBe(true);
+  const review = await ask.json();
+  expect(review.wait).toBe("call");
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) expect((await flag(id, true)).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+
+  // Phase 5's dashboard receives cards on its event stream. Phase 6 owns their controls.
+  const devtools = await page.context().newCDPSession(page);
+  await devtools.send("Network.enable");
+  const states: string[] = [];
+  devtools.on("Network.eventSourceMessageReceived", ({ data }) => {
+    const event = JSON.parse(data);
+    if (event.type === "voice_card" && event.card.id === "convert-release") states.push(event.card.state);
+  });
+  await page.reload();
+  await expect(page.locator(".pulse")).not.toHaveClass(/is-down/);
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+  const wait = request.get(`${daemon.baseURL}/mcp/reviews/${review.id}/wait?convertible=1`, { headers });
+  expect(await (await say(daemon, "Steve, verify the release", { id: "convert-release" })).json()).toEqual({ accepted: true });
+  await expect.poll(() => states).toContain("pending");
+  expect((await request.post(`${daemon.baseURL}/api/voice/cards/convert-release/send-now`)).ok()).toBe(true);
+  expect((await (await wait).json()).converted.receipt).toContain(review.id);
+  await expect.poll(() => states.at(-1)).toBe("sent");
+  expect(states).not.toContain("held");
+  const reply = page.getByText(/Mock reply to: verify the release/).first();
+  await expect(reply).toBeVisible({ timeout: 30_000 });
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("voice-question-conversion");
+    mkdirSync(dir, { recursive: true });
+    await reply.screenshot({ path: join(dir, "delivered-reply.png") });
+  }
+});

@@ -18,6 +18,7 @@ import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daem
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { ReviewWaitResponse } from "@shared/async-input.ts";
 import type { Task } from "@shared/types.ts";
@@ -241,7 +242,8 @@ function heartbeat(call?: BlockingCall): () => void {
  */
 async function waitForResolution(id: string, call?: BlockingCall, convertible = false): Promise<ReviewWaitResponse> {
   const beat = heartbeat(call);
-  let retried = false;
+  const retryDelays = [250, 500, 1000, 2000, 4000, 8000];
+  let failures = 0;
   try {
     for (;;) {
       if (call?.signal.aborted) throw new Error("the client cancelled this request");
@@ -251,11 +253,14 @@ async function waitForResolution(id: string, call?: BlockingCall, convertible = 
         const res = await http(`/mcp/reviews/${id}/wait${query}`, "GET", undefined, false, call?.signal);
         if (!res.ok) throw new Error(`harness wait ${res.status}`);
         review = await res.json() as ReviewWaitResponse;
-        retried = false;
+        failures = 0;
       } catch (err) {
-        // A dropped response can follow a committed conversion. Replay the read once.
-        if (!convertible || retried || call?.signal.aborted || !(err instanceof TypeError)) throw err;
-        retried = true;
+        // The receipt can commit just before daemon shutdown. Allow time to bind the port again.
+        const backoff = retryDelays[failures];
+        if (!convertible || backoff === undefined || call?.signal.aborted || !(err instanceof TypeError)) throw err;
+        failures++;
+        beat();
+        await delay(backoff, undefined, { signal: call?.signal });
         continue;
       }
       if (convertible && review.converted && !call?.signal.aborted) return review;

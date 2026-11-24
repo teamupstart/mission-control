@@ -9,7 +9,7 @@ import { asyncInputReceipt } from "../src/shared/async-input.ts";
 import { requestInputReview } from "../src/shared/request-input.ts";
 import { app, home, pending, post, registry, reviews, token } from "./helpers/voice-http.ts";
 
-test("the MCP child recovers its dropped receipt after a legacy duplicate and operator answer before the retry", async t => {
+test("the MCP child recovers its dropped receipt after a brief daemon outage, a legacy duplicate and an operator answer", async t => {
   const sessionId = "sdk:Will";
   const question = "Which build?";
   const ask = requestInputReview({ question });
@@ -19,6 +19,7 @@ test("the MCP child recovers its dropped receipt after a legacy duplicate and op
   );
   let legacyResponse: Response | undefined;
   let legacyPollStatus: number | undefined;
+  let restart: NodeJS.Timeout | undefined;
   let polls = 0;
   const receipts: string[] = [];
   const listener = getRequestListener(app.fetch);
@@ -37,14 +38,18 @@ test("the MCP child recovers its dropped receipt after a legacy duplicate and op
         headers: { "x-harness-token": token }, signal: AbortSignal.timeout(1000),
       })).status;
       reviews.resolve(row.id, "answer", "Use the nightly build.");
+      // Drop the committed response and leave the port closed across the first retry.
+      daemon.close();
+      restart = setTimeout(() => daemon.listen(address.port, "127.0.0.1"), 650);
       return res.destroy();
     }
     res.end(JSON.stringify(result));
   });
   await new Promise<void>(resolve => daemon.listen(0, "127.0.0.1", resolve));
-  t.after(() => daemon.close());
-  const address = daemon.address();
-  assert.ok(address && typeof address !== "string");
+  t.after(() => { clearTimeout(restart); daemon.close(); });
+  const bound = daemon.address();
+  assert.ok(bound && typeof bound !== "string");
+  const address = bound;
   const client = new Client({ name: "voice-wait-test", version: "1" });
   t.after(() => client.close());
   await client.connect(new StdioClientTransport({

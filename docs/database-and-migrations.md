@@ -237,7 +237,9 @@ stamp whose reservation is missing. Its uncertain outbox row still awaits the op
 marking it sent cannot establish a receiving turn or hold Foreman. If a discarded capture is
 replayed with the same outbox ID and revision, it receives a new UUID. A late receipt from the
 first handoff cannot retire the new row or confirm its reservation.
-A restart before the guard leaves no transcript reservation. After the guard, the ledger can
+A claim from the guarded delivery protocol records `spoken_requires_guard`. If the daemon restarts
+before any handoff stamp or reservation exists, it returns the composed message to the queue.
+A partial stamp or a legacy claim without this marker remains uncertain. After the guard, the ledger can
 bind the spoken words even after the pending row retires. For databases from earlier builds
 of this phase, an SDK client UUID can identify its native turn directly. A terminal binding
 needs its saved file and prefix proof to display the disclosure, even if the native ID and
@@ -268,6 +270,7 @@ including newer handoffs still inside their receipt window. Before expiring an u
 payload it yields between pages, then rechecks the saved locations, file revisions and eligible rows.
 An unchanged SDK-only file can reuse a complete scan for the same receipt IDs. A missing,
 unreadable or changing file is retried later.
+Hourly terminal cleanup prepares prefix proofs in the worker and rechecks the revision before binding.
 Archived scans bind only spoken receipts and respect native turns already claimed by other senders.
 Delegated and review deliveries bind against the live transcript.
 Pending uncertain attempts remain available for the operator to resolve.
@@ -283,7 +286,10 @@ hold and tells the operator they can repeat the message.
 If the writer appends during the read, a second matching hash through that same offset
 confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
 The live dashboard and backward history pages verify visible text-bound receipts in a worker.
-Each page requests its distinct handoff offsets. An unrelated append needs no disclosure proof.
+Each page requests its distinct handoff offsets and its fixed end. If the file grows during
+verification, matching proofs on either side of a reread validate the original page while the
+writer continues appending. A changed prefix or replaced file invalidates the disclosure.
+An unrelated append needs no disclosure proof.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 The same transaction records the conversation and fingerprint in `session_spoken_releases`.
 The next ledger read rechecks competing deliveries and acknowledges that release atomically,

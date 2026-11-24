@@ -403,11 +403,15 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   const reader = native.read as Required<Pick<typeof native.read, "boundary" | "prepareHandoffBoundaries">>;
   const sync = t.mock.method(reader, "boundary");
   let appendDuringVerification = false;
+  let rewritePrefix = false;
   const prepare = reader.prepareHandoffBoundaries.bind(reader);
   const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
     const result = await prepare(...args);
     if (appendDuringVerification) {
-      appendDuringVerification = false;
+      if (rewritePrefix) {
+        rewritePrefix = false;
+        writeFileSync(path, readFileSync(path, "utf8").replace("pppp", "edit"));
+      }
       appendFileSync(path, turn("during-verification", "appended while reading history"));
     }
     return result;
@@ -417,20 +421,26 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   const opened = await firstFrame();
   assert.ok(opened.type === "init");
   assert.deepEqual(spokenIds(opened.messages), ["native-visible-first", "native-visible-second"]);
-  assert.deepEqual(worker.mock.calls[0]?.arguments, [path, offsets, false]);
+  assert.deepEqual(worker.mock.calls[0]?.arguments, [path, [...offsets, opened.pos], false]);
   appendFileSync(path, turn("advance-revision", "more output"));
   appendDuringVerification = true;
-  const history = await app.request("/api/sessions/s1/transcript?before=" + statSync(path).size, { headers: { host: "127.0.0.1:7317" } });
+  const end = statSync(path).size;
+  const historyPage = () => app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+  const history = await historyPage();
   assert.equal(history.status, 200);
   assert.deepEqual(spokenIds((await history.json()).messages), ["native-visible-first", "native-visible-second"]);
-  assert.deepEqual(worker.mock.calls[1]?.arguments, [path, offsets, false]);
-  assert.deepEqual(worker.mock.calls[2]?.arguments, [path, offsets, false], "retry the new revision before returning history");
+  for (const call of worker.mock.calls.slice(1)) assert.deepEqual(call.arguments, [path, [...offsets, end], false]);
+  assert.equal(worker.mock.callCount(), 3, "both worker passes tolerated growth beyond the captured page");
+  rewritePrefix = true;
+  const rewritten = await historyPage();
+  assert.equal(rewritten.status, 200);
+  assert.deepEqual(spokenIds((await rewritten.json()).messages), [], "changing earlier bytes during growth invalidates both disclosures");
+  appendDuringVerification = false;
   writeFileSync(path + ".new", readFileSync(path));
   renameSync(path + ".new", path);
   const replacement = await firstFrame();
   assert.ok(replacement.type === "init");
   assert.deepEqual(spokenIds(replacement.messages), []);
   assert.equal(sync.mock.callCount(), 0);
-  assert.equal(worker.mock.callCount(), 4);
-  t.diagnostic(`Three projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
+  t.diagnostic(`Four projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
 });

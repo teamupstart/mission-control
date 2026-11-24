@@ -207,7 +207,8 @@ export function transcriptStreamHandler(registry: Registry) {
       const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
         const captured = await capture(state, null, end => read.initial(path, end));
         const init = captured.frame;
-        const project = async () => titled.transcript(await attributeTranscriptPage(id, init.messages, launch(), anchor, conversation()));
+        const project = async () => titled.transcript(await attributeTranscriptPage(id, init.messages, launch(), anchor, conversation(),
+          { end: init.pos, reread: () => read.initial(path, init.pos).messages }));
         const messages = await project();
         // Any ledger consulted during projection can finish a binding. When the token advances,
         // project again against that token before promising it to the reader.
@@ -245,7 +246,8 @@ export function transcriptStreamHandler(registry: Registry) {
             cursor = captured.cursor;
             revision = captured.revision;
             verifiedVersion = revision?.version;
-            await send({ type: "resume", messages: titled.transcript(await attributeTranscriptPage(id, resumed.messages, launch(), anchor, conversation())),
+            await send({ type: "resume", messages: titled.transcript(await attributeTranscriptPage(id, resumed.messages, launch(), anchor, conversation(),
+              { end: resumed.pos, reread: () => read.appended(path, from, resumed.pos).messages })),
               pos, ...(cursor && { spokenCursor: digest(cursor) }) });
           }
         } else {
@@ -299,7 +301,9 @@ export function transcriptStreamHandler(registry: Registry) {
           }
           const advanced = next > pos;
           if (messages.length > 0 || (current && advanced)) {
-            const projected = await attributeTranscriptPage(id, messages, launch(), anchor, conversation());
+            const from = pos;
+            const projected = await attributeTranscriptPage(id, messages, launch(), anchor, conversation(),
+              { end: next, reread: () => read.appended(path, from, next).messages });
             await send({ type: "append", messages: titled.transcript(projected), pos: next,
               ...(captured.cursor && { spokenCursor: digest(captured.cursor) }) });
             sinceHeartbeat = 0;

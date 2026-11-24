@@ -48,6 +48,7 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_reservation_id;
     ALTER TABLE pending_turns DROP COLUMN spoken_proof_failures;
+    ALTER TABLE pending_turns DROP COLUMN spoken_requires_guard;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold_since;
     PRAGMA user_version = 51;
@@ -392,6 +393,35 @@ test("archived spoken payloads leave the bounded cache and their disclosures rel
   assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, payload);
 });
 
+test("restart retries a proven pre-guard spoken claim once and keeps legacy and partially stamped attempts uncertain", async () => {
+  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const now = Date.now();
+  const words = "inspect the resumed build";
+  for (const key of ["unguarded-legacy", "guard-waiting", "partial-stamp", "ordinary-typed"]) {
+    const queued = db.createPendingTurn({ id: key, noteKey: key, text: words, now,
+      ...(key !== "ordinary-typed" && { spokenWords: words }) });
+    db.claimNextPendingTurn(key, now, queued, () => words + " with original notes");
+  }
+  db.openDb().prepare("UPDATE pending_turns SET spoken_requires_guard = NULL WHERE id = 'unguarded-legacy'").run();
+  db.openDb().prepare("UPDATE pending_turns SET spoken_handoff_at = ? WHERE id = 'partial-stamp'").run(now);
+  db.closeDb();
+  db.recoverSendingPendingTurns(now + 1);
+  for (const key of ["unguarded-legacy", "partial-stamp", "ordinary-typed"]) {
+    assert.equal(db.listPendingTurns(key)[0]?.state, "uncertain", key);
+  }
+  const key = "guard-waiting";
+  const [restored] = db.listPendingTurns(key);
+  assert.equal(restored?.state, "queued");
+  assert.equal(restored.claimedAt, null);
+  assert.equal(restored.text, words + " with original notes");
+  const claimed = db.claimNextPendingTurn(key, now + 2, restored, () => assert.fail("recomposed the recovered turn"))!;
+  const row = reserveSpokenHandoff({ key, transcript: null }, claimed, words, true, 0, now + 2)!;
+  assert.ok(db.retireDeliveredPendingTurn(claimed.id, claimed.revision, now + 3, row.id));
+  db.recoverSendingPendingTurns(now + 4);
+  assert.deepEqual(db.listPendingTurns(key), []);
+  assert.deepEqual(db.loadSpokenTurns(key).map(s => s.id), [row.id]);
+});
+
 for (const handedOff of [false, true]) {
   test(handedOff
     ? "restart after the handoff guard preserves the spoken occurrence after the outbox retires"
@@ -435,16 +465,15 @@ for (const handedOff of [false, true]) {
     forgetDeliveryBindingState();
     db.closeDb();
     db.recoverSendingPendingTurns(Date.now());
-    const [uncertain] = db.listPendingTurns(key);
-    assert.equal(uncertain?.state, "uncertain");
+    const [restored] = db.listPendingTurns(key);
+    assert.equal(restored?.state, handedOff ? "uncertain" : "queued");
     if (handedOff) {
-      assert.ok(db.resolveUncertainPendingTurn(queued.id, uncertain.revision));
+      assert.ok(db.resolveUncertainPendingTurn(queued.id, restored.revision));
       const [reservation] = db.loadSpokenTurns(key);
       assert.equal(reservation?.outboxTurnId, queued.id);
-      assert.equal(reservation.outboxRevision, uncertain.revision - 1);
+      assert.equal(reservation.outboxRevision, restored.revision - 1);
     } else {
-      const editable = db.retryPendingTurn(queued.id, uncertain.revision, Date.now())!;
-      assert.ok(db.recallPendingTurn(key, queued.id, editable.revision));
+      assert.ok(db.recallPendingTurn(key, queued.id, restored.revision));
     }
     if (handedOff) assert.ok(receiptId, "SDK handoff supplies a native receipt even with a known transcript offset");
     for (const uuid of [receiptId ?? "first", "repeat"]) {
@@ -1193,6 +1222,46 @@ test("hourly SDK cleanup yields between pages and reuses only complete scans of 
   assert.equal(await sweep(), 1);
   assert.equal(pages, 12);
   assert.deepEqual(db.loadSpokenTurns(key).map(row => [row.id, row.messageTs]), [[later.id, now]]);
+});
+
+test("hourly terminal cleanup prepares handoff proofs off-thread and retries a changed revision before binding", async t => {
+  const { prepareSpokenTranscript, reserveSpokenHandoff, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-archive-worker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "archive.jsonl");
+  writeFileSync(path, JSON.stringify({ padding: "x".repeat(2 * 1024 * 1024) }) + "\n");
+  const now = Date.now();
+  const key = "cleanup-proof-worker";
+  const read = claudeTranscript.messages!;
+  const source = { path, read };
+  const words = "inspect the archive";
+  const pending = db.createPendingTurn({ id: key, noteKey: key, text: words, spokenWords: words, now });
+  const claim = db.claimNextPendingTurn(key, now, pending, text => text)!;
+  const prepared = await prepareSpokenTranscript(key, source);
+  const row = reserveSpokenHandoff({ key, transcript: source }, claim, words, false, 0, now, prepared)!;
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+  appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-archive", timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: words } }) + "\n");
+  const native = read as Required<Pick<typeof read, "boundary" | "prepareHandoffBoundaries">>;
+  const sync = t.mock.method(native, "boundary");
+  const prepare = native.prepareHandoffBoundaries.bind(native);
+  let change = true;
+  const worker = t.mock.method(native, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    const result = await prepare(...args);
+    if (change) appendFileSync(path, "{}\n");
+    return result;
+  });
+  const sweep = () => pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, k => k === key ? [source] : []);
+  await sweep();
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null, "a changed capture deferred cleanup");
+  change = false;
+  await sweep();
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "native-archive");
+  assert.equal(worker.mock.callCount(), 2);
+  for (const call of worker.mock.calls) assert.deepEqual(call.arguments, [path, [row.transcriptOffset], false]);
+  assert.equal(sync.mock.callCount(), 0);
 });
 
 test("cleanup reopens an evicted terminal's native transcript before expiring its unread disclosure", async t => {

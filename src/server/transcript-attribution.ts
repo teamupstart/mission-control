@@ -1,5 +1,5 @@
 import { featureEnabled } from "./feature-flags/index.ts";
-import { spokenLedger, withSpokenReadProofs } from "./delivery-ledgers.ts";
+import { spokenLedger, withSpokenReadProofs, type SpokenPageAnchor } from "./delivery-ledgers.ts";
 import { residentWakePresentation } from "./residents/loop-store.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
@@ -105,7 +105,7 @@ export function attributeTranscript(
 
 /** Both dashboard views and their backward pages verify visible spoken receipts off the daemon thread. */
 export async function attributeTranscriptPage(sessionId: string | undefined, messages: TranscriptMessage[], launch: LaunchTurnMarker | null,
-  onLaunchTurnIdentified: (id: string) => void, conversation: DelegatedConversation | null): Promise<TranscriptMessage[]> {
+  onLaunchTurnIdentified: (id: string) => void, conversation: DelegatedConversation | null, anchor: SpokenPageAnchor): Promise<TranscriptMessage[]> {
   const project = (source: DelegatedConversation | null) => attributeTranscript(sessionId, messages, launch, onLaunchTurnIdentified, source);
-  return featureEnabled("voice") ? withSpokenReadProofs(conversation, messages, project) : project(conversation);
+  return featureEnabled("voice") ? withSpokenReadProofs(conversation, messages, project, anchor) : project(conversation);
 }

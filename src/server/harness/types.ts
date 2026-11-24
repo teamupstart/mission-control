@@ -207,6 +207,8 @@ export interface TranscriptBoundary {
 
 /** Proofs from one file revision, prepared off the daemon thread before a spoken write. */
 export interface PreparedTranscriptBoundaries {
+  fileId?: string;
+  size?: number;
   version: string | null;
   eof: TranscriptBoundary | null;
   proofs: Map<number, TranscriptBoundary>;
@@ -314,7 +316,7 @@ export interface TranscriptMessages {
    */
   size(path: string): number | null;
   /** Identify one file revision for a scan that needs to prove a receipt is absent. */
-  snapshot?(path: string): { size: number; version: string } | null;
+  snapshot?(path: string): { size: number; version: string; fileId?: string } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
   boundary?(path: string, offset?: number): TranscriptBoundary | null;
   /** Batch native prefix proofs off-thread. A dashboard read only needs its supplied offsets. */

@@ -7,10 +7,14 @@ function fileVersion(s: BigIntStats): string {
   return [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(":");
 }
 
+function fileId(s: BigIntStats): string {
+  return [s.dev, s.ino, s.birthtimeNs].join(":");
+}
+
 export function transcriptSnapshot(path: string) {
   try {
     const s = statSync(path, { bigint: true });
-    return { size: Number(s.size), version: fileVersion(s) };
+    return { size: Number(s.size), version: fileVersion(s), fileId: fileId(s) };
   } catch {
     return null;
   }
@@ -62,25 +66,59 @@ function captureBoundary(path: string, offset?: number) {
   }
 }
 
+/** Verify all fixed offsets on one descriptor. Later appends do not move a page's end. */
+function fixedBoundaries(path: string, offsets: number[]): PreparedTranscriptBoundaries | null {
+  const fd = openSync(path, "r");
+  try {
+    const started = fstatSync(fd, { bigint: true });
+    const identity = fileId(started);
+    const ends = [...new Set(offsets.filter(n => Number.isSafeInteger(n) && n >= 0 && n <= started.size))].sort((a, b) => a - b);
+    const end = ends.at(-1) ?? 0;
+    const buffer = Buffer.allocUnsafe(Math.min(65536, end));
+    const hashPrefixes = () => {
+      // Persisted hashes include the offset in their seed. Feed them together in one file pass.
+      const hashes = ends.map(offset => createHash("sha256").update(identity + ":" + offset + "\n"));
+      for (let pos = 0; pos < end;) {
+        const n = readSync(fd, buffer, 0, Math.min(buffer.length, end - pos), pos);
+        if (!n) return null;
+        for (let i = 0; i < ends.length; i++) {
+          if (ends[i]! > pos) hashes[i]!.update(buffer.subarray(0, Math.min(n, ends[i]! - pos)));
+        }
+        pos += n;
+      }
+      return new Map(ends.map((offset, i) => [offset, { offset, proof: hashes[i]!.digest("hex") }]));
+    };
+    const proofs = hashPrefixes();
+    let final = statSync(path, { bigint: true });
+    if (!proofs || fileId(final) !== identity || final.size < end) return null;
+    if (fileVersion(final) !== fileVersion(started)) {
+      const checked = hashPrefixes();
+      if (!checked || ends.some(offset => proofs.get(offset)!.proof !== checked.get(offset)!.proof)) return null;
+      const after = statSync(path, { bigint: true });
+      if (fileId(after) !== identity || after.size < end ||
+          (fileVersion(after) !== fileVersion(final) && after.size <= final.size)) return null;
+      final = after;
+    }
+    return { proofs, eof: null, version: fileVersion(final), fileId: identity, size: Number(final.size) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Capture the requested prefix proofs against one revision, including EOF when preparing a handoff. */
 export function captureHandoffBoundaries(path: string, offsets: number[], includeEof = true): PreparedTranscriptBoundaries | null {
   try {
-    // Projection only needs the visible handoff offsets; capturing the current EOF is for a new send.
-    const snapshot = transcriptSnapshot(path);
-    if (!snapshot) return { version: null, eof: null, proofs: new Map() };
-    const eof = includeEof ? captureBoundary(path) : null;
-    if (includeEof && !eof) return null;
-    const version = eof?.version ?? snapshot.version;
-    const size = eof?.boundary.offset ?? snapshot.size;
-    const proofs = new Map<number, TranscriptBoundary>();
-    if (eof) proofs.set(eof.boundary.offset, eof.boundary);
+    if (!includeEof) return fixedBoundaries(path, offsets);
+    const eof = captureBoundary(path);
+    if (!eof) return null;
+    const proofs = new Map<number, TranscriptBoundary>([[eof.boundary.offset, eof.boundary]]);
     for (const offset of offsets) {
-      if (offset > size || proofs.has(offset)) continue;
+      if (offset > eof.boundary.offset || proofs.has(offset)) continue;
       const receipt = captureBoundary(path, offset);
-      if (!receipt || receipt.version !== version) return null;
+      if (!receipt || receipt.version !== eof.version) return null;
       proofs.set(offset, receipt.boundary);
     }
-    return { version, eof: eof?.boundary ?? null, proofs };
+    return { version: eof.version, eof: eof.boundary, proofs };
   } catch (error) {
     // A consistently unreadable file still permits delivery, with no text attribution.
     if (!(error instanceof Error) || !("code" in error)) throw error;

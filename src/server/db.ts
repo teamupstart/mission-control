@@ -3858,6 +3858,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_requires_guard", "INTEGER");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
@@ -15471,6 +15472,7 @@ export function claimNextPendingTurn(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
                 claimed_at = ?, last_error = NULL, text = ?, composed_at = ?,
+                spoken_requires_guard = CASE WHEN spoken_words IS NOT NULL THEN 1 END,
                 spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_handoff_at = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
@@ -15784,6 +15786,15 @@ export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): 
 export function recoverSendingPendingTurns(now: number): number {
   const d = openDb();
   const recover = () => {
+    // Only a claim made by the guarded protocol proves absence of a write before its stamp.
+    // Earlier builds and every attempt with handoff evidence still need operator confirmation.
+    const unhanded = d.prepare(`UPDATE pending_turns SET state = 'queued', revision = revision + 1,
+      updated_at = ?, claimed_at = NULL, last_error = NULL
+      WHERE state = 'sending' AND spoken_words IS NOT NULL AND spoken_requires_guard = 1
+        AND spoken_reservation_id IS NULL AND spoken_handoff_key IS NULL
+        AND spoken_handoff_at IS NULL AND spoken_handoff_generation IS NULL
+        AND NOT EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.outbox_turn_id = pending_turns.id
+          AND s.outbox_revision = pending_turns.revision)`).run(now);
     const updated = d.prepare(`UPDATE pending_turns
             SET state = 'uncertain', revision = revision + 1, updated_at = ?,
                 last_error = 'Mission Control restarted during delivery; confirm before retrying.'
@@ -15814,7 +15825,7 @@ export function recoverSendingPendingTurns(now: number): number {
       WHERE message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
           AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain'))`).run(now);
-    return Number(updated.changes);
+    return Number(unhanded.changes) + Number(updated.changes);
   };
   return d.isTransaction ? recover() : inTransaction(recover);
 }

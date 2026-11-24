@@ -4823,6 +4823,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
+          { end: page.end, reread: () => t.read.before(t.path, page.end, want).messages },
         )),
       });
     }

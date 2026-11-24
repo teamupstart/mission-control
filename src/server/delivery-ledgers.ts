@@ -1,5 +1,6 @@
 import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { statSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { PendingTurn, TranscriptMessage } from "@shared/types.ts";
 import {
   bindDelegatedTurn,
@@ -184,26 +185,47 @@ export async function prepareSpokenTranscript(key: string, transcript: NonNullab
   }
 }
 
-/** Run the synchronous projection against worker-verified offsets from the current file revision. */
+export interface SpokenPageAnchor {
+  end: number;
+  reread: () => TranscriptMessage[];
+}
+
+/** A visible frame is anchored to complete bytes. Growth after that anchor is allowed when
+ * two worker captures agree through the end and the intervening read reproduces the page. */
 export async function withSpokenReadProofs<T>(conversation: DeliveryConversation | null, messages: TranscriptMessage[] | undefined,
-  project: (conversation: DeliveryConversation | null) => T): Promise<T> {
+  project: (conversation: DeliveryConversation | null) => T, anchor?: SpokenPageAnchor): Promise<T> {
   const transcript = conversation?.transcript;
   const prepare = transcript?.read.prepareHandoffBoundaries;
   if (!conversation || !transcript || !prepare || !spokenLedger.rows(conversation.key).length) return project(conversation);
   const { path, read } = transcript;
-  // An append can race a worker response. Recheck against the new revision before
-  // asking the caller to retry the page. Neither attempt hashes bytes on the daemon.
   for (let attempt = 0; attempt < 2; attempt++) {
     const version = read.snapshot?.(path)?.version;
-    const offsets = spokenLedger.projectionOffsets(conversation.key, version, messages);
-    const capture = offsets.length ? await prepare(path, offsets, false) : null;
-    if (offsets.length && (!capture || capture.version !== version || read.snapshot?.(path)?.version !== version)) continue;
-    const result = project({ ...conversation, transcript: { path, read: { ...read,
-      boundary: (_path, offset) => offset !== undefined && capture && read.snapshot?.(path)?.version === version
-        ? capture.proofs.get(offset) ?? null : null,
+    const needed = spokenLedger.projectionOffsets(conversation.key, version, messages);
+    const offsets = needed.length && anchor
+      ? [...new Set([...spokenLedger.projectionOffsets(conversation.key, undefined, messages), anchor.end])] : needed;
+    let capture = offsets.length ? await prepare(path, offsets, false) : null;
+    let anchored = false;
+    if (offsets.length && (!capture || capture.version !== version || read.snapshot?.(path)?.version !== version)) {
+      const first = capture;
+      if (!anchor || !first?.proofs.has(anchor.end) || !isDeepStrictEqual(anchor.reread(), messages)) continue;
+      capture = await prepare(path, offsets, false);
+      if (!capture || !capture.fileId || capture.fileId !== first.fileId ||
+          offsets.some(n => first.proofs.get(n)?.proof !== capture?.proofs.get(n)?.proof)) continue;
+      anchored = true;
+    }
+    const snapshot = () => {
+      const live = read.snapshot?.(path);
+      if (!anchored || !live || !capture) return live ?? null;
+      if (live.fileId !== capture.fileId || (live.version !== capture.version && live.size <= (capture.size ?? Infinity))) return null;
+      // Never cache a proof of the old page as proof of the entire growing file.
+      return { ...live, version: live.version + "/" + capture.proofs.get(anchor!.end)!.proof };
+    };
+    const valid = () => anchored ? !!snapshot() : read.snapshot?.(path)?.version === version;
+    if (capture && !valid()) continue;
+    const result = project({ ...conversation, transcript: { path, read: { ...read, snapshot,
+      boundary: (_path, offset) => offset !== undefined && capture && valid() ? capture.proofs.get(offset) ?? null : null,
     } } });
-    const current = read.snapshot?.(path)?.version;
-    if (current === version || (!capture && !spokenLedger.projectionOffsets(conversation.key, current, messages).length)) return result;
+    if (valid() || (!capture && !spokenLedger.projectionOffsets(conversation.key, read.snapshot?.(path)?.version, messages).length)) return result;
   }
   throw new SpokenTranscriptChanged();
 }
@@ -260,7 +282,19 @@ async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscrip
   const verified = { transcript, version: snapshot.version, complete: true };
   if (!textPending && cached?.version === snapshot.version && ids.every(id => cached.ids.has(id))) return verified;
   try {
-    if (textPending) await spokenLedger.reconcileBeforePrune(noteKey, transcript, now, snapshot.version, signal);
+    if (textPending) {
+      let verified = transcript;
+      if (transcript.read.prepareHandoffBoundaries) {
+        const offsets = rows.filter(row => row.messageId === null && !row.contested).map(row => row.transcriptOffset ?? 0);
+        const captured = await transcript.read.prepareHandoffBoundaries(transcript.path, [...new Set(offsets)], false);
+        if (signal?.aborted || !captured || captured.version !== snapshot.version ||
+            transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
+        verified = { path: transcript.path, read: { ...transcript.read, boundary: (_path, offset) =>
+          offset !== undefined && transcript.read.snapshot?.(transcript.path)?.version === captured.version
+            ? captured.proofs.get(offset) ?? null : null } };
+      }
+      await spokenLedger.reconcileBeforePrune(noteKey, verified, now, snapshot.version, signal);
+    }
     // A rewritten transcript can put an SDK UUID before its handoff offset. Exact IDs
     // can be observed from each page without starting another whole-file binding walk.
     for (let from = 0;;) {

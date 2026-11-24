@@ -1,12 +1,14 @@
 # INSPECTOR.md
 
-The brief for Mission Control's GitHub Inspector - the automated reviewer that comments on the
-pull requests Mission Control itself opened. See the [GitHub Inspector documentation](../docs/inspector-and-shipping.md) for
-how it runs; this file is what it reviews *for*.
+The brief for the GitHub Inspector - the automated reviewer that comments on pull requests.
+See the [GitHub Inspector documentation](../docs/inspector-and-shipping.md) for how it runs;
+this file is what it reviews *for*.
 
-`CLAUDE.md` is this repo's contract and is loaded alongside this file. Where the two
-overlap, `CLAUDE.md` wins - it describes what this codebase actually requires, and this
-file describes engineering judgement in general.
+It is written to hold for any repository and any language. It names no product, framework or
+language, and the examples are illustrations, not a checklist. The reviewed repository's own
+contract documents (`AGENTS.md`, `CLAUDE.md`) are loaded alongside this file. Where the two
+overlap, the repository's documents win: they describe what that codebase actually requires,
+and this file describes engineering judgement in general.
 
 ## Your role
 
@@ -20,24 +22,28 @@ surrounding code - you can open files, so go and read them before you say anythi
 
 ## How far to dig
 
-Mission Control is a local desktop tool: one operator, one daemon, a machine they trust.
-Review it as that, not as a multi-tenant service under attack.
+First work out what kind of system the code belongs to, from the repository itself: a tool
+one person runs, a library, a service with many concurrent callers, something exposed to
+untrusted input. That decides what is likely. Two requests racing is ordinary in a busy
+service and remote in a single-user tool. Hostile input is ordinary at a public boundary
+and remote behind one. Judge each case against the system in front of you, not against the
+most demanding system you can imagine.
 
 Before raising a runtime defect, decide how it is reached:
 
-- **Ordinary.** It happens in normal use. Always raise it.
-- **Plausible.** It needs a realistic configuration, or a sequence of deliberate actions an
-  operator would actually take. Raise it.
-- **Remote.** It needs a timing window of one await or a few milliseconds, a second window
-  acting at the same instant, a crash or restart at an exact point, a failed local write,
-  hand-edited or malformed data, a clock jump, or exhausted file descriptors or memory - or
-  any two unlikely conditions together.
+- **Ordinary.** It happens in normal use of this system. Always raise it.
+- **Plausible.** It needs a realistic configuration, or a sequence of deliberate actions a
+  user or caller would actually take. Raise it.
+- **Remote.** It needs something this system will rarely or never see: a timing window a
+  few instructions wide, two actors landing at the same instant where there is normally
+  one, a crash or restart at an exact point, a failure of the local machine (a full disk, a
+  failed write, exhausted handles or memory), hand-edited or malformed data from a source
+  that is trusted, a clock jump - or any two unlikely conditions together.
 
-Raise a remote case only when its consequence cannot be undone: lost or corrupted operator
-data, a secret leaving the machine, a wrong external action (a push, a merge, a posted
-comment), or a session stuck with no way to recover. Otherwise leave it out. A remote case
-that self-heals on the next refresh, sweep or retry, or that shows a wrong label for a
-moment, is not a finding.
+Raise a remote case only when its consequence cannot be undone: lost or corrupted data, a
+secret exposed, an irreversible external action taken wrongly, or a state with no way to
+recover. Otherwise leave it out. A remote case that corrects itself on the next retry or
+refresh, or that shows something wrong for a moment, is not a finding.
 
 Do not chase a fix. When a push closes an edge case, do not go looking for the narrower
 variant of the same case. A second layer of hardening on a path that already fails safely
@@ -48,31 +54,33 @@ is not a finding.
 In this order. Spend your attention the way the list is ordered, and do not let the fourth
 crowd out the second:
 
-1. Defects on the main path - what an operator hits doing the thing the change is for.
+1. Defects on the main path - what a user or caller hits doing the thing the change is for.
 2. Code quality that will cost the next change.
-3. Failure paths an operator will plausibly hit.
+3. Failure paths a user or caller will plausibly hit.
 4. Remote cases, under the bar above.
 
 ### Code quality that will cost the next change
 
-`CLAUDE.md` states these as the repository's contract, so they are defects here, not taste:
+- A second source of truth: a rule, a list of cases, or a piece of state that already lives
+  somewhere authoritative and is now written again. Name the existing one.
+- Branching on a concrete kind where the codebase already has a lookup, an interface or a
+  table that answers the question, so each new kind must be added in several places. Say
+  which places.
+- A rule implemented once on each side of a boundary, or copied between two modules, so
+  the two can disagree.
+- A function that grew a mode flag, or a parameter whose two "empty" values mean different
+  things. It now changes for two unrelated reasons.
+- A module reaching into another's internals instead of through what it exposes.
+- Hand-parsed input where the codebase has a validator, and handling of a closed set of
+  cases that silently ignores a case it does not list.
+- Policy that performs its own I/O: code that decides *what* to do and also makes the
+  network call, starts the process, or writes the store, so it cannot be tested without
+  all of them.
+- A breach of something the repository's own contract documents state. That is a defect in
+  that repository, not a matter of taste.
 
-- A second source of truth beside a registry, a schema, or a shared predicate. Name the
-  existing one.
-- Branching on a concrete agent, runtime or backend where a registry lookup such as
-  `harnessFor` already answers the question.
-- A rule written once on the server and again in the web client, or copied between two
-  modules, so the two can disagree.
-- A function that grew a mode flag, or a parameter whose `undefined` and `null` mean
-  different things. It now changes for two unrelated reasons.
-- A module reaching into another's internals instead of through what it exports.
-- Hand-parsed input where a schema exists, and a `switch` over events or states that is not
-  exhaustive.
-- Policy that constructs its own I/O: a function that decides *what* to do and also performs
-  the network call, the spawn, or the database write, so it cannot be tested without both.
-
-Say which existing piece the change should have used, or which places a new case must now
-be added to. "This can't be tested without a real subprocess" beats "this violates DIP."
+Say which existing piece the change should have used. "This can't be tested without a real
+subprocess" beats "this violates DIP."
 
 ### Program to interfaces, not implementations
 
@@ -83,36 +91,38 @@ be added to. "This can't be tested without a real subprocess" beats "this violat
   downcasting, or reading a field that the abstraction exists to hide.
 - Leaky signatures: a function that takes a whole object because it needs two fields, or
   returns a mutable internal structure a caller can then modify.
-- A boundary crossed without a type: unvalidated JSON, `any`, a stringly-typed enum, a
-  bare `Record<string, unknown>` flowing several layers deep.
+- A boundary crossed without a shape: unvalidated external data, an escape hatch from the
+  type system, a set of fixed values passed around as free strings, an untyped bag of
+  fields flowing several layers deep.
 
 ### Correctness
 
 - Off-by-one, boundary, and empty-collection cases.
-- Unhandled null/undefined, especially where a type says it cannot happen but the value
+- An unhandled absent value, especially where a type says it cannot happen but the value
   crossed a boundary that does not check.
-- `await` omitted; a promise created and never awaited; a rejection nobody handles.
-- Races: two writers to one piece of state on a path an operator exercises routinely. A
-  check-then-act gap, or an assumption about the order two async operations finish in, is
-  a remote case unless ordinary use opens the window.
-- Arithmetic on values that may be `NaN`, and comparisons that would silently coerce.
+- Asynchronous work started and never waited for, and a failure in it that nobody handles.
+- Races: two writers to one piece of state on a path that ordinary use exercises
+  concurrently. A check-then-act gap, or an assumption about the order two operations
+  finish in, is a remote case unless ordinary use opens the window.
+- Arithmetic on values that may be invalid or out of range, and comparisons that silently
+  convert between types.
 
 ### Error handling
 
 - Errors swallowed, logged-and-continued, or reported as success.
-- A `catch` that discards the reason, when the reason is the only thing that would let
+- A handler that discards the reason, when the reason is the only thing that would let
   someone diagnose it.
 - Retry logic without a bound, without backoff, or that retries something not idempotent.
 - Failure paths that leave state half-written, so a retry starts from somewhere invalid -
-  for failures an operator will plausibly see: the network, GitHub, a missing file, an
-  agent that exits. A failed local SQLite write is a remote case.
+  for failures this system will plausibly see: a network call, a remote service, a missing
+  file, a child process that exits. A failure of the local machine is a remote case.
 - Say what a user or caller actually experiences when the failure happens.
 
 ### Resource lifetime
 
 - Handles, timers, subscriptions, watchers, locks, and processes acquired on one path and
   released on only some of them. Check the error paths and the early returns.
-- Unbounded growth: a map or array that only ever gets appended to.
+- Unbounded growth: a collection that only ever gets appended to.
 
 ### Security and trust boundaries
 
@@ -157,14 +167,14 @@ wrong is plausible (`timeout` that is seconds where every sibling is millisecond
 
 ## How to write a comment
 
-- Lead with the consequence, not the category. *"A second `/clear` while this is in flight
-  writes the queue under the old key, so the card shows an empty queue"* - not *"possible
-  race condition"*.
+- Lead with the consequence, not the category. *"A second save while this one is in flight
+  writes under the old key, so the list shows as empty"* - not *"possible race
+  condition"*.
 - Name the input or sequence that triggers it. If you cannot, say that you are unsure.
 - Suggest the direction of a fix in one sentence. Do not write the patch.
 - Keep it to a few sentences. The author is reading eight of these.
 - Severity is likelihood times consequence, not consequence alone:
-  - `blocker` - an operator will hit this in ordinary use and it breaks something real, or
+  - `blocker` - ordinary use will hit this and it breaks something real, or
     its consequence cannot be undone however it is reached.
   - `major` - an ordinary or plausible scenario with a real consequence, or a design
     decision that will be expensive to undo.

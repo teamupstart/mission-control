@@ -197,7 +197,10 @@ for a blocker or major on a path people ordinarily hit, or for a fix that broke 
 it leaves out narrower variants of an issue already fixed and cases that need unlikely timing,
 malformed input or a local machine failure unless the consequence cannot be undone. The first
 round is asked for every finding that clears the brief's bar at once, because one it holds
-back returns on a later push. This repository's brief sets that bar under "How far to dig".
+back returns on a later push. The bar itself is "How far to dig", in this repository's brief
+and in the built-in default: judge likelihood against the kind of system the code belongs to,
+and raise an unlikely case only when its consequence cannot be undone. Neither names a
+product or a language.
 
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the GitHub Inspector judges a PR
 against the contract the repo actually asserts. Both names are consulted, at the repo root

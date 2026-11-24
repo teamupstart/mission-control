@@ -77,7 +77,11 @@ Turning the preview off hides the controls and suspends the overrides while keep
 Calls already in progress keep the effort they started with.
 
 Foreman's Review effort also applies to its ship-recovery reviewer. GitHub Inspector uses one
-setting for full reviews and follow-up replies. A judging Persona's pinned effort takes precedence
+setting for full reviews and follow-up replies, with one difference from the other rows: until
+you choose, a full review runs at `xhigh` and the row shows `xhigh`, while replies use the
+provider's default. A level you choose applies to both. Choosing **Provider default** is a
+choice too, and turns the `xhigh` review default off. With the preview off, reviews run at
+`xhigh` and replies at the provider's default. A judging Persona's pinned effort takes precedence
 over the Ensemble evaluation setting. Workflow Persona and reviewer-node settings continue to
 control Workflow reviews.
 

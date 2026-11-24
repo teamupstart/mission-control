@@ -986,6 +986,56 @@ test("failed launches return their errors during an outage and a restarted super
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
 });
 
+test("a stalled exit times out, lets the next retirement finish, and ignores late completion until its own retry succeeds", async t => {
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => { signer.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
+  Object.assign(process.env, signer.daemonEnv);
+  const peer = player();
+  for (let i = 0; i < 2; i++) {
+    await assert.rejects(signer.launch(home, process.execPath, ["\0"], {}, async (instance, state, proof) => {
+      if (state === "exited") throw new Error("offline");
+      assert.equal((await peer.report(state, instance, proof)).status, 200);
+    }), { code: "ERR_INVALID_ARG_VALUE" });
+  }
+  signer.pauseExitRetries();
+  store.reset(); await peer.hello();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+  const attempts: string[] = [];
+  let finishLate!: () => void;
+  const stalled = new Promise<void>(resolve => { finishLate = resolve; });
+  let transportSignal: AbortSignal | undefined;
+  signer.retryPendingExits(home, async (instance, state, proof, signal) => {
+    attempts.push(instance);
+    if (attempts.length === 1) {
+      transportSignal = signal;
+      return stalled; // This transport ignores cancellation.
+    }
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+  });
+  t.mock.timers.tick(4999);
+  await flush();
+  assert.equal(transportSignal?.aborted, false);
+  assert.equal(attempts.length, 1);
+  assert.equal(readdirSync(retirementDirectory(home)).length, 2);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(transportSignal?.aborted, true);
+  assert.equal(attempts.length, 2);
+  assert.notEqual(attempts[1], attempts[0]);
+  const remaining = ["shell-" + announcementName(attempts[0]!) + ".json"];
+  assert.deepEqual(readdirSync(retirementDirectory(home)), remaining);
+  finishLate();
+  await flush();
+  assert.deepEqual(readdirSync(retirementDirectory(home)), remaining);
+  assert.equal((await peer.poll()).capture, false);
+  t.mock.timers.tick(250);
+  await flush();
+  assert.deepEqual(attempts, [attempts[0], attempts[1], attempts[0]]);
+  assert.deepEqual(readdirSync(retirementDirectory(home)), []);
+  assert.equal((await peer.poll()).capture, true);
+});
+
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const holder = player();

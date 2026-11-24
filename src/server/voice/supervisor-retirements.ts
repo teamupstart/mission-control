@@ -7,6 +7,27 @@ import type { SupervisorReporter } from "./supervisor-auth.ts";
 
 const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
 type PendingExit = z.infer<typeof signedExit>;
+const EXIT_REPORT_TIMEOUT_MS = 5000;
+
+async function reportExit(report: SupervisorReporter, exit: PendingExit, stop: AbortSignal) {
+  const deadline = new AbortController();
+  const signal = AbortSignal.any([stop, deadline.signal]);
+  signal.throwIfAborted();
+  let onAbort: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const timer = setTimeout(() => deadline.abort(), EXIT_REPORT_TIMEOUT_MS).unref();
+  try {
+    // An adapter may ignore cancellation. Its late response cannot acknowledge this attempt.
+    await Promise.race([aborted, report(exit.instance, "exited", exit.proof, signal)]);
+    signal.throwIfAborted();
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort!);
+  }
+}
 
 /** The launcher owns this queue. No entry is created for a child that might have spawned. */
 export class SupervisorRetirements {
@@ -87,7 +108,7 @@ export class SupervisorRetirements {
       if (signal.aborted) return false;
       if (this.pending.has(file)) this.persist(file, exit);
       try {
-        await report(exit.instance, "exited", exit.proof, signal);
+        await reportExit(report, exit, signal);
         if (signal.aborted) return false;
         removeVoiceRecord(this.home, join(this.directory(), file));
         this.pending.delete(file);

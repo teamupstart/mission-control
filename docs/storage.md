@@ -229,6 +229,8 @@ instance and its exit signature under `voice-retirements/` in the state home,
 in an owner-only file hidden from the listener. If storage is unavailable it
 retains the exit in memory and retries the write. Each outstanding exit is
 retried with backoff until the daemon acknowledges or definitively refuses it.
+Each delivery attempt has five seconds to respond. A stalled transport leaves
+the exit queued and allows delivery of the other launches' exits to proceed.
 On service startup and daemon reconnect, call `retryPendingExits(stateHome, report)`
 even when there is no child to launch. On disconnect or shutdown,
 `pauseExitRetries()` cancels pending requests and timers. Forward the report

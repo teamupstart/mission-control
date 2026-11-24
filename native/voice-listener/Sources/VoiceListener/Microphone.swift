@@ -68,15 +68,18 @@ struct Segment {
 // Energy VAD over mono 16 kHz PCM. Keep a short onset lead-in, allow pauses
 // within a phrase, and bound memory if a device supplies continuous loud input.
 struct SpeechGate {
+    private static let silenceSamples = 12_800
+    private static let maxSegmentSamples = 16_000 * 30
     private var lead: [Float] = []
     private var samples: [Float] = []
     private var quiet = 0
     private var start: Int64 = 0
+    private var discarding = false
 
     mutating func feed(_ frame: [Float], now: Int64) -> Segment? {
         guard !frame.isEmpty else { return nil }
         let active = frame.reduce(0) { $0 + $1 * $1 } > Float(frame.count) * 0.000016
-        if samples.isEmpty {
+        if samples.isEmpty && !discarding {
             if !active {
                 lead = Array((lead + frame).suffix(2400))
                 return nil
@@ -85,11 +88,24 @@ struct SpeechGate {
             samples = lead
             lead.removeAll()
         }
-        samples.append(contentsOf: frame)
-        quiet = active ? 0 : quiet + frame.count
-        guard quiet >= 12_800 || samples.count >= 16_000 * 30 else { return nil }
-        defer { samples.removeAll(); quiet = 0 }
-        return Segment(samples: samples, capturedAt: start)
+        // A quiet frame may straddle both the silence boundary and the buffer limit.
+        let count = active ? frame.count : min(frame.count, Self.silenceSamples - quiet)
+        quiet = active ? 0 : quiet + count
+        let ended = quiet == Self.silenceSamples
+        if ended { quiet = 0 }
+
+        if !discarding && count <= Self.maxSegmentSamples - samples.count {
+            samples.append(contentsOf: frame.prefix(count))
+            if ended {
+                defer { samples.removeAll() }
+                return Segment(samples: samples, capturedAt: start)
+            }
+            if samples.count < Self.maxSegmentSamples { return nil }
+        }
+        // Drop the entire unfinished instruction. Its tail must never start another segment.
+        samples.removeAll()
+        discarding = !ended
+        return nil
     }
 }
 

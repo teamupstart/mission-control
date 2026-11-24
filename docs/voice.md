@@ -65,6 +65,9 @@ directive after 25 seconds. A heartbeat with identical capture settings leaves t
 
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples and gates recognition on speech energy. Parakeet transcribes each segment.
+An utterance ends after 800 ms of continuous silence. If the 30-second buffer fills
+before that boundary, the listener discards the whole utterance, including any further
+speech before the next silence boundary.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.
 Only a correction aligned to the leading address can change the transcript and its timing
 labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.

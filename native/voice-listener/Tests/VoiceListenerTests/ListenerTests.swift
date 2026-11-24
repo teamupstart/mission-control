@@ -58,16 +58,40 @@ final class ListenerTests: XCTestCase {
         }
     }
 
-    func testContinuousSpeechEmitsAtThirtySeconds() throws {
+    func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
-        let frame = Array(repeating: Float(0.1), count: 320) // 20 ms at 16 kHz
-        for tick in 1..<1500 {
-            XCTAssertNil(gate.feed(frame, now: Int64(tick * 20)))
+        let speech = Array(repeating: Float(0.1), count: 320)
+        let quiet = Array(repeating: Float(0), count: 320)
+        var now: Int64 = 0
+        func feed(_ frame: [Float]) -> Segment? {
+            now += 20
+            return gate.feed(frame, now: now)
         }
-        let segment = try XCTUnwrap(gate.feed(frame, now: 30_000))
-        XCTAssertEqual(segment.samples.count, 480_000)
-        XCTAssertEqual(segment.capturedAt, 0)
-        XCTAssertNil(gate.feed(frame, now: 30_020))
+        for _ in 0..<1500 { XCTAssertTrue(feed(speech) == nil) } // 30 seconds
+        for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) } // 780 ms is still inside the utterance.
+        for _ in 0..<1510 { XCTAssertTrue(feed(speech) == nil) }
+        for _ in 0..<40 { XCTAssertTrue(feed(quiet) == nil) }
+
+        let freshStart = now
+        let fresh = Array(repeating: Float(0.2), count: 320)
+        XCTAssertTrue(feed(fresh) == nil)
+        for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) }
+        let segment = try XCTUnwrap(feed(quiet))
+        XCTAssertEqual(segment.capturedAt, freshStart)
+        XCTAssertEqual(segment.samples, fresh + Array(repeating: 0, count: 12_800))
+    }
+
+    func testSilenceMustCompleteWithinTheSegmentLimit() {
+        let limit = 16_000 * 30
+        let silence = Array(repeating: Float(0), count: 12_801)
+        for extra in [0, 1] {
+            var gate = SpeechGate()
+            XCTAssertTrue(gate.feed(Array(repeating: 0.1, count: limit - 12_800 + extra), now: 29_200) == nil)
+            let segment = gate.feed(silence, now: 30_000)
+            XCTAssertEqual(segment?.samples.count, extra == 0 ? limit : nil)
+            XCTAssertTrue(gate.feed([0.2], now: 31_000) == nil)
+            XCTAssertNotNil(gate.feed(silence, now: 31_800), "This frame already supplied a full silence boundary")
+        }
     }
 
     private func fixtureDirectories() throws -> (models: URL, corpus: URL) {

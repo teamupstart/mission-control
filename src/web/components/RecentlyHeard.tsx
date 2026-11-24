@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { HeardEntry } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import { api, fetchRecentlyHeard } from "../lib/api.ts";
+import { fetchRecentlyHeard } from "../lib/api.ts";
+import { clearVoiceHistory, useVoiceSettingsActions } from "../lib/voice-settings-actions.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -46,8 +47,7 @@ export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: re
 export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   const [entries, setEntries] = useState<HeardEntry[] | null>(null);
   const [readError, setReadError] = useState("");
-  const [clearError, setClearError] = useState("");
-  const [clearing, setClearing] = useState(false);
+  const { clearing, clearError } = useVoiceSettingsActions();
   const generation = useRef(0);
   useEffect(() => {
     if (clearing) return;
@@ -66,19 +66,10 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   }, [clearing]);
   async function clear() {
     generation.current++;
-    setClearing(true);
-    const deadline = AbortSignal.timeout(HISTORY_REQUEST_TIMEOUT_MS);
-    const result = await api.clearRecentlyHeard(deadline);
-    if (deadline.aborted) {
-      setClearError("Clear timed out. Deletion is unconfirmed. Check the history and retry.");
-    } else if (result.ok) {
+    if (await clearVoiceHistory()) {
       setEntries([]);
       setReadError("");
-      setClearError("");
-    } else {
-      setClearError(result.error ?? "Could not clear recent utterances.");
     }
-    setClearing(false);
   }
   const now = Date.now();
   const knownEmpty = !readError && entries?.length === 0;

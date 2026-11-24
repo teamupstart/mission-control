@@ -4,7 +4,8 @@ import {
 } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
-import { updateVoiceIndicator, useUiConfig } from "../lib/uiConfig.ts";
+import { useUiConfig } from "../lib/uiConfig.ts";
+import { saveIndicatorSelection, useVoiceSettingsActions } from "../lib/voice-settings-actions.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -154,27 +155,19 @@ const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as con
 
 export function VoiceIndicatorSettings(): React.JSX.Element {
   const { voice } = useUiConfig();
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState<{ id: VoiceIndicatorId; enabled: boolean } | null>(null);
+  const { saving, indicatorError } = useVoiceSettingsActions();
   return <fieldset className="settings-group vi-settings" data-anchor="voice/indicators">
     <legend className="settings-group-label">In the window</legend>
     {VOICE_INDICATOR_IDS.map(id => <div className="vi-choice" key={id}>
       <Tooltip label={`Show the ${styles[id].toLowerCase()} in the window`}><label className="kb-row-label">
-        <input type="checkbox" disabled={saving !== null} checked={saving?.id === id ? saving.enabled : voice.indicators.includes(id)} onChange={async e => {
-          const enabled = e.target.checked;
-          setError("");
-          setSaving({ id, enabled });
-          const result = await updateVoiceIndicator(id, enabled);
-          if (result === "unconfirmed") setError("The indicator save timed out and could not be confirmed. Check the selection and retry if needed.");
-          if (result === "failed") setError("Could not save the indicator selection.");
-          setSaving(null);
-        }} /> {styles[id]}
+        <input type="checkbox" disabled={saving !== null} checked={saving?.id === id ? saving.enabled : voice.indicators.includes(id)}
+          onChange={e => void saveIndicatorSelection(id, e.target.checked)} /> {styles[id]}
       </label></Tooltip>
       <div className="vi-samples">{previewModes.map(mode => <div className="vi-sample" key={mode}>
         <VoiceIndicatorButton id={id} mode={mode} />
         {(id === "floating" || id === "composer") && <span className="kb-row-desc">{modes[mode][0]}</span>}
       </div>)}</div>
     </div>)}
-    {error && <p className="settings-error" role="alert">{error}</p>}
+    {indicatorError && <p className="settings-error" role="alert">{indicatorError}</p>}
   </fieldset>;
 }

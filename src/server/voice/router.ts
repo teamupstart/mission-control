@@ -234,14 +234,16 @@ export class VoiceRouter {
     this.delivering.delete(id);
     const outcome = receipt.outcome ?? (typeof result === "string" ? result : result.outcome);
     if (typeof result !== "string" && result.outcome === "failed") item.entry.detail = result.detail;
-    const recipient = target ?? part.target;
-    if (outcome === "not-running" && !target) {
+    const current = this.state();
+    // A stopped resident keeps its roster key after losing its session. It can still supply restart guidance.
+    const stopped = outcome === "not-running" ? current.roster.find(name => name.key === selected?.key && name.state === "not-running") : undefined;
+    const recipient = stopped ?? target ?? selected;
+    if (outcome === "not-running" && !target && !stopped) {
       item.entry.detail = "The selected session is unavailable.";
     } else if (outcome === "not-running" && recipient) {
       item.entry.detail = `${recipient.name} isn't running. Nothing was sent. ${recipient.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`;
     }
     item.entry.outcome = outcome;
-    const current = this.state();
     if (current.mode !== "off") {
       const latest = (target && current.roster.find(matchesTarget)) ?? recipient;
       const card: VoiceCard = { ...item.card, state: outcome, deadline: null,

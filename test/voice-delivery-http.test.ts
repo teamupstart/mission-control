@@ -223,6 +223,24 @@ test("hibernated task queues on the resumed binding and stopped agents get their
   assert.equal(resume.mock.callCount(), 1);
 });
 
+test("a resident that stops during the cancel window keeps its relaunch guidance", async t => {
+  const resident = { ...name("Bill"), key: "resident:Marlowe", name: "Marlowe", kind: "resident" as const };
+  roster.push(resident);
+  t.after(() => { roster.splice(roster.indexOf(resident), 1); });
+  await say("Marlowe, inspect the build", "stopped-during-window");
+  assert.equal(cards.at(-1)?.parts[0]?.target?.sessionId, "sdk:Bill");
+  resident.state = "not-running";
+  resident.taskId = null;
+  resident.sessionId = null;
+  const submit = t.mock.method(pending, "submitSpoken");
+  await act("stopped-during-window", "send-now");
+  const message = "Marlowe isn't running. Nothing was sent. Relaunch the resident.";
+  assert.equal(submit.mock.callCount(), 0);
+  assert.equal(cards.at(-1)?.detail, message);
+  assert.equal(cards.at(-1)?.parts[0]?.target?.state, "not-running");
+  assert.equal((await readHeard())[0]?.detail, message);
+});
+
 function signal() {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });

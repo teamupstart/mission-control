@@ -104,6 +104,17 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   } } });
   expect(resident.ok(), await resident.text()).toBe(true);
 
+  const profile = await resident.json();
+  const launch = await request.post(`${daemon.baseURL}/api/residents/profiles/${profile.id}/launch`, {
+    data: { repoRoot: null, requestId: "voice-cancel-window" },
+  });
+  expect(launch.ok(), await launch.text()).toBe(true);
+  let taskId: string | undefined;
+  await expect.poll(async () => {
+    const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    taskId = sessions.find(s => s.task?.kind === "resident")?.task?.id;
+    return taskId;
+  }, { timeout: 30_000 }).toBeTruthy();
   // Deliver two real daemon frames in one browser task, in their original order.
   await page.addInitScript(() => {
     const Native = window.EventSource;
@@ -131,6 +142,8 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   for (const id of ["earlier", "newer"]) {
     expect(await (await say(daemon, "Marlowe, check the build", { id })).json()).toEqual({ accepted: true });
   }
+  const complete = await request.post(`${daemon.baseURL}/api/tasks/${taskId}/complete`, { data: { outcome: "Stood down" } });
+  expect(complete.ok(), await complete.text()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/earlier/send-now`)).ok()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/newer/cancel`)).ok()).toBe(true);
   const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });

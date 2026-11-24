@@ -2843,8 +2843,10 @@ blocks immediately, including when the local ledger records a failed read. A clo
 or merged PR also blocks if its source fork has been deleted.
 If the GitHub CLI returns partial GraphQL data with a field error, a matching
 PR's closed or merged state still blocks when the errors affect only source or timeline
-fields. On an open PR, a different valid head OID also blocks when the errors leave
-that field intact. Missing or malformed head OIDs leave recovery pending, including
+fields. On an identified PR, an intact head OID, source branch, source repository, or
+rewrite history can independently establish a mismatch. An error on a field makes its
+value unusable. Missing or malformed head OIDs leave recovery pending in the absence
+of an independent mismatch, including
 when the GitHub CLI exits successfully. Confirming a match requires a successful read
 with complete source and timeline evidence. A response for another PR or an activity
 row for another ref supplies no evidence about the pinned identity. Replaying the

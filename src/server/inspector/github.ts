@@ -239,11 +239,16 @@ export interface InspectorBranchActivity {
 
 const refOid = z.string().regex(GIT_OBJECT_ID);
 const recoveryHeadOid = refOid.refine(oid => !/^0+$/.test(oid));
+// GitHub returns the short name of a refs/heads/ ref. Malformed names cannot prove a rename.
+const recoveryBranchName = z.string().min(1).refine(name =>
+  !name.endsWith(".") && !name.includes("..") && !name.includes("@{") && !/[~^:?*[\\]/.test(name)
+  && ![...name].some(char => char.charCodeAt(0) <= 0x20 || char.charCodeAt(0) === 0x7f)
+  && name.split("/").every(part => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock")));
 
 const recoveryPullRequest = z.object({
   number: z.number().int(), state: z.enum(["open", "closed"]), created_at: z.iso.datetime(),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
-  head: z.object({ ref: z.string().min(1), sha: recoveryHeadOid,
+  head: z.object({ ref: recoveryBranchName, sha: recoveryHeadOid,
     repo: z.object({ full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }) }),
 });
 
@@ -323,7 +328,10 @@ const recoveryPullQuery = `query RecoveryPull($owner:String!,$repo:String!,$numb
   }}
 }`;
 
-const timelineEvent = z.object({ __typename: z.string(), id: z.string().min(1) }).loose();
+const timelineEvent = z.object({
+  __typename: z.enum(["HeadRefForcePushedEvent", "HeadRefDeletedEvent", "HeadRefRestoredEvent", "ClosedEvent", "ReopenedEvent"]),
+  id: z.string().min(1),
+}).loose();
 const forcePushEvent = timelineEvent.extend({
   __typename: z.literal("HeadRefForcePushedEvent"), createdAt: z.iso.datetime(),
   beforeCommit: z.object({ oid: z.string() }), afterCommit: z.object({ oid: z.string() }),
@@ -332,17 +340,23 @@ const forcePushEvent = timelineEvent.extend({
 const recoveryPullSnapshot = z.object({
   errors: z.array(z.object({ message: z.string(), path: z.array(z.union([z.string(), z.number()])).optional() })).optional(),
   data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.looseObject({
-    number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]),
+    number: z.number().int(),
   }) }) }),
 });
-const openRecoverySource = z.object({
-  headRefName: z.string().min(1), headRepository: z.object({ nameWithOwner: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }),
+const recoveryFields = {
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]),
+  headRefOid: recoveryHeadOid,
+  headRefName: recoveryBranchName,
+  headRepository: z.object({ nameWithOwner: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }),
   timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
-});
+};
 
-async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl>>, changedAt: number, expectedHead: string) {
+async function readRecoveryTimeline(
+  pr: NonNullable<ReturnType<typeof parsePrUrl>>,
+  expected: Pick<InspectorBranchActivity, "changedAt" | "headSha" | "repository" | "ref">,
+) {
   // Ask GitHub about the entire timestamp bucket containing this ref update.
-  const since = new Date(Math.floor(changedAt / 1_000) * 1_000 - 1);
+  const since = new Date(Math.floor(expected.changedAt / 1_000) * 1_000 - 1);
   if (!Number.isFinite(since.getTime())) return null;
   const result = await readRecoveryApi("graphql", "-f", `query=${recoveryPullQuery}`,
     "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`, "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`);
@@ -356,18 +370,23 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   const partial = result.code !== 0 || Boolean(errors?.length);
   if (partial) {
     // gh writes partial GraphQL data to stdout and exits 1 for field errors.
-    const sourceOrTimelineErrors = errors?.length && errors.every(({ path }) => path?.[0] === "repository"
-      && path[1] === "pullRequest" && ["headRefName", "headRefOid", "headRepository", "timelineItems"].includes(String(path[2])));
-    if (!sourceOrTimelineErrors) return null;
+    if (!errors?.length || !errors.every(({ path }) => path?.[0] === "repository" && path[1] === "pullRequest"
+        && typeof path[2] === "string" && Object.hasOwn(recoveryFields, path[2]))) return null;
   }
-  if (base.pullRequest.state !== "OPEN") return false;
-  // An identified PR can disprove the receipt even if its timeline or fork is unavailable.
-  const oid = recoveryHeadOid.safeParse(base.pullRequest.headRefOid);
-  if (!oid.success || errors?.some(({ path }) => path?.[2] === "headRefOid")) return null;
-  if (oid.data !== expectedHead) return false;
-  if (partial) return null;
-  const source = openRecoverySource.safeParse(base.pullRequest);
-  return source.success ? source.data : null;
+  // Each intact field can disprove the receipt independently. A positive match requires all fields.
+  const field = (name: keyof typeof recoveryFields) =>
+    errors?.some(({ path }) => path?.[2] === name) ? undefined : base.pullRequest[name];
+  const state = recoveryFields.state.safeParse(field("state"));
+  const oid = recoveryFields.headRefOid.safeParse(field("headRefOid"));
+  const branch = recoveryFields.headRefName.safeParse(field("headRefName"));
+  const fork = recoveryFields.headRepository.safeParse(field("headRepository"));
+  if ((state.success && state.data !== "OPEN") || (oid.success && oid.data !== expected.headSha)
+      || (branch.success && `refs/heads/${branch.data}` !== expected.ref)
+      || (fork.success && fork.data.nameWithOwner.toLowerCase() !== expected.repository.toLowerCase())) return false;
+
+  const timeline = recoveryFields.timelineItems.safeParse(field("timelineItems"));
+  if (!timeline.success) return null;
+  return { timelineItems: timeline.data, complete: !partial && state.success && oid.success && branch.success && fork.success };
 }
 
 /** Read the PR state, head and evidence of a ref rewrite together at final verification. */
@@ -380,14 +399,13 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
     const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
     const latest = tip.success && tip.data[0].ref === ref ? tip.data[0] : null;
     if (latest && (latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt)) return false;
-    const pull = await readRecoveryTimeline(pr, changedAt, head);
+    const pull = await readRecoveryTimeline(pr, saved.data);
     if (pull === false) return false;
     if (!pull) return null;
-    if (pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
-        || `refs/heads/${pull.headRefName}` !== ref || pull.timelineItems.pageInfo.hasNextPage) return false;
+    if (pull.timelineItems.pageInfo.hasNextPage) return false;
     const [event] = pull.timelineItems.nodes;
     if (event?.id !== saved.data.verifiedForcePushId || (event && event.__typename !== "HeadRefForcePushedEvent")) return false;
-    if (!latest) return null;
+    if (!latest || !pull.complete) return null;
   }
   return true;
 }
@@ -405,10 +423,8 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   if (tip.ref !== ref || tip.after !== expectedHead) return null;
   let verifiedForcePushId: string | undefined;
   if (tip.activity_type === "force_push") {
-    const snapshot = await readRecoveryTimeline(pr, tip.changedAt, expectedHead);
-    if (!snapshot || snapshot.headRefName !== source.head.ref
-        || snapshot.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
-        || snapshot.timelineItems.pageInfo.hasNextPage) return null;
+    const snapshot = await readRecoveryTimeline(pr, { changedAt: tip.changedAt, headSha: expectedHead, repository, ref });
+    if (!snapshot || !snapshot.complete || snapshot.timelineItems.pageInfo.hasNextPage) return null;
     const event = forcePushEvent.safeParse(snapshot.timelineItems.nodes[0]);
     if (!event.success) return null;
     const push = event.data;

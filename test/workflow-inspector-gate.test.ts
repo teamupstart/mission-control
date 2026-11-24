@@ -3991,6 +3991,15 @@ for (const partial of [
   { name: "invalid OID", head: "unavailable", errors: ["timelineItems"], blocked: false },
   { name: "head field also failed", head: laterRefOid, errors: ["timelineItems", "headRefOid"], blocked: false },
   { name: "different PR", head: laterRefOid, errors: ["timelineItems"], wrongPr: true, blocked: false },
+  { name: "renamed branch", head: verifiedRecoveryOid, branch: "other", errors: ["timelineItems"], blocked: true },
+  { name: "changed fork", head: verifiedRecoveryOid, fork: "another/fork", errors: ["timelineItems"], blocked: true },
+  { name: "malformed branch", head: verifiedRecoveryOid, branch: "bad..ref", errors: ["timelineItems"], blocked: false },
+  { name: "malformed fork", head: verifiedRecoveryOid, fork: "unavailable", errors: ["timelineItems"], blocked: false },
+  { name: "branch field also failed", head: verifiedRecoveryOid, branch: "other", errors: ["headRefName", "timelineItems"], blocked: false },
+  { name: "fork field also failed", head: verifiedRecoveryOid, fork: "another/fork", errors: ["headRepository", "timelineItems"], blocked: false },
+  { name: "changed fork with unavailable head", head: null, fork: "another/fork", errors: ["headRefOid"], blocked: true },
+  { name: "confirmed rewrite with unavailable fork", head: verifiedRecoveryOid, rewrite: true, errors: ["headRepository"], blocked: true },
+  { name: "rewrite field also failed", head: verifiedRecoveryOid, rewrite: true, errors: ["timelineItems"], blocked: false },
 ]) {
   test(`recovery checks the head in a partial PR response: ${partial.name}`, async () => {
     let selecting = false;
@@ -4000,7 +4009,10 @@ for (const partial of [
         if (!partial.keepActivity) rmSync(branchActivity);
         const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
         writeFileSync(recoveryPr, JSON.stringify({ ...pull, number: pull.number + (partial.wrongPr ? 1 : 0),
-          head: { ...pull.head, sha: partial.head }, graphExitCode: 1,
+          head: { ...pull.head, sha: partial.head, ref: partial.branch ?? pull.head.ref,
+            repo: partial.fork ? { full_name: partial.fork } : pull.head.repo },
+          rewrites: partial.rewrite ? [{ __typename: "HeadRefForcePushedEvent", id: "later-rewrite" }] : [],
+          graphExitCode: 1,
           graphErrors: partial.errors.map(field => ({ message: "Field unavailable", path: ["repository", "pullRequest", field] })),
         }));
       }

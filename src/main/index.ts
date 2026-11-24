@@ -330,8 +330,7 @@ function stopShell(): void {
  * quit must wait for it.
  */
 async function drainBackground(): Promise<void> {
-  await voice?.stop();
-  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS).then((result) => {
+  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS, voice).then((result) => {
     if (result === "timed-out") logMain(`background processes did not exit within ${BACKGROUND_DRAIN_TIMEOUT_MS}ms of quitting; leaving them to Electron`);
   });
 }

@@ -1,11 +1,16 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { VOICE_HELLO_INTERVAL_MS } from "../shared/voice.ts";
-import { ListenerClient } from "./client.ts";
+import { ListenerClient, type CaptureBounds } from "./client.ts";
 import { tokenWords, type Recognition } from "./words.ts";
 
-type SegmentIterator = Iterator<Float32Array | null, void, string> | AsyncIterator<Float32Array | null, void, string>;
+type Segment = { samples: Float32Array; capture?: CaptureBounds };
+type Step = IteratorResult<Segment | null, void>;
 /** EOF can be checked even while muted, without asking the detector to read any more audio. */
-export type RecordingSegments = SegmentIterator & { readonly exhausted: boolean };
+export interface RecordingSegments {
+  readonly exhausted: boolean;
+  next(directive: { revision: string; held?: true }): Step | Promise<Step>;
+  return?(): unknown;
+}
 
 /** File playback is a finite listener session. A changed directive invalidates only the segment decoded under it. */
 export async function playRecording(client: ListenerClient,
@@ -15,6 +20,7 @@ export async function playRecording(client: ListenerClient,
   const segments = open(lifetime.signal);
   async function hello() {
     const response = await client.hello({}, lifetime.signal);
+    await response.body?.cancel();
     if (!response.ok) throw new Error("Listener hello refused: " + response.status);
   }
   async function heartbeat() {
@@ -27,17 +33,29 @@ export async function playRecording(client: ListenerClient,
     while (!segments.exhausted) {
       let directive = await client.poll(undefined, lifetime.signal);
       while (!directive.capture) directive = await client.poll(directive.revision, lifetime.signal);
-      const segment = await segments.next(directive.revision);
+      const segment = await segments.next(directive);
       if (segment.done) return;
       if (segment.value === null) continue;
       lifetime.signal.throwIfAborted();
       const capturedAt = Date.now();
-      const result = await decode(segment.value, directive.roster);
+      const result = await decode(segment.value.samples, directive.roster);
       lifetime.signal.throwIfAborted();
       if (!result.text.trim()) continue;
-      const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal);
-      if (!response.ok) throw new Error("Utterance HTTP " + response.status);
-      if (!(await response.json()).accepted) {
+      const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal, segment.value.capture);
+      if (!response) {
+        console.warn("Voice listener dropped one segment after waiting for push-to-talk release.");
+        continue;
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("Utterance HTTP " + response.status);
+      }
+      const acknowledgment = await response.json().catch((error: unknown) => {
+        if (error instanceof SyntaxError) return null;
+        throw error;
+      });
+      if (typeof acknowledgment?.accepted !== "boolean") throw new Error("Invalid voice utterance acknowledgment");
+      if (!acknowledgment.accepted) {
         const current = await client.poll(undefined, lifetime.signal);
         if (current.revision === directive.revision) throw new Error("Daemon refused the capture");
         // Capture changed during decoding. Discard this segment and continue from the next one.

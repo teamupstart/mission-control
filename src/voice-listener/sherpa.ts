@@ -6,6 +6,7 @@ import { OfflineRecognizer, Vad } from "sherpa-onnx-node";
 import { playRecording } from "./playback.ts";
 import { recordingSegments } from "./segments.ts";
 import { readRecording } from "./recording.ts";
+import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
 import { VOICE_MODELS, VOICE_TEST_MODEL, VoiceModelManifestSchema } from "../shared/voice-models.ts";
 import { ListenerClient } from "./client.ts";
 import { rosterHotwords } from "./words.ts";
@@ -40,7 +41,8 @@ const recognizer = new OfflineRecognizer({
 const vad = new Vad({ sileroVad: { model: modelFile("onnx/model.onnx"), windowSize: 512, minSilenceDuration: 0.8,
   minSpeechDuration: 0.15 }, numThreads: 1, sampleRate: 16000 }, 60);
 
-await playRecording(client, signal => recordingSegments(mono, vad, signal), async (samples, roster) => {
+const hostNowUs = loadVoiceHostClock(fileURLToPath(new URL("../native/state-lock.node", import.meta.url)));
+await playRecording(client, signal => recordingSegments(mono, vad, signal, hostNowUs), async (samples, roster) => {
   const stream = recognizer.createStream(rosterHotwords(roster, vocabulary));
   stream.acceptWaveform({ samples, sampleRate: 16000 });
   return recognizer.decodeAsync(stream);

@@ -216,6 +216,11 @@ It clips on 16 kHz sample boundaries and rounds the exclusive end up to host mil
 for `x-voice-capture-end-host-ms`. At key-up the detector tests a partial 20 ms frame
 with silence padding. The recognizer receives only recorded samples through release.
 A clipped prefix containing only quiet lead-in is discarded.
+
+For sherpa WAV playback, the host times describe when the listener fed the first and last
+sample windows of a detected phrase to the detector. A phrase read entirely during a hold
+can finish decoding after key-up. The file listener uses the same retry budget and
+utterance ID across held responses. A phrase that crosses key-up is discarded.
 The daemon timestamps dashboard picks on the listener's host clock. On macOS it reads
 `CLOCK_UPTIME_RAW`, the Core Audio clock in nanoseconds, and converts it to microseconds.
 On Linux the host clock is `CLOCK_MONOTONIC`. The router uses these timestamps to order

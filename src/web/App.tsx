@@ -5,7 +5,7 @@ import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
-import { IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { IDLE_RAIL_SECTION_COUNTS_FLAG_ID, IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
@@ -121,6 +121,7 @@ import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
+import { idleRailSections } from "./lib/idle-rail-sections.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
@@ -1078,7 +1079,9 @@ export function App(): React.JSX.Element {
     // A folded rail draws no rows, so no row is registered for the id. The strip that stands
     // in for them takes the keyboard instead: leaving the reader must still leave it, or every
     // Escape would land back inside the reader and the next one could never peel further.
-    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
+    (sessionEls.current.get(id)
+      ?? document.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
+      ?? document.querySelector<HTMLElement>(".session-rail-strip"))
       ?.focus({ preventScroll: true });
   }, []);
 
@@ -3329,20 +3332,45 @@ export function App(): React.JSX.Element {
   // Navigation follows the overview that BoardView renders until a detail is visible again.
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
   const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const idleRailCountsEnabled = resolveFeatureFlag(IDLE_RAIL_SECTION_COUNTS_FLAG_ID, featureFlags);
+  const idleColumn = boardDetailOpen && !allSessionsRail && idleRailCountsEnabled
+    ? fleet.columns.find((column) => column.id === "idle" && column.sessions.some((session) => session.id === detailId))
+    : undefined;
+  const idleSectionRows = useMemo(() => idleColumn && idleRailSections(idleColumn), [idleColumn]);
+  const selectedIdleSectionKey = idleSectionRows?.find((section) => detailId && section.sessionIds.includes(detailId))?.key;
+  const [idleSectionState, setIdleSectionState] = useState({
+    detailId,
+    selectedSectionKey: selectedIdleSectionKey,
+    overrides: new Map<string, boolean>(),
+  });
+  if (idleSectionState.detailId !== detailId || idleSectionState.selectedSectionKey !== selectedIdleSectionKey) {
+    // An explicit collapse applies to the current conversation. When a session opens
+    // or moves to another section, reveal its row before the rail renders.
+    const overrides = new Map(idleSectionState.overrides);
+    if (selectedIdleSectionKey) overrides.delete(selectedIdleSectionKey);
+    setIdleSectionState({ detailId, selectedSectionKey: selectedIdleSectionKey, overrides });
+  }
+  const idleSections = useMemo(() => idleSectionRows?.map((section, index) => ({
+    ...section,
+    expanded: idleSectionState.overrides.get(section.key) ?? (index === 0 || section.key === selectedIdleSectionKey),
+  })), [idleSectionRows, idleSectionState.overrides, selectedIdleSectionKey]);
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   // The folded At the top of Idle frame hides its cards on the Board overview only, like a
   // collapsed column: the rails always list the Blocked group in full.
   const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
     && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
-    const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
+    const folded = new Set(hiddenSessionIds(fleet.groups, collapsedRepoKeys));
+    for (const section of idleSections ?? []) {
+      if (!section.expanded) for (const id of section.sessionIds) folded.add(id);
+    }
     const inStrips = hideCollapsedColumns
       ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
       : new Set<string>();
     const inFrame = hideFoldedBlocked ? fleet.blocked : [];
     if (inStrips.size === 0 && inFrame.length === 0) return folded;
     return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked, idleSections]);
 
   // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
   // of the column that draws it and the Own column placement adds a sixth array.
@@ -3797,6 +3825,13 @@ export function App(): React.JSX.Element {
 
   const viewProps: SessionViewProps = {
     sessions: visible,
+    idleRailSections: idleSections && {
+      sections: idleSections,
+      onToggle: (key, expanded) => setIdleSectionState((previous) => ({
+        ...previous,
+        overrides: new Map(previous.overrides).set(key, expanded),
+      })),
+    },
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
@@ -4313,7 +4348,8 @@ export function App(): React.JSX.Element {
       // it natively. Without this they would act as they do on a rail row: Tab dives into the
       // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
       // never get from Intake to Backlog.
-      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+      // The preview Idle rail includes section disclosures in its native tab order.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock, .has-idle-sections")) return;
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));

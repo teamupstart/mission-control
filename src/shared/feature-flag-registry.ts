@@ -16,6 +16,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
+
 /**
  * The one owner of the Stalled section's id: idle stalls move from the inbox's Stuck section into
  * Idle's Stalled section on the Board and the Console rail. See `docs/attention-and-alerts.md`.
@@ -137,6 +139,13 @@ export const FEATURE_FLAGS = [
       "Reports section has Mark all read.",
     stage: "preview",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
+  },
+  {
+    id: IDLE_RAIL_SECTION_COUNTS_FLAG_ID,
+    label: "Counts on Idle rail sections",
+    description: "Show a session total in the conversation’s Idle rail and put status counts on expandable section headings.",
+    stage: "preview",
+    keywords: ["idle", "rail", "conversation", "sections", "counts"],
   },
   {
     id: IDLE_STALLED_FLAG_ID,

@@ -119,6 +119,24 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(toAnswer(page)).toHaveCount(0);
   await capture(idle, "01-stalled-section", page);
 
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await idle.locator(".tile.is-stalled").first().getByRole("button", { name: /^Open / }).press("Enter");
+  const rail = page.locator("section.board-col.is-rail.tone-idle");
+  const stalledHeading = rail.getByRole("button", { name: "stalled 2", exact: true });
+  await expect(rail.locator("header").getByText("2 sessions", { exact: true })).toBeVisible();
+  await expect(stalledHeading).toHaveAttribute("aria-expanded", "true");
+  await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(2);
+  for (const session of [a.session, b.session]) {
+    await expect(rail.getByRole("button", { name: session.name, exact: true })).toBeVisible();
+  }
+  await stalledHeading.click();
+  await expect(stalledHeading).toHaveAttribute("aria-expanded", "false");
+  await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(0);
+  await capture(rail, "04-stalled-rail-collapsed", page);
+  await stalledHeading.click();
+  await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(2);
+  await rail.getByRole("button", { name: "Back to the board" }).click();
+
   // Nudge puts the fixed text in the agent's conversation through the real outbox, and the
   // session moving takes its card out of the section.
   await factsA.getByRole("button", { name: "Nudge", exact: true }).click();

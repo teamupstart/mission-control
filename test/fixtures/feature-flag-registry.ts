@@ -8,6 +8,7 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
 // Replaces only the registry module in reader tests.

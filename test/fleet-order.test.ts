@@ -23,6 +23,7 @@ import {
 import type { Stall } from "../src/shared/stall.ts";
 import { TONE_GROUPS } from "../src/web/lib/tone.ts";
 import { awaitingSessionIds } from "../src/web/lib/awaiting.ts";
+import { idleRailSections } from "../src/web/lib/idle-rail-sections.ts";
 import { moveSelection } from "../src/web/lib/layoutNav.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import { mkMemberSession, mkSession } from "./helpers/session-fixture.ts";
@@ -1006,4 +1007,24 @@ test("with repository grouping on, the Stalled section stays a flat longest-firs
   assert.deepEqual(names(idle.sessions), ["delta", "bravo", "charlie", "alpha"]);
   assert.deepEqual(idle.repos.map((r) => [r.repoRoot, r.startIndex, r.length]), [[REPO_A, 0, 1]]);
   assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
+});
+
+test("Idle rail sections keep counts and navigation order across pinned residents and the held split", () => {
+  const fleet = [
+    awaiting("pinned-awaiting", 30 * 60_000),
+    plain("pinned-free", IDLE),
+    awaiting("awaiting", 60_000),
+    plain("free", IDLE),
+    plain("held", IDLE),
+  ];
+  const ordered = orderSessions(
+    fleet, new Set(["plain-held"]), false, undefined, undefined,
+    new Set(["plain-pinned-awaiting", "plain-pinned-free"]), undefined,
+    awaitingSessionIds(fleet, true, AT),
+  );
+  const idle = ordered.columns.find((column) => column.id === "idle")!;
+  const sections = idleRailSections(idle);
+  assert.deepEqual(sections.map((section) => section.key), ["pinned-awaiting", "pinned-free", "awaiting", "free", "held"]);
+  assert.deepEqual(sections.flatMap((section) => section.sessionIds), idle.sessions.map((session) => session.id));
+  for (const section of sections) assert.deepEqual(renderedIds(section.rows), section.sessionIds);
 });

@@ -23,6 +23,8 @@ import {
   loadSpokenTurns,
   moveSpokenTurns,
   observeSpokenClientReceipt,
+  openDb,
+  type BindableDelivery,
   recordSpokenHandoff,
   processSpokenReleases,
   spokenTranscriptLocators,
@@ -70,6 +72,97 @@ export const delegatedLedger = new DeliveryLedger<DelegatedTurnRow>({
   // The label a row would show: two rows with the same one cannot be credited to the wrong sender.
   sender: (row) => `${row.controllerId}\0${row.controllerName}`,
 });
+
+/** Each workflow send attempt can bind one native turn, including a delayed echo after restart. */
+type WorkflowDeliveryTurn = BindableDelivery & { deliveryId: string; transcriptPath: string | null };
+export const WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT = 200;
+export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
+  label: "a workflow packet",
+  acceptsTranscript: (row, transcript) => row.transcriptPath === null || row.transcriptPath === transcript.path,
+  requireExactFingerprint: true,
+  maxCachedConversations: 200,
+  load: key => {
+    const db = openDb();
+    const retained = "has_transcript_receipt = 1 AND payload_pruned_at IS NULL AND note_key = ?";
+    // Seek directly to each originating session, including predecessors after a transfer.
+    // DISTINCT or a window function here would walk all of a long conversation's history.
+    const nextSession = db.prepare(`SELECT session_id FROM workflow_deliveries
+      WHERE ${retained} AND session_id > ? ORDER BY session_id LIMIT 1`);
+    const forSession = `${retained} AND session_id = ?`;
+    const window = db.prepare(`
+      WITH recent AS (SELECT id FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NOT NULL
+                      ORDER BY delivered_at DESC, id DESC LIMIT ?),
+      eligible(id, oldest_receipt) AS (
+        SELECT id, NULL FROM recent
+        UNION SELECT id, NULL FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NULL AND state = 'sending'
+        UNION SELECT id, ? FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NULL AND state = 'uncertain' AND updated_at >= ?
+        UNION SELECT id, NULL FROM workflow_deliveries WHERE ${forSession} AND delivered_at >= ?
+      )
+      SELECT turns.rowid AS ordinal, turns.id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey,
+             fingerprint, delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
+             message_id AS messageId, message_ts AS messageTs
+        FROM eligible JOIN workflow_delivery_turns turns ON turns.delivery_id = eligible.id
+       WHERE discarded_at IS NULL AND (oldest_receipt IS NULL OR delivered_at >= oldest_receipt)`);
+    type StoredTurn = Omit<WorkflowDeliveryTurn, "contested"> & { ordinal: number; contested: number };
+    const rows: StoredTurn[] = [];
+    const cutoff = Date.now() - DELIVERY_LAG_MS;
+    let after = "";
+    for (;;) {
+      const origin = nextSession.get(key, after) as { session_id: string } | undefined;
+      if (!origin) break;
+      after = origin.session_id;
+      for (const row of window.iterate(key, after, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT, key, after,
+        cutoff, key, after, cutoff, key, after, cutoff)) {
+        rows.push(row as unknown as StoredTurn);
+      }
+    }
+    return rows.sort((a, b) => a.ordinal - b.ordinal).map(({ ordinal: _ordinal, ...row }) => ({ ...row, contested: Boolean(row.contested) }));
+  },
+  insert: row => {
+    openDb().prepare(
+      `INSERT INTO workflow_delivery_turns
+         (id, delivery_id, transcript_path, note_key, fingerprint, delivered_at, transcript_offset, contested, message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.deliveryId, row.transcriptPath, row.noteKey, row.fingerprint, row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId);
+  },
+  remove: id => { openDb().prepare("DELETE FROM workflow_delivery_turns WHERE id = ?").run(id); },
+  contest: (id, contested) => {
+    openDb().prepare("UPDATE workflow_delivery_turns SET contested = ? WHERE id = ? AND message_id IS NULL")
+      .run(Number(contested), id);
+  },
+  bind: (row, id, ts) => Boolean(openDb().prepare(
+    "UPDATE workflow_delivery_turns SET message_id = ?, message_ts = ? WHERE id = ? AND message_id IS NULL AND discarded_at IS NULL",
+  ).run(id, ts, row.id).changes),
+  sender: () => "workflow",
+});
+
+let checkDiscardedWorkflowReceipts = true;
+
+/** The delivery transition already made this receipt ineligible, even if deleting it fails. */
+export function noteDiscardedWorkflowReceipt(noteKey: string): void {
+  workflowDeliveryLedger.forgetConversation(noteKey);
+  checkDiscardedWorkflowReceipts = true;
+}
+
+function cleanDiscardedWorkflowReceipts(): void {
+  if (!checkDiscardedWorkflowReceipts || openDb().isTransaction) return;
+  checkDiscardedWorkflowReceipts = false;
+  try {
+    inTransaction(() => {
+      const rows = openDb().prepare(
+        "DELETE FROM workflow_delivery_turns WHERE discarded_at IS NOT NULL RETURNING note_key AS noteKey, fingerprint",
+      ).all() as { noteKey: string; fingerprint: string }[];
+      for (const row of rows) {
+        workflowDeliveryLedger.forgetConversation(row.noteKey);
+        workflowDeliveryLedger.reconsider(row.noteKey, row.fingerprint);
+      }
+    });
+  } catch {
+    // Retry on the next ledger read. A rolled-back reconsideration cannot survive in cache.
+    forgetDeliveryBindingState();
+    checkDiscardedWorkflowReceipts = true;
+  }
+}
 
 const reviewForgetHooks: Array<() => void> = [];
 
@@ -428,7 +521,8 @@ export async function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key:
   return removed;
 }
 
-registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger], () => {
+registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger, workflowDeliveryLedger], () => {
+  cleanDiscardedWorkflowReceipts();
   try {
     processSpokenReleases(rows => {
       for (const { noteKey, fingerprint } of rows) {

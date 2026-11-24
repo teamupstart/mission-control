@@ -8,7 +8,7 @@ import { capturePaneText } from "./discovery/pane-capture.ts";
 import { parsePaneModeLine, readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
-import type { ControlSpec } from "./harness/types.ts";
+import type { ControlSpec, SdkTurn } from "./harness/types.ts";
 import {
   describeOptionRowMiss,
   hasUnansweredWarning,
@@ -375,7 +375,8 @@ async function writeText(
   return fromTerminal(await pane.write.text(text));
 }
 
-export type PromptWriteGuard = () => string | null;
+/** The SDK can reject a queued send before it reaches its serialized write boundary. */
+export type PromptWriteGuard = (phase?: "preflight" | "submit", receiptTarget?: Pick<SdkTurn, "clientMessageId">) => string | null;
 
 async function sendKeys(
   pane: BoundPane,
@@ -1098,7 +1099,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
+    () => injectPromptLocked(session, text, deps, phase => writeHold(session) ?? beforeWrite?.(phase) ?? null),
   );
 }
 
@@ -1176,7 +1177,7 @@ async function injectPromptLocked(
       pane,
       ["enter"],
       inModeAfterPasteError,
-      beforeWrite,
+      () => beforeWrite?.("submit") ?? null,
     ),
     pastePlaceholder,
     wasPending,

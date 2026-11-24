@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, VOICE_PROVIDER_EDIT_TIMEOUT_MS, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
 import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type VoiceDashboardSnapshot, type VoiceKeyWriteOptions } from "./lib/api.ts";
+import { VoiceDashboardClock } from "./lib/voice-dashboard-clock.ts";
 
 // Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
 // `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
@@ -68,8 +69,8 @@ export interface VoiceConfigState {
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   keyReportVersion: string;
-  deadlineIn: (ms: number) => number;
-  observeProvider: (revision: string, selection: VoiceConfig["decisionProvider"], snapshot?: VoiceDashboardSnapshot) => boolean;
+  clock: VoiceDashboardClock;
+  observeProvider: (revision: string, selection: VoiceConfig["decisionProvider"]) => boolean;
   pendingDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Show an edit immediately and resolve to whether the daemon kept it.
@@ -107,10 +108,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [provider, setProvider] = useState<{ revision: string; selection: VoiceConfig["decisionProvider"] }>();
   const latestProvider = useRef(provider);
   const previousDaemons = useRef(new Set<string>());
-  const serverClock = useRef<{ daemon: string; order: number; offset: number } | undefined>(undefined);
-  // The daemon validates expiry. Advance its snapshot time using the browser's monotonic clock.
-  const deadlineIn = useCallback((ms: number) =>
-    (serverClock.current ? Math.floor(performance.now() + serverClock.current.offset) : Date.now()) + ms, []);
+  const [clock] = useState(() => new VoiceDashboardClock(signal => readSetting(fetchVoiceConfig, signal)));
   const [unconfirmedProviderEdit, setUnconfirmedProviderEdit] = useState<number | null>(null);
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
@@ -128,7 +126,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
 
   // Config reads, key reports and write acknowledgments all carry the daemon's
   // selection revision. Their HTTP responses may arrive in any order.
-  const observeProvider = useCallback((revision: string, selection: VoiceConfig["decisionProvider"], snapshot?: VoiceDashboardSnapshot): boolean => {
+  const observeProvider = useCallback((revision: string, selection: VoiceConfig["decisionProvider"]): boolean => {
     const prior = latestProvider.current;
     const [daemon = "", order] = revision.split(":");
     if (prior?.revision !== revision) {
@@ -140,10 +138,6 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       latestProvider.current = { revision, selection };
       setProvider(latestProvider.current);
-    }
-    if (snapshot && Number.isFinite(snapshot.serverTime) &&
-        (serverClock.current?.daemon !== daemon || snapshot.snapshotOrder > serverClock.current.order)) {
-      serverClock.current = { daemon, order: snapshot.snapshotOrder, offset: snapshot.serverTime - performance.now() };
     }
     setUnconfirmedProviderEdit(null);
     return true;
@@ -157,9 +151,11 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
       if (pendingRef.current.length > 0) return;
       const at = nextEdit.current;
+      const sentAt = performance.now();
       const read = await readSetting(fetchVoiceConfig, reads.signal);
       if (!reads.signal.aborted && read && !isOlderSnapshot(read, snapshot) && nextEdit.current === at && pendingRef.current.length === 0) {
-        if (!observeProvider(read.providerRevision, read.config.decisionProvider, read)) return;
+        if (!observeProvider(read.providerRevision, read.config.decisionProvider)) return;
+        clock.observe(read, sentAt);
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);
         setConfirmed(read.config);
@@ -171,7 +167,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       reads.abort();
       clearInterval(id);
     };
-  }, [enabled, observeProvider, setConfirmed, unconfirmedProviderEdit]);
+  }, [clock, enabled, observeProvider, setConfirmed, unconfirmedProviderEdit]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;
@@ -184,12 +180,15 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const selectedAt = performance.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id, expiresAt: deadlineIn(VOICE_PROVIDER_EDIT_TIMEOUT_MS),
+    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id,
       observedIntent: changesProvider ? observedIntentReceipt() : undefined };
     const providerRequest = changesProvider ? new AbortController() : undefined;
     const timer = providerRequest && setTimeout(() => providerRequest.abort(), VOICE_PROVIDER_EDIT_TIMEOUT_MS);
-    const reservation = providerRequest ? nextProviderGesture(providerRequest.signal).then(gesture => {
+    const reservation = providerRequest ? Promise.all([
+      nextProviderGesture(providerRequest.signal), clock.deadline(VOICE_PROVIDER_EDIT_TIMEOUT_MS, providerRequest.signal),
+    ]).then(([gesture, expiresAt]) => {
       intent.gesture = gesture;
+      intent.expiresAt = expiresAt;
       return api.reserveVoiceProviderWrite(intent, providerRequest.signal);
     }) : undefined;
     const save = async (): Promise<boolean> => {
@@ -202,7 +201,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         return false;
       }
       const signal = sendProvider && providerRequest ? providerRequest.signal : AbortSignal.timeout(SETTINGS_REQUEST_TIMEOUT_MS);
-      const settingsExpiry = sendProvider ? undefined : deadlineIn(SETTINGS_REQUEST_TIMEOUT_MS);
+      const settingsExpiry = sendProvider ? undefined : await clock.deadline(SETTINGS_REQUEST_TIMEOUT_MS, signal);
       let res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined, signal, settingsExpiry);
       // A receipt captured at click time establishes order independently of
@@ -248,7 +247,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const result = changesSettings ? settingsQueue.current.then(save) : save();
     if (changesSettings) settingsQueue.current = result.then(() => {}, () => {});
     return result.finally(() => clearTimeout(timer));
-  }, [deadlineIn, observeProvider, setConfirmed, setPending, writer]);
+  }, [clock, observeProvider, setConfirmed, setPending, writer]);
 
   const config = useMemo(
     () => (confirmed ? pending.reduce((shown, edit) => {
@@ -263,7 +262,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     config, confirmedDecisionProvider: unconfirmedProviderEdit === null ? provider?.selection : undefined,
     keyReportVersion: unconfirmedProviderEdit === null ? provider?.revision ?? "" : `unconfirmed:${unconfirmedProviderEdit}`,
     observeProvider,
-    deadlineIn,
+    clock,
     pendingDecisionProvider: pending.find(edit => edit.id === latestProviderEdit.current)?.patch.decisionProvider, update, error,
   };
 }
@@ -316,8 +315,8 @@ export interface VoiceDecisionKeyState {
  * the chosen provider changes, and on the same poll as the config, so a key saved in another
  * window or a provider chosen there shows here too.
  */
-export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: providerRevision, observeProvider, deadlineIn }:
-    Pick<VoiceConfigState, "keyReportVersion" | "observeProvider" | "deadlineIn">): VoiceDecisionKeyState {
+export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: providerRevision, observeProvider, clock }:
+    Pick<VoiceConfigState, "keyReportVersion" | "observeProvider" | "clock">): VoiceDecisionKeyState {
   const [status, setStatus] = useState<{
     revision: string;
     report: Awaited<ReturnType<typeof fetchVoiceDecisionKey>>;
@@ -339,12 +338,14 @@ export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: provid
       const id = ++nextRead;
       const at = writes.current;
       const group = reads.signal;
+      const sentAt = performance.now();
       const read = await readSetting(fetchVoiceDecisionKey, group);
       if (group.aborted || writes.current !== at) return;
       if (read) {
         // Requests may reach the daemon out of order even when they share a provider revision.
         if (id < failedRead || isOlderSnapshot(read, snapshot)) return;
-        if (!observeProvider(read.providerRevision, read.selection, read)) return;
+        if (!observeProvider(read.providerRevision, read.selection)) return;
+        clock.observe(read, sentAt);
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);
       } else {
@@ -368,7 +369,7 @@ export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: provid
       refresh.current = null;
       clearInterval(id);
     };
-  }, [enabled, providerRevision, observeProvider]);
+  }, [clock, enabled, providerRevision, observeProvider]);
 
   const report = status?.revision === providerRevision ? status.report : undefined;
   const mutate = useCallback(async (provider: VoiceKeyProvider, request: (options: VoiceKeyWriteOptions) => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
@@ -379,7 +380,8 @@ export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: provid
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
     try {
-      const res = await request({ revision, expiresAt: deadlineIn(SETTINGS_REQUEST_TIMEOUT_MS), signal: deadline.signal });
+      const expiresAt = await clock.deadline(SETTINGS_REQUEST_TIMEOUT_MS, deadline.signal);
+      const res = await request({ revision, expiresAt, signal: deadline.signal });
       if (res.ok && res.keys && res.provider !== undefined) {
         setError(null);
         return "confirmed";
@@ -396,7 +398,7 @@ export function useVoiceDecisionKey(enabled: boolean, { keyReportVersion: provid
       writing.current = false;
       setBusy(false);
     }
-  }, [deadlineIn, report]);
+  }, [clock, report]);
 
   const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
     mutate(provider, options => api.saveVoiceDecisionKey(provider, key, options)), [mutate]);

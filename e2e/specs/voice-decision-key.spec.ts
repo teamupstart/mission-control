@@ -1088,6 +1088,44 @@ test("an expired config write cannot restore an older cancel window", async ({ d
   }
 });
 
+test("a fresh edit keeps its deadline after a slow config snapshot", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
+  await openVoiceSettings(page, daemon);
+  const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+  await expect(length).toHaveValue("4");
+  await expect(line(page)).toHaveText(NOT_SET);
+  await api(daemon, "/api/voice/config", { cancelWindow: { seconds: 6 } }, "PUT");
+  const release = Promise.withResolvers<void>();
+  let first = true;
+  await page.route(/\/api\/voice\/(config|decision-key)$/, async route => {
+    if (route.request().method() === "PUT") {
+      await new Promise(resolve => setTimeout(resolve, 4_000));
+      return route.continue();
+    }
+    if (first && route.request().url().endsWith("/config")) {
+      first = false;
+      const response = await route.fetch();
+      // The read and write each take less than 15 seconds, but together they exceed it.
+      await new Promise(resolve => setTimeout(resolve, 12_000));
+      return route.fulfill({ response });
+    }
+    await release.promise;
+    return route.continue();
+  });
+  try {
+    await expect(length).toHaveValue("6");
+    const saved = page.waitForResponse(r => r.request().method() === "PUT" && r.url().endsWith("/api/voice/config"));
+    await length.selectOption("8");
+    expect((await saved).status()).toBe(200);
+  } finally {
+    release.resolve();
+  }
+  await page.reload();
+  await expect(length).toHaveValue("8");
+  await capture(panel(page).locator('[data-anchor="voice/cancel-window"]'), "47-fresh-edit-after-delayed-read");
+});
+
 test("a delayed config poll shows the newer cancel window when it reaches the daemon last", async ({ dashboard: page, context, daemon }) => {
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");

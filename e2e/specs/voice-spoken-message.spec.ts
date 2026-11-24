@@ -236,13 +236,14 @@ test("Send now updates the compatible question's spoken card and delivers the wo
   await page.reload();
   await expect(page.locator(".pulse")).not.toHaveClass(/is-down/);
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
-  const wait = request.get(`${daemon.baseURL}/mcp/reviews/${review.id}/wait?convertible=1`, { headers });
   expect(await (await say(daemon, "Steve, verify the release", { id: "convert-release" })).json()).toEqual({ accepted: true });
   await expect.poll(() => states).toContain("pending");
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/convert-release/send-now`)).ok()).toBe(true);
-  expect((await (await wait).json()).converted.receipt).toContain(review.id);
+  // Observe the real hold before starting the poll, so request scheduling cannot choose the case.
+  await expect.poll(() => states.at(-1)).toBe("held");
+  const wait = await request.get(`${daemon.baseURL}/mcp/reviews/${review.id}/wait?convertible=1`, { headers });
+  expect((await wait.json()).converted.receipt).toContain(review.id);
   await expect.poll(() => states.at(-1)).toBe("sent");
-  expect(states).not.toContain("held");
   const reply = page.getByText(/Mock reply to: verify the release/).first();
   await expect(reply).toBeVisible({ timeout: 30_000 });
   if (process.env.MC_E2E_EVIDENCE === "1") {

@@ -1080,6 +1080,8 @@ background, including after a reconnect or supervisor restart. It records its
 own PID before announcement and the sandbox child's PID before releasing the
 listener. A replacement launcher can therefore retire a launch interrupted
 between acknowledgement and spawn once the OS confirms the recorded PID is gone.
+During ordinary operation the child's OS exit event queues its signed exit,
+including for the first launch on a fresh state home.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor
 sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of

@@ -216,7 +216,10 @@ binding it to the launch instance under `voice-retirements/`. It waits up to
 five seconds for acknowledgement. On success it starts a confined shell that
 waits on the launcher's pipe. The launcher records the sandbox child's PID and
 signature before releasing the shell to exec the listener. Losing the launcher
-before release closes the pipe and the listener never starts.
+before release closes the pipe and the listener never starts. Before releasing
+the gate the launcher also subscribes to the child's OS exit event. That event
+queues its signed retirement immediately. During a disconnect the exit stays
+on disk for the next connection.
 
 A replacement supervisor checks the recorded PID with the OS, rereads the
 record after observing that PID gone, and verifies its signature before signing

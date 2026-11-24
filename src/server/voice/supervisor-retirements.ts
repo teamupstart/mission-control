@@ -44,6 +44,8 @@ export class SupervisorRetirements {
   private readonly pending = new Map<string, PendingExit>();
   private timer?: NodeJS.Timeout;
   private active?: AbortController;
+  private reporter?: SupervisorReporter;
+  private paused = false;
   private enqueued = false;
   private retryMs = 250;
 
@@ -74,15 +76,17 @@ export class SupervisorRetirements {
     catch { /* Recovery can still establish that the launcher is gone. */ }
   }
 
-  enqueue(exit: PendingExit, report: SupervisorReporter) {
+  enqueue(exit: PendingExit) {
     const file = this.file(exit.instance);
     if (!this.persist(file, exit)) this.pending.set(file, exit);
     this.enqueued = true;
-    this.start(report);
+    this.start();
   }
 
   /** Stop the timer and detach an in-flight report. A later reconnect replays the durable entries. */
   pause() {
+    this.paused = true;
+    this.reporter = undefined;
     clearTimeout(this.timer);
     this.active?.abort();
     this.active = undefined;
@@ -91,11 +95,19 @@ export class SupervisorRetirements {
 
   resume(report: SupervisorReporter) {
     this.pause();
-    this.start(report);
+    this.paused = false;
+    this.connect(report);
   }
 
-  start(report: SupervisorReporter) {
-    if (this.active) return;
+  connect(report: SupervisorReporter) {
+    if (this.paused) return;
+    this.reporter = report;
+    this.start();
+  }
+
+  private start() {
+    const report = this.reporter;
+    if (!report || this.active) return;
     this.enqueued = false;
     clearTimeout(this.timer);
     const controller = new AbortController();
@@ -103,9 +115,9 @@ export class SupervisorRetirements {
     void this.deliver(report, controller.signal).then(retry => {
       if (this.active !== controller) return;
       this.active = undefined;
-      if (this.enqueued) this.start(report);
+      if (this.enqueued) this.start();
       else if (retry) {
-        this.timer = setTimeout(() => this.start(report), this.retryMs).unref();
+        this.timer = setTimeout(() => this.start(), this.retryMs).unref();
         this.retryMs = Math.min(5000, this.retryMs * 2);
       } else this.retryMs = 250;
     });

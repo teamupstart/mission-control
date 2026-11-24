@@ -837,7 +837,8 @@ test("a stalled start times out before spawning and retires the accepted launch 
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
 });
 
-test("a supervised same-account child cannot read or change the daemon's recovery files", async t => {
+for (const disconnected of [false, true]) test("the first supervised same-account child protects recovery files and retires on OS exit " +
+  (disconnected ? "after reconnect" : "while connected"), async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
@@ -871,20 +872,27 @@ test("a supervised same-account child cannot read or change the daemon's recover
   const exit = join(home, "voice/supervised-exits", "fixture.json");
   mkdirSync(join(home, "voice/supervised-exits"), { recursive: true });
   t.after(() => signer.pauseExitRetries());
+  let deliverExit!: () => void;
+  const transport = new Promise<void>(resolve => { deliverExit = resolve; });
+  let exitAttempts = 0;
   const launched = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model, retirement], {},
-    async (subject, state, proof) => { assert.equal((await peer.report(state, subject, proof)).status, 200); })
+    async (subject, state, proof) => {
+      if (state === "exited") { exitAttempts++; await transport; }
+      assert.equal((await peer.report(state, subject, proof)).status, 200);
+    })
     .catch(error => {
       if (process.platform === "linux" && error.code === "ENOENT") return null;
       throw error;
     });
   if (!launched) {
+    deliverExit();
     await t.waitFor(() => assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []));
     t.diagnostic("Bubblewrap is unavailable. The launcher retired the failed start without running the listener.");
     return;
   }
   const { instance, child } = launched;
   const guarded = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
-  assert.equal(guarded.pid, child.pid);
+  if (child.exitCode === null && child.signalCode === null) assert.equal(guarded.pid, child.pid);
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const completed = once(child, "close");
   const ready = process.platform === "darwin" ? once(child.stderr, "data") : null;
@@ -905,6 +913,8 @@ test("a supervised same-account child cannot read or change the daemon's recover
     assert.equal(store.state().capabilities["speech-output"]?.available, true);
   }
   const id = await audition();
+  assert.equal((await peer.request("/voice/speech/jobs/" + id + "/events", { type: "started" }, instance)).status, 200);
+  if (disconnected) signer.pauseExitRetries();
   child.stdin.on("error", () => {}); // A host that disallows namespaces can refuse the child before stdin opens.
   child.stdin.end("check");
   const [code] = await completed;
@@ -912,17 +922,37 @@ test("a supervised same-account child cannot read or change the daemon's recover
   const stderr = await errors;
   if (process.platform === "linux" && code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)) {
     assert.equal(await output, ""); // The host refused confinement and the listener never ran.
+    deliverExit();
+    if (disconnected) signer.retryPendingExits(home, async (subject, state, proof) => {
+      assert.equal((await peer.report(state, subject, proof)).status, 200);
+    });
+    await t.waitFor(() => assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []));
     t.diagnostic("Host refused a confined process. Verified the launcher never falls back to an unrestricted child.");
-  } else {
-    assert.equal(code, 0, stderr);
-    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, retirement: true, model: "sample",
-      ...(process.platform === "darwin" && { descendantError: "EPERM" }) });
+    return;
   }
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, retirement: true, model: "sample",
+    ...(process.platform === "darwin" && { descendantError: "EPERM" }) });
+  assert.equal(exitAttempts, disconnected ? 0 : 1);
   assert.deepEqual(entries(), [{ jobId: id, instance, purpose: "audition" }]);
   assert.throws(() => readFileSync(exit), { code: "ENOENT" });
   store.reset(); await peer.hello(instance);
   assert.equal((await peer.poll(instance)).capture, false);
-  assert.equal((await peer.report("exited", instance, signer.exitProof(instance))).status, 200);
+  let replayed = 0;
+  if (disconnected) {
+    const saved = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
+    assert.deepEqual(saved, { instance, proof: signer.exitProof(instance) });
+    signer.retryPendingExits(home, async (subject, state, proof) => {
+      assert.equal(state, "exited");
+      assert.equal((await peer.report(state, subject, proof)).status, 200);
+      replayed++;
+    });
+  }
+  deliverExit();
+  await t.waitFor(() => assert.deepEqual(entries(), []));
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  assert.equal(exitAttempts, disconnected ? 0 : 1);
+  assert.equal(replayed, disconnected ? 1 : 0);
   assert.equal((await peer.poll(instance)).capture, true);
 });
 

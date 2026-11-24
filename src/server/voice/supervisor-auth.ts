@@ -73,7 +73,8 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
       const instance = prefix + randomBytes(32).toString("hex");
       const start = confinedVoiceListener(stateHome, instance);
       const queue = retirements(stateHome);
-      queue.start(report);
+      queue.connect(report);
+      const retire = () => queue.enqueue({ instance, proof: signature(instance, "exited") });
       const startProof = signature(instance, "started");
       const announce = () => reportBeforeDeadline(report, instance, "started", startProof);
       const watch = (pid: number) => queue.watch({ instance, pid, proof: watchProof(instance, pid) });
@@ -93,6 +94,8 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
         await once(child, "spawn");
         try { watch(child.pid!); }
         catch (error) { child.stdin.destroy(); throw error; }
+        // Install the observer before release, including for the first child on a fresh home.
+        child.once("exit", retire);
         // EOF before this line exits the gate. After release only the OS can establish exit.
         released = true;
         const onBrokenGate = () => {};
@@ -106,7 +109,7 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
         if (refused || released) throw error;
         // No OS child started. Keep its signed retirement available across launch
         // service restarts while returning the actual launch error to the caller.
-        queue.enqueue({ instance, proof: signature(instance, "exited") }, report);
+        retire();
         throw error;
       }
     },

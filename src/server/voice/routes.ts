@@ -181,12 +181,13 @@ export function registerVoiceUtteranceRoutes(
     }
     const release = revision ? voiceStateStore.releasedCapture(revision) : undefined;
     const heldBeforeRelease = release !== undefined && revision === release.revision;
+    const startHeader = c.req.header(VOICE_CAPTURE_START_HEADER);
+    const startUs = startHeader ? Number(startHeader) : undefined;
+    if (startUs !== undefined && (!Number.isSafeInteger(startUs) || startUs < 0)) return c.json({ accepted: false });
     if (heldBeforeRelease) {
-      const startHeader = c.req.header(VOICE_CAPTURE_START_HEADER);
-      const startUs = startHeader ? Number(startHeader) : NaN;
       const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
       const end = endHeader ? Number(endHeader) : NaN;
-      if (!Number.isSafeInteger(startUs) || startUs < release.pressedAtUs ||
+      if (startUs === undefined || startUs < release.pressedAtUs ||
           !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
         c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
@@ -194,7 +195,7 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
-    return c.json({ accepted: await router.accept(parsed.data, heldBeforeRelease) });
+    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs }) });
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");

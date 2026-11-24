@@ -384,6 +384,36 @@ test("released speech must start at or after physical key-down and end by key-up
   assert.equal((await readHeard()).length, 1);
 });
 
+test("released controls follow monotonic capture order when Unix times move backward", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
+  await report({ reportedAtHostUs: 201_000, callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: 200_000 });
+  const held = voiceStateStore.directive().revision;
+  await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 800_000 });
+  const submit = async (id: string, text: string, hostUs: number, unixMs: number) => {
+    const response = await app.request(utterancePath(held), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(hostUs), "x-voice-capture-end-host-ms": String(Math.ceil(hostUs / 1000) + 10),
+    }, body: JSON.stringify({ ...capture(text, id), capturedAt: unixMs }) });
+    assert.deepEqual(await response.json(), { accepted: true });
+  };
+  await submit("command", "Will review this", 300_000, now);
+  await submit("later-command", "Will keep this", 500_000, now - 2000);
+  await submit("cancel", "cancel", 400_000, now - 60_000);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["command", "cancelled"]);
+  await submit("choice", "Steven ask Will", 600_000, now - 61_000);
+  await submit("too-early", "Will", 550_000, now);
+  assert.equal(cards.at(-1)?.state, "unsure");
+  await submit("pick", "Will", 650_000, now - 62_000);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await submit("before-pick", "cancel", 625_000, now);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["later-command", "cancelled"]);
+  await submit("after-pick", "cancel", 675_000, now - 63_000);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.equal((await readHeard()).find(entry => entry.id === "cancel")?.time, now - 60_000);
+});
+
 test("a fresh snapshot with a stale key event renews call state and applies permission without authorizing audio", async (t) => {
   let elapsed = performance.now();
   t.mock.method(performance, "now", () => elapsed);

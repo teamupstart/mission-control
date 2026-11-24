@@ -166,8 +166,9 @@ the daemon accepts the same owner's held revision for segments contained within 
 The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
 It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
 for `x-voice-capture-end-host-ms`. A clipped prefix containing only quiet lead-in is discarded.
-The router uses the Unix
-`capturedAt` time for history and for ordering a spoken action against dashboard actions. If a POST races key-up
+The router orders spoken commands, picks and cancels by their monotonic start timestamps when
+both are available. Recently heard displays the original Unix `capturedAt`. Comparisons with
+dashboard picks or Unix-only captures use their Unix times. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the
 same call preserve the release exception. Manual mute, a change of recipient, listener or input,

@@ -115,6 +115,51 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
   });
 }
 
+test("a standalone relaunch keeps its feedback and retry ID while another card occupies the surface", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "pill" } })).ok()).toBe(true);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const release = Promise.withResolvers<void>();
+  const launches: string[] = [];
+  await page.route("**/api/residents/profiles/*/launch", async route => {
+    launches.push(route.request().postDataJSON().requestId);
+    if (launches.length > 1) return route.continue();
+    await release.promise;
+    await route.fulfill({ status: 503, json: { error: "Try the launch again" } });
+  });
+  await page.goto(daemon.baseURL + "/#/voice/pill");
+  await page.clock.install();
+  const card = page.getByRole("status");
+  await say(daemon, "Marlowe, check the build");
+  await card.getByRole("button", { name: "Send now" }).click();
+  const relaunch = card.getByRole("button", { name: "Relaunch Marlowe" });
+  const failedLaunch = page.waitForResponse(response => response.url().endsWith("/launch") && response.status() === 503);
+  await relaunch.click();
+  try {
+    await expect(relaunch).toBeDisabled();
+    await say(daemon, "Marlowe, inspect another build");
+    await expect(card).toContainText("inspect another build");
+    await expect(relaunch).toHaveCount(0);
+  } finally {
+    release.resolve();
+  }
+  await (await failedLaunch).finished();
+  // Let the hidden failure outlast an ordinary outcome, then give the newer Cancelled card its interval.
+  await page.clock.fastForward(9000);
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(card).toContainText("Cancelled");
+  await page.clock.fastForward(9000);
+  await expect(card).toContainText("Try the launch again", { timeout: 3000 });
+  await expect(relaunch).toBeEnabled();
+  await captureCard(card, "standalone-relaunch-returned");
+  await relaunch.click();
+  await expect(card).toContainText("Relaunch requested.");
+  expect(launches).toHaveLength(2);
+  expect(launches[1]).toBe(launches[0]);
+});
+
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {
   const fleet = page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Fleet" });
   for (const placement of ["pill", "popover"]) {

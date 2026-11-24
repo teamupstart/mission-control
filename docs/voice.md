@@ -16,7 +16,8 @@ The Sound preference controls the pending chime. During the cancel window, an un
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
 notifications. If you switch away while the card is counting down, the notification shows
-the time left in the window. A split card shows an immediate stop’s result as soon as it arrives. The
+the time left in the window. If you return before the desktop shows it, switching away
+again can still show it before the deadline. A split card shows an immediate stop’s result as soon as it arrives. The
 desktop notification identifies that stop separately and counts down only the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 If a desktop action fails, the dashboard card names the unconfirmed action and shows
@@ -37,6 +38,8 @@ choices until the desktop implements the floating windows. It saves the selected
 for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
+If a countdown interrupts a relaunch, the standalone card keeps its result for you to read
+when it returns. Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect

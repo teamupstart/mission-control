@@ -42,10 +42,18 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
   await page.addInitScript(() => {
     document.hasFocus = () => document.documentElement?.dataset.fixtureBlurred !== "true";
     Object.defineProperty(Notification, "permission", { get: () => "granted" });
+    let declineFirst = true;
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true,
       onOpenSettings: () => () => {},
       showVoiceCardNotice: ({ title, body, scope }: { title: string; body: string; scope: string }) => {
+        if (declineFirst) {
+          declineFirst = false;
+          document.documentElement.dataset.fixtureBlurred = "false";
+          window.dispatchEvent(new Event("focus"));
+          document.documentElement.dataset.declinedNotice = "true";
+          return Promise.resolve("window-focused");
+        }
         document.title = title + " | " + body;
         document.documentElement.dataset.noticeScope = scope;
         document.documentElement.dataset.noticeCount = String(Number(document.documentElement.dataset.noticeCount ?? 0) + 1);
@@ -65,6 +73,12 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
       await expect(page.locator("html")).not.toHaveAttribute("data-notice-count", /.+/);
       await page.clock.install();
       await page.clock.fastForward(4000);
+      await page.evaluate(() => {
+        document.documentElement.dataset.fixtureBlurred = "true";
+        window.dispatchEvent(new Event("blur"));
+      });
+      await expect(page.locator("html")).toHaveAttribute("data-declined-notice", "true");
+      await expect(page.locator("html")).not.toHaveAttribute("data-notice-count", /.+/);
       await page.evaluate(() => {
         document.documentElement.dataset.fixtureBlurred = "true";
         window.dispatchEvent(new Event("blur"));

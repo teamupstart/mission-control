@@ -6,8 +6,8 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, notify, sound, notifications, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions; notify: boolean; sound: boolean; notifications: boolean;
+function Card({ card, actions, hidden, notify, sound, notifications, onDeadline }: {
+  card: VoiceCard; actions: VoiceCardActions; hidden: boolean; notify: boolean; sound: boolean; notifications: boolean;
   onDeadline?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -42,6 +42,8 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
   useEffect(() => {
     if (!notify || !deadline || state !== "pending" || !waiting.length) return;
     if (!notifications || typeof Notification === "undefined") return;
+    let dismiss: (() => void) | undefined;
+    let blurCount = 0;
     const showNotice = () => {
       try {
         const seconds = Math.ceil(Math.max(0, deadline - Date.now()) / 1000);
@@ -51,11 +53,19 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
         if (shell?.showVoiceCardNotice) {
           const id = newRequestId();
           let active = true;
+          const attempt = blurCount;
+          const allowRetry = () => {
+            if (!active) return;
+            dismiss = undefined;
+            // Another blur may have arrived before Electron replied to the first one.
+            if (blurCount !== attempt) notifyWhenAway();
+          };
           void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
             if (!active || !choice) return;
+            if (choice === "window-focused") return allowRetry();
             const label = choice === "cancel" ? "Cancel" : "Send now";
             void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
-          }).catch(() => {});
+          }, allowRetry);
           return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
         }
         const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
@@ -72,20 +82,23 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
         return close;
       } catch { /* A browser may require a service worker for system notifications. */ }
     };
-    let dismiss: (() => void) | undefined;
-    const notifyWhenAway = () => {
+    function notifyWhenAway() {
       if (!dismiss && !document.hasFocus() && Notification.permission === "granted") dismiss = showNotice();
+    }
+    const onBlur = () => {
+      blurCount++;
+      notifyWhenAway();
     };
-    window.addEventListener("blur", notifyWhenAway);
+    window.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", notifyWhenAway);
     notifyWhenAway();
     return () => {
-      window.removeEventListener("blur", notifyWhenAway);
+      window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
   }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
+  return <VoiceCardView card={card} actions={actions} hidden={hidden} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
 }
 
 export function VoiceCardHost({ cards, actions, surface, sound, notifications }: {
@@ -97,14 +110,14 @@ export function VoiceCardHost({ cards, actions, surface, sound, notifications }:
   // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
   if (surface && surface !== voice.confirmation) return null;
   const newestFirst = [...cards.values()].reverse();
-  let visible = newestFirst;
+  let selected: VoiceCard | undefined;
   if (surface) {
     const now = Date.now();
     const pending = newestFirst.find(card => card.state === "pending" && card.deadline !== null && card.deadline > now);
-    visible = pending ? [pending] : newestFirst.slice(0, 1);
+    selected = pending ?? newestFirst[0];
   }
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {visible.map(card => <Card key={card.id} card={card} actions={actions}
+    {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       notify={!surface} sound={sound} notifications={notifications} onDeadline={surface ? reselect : undefined} />)}
   </div>;
 }

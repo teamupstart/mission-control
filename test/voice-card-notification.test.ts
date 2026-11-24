@@ -73,11 +73,13 @@ test("a different renderer cannot create or dismiss the owner's notification", a
   assert.equal(notice.closed, true);
 });
 
-test("a focused owner, unsupported notifications and a malformed request create no notification", () => {
-  for (const fixture of [notificationFixture({ focused: true }), notificationFixture({ supported: false })]) {
-    assert.equal(fixture.show(), null);
-    assert.equal(fixture.notices.length, 0);
-  }
+test("a focused owner declines until blur, while unsupported and malformed requests create no notice", () => {
+  const focused = notificationFixture({ focused: true });
+  assert.equal(focused.show(), "window-focused");
+  assert.equal(focused.notices.length, 0);
+  const unsupported = notificationFixture({ supported: false });
+  assert.equal(unsupported.show(), null);
+  assert.equal(unsupported.notices.length, 0);
   const fixture = notificationFixture();
   assert.equal(fixture.show({ ...fixture.input, id: "invalid" }), null);
   assert.equal(fixture.notices.length, 0);

@@ -68,11 +68,13 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
   // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
   // `inbox` flag off.
+  // `POST /api/sessions/:id/inbox-message` then opened to the `idle-stalled` flag as well, so its
+  // 403 with both flags off names both previews.
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 459);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "1ca6a135b1c86708d0782a9b24f7fa4e4eeea143974ae5277ec5f80f3e93b0aa");
+    "6b98951f9985aabde47b13aee18c521012f252dab91bb2dd0c5c590d09d71262");
 });
 
 function sourceFiles(dir: string): string[] {

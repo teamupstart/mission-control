@@ -279,6 +279,30 @@ test("handoff and fixed-offset proof batches retry a final-pass rewrite and grow
   }
 });
 
+test("a fixed-offset read error retries disclosure on the same revision while an unreadable handoff can proceed", async t => {
+  const { captureHandoffBoundaries, transcriptSnapshot } = await import("../src/server/transcript-boundary.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-fixed-read-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "turns.jsonl");
+  writeFileSync(path, "native transcript\n");
+  const version = transcriptSnapshot(path)!.version;
+  const error = Object.assign(new Error("transient read error"), { code: "EIO" });
+  const reads = t.mock.method(fs, "readSync", () => { throw error; });
+  syncBuiltinESMExports();
+  try {
+    for (const includeEof of [false, true]) {
+      const fallback = captureHandoffBoundaries(path, [4], includeEof);
+      assert.deepEqual(fallback, { version, eof: null, proofs: new Map(), unreadable: true });
+    }
+  } finally {
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+  const recovered = captureHandoffBoundaries(path, [4], false);
+  assert.equal(recovered?.version, version);
+  assert.ok(recovered?.proofs.get(4)?.proof);
+});
+
 test("terminal proof preparation leaves the daemon responsive and rechecks the file and outbox claim at paste", async t => {
   const { prepareSpokenTranscript, reserveSpokenHandoff, SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");

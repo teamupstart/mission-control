@@ -207,6 +207,8 @@ export interface TranscriptBoundary {
 
 /** Proofs from one file revision, prepared off the daemon thread before a spoken write. */
 export interface PreparedTranscriptBoundaries {
+  /** A file read failed. Handoffs can proceed, but display and cleanup must retry verification. */
+  unreadable?: true;
   fileId?: string;
   size?: number;
   version: string | null;

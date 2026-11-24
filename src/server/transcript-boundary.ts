@@ -121,7 +121,7 @@ export function captureHandoffBoundaries(path: string, offsets: number[], includ
   } catch (error) {
     // A consistently unreadable file still permits delivery, with no text attribution.
     if (!(error instanceof Error) || !("code" in error)) throw error;
-    return { version: transcriptSnapshot(path)?.version ?? null, eof: null, proofs: new Map() };
+    return { version: transcriptSnapshot(path)?.version ?? null, eof: null, proofs: new Map(), unreadable: true };
   }
 }
 

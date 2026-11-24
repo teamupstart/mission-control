@@ -251,8 +251,10 @@ export async function withSpokenReadProofs<T>(conversation: DeliveryConversation
     catch { return false; }
   };
   const captureOffsets = async (offsets: number[]) => {
-    try { return await prepare(path, offsets, false); }
-    catch (error) { throw new SpokenTranscriptUnavailable(error); }
+    try {
+      const capture = await prepare(path, offsets, false);
+      return capture?.unreadable ? null : capture;
+    } catch (error) { throw new SpokenTranscriptUnavailable(error); }
   };
   for (let attempt = 0; attempt < 2; attempt++) {
     const version = read.snapshot?.(path)?.version;
@@ -353,7 +355,7 @@ async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscrip
       if (transcript.read.prepareHandoffBoundaries) {
         const offsets = rows.filter(row => row.messageId === null && !row.contested).map(row => row.transcriptOffset ?? 0);
         const captured = await transcript.read.prepareHandoffBoundaries(transcript.path, [...new Set(offsets)], false);
-        if (signal?.aborted || !captured || captured.version !== snapshot.version ||
+        if (signal?.aborted || !captured || captured.unreadable || captured.version !== snapshot.version ||
             transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
         verified = { path: transcript.path, read: { ...transcript.read, boundary: (_path, offset) =>
           offset !== undefined && transcript.read.snapshot?.(transcript.path)?.version === captured.version

@@ -503,8 +503,11 @@ test("a failed proof leaves native history, opening, resume and live appends rea
   t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
   const words = "proof-worker-failure";
   const { read, record } = await confirmedTerminalRecord(words);
-  const worker = t.mock.method(read as Required<Pick<typeof read, "prepareHandoffBoundaries">>, "prepareHandoffBoundaries",
-    async () => { throw new Error("transient proof worker failure"); });
+  let unreadable = false;
+  const worker = t.mock.method(read as Required<Pick<typeof read, "prepareHandoffBoundaries">>, "prepareHandoffBoundaries", async () => {
+    if (unreadable) return { version: read.snapshot!(path)!.version, eof: null, proofs: new Map(), unreadable: true };
+    throw new Error("transient proof worker failure");
+  });
   const end = statSync(path).size;
   const page = await app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
   assert.equal(page.status, 200);
@@ -512,6 +515,7 @@ test("a failed proof leaves native history, opening, resume and live appends rea
   assert.equal(history.spokenDeferred, true);
   assert.equal(history.messages.at(-1).text, words);
   assert.equal(history.messages.at(-1).presentation, undefined);
+  unreadable = true; // The worker can also report an I/O error with the same stat revision.
   const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
   const reader = res.body!.getReader();
   const timer = setTimeout(() => void reader.cancel(), 15_000);

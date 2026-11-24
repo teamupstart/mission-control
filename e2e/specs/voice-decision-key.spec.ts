@@ -273,6 +273,53 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     expect([config.decisionProvider, config.cancelWindow.seconds]).toEqual(["off", 8]);
   });
 
+  for (const heldAt of ["request", "response"] as const) {
+    test(`Off supersedes an earlier provider selection with a stalled ${heldAt}`, async ({ dashboard: page, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      await saveKey(page, "Jev", SAVED_JEV);
+      const held = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const earlierResponse = page.waitForResponse(r => r.url().endsWith("/api/voice/config") &&
+        r.request().method() === "PUT" && r.request().postDataJSON().decisionProvider === "jev");
+      await page.route("**/api/voice/config", async route => {
+        const req = route.request();
+        if (req.method() !== "PUT" || req.postDataJSON().decisionProvider !== "jev") return route.continue();
+        if (heldAt === "request") {
+          held.resolve();
+          await release.promise;
+          await route.continue();
+        } else {
+          const previous = await route.fetch();
+          held.resolve();
+          await release.promise;
+          await route.fulfill({ response: previous });
+        }
+      });
+      try {
+        await providerMenu(page).selectOption("jev");
+        await held.promise;
+        await providerMenu(page).selectOption("off");
+        await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+        const { entry } = await sayAndSettle(daemon, SPLIT);
+        expect(entry.detail).toBe("job on codex answered: split");
+        if (heldAt === "request") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "21-off-supersedes-provider");
+      } finally {
+        release.resolve();
+      }
+      const response = await earlierResponse;
+      await response.finished();
+      expect(response.status()).toBe(heldAt === "request" ? 409 : 200);
+      await expect(providerMenu(page)).toHaveValue("off");
+      await expect(line(page)).toHaveText(NOT_SET);
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+      expect(decisions.requests).toHaveLength(0);
+      await providerMenu(page).selectOption("jev");
+      await expect(line(page)).toHaveText(using("Jev"));
+    });
+  }
+
   for (const mutation of ["save", "remove"] as const) {
     test(`Off stops provider routing before a pending key ${mutation} completes`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

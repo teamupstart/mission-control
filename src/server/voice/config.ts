@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   applyVoiceConfigPatch,
@@ -16,6 +17,14 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 const ENTRY = APP_CONFIG_ENTRIES.voice;
 type Listener = (config: VoiceConfig) => void;
 const listeners = new Set<Listener>();
+const instance = randomUUID();
+let issued = 0;
+let applied = 0;
+
+/** Reserve the order of a dashboard selection before its config write can be delayed. */
+export function reserveProviderWrite(): string {
+  return `${instance}:${++issued}`;
+}
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getVoiceConfig(): VoiceConfig {
@@ -34,9 +43,18 @@ function notify(config: VoiceConfig): void {
 }
 
 /** Merge a patch over the current config, persist it, and tell the listeners. */
-export function setVoiceConfig(patch: VoiceConfigPatch): VoiceConfig {
+export function setVoiceConfig(patch: VoiceConfigPatch): VoiceConfig;
+export function setVoiceConfig(patch: VoiceConfigPatch, ticket: string | undefined): VoiceConfig | null;
+export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceConfig | null {
+  let order: number | undefined;
+  if (ticket !== undefined) {
+    order = Number(ticket.slice(instance.length + 1));
+    if (patch.decisionProvider === undefined || !Number.isSafeInteger(order) || order <= applied ||
+        order > issued || ticket !== `${instance}:${order}`) return null;
+  }
   const next = applyVoiceConfigPatch(getVoiceConfig(), patch);
   setAppConfig(ENTRY, next);
+  if (patch.decisionProvider !== undefined) applied = order ?? ++issued;
   notify(next);
   return next;
 }
@@ -44,6 +62,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch): VoiceConfig {
 /** A settings restore rewrote the row: tell the listeners what it holds now. */
 export function reloadVoiceConfig(): VoiceConfig {
   const config = getVoiceConfig();
+  applied = ++issued;
   notify(config);
   return config;
 }

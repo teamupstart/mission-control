@@ -57,6 +57,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
   for (const response of [
     await json("/api/voice/config"),
     await json("/api/voice/config", "PUT", { muted: true }),
+    await json("/api/voice/config/provider-intent", "POST"),
     await json("/api/voice/mute", "POST", { muted: true }),
     await hello(),
     await report({}),
@@ -72,6 +73,23 @@ test("GET returns every contract A field with its default", async () => {
   const response = await json("/api/voice/config");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("an earlier reserved provider write cannot undo Off, a restore, or a legacy write", async () => {
+  const reserve = async () => (await (await json("/api/voice/config/provider-intent", "POST")).json() as { ticket: string }).ticket;
+  const choose = (provider: string, ticket: string) => json("/api/voice/config", "PUT", { decisionProvider: provider }, { "x-voice-provider-ticket": ticket });
+  const earlier = await reserve();
+  const off = await reserve();
+  assert.equal((await choose("off", off)).status, 200);
+  assert.equal((await choose("openai", earlier)).status, 409);
+  assert.equal((await choose("jev", off)).status, 409);
+  const beforeRestore = await reserve();
+  reloadVoiceConfig();
+  assert.equal((await choose("jev", beforeRestore)).status, 409);
+  const beforeLegacy = await reserve();
+  assert.equal((await json("/api/voice/config", "PUT", { decisionProvider: "off" })).status, 200);
+  assert.equal((await choose("jev", beforeLegacy)).status, 409);
+  assert.equal((await choose("jev", await reserve())).status, 200);
 });
 
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {

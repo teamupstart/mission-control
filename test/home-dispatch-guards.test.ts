@@ -72,11 +72,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // 403 with both flags off names both previews.
   // The six utterance, card action and Recently heard routes answer 404 with the voice preview off.
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
-  // Voice also gates GET, PUT and DELETE /api/voice/decision-key.
+  // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 468);
+  assert.equal(others.length, 469);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "e0e121b80d9de50d29db1ac2a25cf2a4273a1268bde5cc8e8d45bcba8f9a6879");
+    "accb48140be259ed41faafd354ecc04179e45a32133a08dee29b850010c6f74c");
 });
 
 function sourceFiles(dir: string): string[] {

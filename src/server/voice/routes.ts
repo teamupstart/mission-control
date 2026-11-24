@@ -21,7 +21,7 @@ import {
 import { checkToken } from "../auth.ts";
 import { featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { getVoiceConfig, setVoiceConfig } from "./config.ts";
+import { getVoiceConfig, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
@@ -75,10 +75,13 @@ export function registerVoiceRoutes(
   const authed = (header: string | undefined): boolean => checkToken(header);
 
   app.get("/api/voice/config", gate, (c) => c.json({ config: getVoiceConfig() }));
+  app.post("/api/voice/config/provider-intent", gate, (c) => c.json({ ticket: reserveProviderWrite() }));
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    return c.json({ config: setVoiceConfig(parsed.data) });
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const config = setVoiceConfig(parsed.data, c.req.header("x-voice-provider-ticket"));
+    return config ? c.json({ config }) : c.json({ error: "A newer provider choice took effect.", config: getVoiceConfig() }, 409);
   });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });

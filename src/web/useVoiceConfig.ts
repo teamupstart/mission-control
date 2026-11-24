@@ -39,8 +39,8 @@ interface PendingEdit {
 /**
  * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
  *
- * Provider changes are ordered independently so an unrelated save cannot delay an opt-out.
- * Other settings retain their edit order. A patch touching both waits for both queues.
+ * The daemon orders provider selections, so a stalled write cannot delay an opt-out.
+ * The other settings share one queue and retain their edit order.
  */
 export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
@@ -48,7 +48,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [error, setError] = useState<string | null>(null);
   const confirmedRef = useRef<VoiceConfig | null>(null);
   const pendingRef = useRef<readonly PendingEdit[]>([]);
-  const queues = useRef({ provider: Promise.resolve(), settings: Promise.resolve() });
+  const settingsQueue = useRef(Promise.resolve());
+  const latestProviderEdit = useRef(0);
+  const confirmedProviderEdit = useRef(0);
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
   // an edit already waiting behind the refused one cannot wipe the sentence before it is read.
@@ -84,21 +86,34 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const update = useCallback((patch: VoiceConfigPatch): Promise<boolean> => {
     if (!confirmedRef.current) return Promise.resolve(false);
     const edit: PendingEdit = { id: ++nextEdit.current, patch };
+    const { decisionProvider, ...settings } = patch;
+    const changesProvider = decisionProvider !== undefined;
+    const changesSettings = Object.keys(settings).length > 0;
+    if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
-    const changesProvider = patch.decisionProvider !== undefined;
-    const changesSettings = Object.keys(patch).some(key => key !== "decisionProvider");
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite() : undefined;
     const save = async (): Promise<boolean> => {
-      const res = await api.setVoiceConfig(patch);
+      const order = await reservation;
+      const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
+      const superseded = () => changesProvider && edit.id !== latestProviderEdit.current;
+      if (!sendProvider && !changesSettings) {
+        setPending(pendingRef.current.filter(candidate => candidate !== edit));
+        return false;
+      }
+      const res = sendProvider && !order?.ticket ? { ok: false, error: order?.error, config: undefined, status: undefined }
+        : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
       const kept = res.ok && res.config !== undefined;
       const current = confirmedRef.current;
-      if (kept && current) {
-        // An older full response from the other queue can arrive after this edit.
+      if (res.config && current && (kept || res.status === 409)) {
+        const applyProvider = sendProvider && edit.id > confirmedProviderEdit.current;
+        if (applyProvider) confirmedProviderEdit.current = edit.id;
         setConfirmed({
-          ...(changesSettings ? res.config! : current),
-          decisionProvider: changesProvider ? res.config!.decisionProvider : current.decisionProvider,
+          ...(changesSettings && kept ? res.config : current),
+          decisionProvider: applyProvider ? res.config.decisionProvider : current.decisionProvider,
         });
       }
       setPending(pendingRef.current.filter((candidate) => candidate !== edit));
+      if (superseded() && !changesSettings) return false;
       if (!kept) {
         errorAfter.current = nextEdit.current;
         setError(whyItFailed(res.error));
@@ -107,18 +122,18 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       return kept;
     };
-    const previous = [];
-    if (changesProvider) previous.push(queues.current.provider);
-    if (changesSettings) previous.push(queues.current.settings);
-    const result = Promise.all(previous).then(save);
-    const finished = result.then(() => {}, () => {});
-    if (changesProvider) queues.current.provider = finished;
-    if (changesSettings) queues.current.settings = finished;
+    if (!changesSettings) return save();
+    const result = settingsQueue.current.then(save);
+    settingsQueue.current = result.then(() => {}, () => {});
     return result;
   }, [setConfirmed, setPending]);
 
   const config = useMemo(
-    () => (confirmed ? pending.reduce((shown, edit) => applyVoiceConfigPatch(shown, edit.patch), confirmed) : null),
+    () => (confirmed ? pending.reduce((shown, edit) => {
+      const next = applyVoiceConfigPatch(shown, edit.patch);
+      if (edit.id !== latestProviderEdit.current) next.decisionProvider = shown.decisionProvider;
+      return next;
+    }, confirmed) : null),
     [confirmed, pending],
   );
 

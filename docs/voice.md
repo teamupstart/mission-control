@@ -534,6 +534,9 @@ absent otherwise; a shell report's `listener` entry is dropped.
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
+- The dashboard reserves a provider selection with `POST /api/voice/config/provider-intent`
+  and sends the returned ticket in the config write's `x-voice-provider-ticket` header. A newer
+  selection can commit immediately. An older write arriving afterwards receives 409.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty

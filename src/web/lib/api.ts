@@ -2503,8 +2503,10 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  setVoiceConfig: (patch: VoiceConfigPatch) =>
-    put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
+  reserveVoiceProviderWrite: () => post<ActionResult & { ticket?: string }>("/api/voice/config/provider-intent"),
+  setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
+    put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch,
+      ticket ? { headers: { "x-voice-provider-ticket": ticket } } : undefined),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   /** A 409 carries `reason` when there is no model to download. */

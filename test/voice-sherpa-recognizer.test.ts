@@ -76,7 +76,22 @@ test("the published sherpa addon transcribes a recording through the listener an
   delete env.MISSION_VOICE_BACKEND;
   const play = (file: string, ...args: string[]) => run(process.execPath,
     [resolve("scripts/run-voice-listener.ts"), ...args, "--input-file", file], { cwd, env, timeout: 60_000 });
-  await play(fixture);
+  // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
+  const wav = await readFile(fixture);
+  assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("rejects an 8 kHz WAV before hello and admits an immediate valid retry", async () => {
+    const wrongRate = Buffer.from(wav);
+    wrongRate.writeUInt32LE(8000, 24);
+    wrongRate.writeUInt32LE(16000, 28);
+    const path = join(cwd, "wrong-rate.wav");
+    await writeFile(path, wrongRate);
+    await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
+    assert.equal(hellos, 0);
+    assert.equal(posts, 0);
+    await play(fixture);
+    assert.ok(hellos > 0);
+    assert.equal(posts, 1);
+  });
   assert.equal(captures.length, 1);
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
@@ -90,19 +105,6 @@ test("the published sherpa addon transcribes a recording through the listener an
   assert.deepEqual(deliveries.map(({ target, text }) => [target, normalize(text)]), [["resident:steve", "check the build"]]);
   t.diagnostic(JSON.stringify({ transcript: capture.text, words: capture.words, deliveries }));
 
-  // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
-  const wav = await readFile(fixture);
-  assert.equal(wav.toString("ascii", 36, 40), "data");
-  await t.test("rejects an 8 kHz WAV", async () => {
-    voiceStateStore.reset(); // A new listener process claims its own lease.
-    const wrongRate = Buffer.from(wav);
-    wrongRate.writeUInt32LE(8000, 24);
-    wrongRate.writeUInt32LE(16000, 28);
-    const path = join(cwd, "wrong-rate.wav");
-    await writeFile(path, wrongRate);
-    await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
-    assert.equal(posts, 1);
-  });
   await t.test("finishes a silent recording without posting an utterance", async () => {
     voiceStateStore.reset();
     wav.fill(0, 44);

@@ -183,7 +183,7 @@ test("sherpa waits for capture, discards a stale decode and posts the next file 
     return response;
   });
   function* samples() {
-    assert.ok(resumed, "file read waited for the released mute directive");
+    assert.ok(resumed, "speech detection waited for the released mute directive");
     yield { samples: Float32Array.of(1), last: false };
     yield { samples: Float32Array.of(2), last: true };
   }
@@ -283,7 +283,7 @@ test("scanning a silent recording lets the event loop run before reaching EOF", 
   const lifetime = new AbortController();
   const windows = 256;
   let scanned = 0;
-  const segments = recordingSegments(() => ({ sampleRate: 16000, samples: new Float32Array(512 * windows) }), {
+  const segments = recordingSegments(new Float32Array(512 * windows), {
     acceptWaveform() {
       if (++scanned === 1) setImmediate(() => lifetime.abort());
     },

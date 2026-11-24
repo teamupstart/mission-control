@@ -520,6 +520,16 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
+/** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
+export async function fetchVoiceCardTime(signal: AbortSignal): Promise<number | null> {
+  try {
+    const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
+    const stamp = res.headers.get("X-Voice-Server-Time-Ms");
+    return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchRecentlyHeard = (signal: AbortSignal) =>
   fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
@@ -2544,11 +2554,10 @@ export const api = {
     put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
   voiceAnswerAction: (id: string, action: "cancel" | "send-now") => post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`),
   voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null; answerCompanion?: boolean } = {}) => {
-    const remaining = options.deadline == null ? Infinity : options.deadline - performance.now();
-    if (remaining <= 0) return { ok: false, error: "The cancel window has closed." };
-    // Leave time for a retry even in a short cancel window. The daemon may already
-    // have acted when only its response was lost. Its event stream supplies the outcome.
-    const signal = AbortSignal.timeout(Math.max(1, Math.min(2000, Math.floor(remaining / 2))));
+    // Leave the transport alive through the possible delivery window, plus a short
+    // grace period for the reply. The card can offer a retry independently.
+    const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
+    const signal = AbortSignal.timeout(Math.ceil(remaining) + 2000);
     const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
     const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
       options.candidateId ? { id: options.candidateId } : undefined, { signal });

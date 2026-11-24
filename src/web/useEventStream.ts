@@ -49,7 +49,7 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
-import { fetchVoiceConfig, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
@@ -423,20 +423,19 @@ export function useEventStream(): MissionState {
     let voiceClock = new VoiceCardClock();
     let clockProbe: AbortController | undefined;
     let lastProbeAt = -Infinity;
-    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }, cards: readonly VoiceCard[]) {
+    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }, hasCountdown: boolean) {
       const now = performance.now();
       const stamp = frame.voiceServerTime ?? Date.now();
       const sample = voiceClock.observe(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
       // A long SSE handshake does not tell us which direction was slow. Take an
       // independent timestamped read and refine only the windows still using that estimate.
-      if (sample.uncertain && !clockProbe && now - lastProbeAt > 1000 &&
-          cards.some(card => card.state === "pending" && card.deadline !== null)) {
+      if (hasCountdown && sample.uncertain && !clockProbe && now - lastProbeAt > 1000) {
         const probe = new AbortController();
         clockProbe = probe;
         lastProbeAt = now;
-        void fetchVoiceConfig(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(read => {
-          if (clockProbe !== probe || !read || !Number.isFinite(read.serverTime)) return;
-          const refined = voiceClock.observe(now, performance.now(), read.serverTime, read.serverTime);
+        void fetchVoiceCardTime(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(stamp => {
+          if (clockProbe !== probe || stamp === null) return;
+          const refined = voiceClock.observe(now, performance.now(), stamp, stamp);
           setVoiceCards(current => {
             const next = new Map(current);
             for (const [id, card] of current) {
@@ -596,7 +595,7 @@ export function useEventStream(): MissionState {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
             const active = msg.voiceCards ?? [];
-            const sample = sampleCardClock(msg, active);
+            const sample = sampleCardClock(msg, active.some(card => card.state === "pending" && card.deadline !== null));
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
@@ -896,7 +895,7 @@ export function useEventStream(): MissionState {
           });
           break;
         case "voice_card": {
-          const sample = sampleCardClock(msg, [msg.card]);
+          const sample = sampleCardClock(msg, msg.card.state === "pending" && msg.card.deadline !== null);
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);

@@ -22,6 +22,7 @@ let issued = 0;
 let latestIntentAt = performance.now();
 let applied = 0;
 let lastOptOut = 0;
+let reservedOptOut = 0;
 let lastWriter: string | undefined;
 let writerBase = 0;
 
@@ -34,9 +35,9 @@ function issueProviderOrder(): number {
   return ++issued;
 }
 
-/** A stale opt-out may retry only across an interval with no intervening selection. */
-export function providerIntentWindow(): { token: string; quietForMs: number } {
-  return { token: `${instance}:${issued}`, quietForMs: performance.now() - latestIntentAt };
+/** A gesture may retry only across an interval with no intervening selection. */
+export function providerIntentWindow() {
+  return { token: `${instance}:${issued}:${applied}`, quietForMs: performance.now() - latestIntentAt, pendingOff: reservedOptOut > applied };
 }
 
 function canApply(writer: string, base: number): boolean {
@@ -46,11 +47,14 @@ function canApply(writer: string, base: number): boolean {
 }
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
-export function reserveProviderWrite(writer: string, revision: string, unchangedSince?: string): string | null {
-  if (unchangedSince !== undefined && unchangedSince !== `${instance}:${issued}`) return null;
+export function reserveProviderWrite(writer: string, revision: string, optOut: boolean, unchangedSince?: string): string | null {
+  if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token) return null;
+  if (!optOut && reservedOptOut > applied && !unchangedSince) return null;
   const base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || !canApply(writer, base)) return null;
-  return `${instance}:${issueProviderOrder()}:${writer}:${base}`;
+  const order = issueProviderOrder();
+  if (optOut) reservedOptOut = order;
+  return `${instance}:${order}:${writer}:${base}${optOut ? ":off" : ""}`;
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -79,9 +83,10 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     const [epoch, number, author, revision] = ticket.split(":");
     order = Number(number);
     const base = Number(revision);
-    if (patch.decisionProvider === undefined || !Number.isSafeInteger(order) || order <= applied ||
+    const optOut = ticket.endsWith(":off");
+    if (patch.decisionProvider === undefined || (optOut && patch.decisionProvider !== "off") || !Number.isSafeInteger(order) || order <= applied ||
         order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) || base < 0 || base > applied ||
-        ticket !== `${instance}:${order}:${author}:${base}`) return null;
+        ticket !== `${instance}:${order}:${author}:${base}${optOut ? ":off" : ""}`) return null;
     // Tickets order explicit switches across windows. Remember an intervening Off
     // even if another opt-in has since changed the displayed provider.
     if (patch.decisionProvider !== "off" && base < lastOptOut && !canApply(author, base)) return null;

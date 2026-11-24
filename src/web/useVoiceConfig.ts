@@ -126,7 +126,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
     const selectedAt = performance.now();
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observedProviderRevision ?? latestProvider.current?.revision ?? "") : undefined;
+    const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
+    const optOut = decisionProvider === "off";
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observed, optOut) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
@@ -139,11 +141,13 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
       // Compare elapsed durations, so the browser and daemon need no shared clock.
       // If the daemon was idle longer than the entire trip since the click, its
-      // last intent predates this opt-out. Bind the retry to that same interval.
+      // last intent predates this click. An opt-in must also have observed the
+      // current selection, even when the outstanding Off has yet to commit.
       const window = order?.intentWindow;
-      if (decisionProvider === "off" && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
+      const canRetry = optOut || (window?.pendingOff && res.providerRevision === observed);
+      if (canRetry && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
           window && window.quietForMs > performance.now() - selectedAt) {
-        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, window.token);
+        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, optOut, window.token);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
       const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&

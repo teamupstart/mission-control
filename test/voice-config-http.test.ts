@@ -155,6 +155,22 @@ test("a stale Off retry cannot reserve past an intervening uncommitted selection
   assert.equal((await choose("openai", next)).status, 200);
 });
 
+test("reserving Off protects the still-current revision before its PUT arrives", async () => {
+  const a = randomUUID(), b = randomUUID();
+  const revision = await readProviderRevision();
+  const intent = await json("/api/voice/config/provider-intent", "POST", { writer: a, observedRevision: revision, optOut: true });
+  assert.equal(intent.status, 200);
+  const { ticket } = await intent.json() as { ticket: string };
+  const conflict = await providerIntent(b, revision);
+  assert.equal(conflict.status, 409);
+  const { intentWindow } = await conflict.json() as { intentWindow: { token: string; pendingOff: boolean } };
+  assert.equal(intentWindow.pendingOff, true);
+  assert.equal((await choose("jev", ticket)).status, 409);
+  assert.equal((await choose("off", ticket)).status, 200);
+  const retry = await json("/api/voice/config/provider-intent", "POST", { writer: b, observedRevision: revision, unchangedSince: intentWindow.token });
+  assert.equal(retry.status, 409);
+});
+
 test("newer explicit provider tickets win across windows unless an intervening Off invalidated their view", async () => {
   const a = randomUUID(), b = randomUUID();
   for (const newerFirst of [false, true]) {

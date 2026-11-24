@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import type { LlmRunnerId } from "./llm.ts";
+import { normalizeSpokenName } from "./voice-names.ts";
 import type { VoiceDecisionProvider } from "./voice.ts";
 
 // ---- the providers and their keys ----
@@ -185,6 +186,13 @@ export function acceptVoiceAnswer(
   const choice = typeof raw?.choice === "string" ? raw.choice : null;
   if (choice === null || !voiceQuestionChoices(question).includes(choice) || confidence < floor) {
     return { choice: null, confidence };
+  }
+  if (question.kind === "who") {
+    const selected = question.candidates.find(candidate => candidate.id === choice)!;
+    const name = normalizeSpokenName(selected.label);
+    if (question.candidates.some(candidate => candidate.id !== choice && normalizeSpokenName(candidate.label) === name)) {
+      return { choice: null, confidence };
+    }
   }
   return { choice, confidence };
 }

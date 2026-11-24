@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { acquireHelperLock, realHelperLockOperations, releaseHelperLock } from "../update-lock.mjs";
 import { VOICE_MODEL_STAGE_DEADLINE_MS, type VoiceQuestion } from "../../src/shared/voice-decide.ts";
 import type { ClaudeTransport, CodexTransport } from "../../src/shared/llm.ts";
@@ -68,10 +69,13 @@ const CATEGORIES = ["plain", "phonetic", "split", "mention", "option"];
 const NOT_SURE = "not sure";
 
 const args = process.argv.slice(2);
-const flag = (name: string): string | undefined => {
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-};
+const flags = parseArgs({
+  args: args[0] === "--summarize" ? [] : args,
+  options: {
+    yes: { type: "boolean" }, cases: { type: "string" }, runner: { type: "string" },
+    label: { type: "string" }, transport: { type: "string" }, start: { type: "string" }, limit: { type: "string" },
+  },
+}).values;
 
 function runLabel(label: string | undefined): string {
   if (!label?.trim() || label === "." || label === ".." || label.startsWith("--") || /[/\\:\p{Cc}]/u.test(label)) {
@@ -80,12 +84,12 @@ function runLabel(label: string | undefined): string {
   return label;
 }
 
-function rangeArgument(name: string, fallback: number, minimum: number): number {
-  if (!args.includes(name)) return fallback;
-  const raw = flag(name) ?? "";
+function rangeArgument(name: "start" | "limit", fallback: number, minimum: number): number {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
   const value = Number(raw);
   if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(value) || value < minimum) {
-    throw new Error(`${name} requires an integer of at least ${minimum}.`);
+    throw new Error(`--${name} requires an integer of at least ${minimum}.`);
   }
   return value;
 }
@@ -175,14 +179,15 @@ function summarize(label: string): void {
 }
 
 async function run(): Promise<void> {
-  if (!args.includes("--yes")) {
+  if (!flags.yes) {
     console.error("This spends provider usage through your own CLI login. Re-run with --yes.");
     process.exit(2);
   }
-  const runner = flag("--runner") ?? "claude";
+  const runner = flags.runner ?? "claude";
   if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
-  const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
-  const label = runLabel(args.includes("--label") ? flag("--label") : `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`);
+  const casesPath = flags.cases ?? "scripts/voice-spike/routing-holdout.json";
+  if (!casesPath.trim()) throw new Error("--cases requires a corpus path.");
+  const label = runLabel(flags.label ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`);
   const lockDir = join(OUT, `retest-${label}.lock.d`);
   const ops = realHelperLockOperations();
   const claim = acquireHelperLock(lockDir, ops);
@@ -205,7 +210,7 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
   const { codexTransportChoice, llmJobModel } = await import("../../src/server/llm/config.ts");
   const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
   const { DEFAULT_CLAUDE_TRANSPORT } = await import("../../src/shared/llm.ts");
-  const requested = flag("--transport");
+  const requested = flags.transport;
   let transport: ClaudeTransport | CodexTransport;
   if (runner === "claude") {
     const selected = requested ?? DEFAULT_CLAUDE_TRANSPORT;
@@ -224,8 +229,8 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
   const input = readFileSync(casesPath);
   const corpusSha256 = createHash("sha256").update(input).digest("hex");
   const corpus = JSON.parse(input.toString("utf8")) as Corpus;
-  const start = rangeArgument("--start", 0, 0);
-  const limit = rangeArgument("--limit", corpus.cases.length, 1);
+  const start = rangeArgument("start", 0, 0);
+  const limit = rangeArgument("limit", corpus.cases.length, 1);
   if (start >= corpus.cases.length) throw new Error(`--start ${start} selects no cases from a corpus of ${corpus.cases.length}.`);
   mkdirSync(OUT, { recursive: true });
   const dest = join(OUT, `retest-${label}.jsonl`);

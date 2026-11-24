@@ -186,6 +186,18 @@ test("retest and summary labels must be single file names", () => {
   }
 });
 
+test("explicit retest flags require a value before evaluation", () => {
+  for (const flag of ["--cases", "--transport", "--runner"]) {
+    for (const tail of [[flag], [flag, "--limit", "1"]]) {
+      const result = retest("--yes", "--label", "missing-argument", ...tail);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, new RegExp(`${flag}.*(argument|value)`, "i"));
+      assert.equal(result.stdout, "");
+      assert.equal(existsSync(record(".tmp/voice-spike/retest-missing-argument.jsonl")), false);
+    }
+  }
+});
+
 test("invalid retest ranges fail before a previous label can be summarized or extended", () => {
   const label = "invalid-ranges";
   const args = ["--yes", "--transport", "print", "--label", label, "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json")];

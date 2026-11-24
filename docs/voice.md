@@ -127,7 +127,7 @@ for the whole of it, process start included. It asks only what is left in doubt:
   at the words shown. Saying the shared name alone leaves the card unsure.
 - **Who.** A first word that sounds like two names (“Steven” with Steve and Stevie on the roster) asks
   which was meant, judged by sound. If the rest of the sentence contains another possible command,
-  the router settles its split points after choosing the first agent, within the original deadline. When agents share an exact spoken name, the operator picks from the roster rows.
+  the router settles its split points after choosing the first agent, within the original deadline. If the selected spoken name belongs to several agents, the card stays unsure. The operator can pick the intended session from the roster rows.
 - **Option** questions, a loosely worded answer to a card, are part of the same contract for the
   phase that answers cards by voice.
 

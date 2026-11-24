@@ -1091,6 +1091,34 @@ test("a symbol-only instruction on either side of a split reaches its recipient"
   }
 });
 
+test("a numbered duplicate in a phonetic question stays unsure until a manual pick", async (t) => {
+  const first = name("Steve", "codex");
+  const other = { ...name("STEVE", "codex"), key: "other-steve" };
+  const roster = [first, other, name("Stevie", "codex"), name("Alice", "codex")];
+  let providerChoice = "Steve (1)";
+  const { decider, calls } = rig({ saved: { openai: "fixture-key" }, reply: () => json({
+    answers: [{ name: "q1", type: "choice", choice: providerChoice, confidence: 1 }],
+  }) });
+  const { router, say, cards, delivered } = routerRig((questions, options) => decider.ask(questions, options), roster);
+  t.after(() => router.reset());
+  for (const [id, text] of [["single", "Steven, check the build"], ["later", "Steven, check the build, and Alice, review the PR"]] as const) {
+    await say(text, id);
+    assert.equal(cards.at(-1)?.state, "unsure");
+    assert.equal(await router.sendNow(id), false);
+    assert.ok(cards.at(-1)?.candidates.some(c => c.id === other.key));
+  }
+  assert.equal(calls.length, 2);
+  assert.deepEqual(delivered, []);
+  assert.ok(await router.pick("single", other.key));
+  assert.ok(await router.sendNow("single"));
+  assert.deepEqual(delivered, [["STEVE", "check the build", "single"]]);
+
+  providerChoice = "Stevie";
+  await say("Steven, check the tests", "distinct");
+  assert.ok(await router.sendNow("distinct"));
+  assert.deepEqual(delivered.at(-1), ["Stevie", "check the tests", "distinct"]);
+});
+
 test("a phonetic first choice and a later split share one deadline, including manual choices", async (t) => {
   for (const manual of [false, true]) {
     const starts: (number | undefined)[] = [];

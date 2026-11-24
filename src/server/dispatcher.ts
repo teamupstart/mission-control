@@ -503,6 +503,8 @@ export class Dispatcher {
     // task running on its agent - the only outcome that confirms it (see the `finally`).
     let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
     let launchSucceeded = false;
+    let uncertainTerminal: UnconfirmedDispatchError | undefined;
+    let awaitingLateExit = false;
     noteDispatchStarted(taskId);
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
@@ -1354,6 +1356,7 @@ export class Dispatcher {
         sessionId: deliverySession.id,
       });
     } catch (err) {
+      if (err instanceof UnconfirmedDispatchError) uncertainTerminal = err;
       cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
       pendingAgentStateHome = null;
       // A replaced attempt's failure is its own: the task row, its status and its resources
@@ -1457,29 +1460,46 @@ export class Dispatcher {
                 : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
-        if (alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError && await err.inactive) {
+        if (alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError) {
           const ownsFailure = () => {
             const latest = this.registry.getTask(taskId);
             return currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
               && latest.worktreePath === cur.worktreePath && latest.launchFailure?.at === launchFailure.at
               && latest.launchFailure.sessionKept;
           };
-          if (!ownsFailure()) return;
-          this.patch(taskId, { error: message });
-          const checkCheckout = async (path: string) => {
-            // Native leases check occupancy again immediately before reset. A fallback Git
-            // checkout has no lease manager to protect a process left behind by the wrapper.
-            if (taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider !== "mission") {
-              const occupancy = (await inspectWorktreeOccupancy([path])).get(path);
-              if (occupancy?.status !== "known" || occupancy.occupants.length) return "checkout is occupied or occupancy is unknown";
+          const reclaim = async () => {
+            if (!ownsFailure()) return;
+            this.patch(taskId, { error: message });
+            const checkCheckout = async (path: string) => {
+              // Native leases check occupancy again immediately before reset. A fallback Git
+              // checkout has no lease manager to protect a process left behind by the wrapper.
+              if (taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider !== "mission") {
+                const occupancy = (await inspectWorktreeOccupancy([path])).get(path);
+                if (occupancy?.status !== "known" || occupancy.occupants.length) return "checkout is occupied or occupancy is unknown";
+              }
+              return worktreeReturnBlocker(path, { fetch: true });
+            };
+            if (!await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout)) return;
+            const latest = this.registry.getTask(taskId);
+            if (currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
+              && !latest.worktreePath && latest.launchFailure?.at === launchFailure.at) {
+              this.patch(taskId, { launchFailure: { ...latest.launchFailure, sessionKept: false } });
             }
-            return worktreeReturnBlocker(path, { fetch: true });
           };
-          if (!await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout)) return;
-          const latest = this.registry.getTask(taskId);
-          if (currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
-            && !latest.worktreePath && latest.launchFailure?.at === launchFailure.at) {
-            this.patch(taskId, { launchFailure: { ...latest.launchFailure, sessionKept: false } });
+          if (await err.unstarted || err.exitRecord.confirmed()) {
+            await reclaim();
+          } else if (ownsFailure()) {
+            // Return the failed dispatch at the deadline. Only this attempt can reconcile
+            // a later exit, and observing it must never keep the daemon alive.
+            awaitingLateExit = true;
+            void err.exitRecord.waitForExit(ownsFailure).then(async (exited) => {
+              if (exited) await reclaim();
+            }).catch((error) => {
+              console.warn(`[dispatch] could not reconcile late terminal exit for task ${taskId}:`, error);
+            }).finally(() => {
+              err.exitRecord.close();
+              if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+            });
           }
         }
       } else {
@@ -1498,8 +1518,10 @@ export class Dispatcher {
       // be running with the variable, and its record must outlive the failure for as long as
       // that agent does. A no-op for an embedded launch.
       settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
-      // Settled: nothing of this attempt writes after here. A successor's entry is its own.
-      if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      if (!awaitingLateExit) {
+        uncertainTerminal?.exitRecord.close();
+        if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      }
       // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
       // Best-effort: the worker is already launched, and restart recovery reclaims a leftover file.
       if (outcomeStateHome) {
@@ -3751,9 +3773,8 @@ export async function spawnUniquely(
     if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord) {
       pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
       const record = exitRecord;
-      exitRecord = undefined; // The deadline now owns the open descriptor.
-      throw new UnconfirmedDispatchError(error.message, pending.unstarted.then((unstarted) =>
-        unstarted || record.confirmed()).finally(record.close));
+      exitRecord = undefined; // The dispatcher owns the observation until the attempt settles.
+      throw new UnconfirmedDispatchError(error.message, pending.unstarted, record);
     }
     await handoff?.dispose();
     if (pending) pending.release();
@@ -3765,7 +3786,11 @@ export async function spawnUniquely(
 }
 
 class UnconfirmedDispatchError extends TerminalLaunchError {
-  constructor(message: string, readonly inactive: Promise<boolean>) { super(message, true); }
+  constructor(
+    message: string,
+    readonly unstarted: Promise<boolean>,
+    readonly exitRecord: ReturnType<typeof observeTerminalWrapperExit>,
+  ) { super(message, true); }
 }
 
 /** Managed counterpart: preparation is the sole command source and owns launch cleanup. */

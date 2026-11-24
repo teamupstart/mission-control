@@ -58,10 +58,27 @@ const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Hold the inode through removal of the home. An unmarked, unlinked file is not proof of exit. */
 export function observeTerminalWrapperExit(stateHome: string) {
   const fd = openSync(join(stateHome, WRAPPER_EXIT_FILE), "wx", 0o600);
+  const outcome = () => {
+    const file = fstatSync(fd);
+    return file.nlink === 0 ? file.size === 1 : null;
+  };
   return {
-    confirmed: () => {
-      const file = fstatSync(fd);
-      return file.nlink === 0 && file.size === 1;
+    confirmed: () => outcome() === true,
+    async waitForExit(stillOwned: () => boolean): Promise<boolean> {
+      while (stillOwned()) {
+        const exited = outcome();
+        if (exited !== null) return exited;
+        try {
+          const pid = Number(readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8"));
+          if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 0);
+        } catch (error) {
+          // A killed wrapper cannot produce a new receipt. Its disappearance alone is
+          // insufficient for reclaiming the checkout, which may still have an occupant.
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return outcome() === true;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref());
+      }
+      return false;
     },
     close: () => closeSync(fd),
   };

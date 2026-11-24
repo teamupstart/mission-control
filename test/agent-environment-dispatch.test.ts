@@ -32,8 +32,8 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "exited" | "exited-dirty") {
-  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty";
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
+  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty" || scenario === "late-dirty" || scenario === "late-settled";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -208,9 +208,39 @@ process.stdin.resume();
       await dispatch;
       assert.equal(registry.getTask(task.id)?.launchFailure?.sessionKept, true);
       assert.ok(existsSync(delayed.cwd));
+      const work = join(delayed.cwd, "late-work.txt");
+      if (scenario === "late-dirty") writeFileSync(work, "work after startup");
+      if (scenario === "late-settled") registry.upsertTask({ ...launched, status: "done" });
       child.stdin.end();
       assert.deepEqual(await exited, [0, null]);
       assert.equal(existsSync(observed.home), false);
+      t.mock.timers.tick(RESUME_START_MS);
+      if (scenario === "late-settled") {
+        await Promise.resolve();
+        assert.equal(registry.getTask(task.id)?.status, "done");
+        assert.equal(registry.getTask(task.id)?.worktreeLeaseId, launched.worktreeLeaseId);
+        return;
+      }
+      // The dispatch already returned at the startup deadline. Wait for the registry
+      // to publish the outcome of the late wrapper's checkout safety check.
+      const reconciled = () => {
+        const latest = registry.getTask(task.id)!;
+        return scenario === "late-dirty" ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false;
+      };
+      if (!reconciled()) await new Promise<void>((resolve) => {
+        const unsubscribe = registry.subscribe(() => {
+          if (reconciled()) { unsubscribe(); resolve(); }
+        });
+        t.after(unsubscribe);
+      });
+      const latest = registry.getTask(task.id)!;
+      if (scenario === "late-dirty") {
+        assert.ok(existsSync(work));
+        assert.equal(latest.worktreeLeaseId, launched.worktreeLeaseId);
+      } else {
+        assert.equal(latest.worktreeLeaseId, null);
+        assert.equal(latest.worktreePath, null);
+      }
     } finally {
       lines.close();
       child.stdin.end();
@@ -234,8 +264,13 @@ test("fresh resident terminal dispatch skips named shell lookups, variable injec
 test("clearing the enabled list gives the next dispatched agent no named environment or missing-name warning",
   (t) => checkTerminalDispatch(t, "cleared"));
 
-test("a pane confirmed only after the backend timeout can still enter its checkout and run its named dispatch wrapper",
+test("a late wrapper runs beyond the startup deadline and releases its clean checkout on exit", { timeout: 15000 },
   (t) => checkTerminalDispatch(t, "unconfirmed"));
+
+test("a late wrapper exit preserves work written after the deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "late-dirty"));
+test("a late wrapper exit preserves a task settled after the deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "late-settled"));
 
 test("a backend timeout releases the failed task's checkout when its wrapper never starts",
   (t) => checkTerminalDispatch(t, "never-started"));

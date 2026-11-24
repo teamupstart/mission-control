@@ -84,7 +84,9 @@ host milliseconds). A helper applying that exact held revision uses key-up as th
 the unfinished phrase. If its input tap still owes samples through that time, the helper
 collects the pre-release portion of the last callback before closing. A stalled input
 closes after 250 ms and delivers only phrases completed before the stall. Manual mute stops the input immediately. The helper can finish decoding and posting
-the held audio with the original revision. A second key press can record while the helper
+the held audio with the original revision. If another press arrives before the tap closes,
+the helper keeps polling for privacy changes and rechecks the directive after closure.
+A second key press can record while the helper
 finishes decoding previous holds in spoken order. The daemon lists up to eight authorized
 released revisions in `x-voice-draining-revisions`. A poll that missed an intervening key-up
 also receives the release time for its queried revision. An ordinary capture stop discards unfinished work.
@@ -154,7 +156,9 @@ The response is `{ accepted }`. While listening, the daemon can route a capture 
 A POST made while push-to-talk is held waits for the shell's key-up timestamp before
 anything reaches Recently heard, a card or the queue. If the same key is still held after
 25 seconds, the daemon returns `accepted: false` and its revision in `x-voice-held-revision`.
-The listener retries the same POST and utterance ID. During auto-mute following key-up,
+The listener retries the same POST and utterance ID after at least 250 ms. It drops that
+segment after three attempts or 55 seconds, including time spent waiting for a response,
+and continues with later speech. During auto-mute following key-up,
 the daemon accepts the same owner's held revision for segments ending by the release
 timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
 to host milliseconds for `x-voice-capture-end-host-ms`. Only the utterance’s `capturedAt`

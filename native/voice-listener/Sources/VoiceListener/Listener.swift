@@ -66,12 +66,33 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     func postUtterance(revision: String, endedAt: Int64, body: Data) async throws -> HTTPURLResponse {
-        while true {
-            try Task.checkCancellation()
-            let (_, http) = try await request("voice/utterances", revision: revision, endedAt: endedAt, body: body)
-            // A held POST waits up to 25 seconds for key-up. Retry the identical
-            // text and id if the daemon still lacks a confirmed release boundary.
-            if http.value(forHTTPHeaderField: "x-voice-held-revision") != revision { return http }
+        try await Self.postWithHeldRetries(revision: revision) {
+            try await self.request("voice/utterances", revision: revision, endedAt: endedAt, body: body).1
+        }
+    }
+
+    static func postWithHeldRetries(revision: String, budget: Duration = .seconds(55),
+                                    send: @escaping @Sendable () async throws -> HTTPURLResponse) async throws -> HTTPURLResponse {
+        // Allow two normal 25-second long polls. Bound even a stalled request
+        // and pace an alternate daemon that answers immediately.
+        let deadline = ContinuousClock.now + budget
+        return try await withThrowingTaskGroup(of: HTTPURLResponse.self) { group in
+            group.addTask {
+                try await Task.sleep(until: deadline, clock: .continuous)
+                throw URLError(.timedOut)
+            }
+            group.addTask {
+                for attempt in 1...3 {
+                    try Task.checkCancellation()
+                    let response = try await send()
+                    if response.value(forHTTPHeaderField: "x-voice-held-revision") != revision { return response }
+                    if attempt < 3 { try await Task.sleep(for: .milliseconds(250)) }
+                }
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            guard let response = try await group.next() else { throw CancellationError() }
+            return response
         }
     }
 }
@@ -82,6 +103,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var decoding: Task<Void, Never>?
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
+    var onInputClosed: (() -> Void)?
 
     init(_ revision: String) { self.revision = revision }
 
@@ -92,10 +114,13 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             guard let self, let mic else { return }
             releasedSegments = mic.stop(releasedAt: time)
             self.mic = nil
+            onInputClosed?()
+            onInputClosed = nil
         }
     }
 
     func cancel() {
+        onInputClosed = nil
         decoding?.cancel()
         mic?.stop()
         mic = nil
@@ -164,7 +189,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             let response = await poll.result
             directivePoll = nil
             if poll.isCancelled {
-                // A hardware change interrupted the long poll. Get current settings before reopening.
+                // The input changed while the poll was pending. Recheck capture before opening.
                 revision = nil
                 continue
             }
@@ -189,7 +214,11 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     current?.cancel()
                 }
                 current = nil
-                if capture {
+                if capture, let closing = draining.first(where: { $0.mic != nil }) {
+                    // The next press can arrive before the released tap supplies
+                    // its final frames. Keep polling so a mute can still cancel it.
+                    closing.onInputClosed = { [weak self] in self?.directivePoll?.cancel() }
+                } else if capture {
                     let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
                     let batch = Capture(next.revision)
                     let microphone = try Microphone(selection: next.inputDevice, held: held, onStopped: { [weak self] stopped in

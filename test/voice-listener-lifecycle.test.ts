@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
@@ -36,6 +36,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
+    const heldAttempts: number[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
       const url = new URL(req.url!, "http://localhost");
@@ -56,6 +57,10 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version, microphone: hello.microphone });
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
+        if (repeatedHeld && JSON.parse(body).text === "first") {
+          heldAttempts.push(performance.now());
+          if (heldAttempts.length <= 8) res.setHeader("x-voice-held-revision", "first");
+        }
         if (posted.length === 0 && firstPostHeld) res.setHeader("x-voice-held-revision", "first");
         if (posted.length === 0 && firstPostCutoff) {
           res.setHeader("x-voice-release-revision", "first");
@@ -98,7 +103,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", true);
-    return { events, diagnostics, posted, child, closed, nextPoll, apply, hellos, instanceIds };
+    return { events, diagnostics, posted, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
   }
 
   it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {
@@ -233,6 +238,43 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.deepEqual(posted.slice(2).map(p => p.revision), Array(5).fill("second"));
   });
 
+  it("rechecks a combined release and press before opening a second exclusive microphone", async t => {
+    const { events, nextPoll, apply, posted, child } = await launch(t, { held: true, inputDevice: "exclusive" });
+    const press = await nextPoll("first");
+    press.setHeader("x-voice-release-revision", "first");
+    press.setHeader("x-voice-release-host-ms", "1000");
+    press.setHeader("x-voice-held-revision", "second");
+    press.setHeader("x-voice-draining-revisions", "first");
+    apply(press, "second", true);
+    await nextPoll("second");
+    child.kill("SIGUSR2"); // Deliver the old input's final tap while the poll is pending.
+    const refresh = await nextPoll(null);
+    assert.ok(events.includes("stopped 1"));
+    assert.ok(!events.includes("opened 2"));
+    refresh.setHeader("x-voice-held-revision", "second");
+    refresh.setHeader("x-voice-draining-revisions", "first");
+    apply(refresh, "second", true);
+    await until(() => posted.length === 2, "first hold to finish during the second capture");
+    assert.ok(events.indexOf("opened 2") > events.indexOf("stopped 1"));
+    assert.deepEqual(posted.map(p => p.text), ["first hold", "final phrase"]);
+    assert.ok(!events.includes("overlapping microphones"));
+  });
+
+  it("mute can cancel a closing tap before a pending second press opens its microphone", async t => {
+    const { events, nextPoll, apply, posted } = await launch(t, { held: true, inputDevice: "exclusive" });
+    const press = await nextPoll("first");
+    press.setHeader("x-voice-release-revision", "first");
+    press.setHeader("x-voice-release-host-ms", "1000");
+    press.setHeader("x-voice-held-revision", "second");
+    press.setHeader("x-voice-draining-revisions", "first");
+    apply(press, "second", true);
+    apply(await nextPoll("second"), "muted", false);
+    await nextPoll("muted");
+    await until(() => events.includes("released microphone 1"), "revoked tap to close");
+    assert.ok(!events.includes("opened 2"));
+    assert.deepEqual(posted, []);
+  });
+
   it("re-decodes a segment straddling key-up when the directive arrives during recognition", async (t) => {
     const { events, posted, nextPoll, apply } = await launch(t);
     await until(() => events.includes("decode in-flight"), "recognition before release");
@@ -251,6 +293,14 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await until(() => posted.length === 3, "server refusal followed by clipped result and next segment");
     assert.ok(events.includes("decode first-clipped"));
     assert.deepEqual(posted.map(p => p.text), ["first", "first-clipped", "second"]);
+  });
+
+  it("spaces and bounds repeated held responses so later speech can be delivered", async t => {
+    const { posted, heldAttempts, events } = await launch(t, { inputDevice: "two-utterances", repeatedHeld: true });
+    await until(() => posted.some(p => p.text === "second"), "next segment after repeated held responses");
+    assert.ok(heldAttempts.length > 1 && heldAttempts.length <= 3);
+    for (let i = 1; i < heldAttempts.length; i++) assert.ok(heldAttempts[i]! - heldAttempts[i - 1]! >= 200);
+    assert.deepEqual(events.filter(e => e.startsWith("decode ")), ["decode first", "decode second"]);
   });
 
   it("retries a held POST before later speech without decoding it a second time", async (t) => {

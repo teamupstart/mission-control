@@ -24,6 +24,8 @@ final class Segment {
 
 @MainActor final class Microphone {
     static var openings = 0
+    private static weak var exclusiveOwner: Microphone?
+    private let exclusive: Bool
     let opening: Int
     let segments: AsyncStream<Segment>
     private(set) var isRunning = true
@@ -32,10 +34,16 @@ final class Segment {
     private let source: AsyncStream<Segment>.Continuation
 
     init(selection: String, held: Bool, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+        exclusive = selection == "exclusive"
+        if exclusive, Self.exclusiveOwner?.isRunning == true {
+            observe("overlapping microphones")
+            throw CaptureError.device
+        }
         Self.openings += 1
         opening = Self.openings
         if selection == "unplugged" && opening > 1 { throw CaptureError.device }
         (segments, source) = AsyncStream.makeStream()
+        if exclusive { Self.exclusiveOwner = self }
         observe("opened \(opening)")
         if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
             signal(SIGUSR1, SIG_IGN)
@@ -49,7 +57,7 @@ final class Segment {
             source.resume()
         }
         if held {
-            if selection == "rapid-press" && opening == 1 {
+            if (selection == "rapid-press" || exclusive) && opening == 1 {
                 heldPhrases = [Segment("first hold")]
             } else {
                 heldPhrases = (1...4).map { Segment("phrase \($0)") }
@@ -75,7 +83,14 @@ final class Segment {
         }
     }
 
-    func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) { finish() }
+    func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {
+        guard exclusive && opening == 1 else { finish(); return }
+        signal(SIGUSR2, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        source.setEventHandler { finish() }
+        disruption = source
+        source.resume()
+    }
 
     @discardableResult func stop(releasedAt: Int64? = nil) -> [Segment] {
         disruption?.cancel()

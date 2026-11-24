@@ -11,6 +11,21 @@ private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
 }
 
 final class ListenerTests: XCTestCase {
+    func testHeldPostDeadlineCancelsAnUnansweredRequest() async throws {
+        let cancelled = expectation(description: "pending send cancelled")
+        do {
+            _ = try await Daemon.postWithHeldRetries(revision: "held", budget: .milliseconds(100)) {
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { cancelled.fulfill(); throw error }
+                throw URLError(.badServerResponse)
+            }
+            XCTFail("A stalled send must expire")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        await fulfillment(of: [cancelled], timeout: 1)
+    }
+
     func testStereoDeviceConversionSilenceAndFreshSegmentAfterMute() throws {
         let stereo = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
         let frame = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: 960)!

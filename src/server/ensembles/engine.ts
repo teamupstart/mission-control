@@ -67,11 +67,7 @@ export interface EnsembleReviewDeps {
   /** Resolve runner+model at attempt time from the explicit pins / guidance overrides / app ladder. */
   resolveExecution: (guidance: EnsembleEvaluatorGuidance, pins: ReviewExecutionPins) => ReviewExecution;
   /** The bound, tool-less provider call. Tests inject a fake instead of a real model. */
-  runModel: (
-    runnerId: LlmRunnerId,
-    prompt: string,
-    opts: { modelId: string; timeoutMs: number; schema?: Record<string, unknown> },
-  ) => Promise<string>;
+  runModel: ReviewRuntime["runModel"];
   /** Whether this runner enforces the supplied JSON Schema at the provider boundary. */
   guaranteesSchema: (runnerId: LlmRunnerId) => boolean;
   /** Per-attempt wall-clock budget; defaults to the Persona ceiling. */

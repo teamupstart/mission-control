@@ -1,7 +1,8 @@
-import { resolveLlmRunner, type LlmRunnerId, type ResolvedLlmRunner } from "@shared/llm.ts";
+import { resolveLlmEffort, resolveLlmRunner, type LlmRunnerId, type ResolvedLlmRunner } from "@shared/llm.ts";
 import { resolveModelChoice } from "@shared/model-choice.ts";
 import { providerModelDefault } from "@shared/model.ts";
 import { WORKFLOW_PERSONA_MODEL_SPEC } from "@shared/workflow.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import type { EnsembleEvaluatorGuidance } from "@shared/ensemble.ts";
 import type { ReviewExecution, ReviewExecutionPins } from "./types.ts";
 
@@ -15,7 +16,7 @@ import type { ReviewExecution, ReviewExecutionPins } from "./types.ts";
  *
  *  1. An explicit runner/model override wins - either the caller's own pin, or, absent that, the
  *     snapshotted Persona's overrides - resolved with the balanced Persona fallback.
- *  2. Otherwise the app runner plus the `ensemble-comparison` job model, whose own ladder is the
+ *  2. Otherwise the `ensemble-comparison` job provider and model, whose ladder is the
  *     daemon's config -> env -> shipped-default one.
  *
  * It takes the PINS rather than the evaluator policy, and that is what lets it serve a panel: a
@@ -33,6 +34,9 @@ export interface ComparativeExecutionDeps {
   personaEnvModel: string | null;
   /** The `ensemble-comparison` job model, resolved for whichever runner ends up chosen. */
   jobModel(runnerId: LlmRunnerId): string;
+  jobRunner: ResolvedLlmRunner;
+  effortEnabled: boolean;
+  jobEffort?: ThinkingLevel | null;
 }
 
 export function resolveEvaluatorExecution(
@@ -42,18 +46,25 @@ export function resolveEvaluatorExecution(
 ): ReviewExecution {
   const explicitRunner = pins.runner ?? (guidance.kind === "persona" ? guidance.runner : null);
   const explicitModel = pins.model ?? (guidance.kind === "persona" ? guidance.model : null);
-  if (explicitRunner !== null || explicitModel !== null) {
-    const runner = explicitRunner === null ? deps.appRunner : resolveLlmRunner(explicitRunner, undefined);
-    const model = resolveModelChoice(
-      { ...WORKFLOW_PERSONA_MODEL_SPEC, fallback: providerModelDefault(runner.id, "balanced") },
-      explicitModel,
-      deps.personaEnvModel,
-    );
-    return { runnerId: runner.id, modelId: model.id, unknownRunner: runner.unknown };
-  }
+  const pinned = explicitRunner !== null || explicitModel !== null;
+  const runner = explicitRunner !== null
+    ? resolveLlmRunner(explicitRunner, undefined)
+    : pinned ? deps.appRunner : deps.jobRunner;
+  const modelId = pinned
+    ? resolveModelChoice(
+        { ...WORKFLOW_PERSONA_MODEL_SPEC, fallback: providerModelDefault(runner.id, "balanced") },
+        explicitModel,
+        deps.personaEnvModel,
+      ).id
+    : deps.jobModel(runner.id);
+  const personaEffort = guidance.kind === "persona" ? guidance.effort : undefined;
+  const effort = deps.effortEnabled
+    ? resolveLlmEffort(runner.id, modelId, personaEffort ?? deps.jobEffort).level
+    : null;
   return {
-    runnerId: deps.appRunner.id,
-    modelId: deps.jobModel(deps.appRunner.id),
-    unknownRunner: deps.appRunner.unknown,
+    runnerId: runner.id,
+    modelId,
+    unknownRunner: runner.unknown,
+    ...(effort && { effort }),
   };
 }

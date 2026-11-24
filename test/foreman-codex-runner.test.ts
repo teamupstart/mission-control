@@ -79,13 +79,14 @@ test("Foreman structured review actually routes through Codex with the selected 
     transcript: [],
     truncated: false,
     instructions: "",
-  }, "gpt-5.6-terra", "codex");
+  }, "gpt-5.6-terra", "codex", "low");
 
   assert.equal(result.kind, "verdict");
   const argv = readFileSync(argvPath, "utf8").split("\n");
   assert.ok(argv.includes("exec"));
   assert.ok(argv.includes("gpt-5.6-terra"));
   assert.ok(argv.includes("features.shell_tool=false"));
+  assert.ok(argv.includes("model_reasoning_effort=low"));
 });
 
 // `reviewSession` above sends NO schema, which is why it kept working while the schema-backed
@@ -136,6 +137,7 @@ test("Foreman queue verification hands Codex a strict schema and still reads a s
   assert.equal(result.kind === "verdict" ? result.verdict.confidence : null, 0.5);
 
   const argv = readFileSync(argvPath, "utf8").split("\n");
+  assert.ok(argv.every((arg) => !arg.startsWith("model_reasoning_effort=")));
   assert.ok(argv.includes("--output-schema"), "the verifier must send its schema at all");
   const sent: unknown = JSON.parse(readFileSync(schemaPath, "utf8"));
   assertStrictJsonSchema(sent, "QUEUE_VERDICT_JSON_SCHEMA as handed to codex exec");

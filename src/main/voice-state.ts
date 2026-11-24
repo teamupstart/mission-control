@@ -66,9 +66,6 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let lastReportUs = -1;
   const disabled = () => state.mode === "off";
 
-  // Routine status can coalesce. Each physical hold transition has its own dated snapshot
-  // and follows the preceding transition, independently of an outstanding status POST.
-  let edgeDelivery: Promise<boolean> | undefined;
   let lastHeld = false;
 
   function makeReport(owner: VoiceHardware): VoiceShellReport {
@@ -103,10 +100,6 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     let accepted = false;
     try {
       while (connection && hardware && reportRequested && !disabled()) {
-        if (edgeDelivery) {
-          await edgeDelivery;
-          continue;
-        }
         reportRequested = false;
         accepted = await deliver(connection, hardware, makeReport(hardware));
       }
@@ -118,16 +111,10 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
 
   function requestReport(): Promise<boolean> {
     if (hardware && connection && hardware.holdingToTalk !== lastHeld) {
-      const owner = hardware;
-      const current = connection;
-      lastHeld = owner.holdingToTalk;
-      const snapshot = makeReport(owner);
-      const send = () => deliver(current, owner, snapshot);
-      const delivery = (edgeDelivery ? edgeDelivery.then(send) : send()).finally(() => {
-        if (edgeDelivery === delivery) edgeDelivery = undefined;
-      });
-      edgeDelivery = delivery;
-      return delivery;
+      lastHeld = hardware.holdingToTalk;
+      // Dispatch both edges immediately. The daemon orders snapshots by observation
+      // time, so a press arriving after its release cannot reopen capture.
+      return deliver(connection, hardware, makeReport(hardware));
     }
     reportRequested = true;
     return sending ??= Promise.resolve().then(sendReports);
@@ -146,7 +133,6 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     layoutSubscription = undefined;
     hardware?.stop();
     hardware = undefined;
-    edgeDelivery = undefined;
     lastHeld = false;
   }
 
@@ -173,7 +159,6 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
     }
-    // Capture reacts immediately. Only delivery to the daemon waits for a prior POST.
     return requestReport();
   }
   function update(next: ShellVoiceState) {

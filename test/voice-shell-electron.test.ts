@@ -261,7 +261,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
     assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
 
-    await t.test("hold and release reach the daemon in order while a routine shell report is delayed", async t => {
+    await t.test("key-up reaches the daemon while both the press and routine report responses are stalled", async t => {
       if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
       const call = (value: boolean) => app.evaluate((_, value) =>
         (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
@@ -281,15 +281,17 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         await post(true);
         await until(() => !!heldReport && reports.slice(start).some(r => r.pushToTalk));
         const press = reports.at(-1)!;
+        const pressResponse = heldReport!;
         await post(false);
-        await new Promise(resolve => setTimeout(resolve, 80));
-        assert.equal(reports.at(-1), press, "release waits for the preceding press delivery");
-        heldReport!.end();
-        await until(() => reports.slice(start + 1).some(r => !r.pushToTalk && !!r.pushToTalkReleasedAtHostUs));
-        const release = reports.at(-1)!;
+        const isRelease = (r: VoiceShellReport) => !r.pushToTalk && !!r.pushToTalkReleasedAtHostUs;
+        await until(() => reports.slice(start + 1).some(isRelease), 1500);
+        const release = reports.slice(start + 1).find(isRelease)!;
         assert.ok(press.reportedAtHostUs! < release.reportedAtHostUs!);
         assert.ok(press.pushToTalkPressedAtHostUs! < release.pushToTalkReleasedAtHostUs!);
-        assert.equal(routine.writableEnded, false, "both transitions bypassed the routine POST");
+        for (const response of [routine, pressResponse]) {
+          assert.equal(response.writableEnded, false);
+          assert.equal(response.destroyed, false, "release arrived before either request timed out");
+        }
       } finally {
         holdReport = false;
         const pending = heldReport as ServerResponse | undefined;
@@ -418,8 +420,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await until(() => requests.length === 2);
   assert.deepEqual(requests, [true, false]);
   assert.ok(reports.length);
-  assert.ok(reports.every(({ reportedAtHostUs }, index) => reportedAtHostUs !== undefined &&
-    reportedAtHostUs > (reports[index - 1]?.reportedAtHostUs ?? -1) && reportedAtHostUs <= voiceHostTimeUs()));
+  const stamps = reports.map(report => report.reportedAtHostUs);
+  assert.ok(stamps.every(us => us !== undefined && us <= voiceHostTimeUs()));
+  assert.equal(new Set(stamps).size, reports.length);
   assert.equal(new Set(images).size, 4);
   await click("click");
   assert.equal((await read()).opens, 2);

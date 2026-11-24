@@ -142,7 +142,8 @@ If the gap falls between utterances, the helper clears the lead-in and accepts t
 The shell timestamps every snapshot, including idle heartbeats, at observation time with
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
-across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
+across shell restarts. The desktop sends each hold and release immediately, even while a previous
+shell report awaits its response. Retried snapshots keep their original timestamp. The daemon ignores
 older, duplicate, future-dated and expired snapshots before applying state. A dated
 snapshot's 15-second lifetime starts when observed, including time spent in transit.
 Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.

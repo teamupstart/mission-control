@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 474 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 476 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -76,10 +76,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   // Persona repository access adds the grant update and per-run repository query audit routes.
+  // GET /api/voice/mute and POST /api/voice/hotkey-recording answer 404 with the voice preview off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 474);
+  assert.equal(others.length, 476);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "e347a11fd6e42f7bd27e43a9dae79997962240aa1d3d570dfda401926c19f5fe");
+    "a13ca635c70793050ab39da6b9b38ab251148524906e4f3f04d45cb6204c4cea");
 });
 
 function sourceFiles(dir: string): string[] {

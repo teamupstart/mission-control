@@ -1,6 +1,10 @@
 import type { VoiceCard } from "@shared/voice-routing.ts";
 
-export type DashboardVoiceCard = VoiceCard & { localDeadline?: number; provisionalDeadline?: boolean };
+import type { VoiceAnswer } from "@shared/voice-answers.ts";
+
+type LocalDeadline = { localDeadline?: number; provisionalDeadline?: boolean };
+export type DashboardVoiceCard = VoiceCard & LocalDeadline;
+export type DashboardVoiceAnswer = VoiceAnswer & LocalDeadline;
 export type VoiceCardRetention = "reading" | "in-use" | "hidden-feedback";
 
 type Estimate = { offset: number; uncertain: boolean };
@@ -31,13 +35,20 @@ export class VoiceCardClock {
 /** Split-part updates and reconnect snapshots keep an already calibrated cancel window. */
 export function receiveVoiceCard(card: VoiceCard, sample: Estimate, previous?: DashboardVoiceCard): DashboardVoiceCard {
   if (card.state !== "pending" || card.deadline === null) return card;
-  if (previous?.deadline === card.deadline && previous.localDeadline !== undefined && !previous.provisionalDeadline) {
+  return receiveVoiceCountdown(card, sample, previous);
+}
+
+export function receiveVoiceCountdown<T extends { id: string; deadline: number | null }>(
+  card: T, sample: Estimate, previous?: T & LocalDeadline,
+): T & LocalDeadline {
+  if (card.deadline === null) return card;
+  if (previous?.id === card.id && previous.deadline === card.deadline && previous.localDeadline !== undefined && !previous.provisionalDeadline) {
     return { ...card, localDeadline: previous.localDeadline };
   }
   return { ...card, localDeadline: card.deadline + sample.offset, provisionalDeadline: sample.uncertain };
 }
 
-export function voiceCardDeadline(card: DashboardVoiceCard): number | null {
+export function voiceCardDeadline(card: { deadline: number | null } & LocalDeadline): number | null {
   if (card.deadline === null) return null;
   return card.localDeadline ?? card.deadline - performance.timeOrigin;
 }

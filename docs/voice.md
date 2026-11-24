@@ -1006,7 +1006,7 @@ With a question card open in the focused dashboard, say “Steve, option B” or
 “Reply, neither yet” fills the text field of the focused question, including a question from an
 agent without a spoken name. If several cards from one agent are open, focus the one you mean.
 Choice-only cards show an option example in the footer. Cards that accept text also show how to dictate it.
-A bare answer matches a unique option label first. “Option two” always selects the second option.
+A bare answer matches a unique option label first. “Option two” always selects the second option. Spoken numbers such as “option eleven” and “option twenty-one” work like digits.
 Other wording uses the option matcher. If the lookup fails, the card asks you to try again and the question stays pending.
 Asking for an unavailable option or a recommendation without a single recommended choice
 shows “No matching option.” The Other field stays as you left it and no countdown starts.
@@ -1030,7 +1030,7 @@ confirmed, the footer shows the original voice answer and its deadline. Use **Re
 if the request fails or takes too long. The original answer can still submit at the deadline.
 If the focused dashboard shows the question, its footer carries the countdown. When the
 question closes or its dashboard loses focus or disconnects, a companion card shows the same
-answer and deadline. Returning to the question moves the controls back to its footer.
+answer and deadline, along with the question title and the agent’s name when available. Returning to the question moves the controls back to its footer. Only the dashboard that owns that footer can submit from it.
 Disabling the cancel window submits a matched answer immediately.
 
 The daemon keeps pending answers in memory, includes them in reconnect snapshots, and

@@ -2,8 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
-import type { VoiceAnswer } from "@shared/voice-answers.ts";
-import { receiveVoiceCard, VoiceCardClock, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
+import { receiveVoiceCard, receiveVoiceCountdown, VoiceCardClock, type DashboardVoiceAnswer, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -217,7 +216,7 @@ export interface MissionState {
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
   voiceWindowId?: string;
-  voiceAnswers: Map<string, VoiceAnswer>;
+  voiceAnswers: Map<string, DashboardVoiceAnswer>;
   openVoiceQuestion: { sessionId: string; reviewId: string } | null;
   voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
@@ -352,7 +351,7 @@ export function useEventStream(): MissionState {
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
   const [voiceWindowId, setVoiceWindowId] = useState<string>();
-  const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, VoiceAnswer>());
+  const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, DashboardVoiceAnswer>());
   const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
   const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
   const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
@@ -445,6 +444,8 @@ export function useEventStream(): MissionState {
         void fetchVoiceCardTime(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(stamp => {
           if (clockProbe !== probe || stamp === null) return;
           const refined = voiceClock.observe(now, performance.now(), stamp, stamp);
+          setVoiceAnswers(current => new Map([...current].map(([id, answer]) =>
+            [id, answer.provisionalDeadline ? receiveVoiceCountdown(answer, refined, answer) : answer])));
           setVoiceCards(current => {
             const next = new Map(current);
             for (const [id, card] of current) {
@@ -599,12 +600,13 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
-          setVoiceAnswers(new Map(msg.voiceAnswers?.map(a => [a.reviewId, a])));
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
             const active = msg.voiceCards ?? [];
-            const sample = sampleCardClock(msg, active.some(card => card.state === "pending" && card.deadline !== null));
+            const answers = msg.voiceAnswers ?? [];
+            const sample = sampleCardClock(msg, answers.length > 0 || active.some(card => card.state === "pending" && card.deadline !== null));
+            setVoiceAnswers(current => new Map(answers.map(a => [a.reviewId, receiveVoiceCountdown(a, sample, current.get(a.reviewId))])));
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
@@ -612,6 +614,7 @@ export function useEventStream(): MissionState {
               return next;
             });
           } else {
+            setVoiceAnswers(new Map());
             clearVoiceTimers();
             setVoiceCards(new Map());
           }
@@ -888,14 +891,17 @@ export function useEventStream(): MissionState {
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
           break;
-        case "voice_answer":
+        case "voice_answer": {
+          const answer = msg.answer;
+          const sample = answer && sampleCardClock(msg, true);
           setVoiceAnswers(prev => {
             const next = new Map(prev);
-            if (msg.answer) next.set(msg.reviewId, msg.answer);
+            if (answer && sample) next.set(msg.reviewId, receiveVoiceCountdown(answer, sample, prev.get(msg.reviewId)));
             else next.delete(msg.reviewId);
             return next;
           });
           break;
+        }
         case "voice_card_remove":
           setVoiceCards(prev => {
             const next = new Map(prev);

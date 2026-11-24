@@ -170,7 +170,7 @@ function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resi
   const roster: SpokenName[] = flags.resident ? [{ kind: "resident", key: "resident:lint", name: "Linter watcher",
     role: "Watch the linter", colorId: "violet", state: "running", sessionId: review.sessionId, taskId: "t1", agent: "claude" }] : [];
   const questionCard = createElement(VoiceRosterContext.Provider, { value: roster },
-    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? new Map() : null }, createElement(ReviewCard, { review, session })));
+    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? { answers: new Map() } : null }, createElement(ReviewCard, { review, session })));
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: config },
       createElement(ResidentNamesContext.Provider, { value: runs },

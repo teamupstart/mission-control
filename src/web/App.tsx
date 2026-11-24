@@ -5140,7 +5140,7 @@ export function App(): React.JSX.Element {
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
       <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
-      <VoiceAnswersContext.Provider value={voiceHints ? voiceAnswers : null}>
+      <VoiceAnswersContext.Provider value={voiceHints ? { answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>

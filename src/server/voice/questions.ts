@@ -18,7 +18,7 @@ export class VoiceOpenCards {
   private clockSkewMs = 0;
   private changedAt = 0;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number; clockOffsetUs: number }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number; revision: number; clockOffsetUs: number }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -48,7 +48,7 @@ export class VoiceOpenCards {
     };
   }
 
-  report(report: OpenCardsReport, observedAtUs?: number): boolean {
+  report(report: OpenCardsReport, observedAtUs?: number, revision = 0): boolean {
     const stream = this.streams.get(report.windowId);
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
@@ -59,9 +59,10 @@ export class VoiceOpenCards {
     const focusAtUs = observedAtUs === undefined ? Math.max(Date.now() * 1000, this.latestFocusUs + 1)
       : observedAtUs + stream.clockOffsetUs;
     // A focus transition is dated by the observing dashboard, before HTTP delivery.
-    if (focusAtUs < (this.reports.get(report.windowId)?.focusAtUs ?? 0)) return true;
+    const last = this.reports.get(report.windowId);
+    if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     const previous = this.current;
-    this.reports.set(report.windowId, { report, focusAtUs, clockOffsetUs: stream.clockOffsetUs });
+    this.reports.set(report.windowId, { report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs });
     if (report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
     if (this.current !== previous) this.changedAt = Date.now();
     this.changed();
@@ -87,8 +88,9 @@ export class VoiceOpenCards {
     return live.length === 1 ? live[0] : undefined;
   }
 
-  showing(reviewId: string): boolean {
-    return this.current?.cards.some(card => card.id === reviewId) ?? false;
+  footerOwner(reviewId: string): string | undefined {
+    const current = this.current;
+    return current?.cards.some(card => card.id === reviewId) ? current.windowId : undefined;
   }
 
   target(questions: ReviewItem[], capturedAt = Infinity): ReviewItem | undefined {
@@ -110,15 +112,52 @@ export class VoiceOpenCards {
   }
 }
 
-const cardinals = "one two three four five six seven eight nine ten".split(" ");
-const ordinals = "first second third fourth fifth sixth seventh eighth ninth tenth".split(" ");
+const smallNumbers = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
+const smallOrdinals = "zeroth first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth".split(" ");
+const tens = "twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+const positions = new Map<string, number>();
+for (const [i, word] of smallNumbers.entries()) {
+  positions.set(word, i);
+  positions.set(smallOrdinals[i]!, i);
+}
+for (const [i, word] of tens.entries()) {
+  const value = (i + 2) * 10;
+  positions.set(word, value);
+  positions.set(word.slice(0, -1) + "ieth", value);
+  for (let unit = 1; unit <= 9; unit++) {
+    positions.set(word + " " + smallNumbers[unit], value + unit);
+    positions.set(word + " " + smallOrdinals[unit], value + unit);
+  }
+}
+
+const numberScales = [["trillion", 1e12], ["billion", 1e9], ["million", 1e6], ["thousand", 1000], ["hundred", 100]] as const;
+
+function spokenNumber(value: string, start = 0): number | undefined {
+  const small = positions.get(value);
+  if (small !== undefined) return small;
+  // Larger selectors are still commands when their positions exceed the form's options.
+  const words = value.split(" ");
+  for (let i = start; i < numberScales.length; i++) {
+    const [scale, magnitude] = numberScales[i]!;
+    const at = words.findIndex(w => w === scale || w === scale + "th");
+    if (at < 0) continue;
+    const prefix = words.slice(0, at).join(" ");
+    const suffix = words.slice(at + 1).join(" ").replace(/^and /u, "");
+    if (words[at] !== scale && suffix) return undefined;
+    const leading = !prefix || prefix === "a" ? 1 : spokenNumber(prefix, i + 1);
+    const trailing = suffix ? spokenNumber(suffix, i + 1) : 0;
+    return leading && trailing !== undefined ? leading * magnitude + trailing : undefined;
+  }
+  return undefined;
+}
 
 export function spokenIndex(words: string): number {
-  const value = words.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/u, "").replace(/ one$/u, "");
+  const value = words.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/u, "").replace(/-/gu, " ");
   if (/^[a-z]$/u.test(value)) return value.charCodeAt(0) - 97;
   if (/^a[a-z]$/u.test(value)) return 26 + value.charCodeAt(1) - 97;
   if (/^\d+(?:st|nd|rd|th)?$/u.test(value)) return parseInt(value, 10) - 1;
-  return Math.max(ordinals.indexOf(value), cardinals.indexOf(value));
+  const number = spokenNumber(value) ?? (value.endsWith(" one") ? positions.get(value.slice(0, -4)) : undefined);
+  return (number ?? 0) - 1;
 }
 
 /** These commands request a particular option and cannot supply a written answer. */

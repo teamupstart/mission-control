@@ -76,9 +76,10 @@ export function ReviewModal({
   /** Open one checkout file in the session's Files tab. */
   onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  const selectedIsDrawn = reviews.some(r => r.id === focusQuestion?.reviewId);
   useEffect(() => {
-    if (focusQuestion) document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`)?.focus();
-  }, [focusQuestion]);
+    if (selectedIsDrawn && focusQuestion) document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`)?.focus();
+  }, [focusQuestion, selectedIsDrawn]);
   const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
   const openPath = onOpenPath
     ? (path: string) => {
@@ -197,7 +198,7 @@ export function ReviewCard({
   const decisions = reviewDecisions(review);
   const voiceAnswers = useContext(VoiceAnswersContext);
   const voiceQuestion = question && voiceAnswers !== null && !snoozing && (decisions?.length ?? 0) <= 1;
-  const pendingAnswer = voiceQuestion ? voiceAnswers.get(review.id) : undefined;
+  const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
   const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
   // The daemon owns the deadline. Once the operator edits this preview, the draft
   // owns the inputs immediately, including while the cancel request is in flight.
@@ -212,7 +213,7 @@ export function ReviewCard({
     if (!pendingAnswer) return;
     const attempt = manualEdit && action === "cancel" ? { id: pendingAnswer.id, status: "requested" as const } : null;
     if (attempt) setEditCancel(attempt);
-    const result = await api.voiceAnswerAction(pendingAnswer.id, action);
+    const result = await api.voiceAnswerAction(pendingAnswer.id, action, voiceAnswers?.windowId);
     if (result.ok) return;
     if (attempt) {
       // A retry can reach the daemon before the earlier request returns.
@@ -225,7 +226,7 @@ export function ReviewCard({
     if (preview) void answerAction("cancel", true);
   }
   const footer = pendingAnswer && <VoiceAnswerFooter answer={pendingAnswer} options={decisions?.[0]?.options}
-    act={answerAction} cancelStatus={cancelStatus} />;
+    act={answerAction} canSubmit={!!voiceAnswers?.windowId && voiceAnswers.windowId === pendingAnswer.footerWindowId} cancelStatus={cancelStatus} />;
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
   const finalBundle = review.standingApprovalEligible === true
     && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);

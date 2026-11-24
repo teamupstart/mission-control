@@ -1,4 +1,4 @@
-import { OpenCardsSchema, VOICE_FOCUS_TIME_HEADER } from "@shared/voice-answers.ts";
+import { OpenCardsSchema, VOICE_FOCUS_TIME_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -307,7 +307,12 @@ export function registerVoiceUtteranceRoutes(
     if (stamp !== undefined && (!/^\d+$/.test(stamp) || !Number.isSafeInteger(focusAtUs))) {
       return c.json({ error: "Invalid focus timestamp." }, 400);
     }
-    const ok = router.openCards.report(parsed.data, focusAtUs);
+    const version = c.req.header(VOICE_REPORT_REVISION_HEADER);
+    const revision = version === undefined ? undefined : Number(version);
+    if (version !== undefined && (!/^\d+$/.test(version) || !Number.isSafeInteger(revision))) {
+      return c.json({ error: "Invalid report revision." }, 400);
+    }
+    const ok = router.openCards.report(parsed.data, focusAtUs, revision);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
@@ -368,7 +373,7 @@ export function registerVoiceUtteranceRoutes(
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/send-now", gate, async (c) => {
-    const ok = await router.sendNow(c.req.param("id"), c.req.query("source") === "card");
+    const ok = await router.sendNow(c.req.param("id"), { companion: c.req.query("source") === "card", windowId: c.req.query("windowId") });
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/pick", gate, limitBody, async (c) => {

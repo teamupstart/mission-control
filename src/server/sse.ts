@@ -105,7 +105,7 @@ export async function streamRegistryEvents(
       while (queue.length > 0 && !stream.aborted) {
         const event = titled.event(queue.shift()!);
         // Queued frames may have waited behind a snapshot write. Stamp them as they leave.
-        const frame = event.type === "voice_card"
+        const frame = (event.type === "voice_card" || event.type === "voice_answer")
           ? { ...event, voiceStreamStartedAt: streamStartedAt, voiceServerTime: Date.now() }
           : event;
         await stream.writeSSE({ data: JSON.stringify(frame) });

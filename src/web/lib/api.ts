@@ -2552,7 +2552,8 @@ export const api = {
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement) =>
     put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
-  voiceAnswerAction: (id: string, action: "cancel" | "send-now") => post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`),
+  voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string) =>
+    post(`/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : "")),
   voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null; answerCompanion?: boolean } = {}) => {
     // Leave the transport alive through the possible delivery window, plus a short
     // grace period for the reply. The card can offer a retry independently.

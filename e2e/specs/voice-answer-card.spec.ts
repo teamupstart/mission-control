@@ -90,9 +90,9 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await expect(a).toBeChecked();
   await say(daemon, "Steve, option B");
   // Deliver the click only after the new selection and countdown reach the DOM.
-  const heldClick = page.waitForEvent("request", r => r.url().endsWith("/send-now"));
+  const heldClick = page.waitForEvent("request", r => new URL(r.url()).pathname.endsWith("/send-now"));
   const release = Promise.withResolvers<void>();
-  await page.route("**/api/voice/cards/*/send-now", async route => {
+  await page.route("**/api/voice/cards/*/send-now*", async route => {
     await release.promise;
     await route.continue();
   }, { times: 1 });
@@ -101,7 +101,7 @@ test("answer, correct, cancel and submit through a question card or its countdow
     await heldClick;
     await say(daemon, "no, A");
     await expect(footer).toContainText("Changed to A · SQLite");
-    const stale = page.waitForResponse(r => r.url().endsWith("/send-now"));
+    const stale = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/send-now"));
     release.resolve();
     expect((await stale).status()).toBe(409);
     expect((await read(id)).status).toBe("pending");

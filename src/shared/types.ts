@@ -4273,7 +4273,7 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
-  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null }
+  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
   | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }

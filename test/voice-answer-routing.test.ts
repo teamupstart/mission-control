@@ -94,7 +94,7 @@ test("answer and companion share a cancel slot, correction keeps its place even 
   await say("Steve, option B", "keep-answer");
   await say("Will, drop this");
   await say("cancel");
-  await act("keep-answer", "send-now");
+  await act("keep-answer", "send-now?source=card");
   assert.equal(registry.getReview(q.id)?.status, "answered");
 });
 
@@ -118,7 +118,7 @@ test("a closed free-text question accepts an explicit answer through its countdo
   assert.equal(answers()[0]?.text, "Postgres");
   assert.equal(cards.at(-1)?.reason, "voice-answer");
   assert.equal(registry.getReview(q.id)?.status, "pending");
-  assert.equal((await act("closed-text", "send-now")).status, 200);
+  assert.equal((await act("closed-text", "send-now?source=card")).status, 200);
   assert.equal(registry.getReview(q.id)?.response, "Postgres");
   assert.deepEqual(queued("Steve"), []);
 });
@@ -244,7 +244,7 @@ test("a blurred dashboard loses the reply target and its background reports cann
   await report("first", first.id, false);
   await say("reply, option B", "focused-reply");
   assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
-  assert.equal((await act("focused-reply", "send-now")).status, 200);
+  assert.equal((await act("focused-reply", "send-now?windowId=second")).status, 200);
   assert.equal(registry.getReview(second.id)?.status, "answered");
   assert.equal(registry.getReview(first.id)?.status, "pending");
 });
@@ -277,7 +277,7 @@ test("a closed question picker applies the chosen question's dictation rule", as
       assert.equal(registry.getReview(choices.id)?.status, "pending");
     } else {
       assert.equal(answers()[0]?.reviewId, free.id);
-      assert.equal((await act(id, "send-now")).status, 200);
+      assert.equal((await act(id, "send-now?source=card")).status, 200);
       assert.equal(registry.getReview(free.id)?.response, "something else");
     }
   }
@@ -293,7 +293,7 @@ test("the inline footer takes over the same countdown and retires stale companio
   for (const ids of [[q.id], [], [q.id]]) {
     await show(ids);
     assert.equal(visible(), !ids.length);
-    assert.deepEqual(answers(), [answer]);
+    assert.deepEqual(answers(), [{ ...answer, footerWindowId: ids.length ? "voice-question-test" : undefined }]);
     assert.equal(router.pendingVoiceActions.length, 1);
   }
   // The newer focused dashboard needs the companion even if the first one has not reported blur yet.
@@ -402,7 +402,7 @@ test("bare numeric answers prefer an exact label and explicit option numbers are
   await say("cancel");
   await say("Steve, option 2", "position");
   assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["four"]);
-  assert.equal((await act("position", "send-now")).status, 200);
+  assert.equal((await act("position", "send-now?source=card")).status, 200);
   assert.deepEqual(registry.getReview(q.id)?.selections?.[0]?.selected, ["four"]);
 });
 
@@ -437,5 +437,60 @@ test("a standalone pick survives a missing dashboard and can open its question o
   await put("/api/voice/open-cards", { windowId: "dashboard", focused: false, cards: [] });
   assert.equal((await act("choose", "pick", { id: q.id })).status, 200);
   assert.deepEqual(opened, [["dashboard", q.id]]);
+  assert.deepEqual(answers(), []);
+});
+
+test("spoken option numbers select their position or give a notice without sending a message", async () => {
+  const question = "How many?";
+  const q = reviews.create("sdk:Steve", "input", question, question, [{ id: "q", question, allowOther: true,
+    options: Array.from({ length: 50 }, (_, i) => ({ id: String(i + 1), label: "Choice " + (i + 1) })) }]);
+  for (const [phrase, expected] of [["eleven", "11"], ["seventeenth", "17"], ["twenty one", "21"], ["forty-ninth", "49"], ["fifty", "50"]]) {
+    await say("Steve, option " + phrase);
+    assert.deepEqual(answers()[0]?.selections?.[0]?.selected, [expected], phrase);
+    await say("cancel");
+  }
+  for (const phrase of ["fifty first", "ninety-nine", "one hundred and eleven", "one thousand"]) {
+    await say("Steve, option " + phrase);
+    assert.deepEqual(answers(), []);
+    assert.equal(cards.at(-1)?.detail, "No matching option.", phrase);
+    assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 0);
+  }
+  await say("Steve, option eleven seems risky", "message-about-eleven");
+  await act("message-about-eleven", "send-now");
+  assert.deepEqual(queued("Steve"), ["option eleven seems risky"]);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
+test("only the dashboard currently showing the footer can send its inline answer", async t => {
+  const q = question();
+  const windows = registry.voiceRouter!.openCards;
+  const report = (windowId: string, open: boolean) => put("/api/voice/open-cards", {
+    windowId, focused: true, cards: open ? [{ kind: "question", id: q.id, focused: true }] : [],
+  });
+  t.after(windows.connect("first"));
+  t.after(windows.connect("second"));
+  await report("first", true);
+  await say("Steve, option B", "owned");
+  await report("second", false);
+  assert.equal((await act("owned", "send-now?windowId=first")).status, 409);
+  await report("second", true);
+  assert.equal((await act("owned", "send-now?windowId=first")).status, 409);
+  assert.equal((await act("owned", "send-now")).status, 409);
+  assert.equal((await act("owned", "send-now?source=card")).status, 409);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.equal((await act("owned", "send-now?windowId=second")).status, 200);
+  assert.equal(registry.getReview(q.id)?.status, "answered");
+});
+
+test("a late report from a timed-out request cannot reinstate a closed card on the same focus transition", async t => {
+  const q = question();
+  const windowId = "late-report";
+  t.after(registry.voiceRouter!.openCards.connect(windowId));
+  const report = (ids: string[], revision: number) => put("/api/voice/open-cards", {
+    windowId, focused: true, cards: ids.map(id => ({ kind: "question", id, focused: true })),
+  }, { "x-voice-focus-at-us": "100", "x-voice-report-revision": String(revision) });
+  assert.equal((await report([], 2)).status, 200);
+  assert.equal((await report([q.id], 1)).status, 200);
+  await say("reply, tomorrow");
   assert.deepEqual(answers(), []);
 });

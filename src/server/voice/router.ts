@@ -71,7 +71,6 @@ export class RecentlyHeard {
 
 interface OpenCard {
   answer?: VoiceAnswer;
-  companion?: boolean;
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
@@ -197,12 +196,14 @@ export class VoiceRouter {
   readonly openCards = new VoiceOpenCards(() => {
     for (const item of this.open.values()) {
       if (!item.answer) continue;
-      const companion = !this.openCards.showing(item.answer.reviewId);
-      if (companion === item.companion) continue;
-      if (companion && !this.questions!.pending().some(q => q.id === item.answer!.reviewId)) continue;
-      item.companion = companion;
-      if (companion) this.publish(item.card);
-      else this.questions!.removeCompanion(item.card.id);
+      const owner = this.openCards.footerOwner(item.answer.reviewId);
+      if (owner === item.answer.footerWindowId) continue;
+      if (!this.questions!.pending().some(q => q.id === item.answer!.reviewId)) continue;
+      const hadCompanion = !item.answer.footerWindowId;
+      item.answer = { ...item.answer, footerWindowId: owner };
+      this.questions!.publish(item.answer.reviewId, item.answer);
+      if (!owner) this.publish(item.card);
+      else if (hadCompanion) this.questions!.removeCompanion(item.card.id);
     }
   });
   readonly heard = new RecentlyHeard();
@@ -252,7 +253,7 @@ export class VoiceRouter {
   }
 
   activeCards(): VoiceCard[] {
-    const visible = [...this.open.values()].filter(item => (!item.answer || item.companion) && (item.card.state !== "resolving" || item.resolvingVisible));
+    const visible = [...this.open.values()].filter(item => !item.answer?.footerWindowId && (item.card.state !== "resolving" || item.resolvingVisible));
     const held = new Set<VoiceCard>();
     for (const { delivery } of this.outbox.values()) {
       if (delivery.published?.parts.some(part => part.outcome === "held")) held.add(delivery.published);
@@ -490,16 +491,16 @@ export class VoiceRouter {
       const action = this.pendingVoiceActions.find(a => a.kind === "card" && a.id === previousId)!;
       action.id = id;
       action.cancel = () => this.cancel(id);
-      if (item.companion) this.questions!.removeCompanion(previousId);
+      if (!item.answer?.footerWindowId) this.questions!.removeCompanion(previousId);
     }
-    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!revisionId };
-    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", deadline, windowMs,
-      parts: [{ target, text: result.text }] };
+    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!revisionId,
+      footerWindowId: this.openCards.footerOwner(review.id) };
+    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", questionTitle: review.title, deadline, windowMs,
+      parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
-    item.companion = !this.openCards.showing(review.id);
     this.questions!.publish(review.id, item.answer);
-    if (item.companion) this.publish(item.card);
+    if (!item.answer.footerWindowId) this.publish(item.card);
     if (!windowMs) { await this.sendNow(id); return; }
     item.timer = setTimeout(() => { void this.sendNow(id); }, windowMs);
     item.timer.unref();
@@ -676,7 +677,7 @@ export class VoiceRouter {
           this.publishDelivery(delivery);
         });
       }
-    } else if (!item.answer || item.companion) {
+    } else if (!item.answer?.footerWindowId) {
       this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
@@ -820,16 +821,18 @@ export class VoiceRouter {
     }
   }
 
-  async sendNow(id: string, fromCompanion = false): Promise<boolean> {
+  async sendNow(id: string, source?: { companion: boolean; windowId?: string }): Promise<boolean> {
     const item = this.open.get(id);
-    if (item?.card.state !== "pending" || (fromCompanion && !item.companion)) return false;
+    if (item?.card.state !== "pending") return false;
+    if (source?.companion && (!item.answer || item.answer.footerWindowId)) return false;
+    if (source && !source.companion && item.answer && (!source.windowId || source.windowId !== item.answer.footerWindowId)) return false;
     this.take(item);
     if (this.state().mode === "off") return false;
     if (item.answer) {
       const ok = this.questions!.pending().some(q => q.id === item.answer!.reviewId)
         && await this.questions!.resolve(item.answer).catch(() => false);
       item.entry.outcome = ok ? "sent" : "failed";
-      if (!ok || item.companion) this.publish({ ...item.card, state: item.entry.outcome, deadline: null,
+      if (!ok || !item.answer.footerWindowId) this.publish({ ...item.card, state: item.entry.outcome, deadline: null,
         detail: ok ? "Answer submitted." : "The question could not be answered." });
       return ok;
     }

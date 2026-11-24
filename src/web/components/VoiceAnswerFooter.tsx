@@ -1,5 +1,6 @@
-import { optionLetter, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { optionLetter } from "@shared/voice-answers.ts";
 import type { PlanDecision, PlanDecisionOption } from "@shared/types.ts";
+import { type DashboardVoiceAnswer, voiceCardDeadline, voiceCountdownSeconds } from "../lib/voice-card-clock.ts";
 import { useNow } from "../useNow.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceIcon } from "./VoiceCardView.tsx";
@@ -21,24 +22,28 @@ export function QuestionVoiceHint({ name, decision }: { name?: string; decision?
   </CardVoiceFoot>;
 }
 
-export function VoiceAnswerFooter({ answer, options, act, cancelStatus }: {
-  answer: VoiceAnswer; options?: PlanDecisionOption[]; cancelStatus?: "requested" | "failed"; act(action: "cancel" | "send-now"): Promise<void>;
+const monotonicNow = () => performance.now();
+
+export function VoiceAnswerFooter({ answer, options, act, cancelStatus, canSubmit }: {
+  answer: DashboardVoiceAnswer; canSubmit: boolean; options?: PlanDecisionOption[]; cancelStatus?: "requested" | "failed"; act(action: "cancel" | "send-now"): Promise<void>;
 }) {
-  const now = useNow(true, 100);
-  const remaining = Math.min(answer.windowMs, Math.max(0, answer.deadline - now));
+  const now = useNow(true, 100, monotonicNow);
+  const remaining = Math.min(answer.windowMs, Math.max(0, voiceCardDeadline(answer)! - now));
+  const submitHint = cancelStatus ? "Cancellation is awaiting confirmation"
+    : !canSubmit ? "Focus this question in this dashboard to submit here" : "Submit this voice answer before the countdown ends";
   const selected = answer.selections?.[0]?.selected[0];
   const alternate = selected ? options?.findIndex(option => option.id !== selected) : -1;
   return <div className="av-foot" role="status">
     <div className="vc-count"><i style={{ width: (answer.windowMs ? remaining / answer.windowMs * 100 : 0) + "%" }} /></div>
     <div className="av-foot-row"><VoiceIcon name="mic" /><span className="av-grow">{cancelStatus ? "Pending voice answer: " : answer.switched ? "Changed to " : "Voice answer: "}
       <b>{cancelStatus && !selected ? answer.text : answer.label}</b><span className="av-foot-sub">
-        {cancelStatus && remaining === 0 ? "waiting for confirmation" : <>submits in <b>{Math.ceil(remaining / 1000)}s</b></>}
+        {remaining === 0 ? "waiting for confirmation" : <>submits in <b>{answer.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, answer.windowMs)}s</b></>}
       </span></span>
       <Tooltip label={cancelStatus ? "Request cancellation again" : "Cancel this pending voice answer"}>
         <button className="btn btn-ghost" onClick={() => void act("cancel")}>{cancelStatus ? "Retry cancel" : "Cancel"}</button>
       </Tooltip>
-      <Tooltip label={cancelStatus ? "Cancellation is awaiting confirmation" : "Submit this voice answer before the countdown ends"}>
-        <button className="btn btn-approve" disabled={!!cancelStatus} onClick={() => void act("send-now")}>Submit now</button>
+      <Tooltip label={submitHint}>
+        <button className="btn btn-approve" disabled={!canSubmit || !!cancelStatus || remaining === 0} onClick={() => void act("send-now")}>Submit now</button>
       </Tooltip></div>
     <span className="av-hint">{cancelStatus
       ? (cancelStatus === "failed" ? "Could not cancel the voice answer." : "Cancellation requested.")

@@ -45,6 +45,7 @@ export interface VoiceCard {
   candidates: { kind: "agent" | "question"; id: string; title: string; detail: string; target?: SpokenName }[];
   reason: string;
   openQuestions: number;
+  questionTitle?: string;
   detail?: string;
 }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PlanDecisionAnswer } from "./types.ts";
 
+export const VOICE_REPORT_REVISION_HEADER = "x-voice-report-revision";
 export const VOICE_FOCUS_TIME_HEADER = "x-voice-focus-at-us";
 
 /** A document or daemon keeps its monotonic time origin across a wall clock adjustment.
@@ -26,6 +27,7 @@ export interface VoiceAnswer {
   deadline: number;
   windowMs: number;
   switched: boolean;
+  footerWindowId?: string;
 }
 
 export function optionLetter(index: number): string {

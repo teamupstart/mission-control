@@ -65,6 +65,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
         validate: async (staging) => {
           const check = await checkModCallsAt(claude, deps, join(staging, MOD_NAME));
           if (check.status === "fail") throw new Error(check.message + ". " + (check.fix ?? ""));
+          if (deps.runCache) deps.runCache.modCalls = check;
           // The marketplace is what `marketplace add` reads; let claude refuse it now, not after the swap.
           const market = await deps.exec(claude.path, ["plugin", "validate", staging], { timeoutMs: 30_000 });
           if (market.code !== 0) throw new Error("`claude plugin validate` refused the marketplace: " + describe(market) + ". Rebuild with `npm run build`, then run `mctl setup`.");
@@ -80,6 +81,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const installed = before.mod;
   const replacing = installed?.scope === "user";
   if (installed && installed.enabled && installed.scope === "user" && installed.version === version) {
+    if (deps.runCache) deps.runCache.installed = before;
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
   }
 
@@ -113,6 +115,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
       : ["no entry for the mod"];
     return installFailure("the install finished but `claude plugin list` shows " + problems.join(", "), deps.stateDir, bin);
   }
+  if (deps.runCache) deps.runCache.installed = after;
   const action = installed?.scope === "user" ? "replaced " + installed.version + " with" : "installed";
   return { id, status: "ok", message: action + " the mod " + version + " at user scope (claude " + claude.version + ")" };
 }

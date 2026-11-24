@@ -115,8 +115,8 @@ function isTimeout(error: unknown): boolean {
 
 export async function fetchHealth(deps: SetupDeps): Promise<HealthReading> {
   // One `mctl setup` run reads the daemon from three steps; with a cache they share one answer.
-  if (!deps.healthCache) return readHealth(deps);
-  return (deps.healthCache.reading ??= readHealth(deps));
+  if (!deps.runCache) return readHealth(deps);
+  return (deps.runCache.reading ??= readHealth(deps));
 }
 
 async function readHealth(deps: SetupDeps): Promise<HealthReading> {
@@ -164,7 +164,8 @@ export function checkFlag(health: unknown): DoctorCheck {
 
 /** `mod-enabled` and `mod-current`, from one listing and the staged `plugin.json`. */
 export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promise<DoctorCheck[]> {
-  const listed = await readInstalledMod(claude, deps);
+  // Inside `mctl setup` the mod step has just read this listing after installing; reuse it.
+  const listed = deps.runCache?.installed ?? (await readInstalledMod(claude, deps));
   // Replacing an installed build is uninstall then install (a plain install does not replace it), so
   // the by-hand fix for a stale mod starts with the uninstall that `mctl setup` itself runs.
   const bin = claudeCommand(claude);
@@ -207,6 +208,8 @@ export function calledPaths(bundle: string): string[] {
  * and `claude plugin validate` accepts the plugin.
  */
 export async function checkModCalls(claude: ClaudeCli | null, deps: SetupDeps): Promise<DoctorCheck> {
+  // Inside `mctl setup` the same bytes were just certified before they were published; reuse that verdict.
+  if (deps.runCache?.modCalls) return deps.runCache.modCalls;
   return checkModCallsAt(claude, deps, join(deps.stateDir, "mod", MOD_NAME));
 }
 

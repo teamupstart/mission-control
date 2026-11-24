@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
 
 /**
@@ -68,6 +68,42 @@ async function assertBuild(source: string): Promise<void> {
   await assertMarketplace(source);
 }
 
+/** Whether a process with this id is running (and so may be mid-stage). */
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes staging copies and backups that an earlier run left beside `dest` (it was killed between
+ * the publish and its cleanup, or its cleanup failed). A sibling whose process is still running is
+ * left alone. A `.old-` backup is removed only while a published mod exists: when `dest` is missing,
+ * the backup may be the only copy of the working mod, and an earlier error named it for restoring by hand.
+ */
+async function sweepStaleSiblings(dest: string): Promise<void> {
+  const parent = dirname(dest);
+  const name = basename(dest);
+  let entries: string[];
+  try {
+    entries = await readdir(parent);
+  } catch {
+    return;
+  }
+  const published = await stat(dest).then((s) => s.isDirectory(), () => false);
+  for (const entry of entries) {
+    const match = new RegExp("^" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.(staging|old)-(\\d+)-[0-9a-f]+$").exec(entry);
+    if (!match) continue;
+    const pid = Number(match[2]);
+    if (pid !== process.pid && isRunning(pid)) continue;
+    if (match[1] === "old" && !published) continue;
+    await rm(join(parent, entry), { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 export async function stageMod(options: {
   source: string;
   dest: string;
@@ -91,6 +127,7 @@ export async function stageMod(options: {
   const staging = dest + ".staging-" + suffix;
   const previous = dest + ".old-" + suffix;
   await mkdir(dirname(dest), { recursive: true });
+  await sweepStaleSiblings(dest);
   // What gets published is what was copied, so it is the copy that is validated, not the source
   // read a moment earlier: the source may have changed while it was being copied.
   let version: string;

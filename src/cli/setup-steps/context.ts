@@ -20,14 +20,24 @@ export interface SetupDeps {
   modSource: string;
   /** The user's home directory, for `claude` detection. */
   home: string;
-  /** When present, the first `/api/health` reading is kept here and shared by every step of one run. */
-  healthCache?: { reading?: Promise<import("./checks.ts").HealthReading> };
+  /**
+   * When present, what one `mctl setup` run has already established is kept here and shared by its
+   * steps, so the closing doctor step does not ask the daemon or `claude` the same question again:
+   * the first `/api/health` reading, the `mod-calls` verdict on the bytes that were published, and
+   * the installed-mod listing the mod step verified after installing.
+   */
+  runCache?: {
+    reading?: Promise<import("./checks.ts").HealthReading>;
+    modCalls?: import("./types.ts").DoctorCheck;
+    installed?: { mod: import("./checks.ts").InstalledMod | null };
+  };
 }
 
 /** Where the built mod is: beside the bundle (`dist/cli` next to `dist/mod`), or in a source checkout. */
-export function defaultModSource(env: Readonly<Record<string, string | undefined>>): string {
+export function defaultModSource(env: Readonly<Record<string, string | undefined>>, here: string = import.meta.url): string {
   if (env.MISSION_MOD_SOURCE) return env.MISSION_MOD_SOURCE;
-  const candidates = [new URL("../mod", import.meta.url), new URL("../../../dist/mod", import.meta.url)].map((url) => fileURLToPath(url));
+  // `here` is this module's own URL: `dist/cli/mctl.mjs` when bundled, `src/cli/setup-steps/context.ts` from source.
+  const candidates = [new URL("../mod", here), new URL("../../../dist/mod", here)].map((url) => fileURLToPath(url));
   return candidates.find((path) => existsSync(join(path, ".claude-plugin", "marketplace.json"))) ?? candidates[0]!;
 }
 
@@ -41,6 +51,6 @@ export function resolveDeps(partial: Partial<SetupDeps> = {}): SetupDeps {
     home,
     stateDir: partial.stateDir ?? resolveStateDir(env, home),
     modSource: partial.modSource ?? defaultModSource(env),
-    ...(partial.healthCache ? { healthCache: partial.healthCache } : {}),
+    ...(partial.runCache ? { runCache: partial.runCache } : {}),
   };
 }

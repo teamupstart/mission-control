@@ -6,12 +6,13 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { cp, rename } from "node:fs/promises";
 import { findClaude, realExec } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import type { CliIo } from "../src/cli/commands/index.ts";
 import { checkDaemon, fetchHealth } from "../src/cli/setup-steps/checks.ts";
-import { resolveDeps } from "../src/cli/setup-steps/context.ts";
+import { defaultModSource, resolveDeps } from "../src/cli/setup-steps/context.ts";
 import { calledPaths, recoveryCommands, shellArg } from "../src/cli/setup-steps/checks.ts";
 import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
@@ -1109,5 +1110,89 @@ test("the by-hand recovery for a stale build starts with the user-scope uninstal
     assert.ok(!result.out.includes(" plugin uninstall "));
   } finally {
     await fresh.cleanup();
+  }
+});
+
+test("the built mod is found beside the bundle or in a source checkout, and MISSION_MOD_SOURCE wins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-modsrc-"));
+  try {
+    const layout = (root: string) => {
+      mkdirSync(join(root, "dist", "mod", ".claude-plugin"), { recursive: true });
+      writeFileSync(join(root, "dist", "mod", ".claude-plugin", "marketplace.json"), "{}");
+    };
+    // The bundle layout: dist/cli/mctl.mjs next to dist/mod.
+    const packaged = join(dir, "packaged");
+    layout(packaged);
+    mkdirSync(join(packaged, "dist", "cli"), { recursive: true });
+    const bundleUrl = pathToFileURL(join(packaged, "dist", "cli", "mctl.mjs")).href;
+    assert.equal(defaultModSource({}, bundleUrl), join(packaged, "dist", "mod"));
+
+    // The source layout: src/cli/setup-steps/context.ts with dist/mod at the checkout root.
+    const checkout = join(dir, "checkout");
+    layout(checkout);
+    mkdirSync(join(checkout, "src", "cli", "setup-steps"), { recursive: true });
+    const sourceUrl = pathToFileURL(join(checkout, "src", "cli", "setup-steps", "context.ts")).href;
+    assert.equal(defaultModSource({}, sourceUrl), join(checkout, "dist", "mod"));
+
+    // The override wins over both; with no build anywhere, the first candidate is named so the error says where it looked.
+    assert.equal(defaultModSource({ MISSION_MOD_SOURCE: "/somewhere/else" }, bundleUrl), "/somewhere/else");
+    const bare = pathToFileURL(join(dir, "bare", "dist", "cli", "mctl.mjs")).href;
+    assert.equal(defaultModSource({}, bare), join(dir, "bare", "dist", "mod"));
+
+    // This repository's own source layout resolves to its dist/mod, whether or not it has been built.
+    assert.ok(defaultModSource({}).endsWith(join("dist", "mod")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup does not ask claude the same questions twice, while doctor on its own still does", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const argvs = r.claude.invocations().map((i) => i.argv.slice(0, 2).join(" "));
+    const count = (what: string) => argvs.filter((a) => a === what).length;
+    // The mod step lists before and after installing and validates the plugin and the marketplace; the closing doctor step reuses all of it.
+    assert.equal(count("plugin list"), 2, argvs.join(" | "));
+    assert.equal(count("plugin validate"), 2, argvs.join(" | "));
+
+    const before = r.claude.invocations().length;
+    assert.equal((await r.run("doctor")).code, 0);
+    const added = r.claude.invocations().slice(before).map((i) => i.argv.slice(0, 2).join(" "));
+    assert.equal(added.filter((a) => a === "plugin list").length, 1);
+    assert.equal(added.filter((a) => a === "plugin validate").length, 1);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a later stage sweeps the staging copies and backups an earlier run left, but never the only copy of the mod", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-sweep-"));
+  try {
+    const source = join(dir, "build");
+    const state = join(dir, "state");
+    const dest = join(state, "mod");
+    writeModBuild(source, "1.0.0");
+    const plant = (name: string) => {
+      mkdirSync(join(state, name), { recursive: true });
+      writeFileSync(join(state, name, "marker"), "x");
+    };
+    // Nothing is published yet, and an earlier run left a backup: it may be the only copy, so it stays. Its staging copy goes.
+    mkdirSync(state, { recursive: true });
+    plant("mod.old-2147483646-aaaa");
+    plant("mod.staging-2147483646-bbbb");
+    await stageMod({ source, dest });
+    assert.deepEqual(readdirSync(state).sort(), ["mod", "mod.old-2147483646-aaaa"]);
+
+    // Now a mod is published, so the dead run's backup and staging copy are stale. A running process's, and unrelated folders, stay.
+    plant("mod.staging-2147483646-cccc");
+    plant("mod.old-" + process.ppid + "-dddd");
+    plant("modest.old-2147483646-eeee");
+    plant("mod.staging-notapid-ffff");
+    writeModBuild(source, "1.1.0");
+    await stageMod({ source, dest });
+    assert.deepEqual(readdirSync(state).sort(), ["mod", "mod.old-" + process.ppid + "-dddd", "mod.staging-notapid-ffff", "modest.old-2147483646-eeee"].sort());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

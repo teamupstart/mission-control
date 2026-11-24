@@ -25,7 +25,7 @@ export const command: CommandSpec = {
       return 2;
     }
     // The environment comes from the caller, so the steps see what `mctl` was started with.
-    const options: SetupStepOptions = { live: false, deps: { env: io.env, healthCache: {} } };
+    const options: SetupStepOptions = { live: false, deps: { env: io.env, runCache: {} } };
     let failed = 0;
     for (const step of SETUP_STEPS) {
       if (!step.implemented) {

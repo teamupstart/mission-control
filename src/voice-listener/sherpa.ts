@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { OfflineRecognizer, Vad, readWave } from "sherpa-onnx-node";
+import { OfflineRecognizer, Vad, readWaveMultiChannel } from "sherpa-onnx-node";
 import { playRecording } from "./playback.ts";
 import { recordingSegments } from "./segments.ts";
 import { VOICE_MODELS, VOICE_TEST_MODEL, VoiceModelManifestSchema } from "../shared/voice-models.ts";
@@ -18,8 +18,9 @@ if (process.versions.electron || realpathSync(fileURLToPath(import.meta.url)).in
 const { MISSION_VOICE_DAEMON_URL: url, MISSION_VOICE_TOKEN_FILE: token, MISSION_VOICE_MODEL_DIR: directory } = process.env;
 if (!url || !token || !directory) throw new Error("Missing voice listener connection settings");
 const client = new ListenerClient(url, token);
-const wave = readWave(file);
-if (wave.sampleRate !== 16000) throw new Error("Expected a 16 kHz mono WAV");
+const wave = readWaveMultiChannel(file);
+if (wave.sampleRate !== 16000 || wave.samples.length !== 1) throw new Error("Expected a 16 kHz mono WAV");
+const mono = wave.samples[0]!;
 const launchedManifest = process.env.MISSION_VOICE_LISTENER_MANIFEST;
 const manifest = values["test-model"] ? VOICE_TEST_MODEL : launchedManifest
   ? VoiceModelManifestSchema.parse(JSON.parse(launchedManifest)) : VOICE_MODELS["sherpa-onnx"]!;
@@ -40,7 +41,7 @@ const recognizer = new OfflineRecognizer({
 const vad = new Vad({ sileroVad: { model: modelFile("onnx/model.onnx"), windowSize: 512, minSilenceDuration: 0.8,
   minSpeechDuration: 0.15 }, numThreads: 1, sampleRate: 16000 }, 60);
 
-await playRecording(client, signal => recordingSegments(wave.samples, vad, signal), async (samples, roster) => {
+await playRecording(client, signal => recordingSegments(mono, vad, signal), async (samples, roster) => {
   const stream = recognizer.createStream(rosterHotwords(roster, vocabulary));
   stream.acceptWaveform({ samples, sampleRate: 16000 });
   return recognizer.decodeAsync(stream);

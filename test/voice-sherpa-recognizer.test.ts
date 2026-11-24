@@ -79,6 +79,22 @@ test("the published sherpa addon transcribes a recording through the listener an
   // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
   const wav = await readFile(fixture);
   assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("rejects a 16 kHz stereo WAV with speech on channel two before hello", async () => {
+    const data = wav.subarray(44);
+    const stereo = Buffer.alloc(44 + data.length * 2);
+    wav.copy(stereo, 0, 0, 44);
+    stereo.writeUInt32LE(stereo.length - 8, 4); // RIFF chunk size
+    stereo.writeUInt16LE(2, 22); // channels
+    stereo.writeUInt32LE(16000 * 4, 28); // bytes per second
+    stereo.writeUInt16LE(4, 32); // bytes per stereo frame
+    stereo.writeUInt32LE(data.length * 2, 40);
+    for (let i = 0; i < data.length; i += 2) stereo.writeInt16LE(data.readInt16LE(i), 44 + i * 2 + 2);
+    const path = join(cwd, "stereo.wav");
+    await writeFile(path, stereo);
+    await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
+    assert.equal(hellos, 0);
+    assert.equal(posts, 0);
+  });
   await t.test("rejects an 8 kHz WAV before hello and admits an immediate valid retry", async () => {
     const wrongRate = Buffer.from(wav);
     wrongRate.writeUInt32LE(8000, 24);

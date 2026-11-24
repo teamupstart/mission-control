@@ -9,7 +9,7 @@ declare module "sherpa-onnx-node" {
     acceptWaveform(wave: Waveform): void;
   }
 
-  export function readWave(path: string): Waveform;
+  export function readWaveMultiChannel(path: string): { sampleRate: number; samples: Float32Array[] };
   export class OfflineRecognizer {
     constructor(config: {
       featConfig: { sampleRate: number; featureDim: number };

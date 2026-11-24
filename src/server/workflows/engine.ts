@@ -1149,6 +1149,14 @@ export class WorkflowEngine {
       return;
     }
     const readRepository = node.persona.repositoryAccess === "read";
+    if (readRepository) {
+      try {
+        await this.repositoryReview.confirmCancellations(run.id, node.id);
+      } catch (error) {
+        this.handleInfrastructureFailure(claimed, run.id, `Repository workload cleanup is unconfirmed: ${String(error)}`, true);
+        return;
+      }
+    }
     const basePrompt = buildPersonaPrompt(
       node.persona,
       context.data,
@@ -1289,6 +1297,10 @@ export class WorkflowEngine {
         claimed.reviewInput || readRepository ? { shapeGuaranteed: true } : undefined,
       );
       if (result.kind === "ok") { verdict = result.value; break; }
+      if (readRepository && this.repositoryReview.pendingCancellations(run.id, node.id).length) {
+        this.handleInfrastructureFailure(claimed, run.id, result.reason, true);
+        return;
+      }
       if (result.providerFailure) {
         failure = result.reason;
         providerFailure = result.providerFailure;

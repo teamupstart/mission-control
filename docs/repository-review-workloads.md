@@ -36,6 +36,10 @@ before opening the checkout and again before returning the lease. The executor c
 returned identities again.
 If the supervisor rejects an event or the stream ends without a terminal result, it requests
 cancellation from the executor and waits for cleanup before the review attempt can retry.
+If cancellation fails, the supervisor records the pending cancellation and blocks the run.
+A retry asks the executor about that workload ID. A running workload receives the same
+cancellation generation again. Only a terminal confirmation permits a replacement reviewer
+to start, including after a daemon restart.
 
 ## Sealing and retention
 
@@ -199,7 +203,9 @@ their final row states atomically, so neither operation needs a separately commi
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A submission still capturing
 after restart can replace its released claim in a new promotion transaction, even when
-another active submission holds the original digest. A publication intent beside the
+another active submission holds the original digest. An evidence-recovery child reuses its
+parent's frozen digest. Replaying inheritance keeps an existing provisional claim or
+restores a released claim for that same digest before activation. A publication intent beside the
 candidate identifies a rename interrupted before database commit. If installing an owner
 marker fails, the allocator removes the temporary directory it just created. Before
 sealing or writing a lease, it flushes the marker and syncs the allocation directory

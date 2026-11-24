@@ -8147,10 +8147,15 @@ export class WorkflowStore {
   inheritRepositoryClaim(submissionId: string): string {
     return transaction(this.db, () => {
       const child = this.mustSubmission(submissionId);
+      if (child.status !== "capturing" || child.refinementReason !== "evidence_recovery")
+        throw new Error("Repository claim inheritance requires a capturing recovery child");
       const row = this.db.prepare(`INSERT INTO workflow_repository_snapshot_claims(submission_id,digest,state,created_at)
         SELECT ?, c.digest, 'provisional', ? FROM workflow_repository_snapshot_claims c
         JOIN workflow_repository_artifacts a ON c.digest=a.digest AND a.state='ready'
         WHERE c.submission_id=? AND c.state IN ('active','provisional')
+        ON CONFLICT(submission_id) DO UPDATE SET state='provisional', released_at=NULL, activated_at=NULL
+        WHERE workflow_repository_snapshot_claims.digest=excluded.digest
+          AND workflow_repository_snapshot_claims.state IN ('provisional','released')
         RETURNING digest`).get(submissionId, Date.now(), child.parentSubmissionId);
       if (!row) throw new Error("The original submission's repository artifact is unavailable");
       return String(row.digest);

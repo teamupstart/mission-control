@@ -3152,6 +3152,99 @@ async function captureRepositoryFixture(t: TestContext, store: InstanceType<type
   return service;
 }
 
+test("recovery capture replays the inherited parent digest before and after startup reconciliation", async (t) => {
+  const { RepositoryOwnership } = await import("../src/server/workflows/repository-artifact/ownership.ts");
+  const id = "inherited-checkout", parent = `submission-${id}`, runId = `run-${id}`;
+  const store = seedSubmission(id, providerRetryGraph);
+  const service = await captureRepositoryFixture(t, store, parent);
+  const digest = service.activeSnapshot(parent)!.digest;
+  const claim = (submissionId: string) => openDb().prepare(
+    "SELECT digest,state,released_at FROM workflow_repository_snapshot_claims WHERE submission_id=?",
+  ).get(submissionId);
+  // Mapping recovery starts with the provisional claim held by the failed parent.
+  store.setRunState(runId, "blocked", "evidence_reconciliation_error", { submissionId: parent, error: "Unavailable mapping" });
+  store.setSubmissionState(parent, "failed");
+  openDb().prepare("UPDATE workflow_repository_snapshot_claims SET state='provisional', activated_at=NULL WHERE submission_id=?").run(parent);
+  const child = randomUUID();
+  assert.ok(store.reserveEvidenceRecovery({ id: child, runId, parentId: parent, requestId: randomUUID(), reason: "Retry mapping", now: Date.now() }));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  // Startup first interrupts the capturing submission, then reconciles artifact ownership.
+  store.setSubmissionState(child, "failed");
+  store.setRunState(runId, "blocked", "capture_interrupted", { error: "Restart" });
+  new RepositoryOwnership(store).recoverProvisional();
+  assert.equal(claim(parent)?.state, "provisional");
+  assert.equal(claim(child)?.state, "released");
+  assert.ok(store.resumeCapture(runId, child, ["capture_interrupted"]));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(claim(child)?.released_at, null);
+  store.commitRepositoryCaptureActivation({ submissionId: child, digest, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), fingerprint: "frozen", repositoryFingerprint: "repo", readiness: null,
+  } });
+  assert.equal(service.activeSnapshot(child)?.digest, digest);
+  assert.throws(() => store.inheritRepositoryClaim(child), /capturing recovery child/);
+  store.cancelRun(runId, "test complete", Date.now());
+});
+
+test("failed executor cancellation blocks repository retries across restart until the workload is confirmed terminal", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  const id = "failed-cancel", runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, { ...providerRetryGraph, nodes: providerRetryGraph.nodes.map(node =>
+    node.kind === "persona" ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node) });
+  await captureRepositoryFixture(t, store, submissionId);
+  const launches: string[] = [];
+  let oldState: "unknown" | "running" | "terminal" = "unknown";
+  const executor: import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor = {
+    repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
+    async *dispatch(request) {
+      launches.push(request.workloadId);
+      const envelope = { workloadId: request.workloadId, attemptId: request.attemptId, timestamp: Date.now() };
+      if (launches.length === 1) {
+        yield { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 2 };
+        return;
+      }
+      yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 1, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+        result: { status: "failed", code: "provider_unavailable", providerFailure: "token_exhausted" } };
+    },
+    async cancel(workloadId, generation) {
+      assert.equal(workloadId, launches[0]);
+      assert.equal(generation, 1);
+      throw new Error("Provider cleanup offline");
+    },
+    async reconcile(workloadId) {
+      assert.equal(workloadId, launches[0]);
+      return { workloadId, state: oldState, events: [] };
+    },
+  };
+  const makeEngine = () => new WorkflowEngine(store, () => {}, { repositoryExecutor: executor });
+  let engine = makeEngine();
+  t.after(() => engine.stop());
+  engine.activateSubmission(submissionId);
+  engine.start();
+  const waitBlocked = () => waitFor(() => store.getRun(runId)?.status === "blocked");
+  const prior = () => openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(launches[0]!);
+  await waitBlocked();
+  assert.match(store.latestAttemptForNode(submissionId, "p")!.error!, /failed to confirm cancellation.*Provider cleanup offline/);
+  assert.equal(prior()?.state, "cancellation_pending");
+  assert.equal(launches.length, 1);
+  await engine.stop();
+  engine = makeEngine();
+  engine.start();
+  for (const state of ["unknown", "running", "terminal"] as const) {
+    oldState = state;
+    store.manualInfrastructureRetry(runId, submissionId, store.latestAttemptForNode(submissionId, "p")!, randomUUID(), randomUUID());
+    engine.activateSubmission(submissionId);
+    await waitBlocked();
+    assert.equal(launches.length, state === "terminal" ? 2 : 1);
+    assert.equal(store.listLlmCallPage(runId).items.length, launches.length);
+    assert.equal(prior()?.state, state === "terminal" ? "failed" : "cancellation_pending");
+  }
+  assert.equal(store.getRun(runId)?.currentPhase, "provider_token_exhausted");
+});
+
 for (const timing of ["before initial dispatch", "before provider retry", "during executor setup"] as const) {
   test(`repository preview disabled ${timing} blocks the frozen read grant`, async (t) => {
     const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");

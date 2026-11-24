@@ -150,7 +150,8 @@ export class RepositoryOwnership {
       released_at=? WHERE state='release_pending' OR (state='provisional' AND NOT EXISTS
         (SELECT 1 FROM workflow_submissions s JOIN workflow_runs r ON r.id=s.run_id WHERE s.id=submission_id
           AND (s.status='waiting_for_evidence_readiness' OR (s.status='failed' AND r.current_phase='evidence_reconciliation_error')
-               OR EXISTS (SELECT 1 FROM workflow_submissions child WHERE child.parent_submission_id=s.id AND child.status='capturing' AND child.refinement_reason='evidence_recovery'))))`,
+               OR EXISTS (SELECT 1 FROM workflow_submissions child WHERE child.parent_submission_id=s.id AND child.refinement_reason='evidence_recovery'
+                 AND (child.status='capturing' OR (child.status='failed' AND r.status='blocked' AND r.current_phase='capture_interrupted'))))))`,
         )
         .run(Date.now()),
     );

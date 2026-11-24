@@ -331,6 +331,26 @@ for (const changed of [false, true]) {
   });
 }
 
+test("recovery inheritance refuses a child's conflicting digest even after its claim is released", async (t) => {
+  const f = fixture(t);
+  f.write("review.txt", "original");
+  const parent = await f.service.promote(await f.prepare(), f.submission());
+  f.activate(parent);
+  f.write("review.txt", "changed");
+  const child = await f.service.promote(await f.prepare(), f.submission());
+  assert.notEqual(child.digest, parent.digest);
+  f.db.prepare(`UPDATE workflow_submissions SET run_id=?, segment=1,
+    parent_submission_id=?, refinement_reason='evidence_recovery' WHERE id=?`)
+    .run(parent.submissionId, parent.submissionId, child.submissionId);
+  for (const state of ["provisional", "released"]) {
+    if (state === "released") await f.service.release(child.submissionId);
+    assert.throws(() => f.store.inheritRepositoryClaim(child.submissionId), /repository artifact is unavailable/);
+    const row = f.db.prepare("SELECT digest,state FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(child.submissionId);
+    assert.equal(row?.digest, child.digest);
+    assert.equal(row?.state, state);
+  }
+});
+
 test("one service per root protects live candidates, provisional claims and leases across callers", async (t) => {
   const f = fixture(t);
   f.write("a", "submitted");

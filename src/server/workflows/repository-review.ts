@@ -25,7 +25,31 @@ type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "
   & { persona: import("@shared/workflow.ts").PersonaSnapshot };
 
 export class RepositoryReview {
+  private readonly cleanupExecutors = new Map<string, PersonaWorkloadExecutor>();
   constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {}
+
+  pendingCancellations(runId: string, nodeId: string) {
+    return this.store.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
+      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state='cancellation_pending' AND l.run_id=? AND n.node_id=?`)
+      .all(runId, nodeId)) as { id: string; generation: number }[];
+  }
+
+  async confirmCancellations(runId: string, nodeId: string): Promise<void> {
+    for (const { id, generation } of this.pendingCancellations(runId, nodeId)) {
+      const executor = this.cleanupExecutors.get(id) ?? this.injected;
+      let status = await executor?.reconcile(id, 0);
+      if (executor && status?.workloadId === id && status.state === "running") {
+        await executor.cancel(id, generation);
+        status = await executor.reconcile(id, 0);
+      }
+      if (status?.workloadId !== id || status.state !== "terminal")
+        throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+      this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+        WHERE id=? AND state='cancellation_pending' AND cancellation_generation=?`).run(id, generation));
+      this.cleanupExecutors.delete(id);
+    }
+  }
 
   private current(id: string) {
     // The materializer calls this before opening the checkout and before returning its lease.
@@ -83,9 +107,21 @@ export class RepositoryReview {
         cancel.abort();
       }
     }, 250);
+    const generation = request.cancellationGeneration + 1;
     let stopping: Promise<void> | undefined;
     const stop = () => {
-      stopping ??= executor.cancel(id, request.cancellationGeneration + 1).catch(() => {});
+      if (stopping) return;
+      stopping = (async () => {
+        this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+          cancellation_generation=?, error_code='cancellation_unconfirmed' WHERE id=? AND state='running'`).run(generation, id));
+        try {
+          await executor.cancel(id, generation);
+        } catch (error) {
+          throw new Error(`Repository executor failed to confirm cancellation of ${id}: ${String(error)}`, { cause: error });
+        }
+      })();
+      // Observe rejection even while iterator teardown is pending. Cleanup awaits the original promise.
+      void stopping.catch(() => { this.cleanupExecutors.set(id, executor); });
     };
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
@@ -188,7 +224,7 @@ export class RepositoryReview {
       } finally {
         await stopping;
         this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed',
-          error_code=?, cancellation_generation=cancellation_generation+1 WHERE id=? AND state='running'`).run(errorCode,id));
+          error_code=?, cancellation_generation=? WHERE id=? AND state IN ('running','cancellation_pending')`).run(errorCode,generation,id));
       }
     }
   }

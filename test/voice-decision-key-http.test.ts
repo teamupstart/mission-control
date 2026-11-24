@@ -60,6 +60,23 @@ test("with no key anywhere the report names no provider and each source as not s
   assert.deepEqual(body, { provider: null, keys: { openai: { source: null }, jev: { source: null } } });
 });
 
+test("disabling Voice while a key PUT reads its body prevents saving the credential", async () => {
+  const payload = new TextEncoder().encode(JSON.stringify({ provider: "jev", key: JEV_KEY }));
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+      controller.enqueue(payload);
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const response = await app.request("/api/voice/decision-key", {
+    method: "PUT", headers: { ...headers, "content-length": String(payload.length) }, body, duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "This feature is disabled.", feature: "voice" });
+  assert.equal(existsSync(decisionKeyPath()), false);
+});
+
 test("a saved key is never echoed, lands in a 0600 file under the state home, and switches automatic on", async () => {
   const saved = await report("/api/voice/decision-key", "PUT", { provider: "openai", key: OPENAI_KEY });
   assert.equal(saved.status, 200);

@@ -19,7 +19,7 @@ import {
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
 import { checkToken } from "../auth.ts";
-import { requireFeature } from "../feature-flags/index.ts";
+import { featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
@@ -109,6 +109,7 @@ export function registerVoiceRoutes(
     let body: unknown;
     try { body = await c.req.json(); }
     catch { return c.json({ error: "invalid_body", reason: "The body is not JSON." }, 400); }
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
     const parsed = VoiceDecisionKeyPutSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);

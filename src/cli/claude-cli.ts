@@ -47,6 +47,8 @@ export interface ClaudeSearch {
 export interface ClaudeSearchDeps {
   env: Readonly<Record<string, string | undefined>>;
   exec: Exec;
+  /** The user's home directory when `env.HOME` is unset, so the known places are still searched. */
+  home?: string;
   /** Whether a path is an executable file. Defaults to an `access(X_OK)` check. */
   executable?: (path: string) => boolean;
 }
@@ -86,7 +88,7 @@ export async function findClaude(deps: ClaudeSearchDeps): Promise<ClaudeSearch> 
     candidates.push({ path: explicit, source: "MISSION_CLAUDE_BIN" });
   } else {
     for (const dir of (deps.env.PATH ?? "").split(delimiter).filter(Boolean)) candidates.push({ path: join(dir, "claude"), source: "PATH" });
-    for (const path of knownClaudePlaces(deps.env.HOME)) candidates.push({ path, source: "known place" });
+    for (const path of knownClaudePlaces(deps.env.HOME ?? deps.home)) candidates.push({ path, source: "known place" });
   }
   const seen = new Set<string>();
   for (const candidate of candidates) {

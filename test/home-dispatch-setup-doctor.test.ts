@@ -632,3 +632,77 @@ test("recovery commands quote a state directory with spaces or shell characters"
     await r.cleanup();
   }
 });
+
+test("with HOME unset in the environment, the known places under the resolved home are still searched", async () => {
+  const fake = createFakeClaude({ version: "2.1.400" });
+  const home = mkdtempSync(join(tmpdir(), "mission-detect-home-"));
+  try {
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    for (const name of ["claude", "state.json"]) writeFileSync(join(home, ".local", "bin", name), readFileSync(join(name === "claude" ? fake.path : join(fake.dir, name))));
+    chmodSync(join(home, ".local", "bin", "claude"), 0o755);
+    writeFileSync(join(home, ".local", "bin", "invocations.jsonl"), "");
+    // `env` has no HOME and a restricted PATH; the dependency layer resolved the home separately.
+    const found = await findClaude({ env: { PATH: "/nonexistent" }, exec: realExec, home });
+    assert.equal(found.claude?.path, join(home, ".local", "bin", "claude"));
+    assert.equal(found.claude?.source, "known place");
+    assert.equal((await findClaude({ env: { PATH: "/nonexistent" }, exec: realExec })).claude, null, "without a home there is nowhere to look");
+  } finally {
+    fake.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a project-scope entry listed before the user-scope one is neither mistaken for it nor uninstalled", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const projectFirst = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+      const real = await realExec(file, args, options);
+      if (args[1] !== "list") return real;
+      const rows = JSON.parse(real.stdout) as Record<string, unknown>[];
+      return { ...real, stdout: JSON.stringify([{ ...rows[0], scope: "project", version: "1.0.0" }, ...rows]) };
+    };
+    const deps = { env: r.env, exec: projectFirst };
+    const before = pluginCalls(r.claude).length;
+    // The current user-scope install is found behind the project entry, so setup does nothing.
+    const again = await runModStep({ live: false, deps });
+    assert.equal(again.status, "ok", again.message);
+    assert.match(again.message, /already installed/);
+    const doctor = await runDoctorStep({ live: false, deps });
+    assert.equal(doctor.checks!.find((c) => c.name === "mod-enabled")!.status, "ok");
+    assert.equal(doctor.checks!.find((c) => c.name === "mod-current")!.status, "ok");
+    assert.ok(!pluginCalls(r.claude).slice(before).some((c) => c === "uninstall" || c === "install"));
+
+    // A stale user-scope install is replaced at user scope only, never at the project entry's scope.
+    r.claude.setInstalledVersion("2.1.0");
+    const stale = await runModStep({ live: false, deps });
+    assert.equal(stale.status, "ok", stale.message);
+    const uninstalls = r.claude.invocations().filter((i) => i.argv[1] === "uninstall").map((i) => i.argv.slice(2));
+    assert.deepEqual(uninstalls.at(-1), [MOD_ID, "--scope", "user"]);
+
+    // With only a project-scope entry, nothing is uninstalled and the user-scope install is added.
+    r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "project", enabled: true }] });
+    const uninstallsBefore = r.claude.invocations().filter((i) => i.argv[1] === "uninstall").length;
+    const onlyProject = await runModStep({ live: false, deps: { env: r.env } });
+    assert.equal(onlyProject.status, "ok", onlyProject.message);
+    assert.equal(r.claude.invocations().filter((i) => i.argv[1] === "uninstall").length, uninstallsBefore);
+    assert.ok(r.claude.invocations().some((i) => i.argv[1] === "install"));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("mod-calls does not pass when plugin validation could not be run for want of a usable claude", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    r.env.MISSION_CLAUDE_BIN = join(r.home, "no-such-claude");
+    const result = await r.run("doctor");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod-calls: `claude plugin validate` could not be run because no usable claude was found, so the staged mod was not validated\n {8}fix: Fix the claude check first/);
+    assert.match(result.out, /FAIL {2}claude: /, "the other failed checks still report on their own");
+    assert.match(result.out, /ok {4}daemon: /);
+  } finally {
+    await r.cleanup();
+  }
+});

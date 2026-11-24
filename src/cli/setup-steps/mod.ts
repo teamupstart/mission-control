@@ -29,7 +29,7 @@ async function claudeStep(claude: ClaudeCli, deps: SetupDeps, args: string[]): P
 
 export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const deps = resolveDeps(options.deps);
-  const found = await findClaude({ env: deps.env, exec: deps.exec });
+  const found = await findClaude({ env: deps.env, exec: deps.exec, home: deps.home });
   if (!found.claude) {
     const why = found.rejected.length > 0 ? " (" + found.rejected.join("; ") + ")" : "";
     return failed("the claude CLI was not found" + why + ". Install Claude Code or set MISSION_CLAUDE_BIN, then run `mctl setup` again; the mod was not installed.");
@@ -56,9 +56,10 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   if (add.code !== 0 && !/already/i.test(add.stderr + add.stdout)) {
     return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir);
   }
-  // A stale or disabled install is replaced by uninstall and install, never `claude plugin update`.
-  if (installed) {
-    const gone = await claudeStep(claude, deps, ["plugin", "uninstall", MOD_PLUGIN_ID, "--scope", installed.scope]);
+  // A stale or disabled user-scope install is replaced by uninstall and install, never `claude plugin
+  // update`. An install at another scope is somebody else's and is left alone: the user-scope one is added beside it.
+  if (installed && installed.scope === "user") {
+    const gone = await claudeStep(claude, deps, ["plugin", "uninstall", MOD_PLUGIN_ID, "--scope", "user"]);
     if (gone) return installFailure(gone, deps.stateDir);
   }
   const install = await claudeStep(claude, deps, ["plugin", "install", MOD_PLUGIN_ID, "--scope", "user"]);
@@ -71,6 +72,6 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
     const seen = after.mod ? after.mod.version + (after.mod.enabled ? "" : ", disabled") + (after.mod.scope === "user" ? "" : ", " + after.mod.scope + " scope") : "nothing";
     return installFailure("the install finished but `claude plugin list` shows " + seen + ", not " + version, deps.stateDir);
   }
-  const action = installed ? "replaced " + installed.version + " with" : "installed";
+  const action = installed?.scope === "user" ? "replaced " + installed.version + " with" : "installed";
   return { id, status: "ok", message: action + " the mod " + version + " at user scope (claude " + claude.version + ")" };
 }

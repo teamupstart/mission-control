@@ -56,6 +56,9 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
     return { error: "`claude plugin list --json` printed something that is not JSON" };
   }
   const rows = Array.isArray(parsed) ? parsed : [];
+  // The same plugin may be listed at several scopes. Readiness is the user-scope entry, so it is
+  // preferred wherever it sits in the list; another scope's entry is only reported when there is none.
+  let first: InstalledMod | null = null;
   for (const row of rows) {
     if (typeof row !== "object" || row === null) continue;
     const entry = row as { id?: unknown; name?: unknown; version?: unknown; scope?: unknown; enabled?: unknown };
@@ -65,13 +68,15 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
     if (typeof entry.version !== "string" || typeof entry.scope !== "string" || typeof entry.enabled !== "boolean") {
       return { error: "`claude plugin list --json` lists " + MOD_PLUGIN_ID + " without its version, scope or enabled state" };
     }
-    return { mod: { version: entry.version, scope: entry.scope, enabled: entry.enabled } };
+    const mod = { version: entry.version, scope: entry.scope, enabled: entry.enabled };
+    if (mod.scope === "user") return { mod };
+    first ??= mod;
   }
-  return { mod: null };
+  return { mod: first };
 }
 
 export async function checkClaude(deps: SetupDeps): Promise<{ check: DoctorCheck; claude: ClaudeCli | null }> {
-  const found = await findClaude({ env: deps.env, exec: deps.exec });
+  const found = await findClaude({ env: deps.env, exec: deps.exec, home: deps.home });
   if (found.claude) {
     return { claude: found.claude, check: { name: "claude", status: "ok", message: `claude ${found.claude.version} at ${found.claude.path} (${found.claude.source})` } };
   }
@@ -174,7 +179,10 @@ export async function checkModCalls(claude: ClaudeCli | null, deps: SetupDeps): 
   if (refused.length > 0) {
     return { name: "mod-calls", status: "fail", message: `the staged mod calls daemon paths that are not allowed: ${refused.join(", ")}`, fix: "Rebuild with `npm run build`, then run `mctl setup`." };
   }
-  if (claude) {
+  if (!claude) {
+    return { name: "mod-calls", status: "fail", message: "`claude plugin validate` could not be run because no usable claude was found, so the staged mod was not validated", fix: "Fix the claude check first, then run `mctl doctor` again." };
+  }
+  {
     const validated = await deps.exec(claude.path, ["plugin", "validate", pluginDir], { timeoutMs: 30_000 });
     if (validated.code !== 0) {
       return { name: "mod-calls", status: "fail", message: `\`claude plugin validate\` refused the staged mod: ${(validated.stderr || validated.stdout).trim()}`, fix: "Rebuild with `npm run build`, then run `mctl setup`." };

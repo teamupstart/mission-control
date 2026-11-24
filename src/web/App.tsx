@@ -406,6 +406,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
+    voiceCards,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -2673,6 +2674,12 @@ export function App(): React.JSX.Element {
     },
     [],
   );
+  const latestVoiceCard = [...voiceCards.values()].at(-1);
+  useEffect(() => {
+    if ((latestVoiceCard?.state === "not-running" || latestVoiceCard?.state === "failed") && latestVoiceCard.detail) {
+      showFleetActionError(latestVoiceCard.detail);
+    }
+  }, [latestVoiceCard, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);

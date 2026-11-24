@@ -59,6 +59,7 @@ import { mergeConversation, type ConversationRow, type ReviewHistory, type Revie
 import type { ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls } from "../lib/sessionReports.ts";
 import { ReportEntryCard } from "./ReportEntryCard.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -85,7 +86,7 @@ import { SessionToolbarIcon, SessionToolbarMenu } from "./SessionToolbarMenu.tsx
 import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/conversation-view.ts";
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
-import { ReviewAnswerCard, UnavailableReviewCard, type ReviewCardDelivery } from "./ReviewAnswer.tsx";
+import { ReceivedMessage, ReviewAnswerCard, UnavailableReviewCard, type ReviewCardDelivery } from "./ReviewAnswer.tsx";
 import { AskedQuestionCard, ClosedQuestionCard } from "./AskedQuestion.tsx";
 import { SnoozedReviewCard } from "./ReviewSnooze.tsx";
 import { useRichText } from "../lib/rich-text.ts";
@@ -639,7 +640,8 @@ export function TranscriptPanel({
    * than inside the turn component. It also draws once a steer the agent recorded twice
    * (`collapseSteerEchoes`).
    */
-  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages)), [messages]);
+  const voiceEnabled = useFeatureFlag("voice");
+  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages, voiceEnabled)), [messages, voiceEnabled]);
   /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
@@ -1964,6 +1966,7 @@ export function PendingTurnView({
 }): React.JSX.Element {
   // Crossed the boundary and waiting for pickup: the same claim a steered row makes, drawn
   // the same way, so a terminal delivery and a steer read alike while they are on their way.
+  const voiceEnabled = useFeatureFlag("voice");
   const inFlight = turn.state === "sending" && !hold;
   return (
     <div
@@ -1974,6 +1977,7 @@ export function PendingTurnView({
     >
       <div className="turn-role pending-turn-role">
         <span>You</span>
+        {voiceEnabled && turn.spokenWords !== undefined && <small className="turn-spoken">Spoken</small>}
         {inFlight && <span className="in-flight-pulse" aria-hidden />}
         <span className="pending-turn-state" role="status">
           {hold
@@ -1983,7 +1987,7 @@ export function PendingTurnView({
             : pendingTurnStatus(turn)}
         </span>
       </div>
-      <div className="turn-text">{turn.text}</div>
+      <div className="turn-text">{turn.spokenWords ?? turn.text}</div>
       <div className="pending-turn-actions">
         {inFlight && now !== undefined && (
           <span className="in-flight-age">Sent {sentAgo(turn.claimedAt ?? turn.updatedAt, now)} ago</span>
@@ -2154,6 +2158,7 @@ function Turn({
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
         {m.origin === "session" && m.originSession ? <DelegatedByline source={m.originSession} /> : who}
+        {m.presentation?.kind === "spoken" && <small className="turn-spoken">Spoken</small>}
         {receivedBy && <span className="turn-received" role="status">✓ received by {receivedBy}</span>}
         <ConversationTimestamp at={m.ts} className="turn-time" />
       </div>
@@ -2172,6 +2177,7 @@ function Turn({
           />
         </div>
       )}
+      {m.presentation?.kind === "spoken" && <ReceivedMessage text={m.presentation.received} />}
       {m.advisor && <AdvisorNote advisor={m.advisor} />}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
       <ConversationArtifacts
@@ -2383,8 +2389,10 @@ function TerminalTurn({
               )}
             </span>
           )}
+          {m.presentation?.kind === "spoken" && <small className="turn-spoken">Spoken</small>}
           {!foreman && <ConversationTimestamp at={m.ts} className="pty-time" />}
         </p>
+        {m.presentation?.kind === "spoken" && <ReceivedMessage text={m.presentation.received} />}
         {foreman && (
           <ForemanTerminalMessage
             text={m.text}

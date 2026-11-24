@@ -1,3 +1,5 @@
+import { featureEnabled } from "./feature-flags/index.ts";
+import { spokenLedger } from "./delivery-ledgers.ts";
 import { residentWakePresentation } from "./residents/loop-store.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
@@ -40,6 +42,7 @@ export function attributeTranscript(
   // Review messages (`async-input`) are answered the same way, from the daemon's own recorded
   // deliveries. A turn is Mission Control's, and drawn as answer cards, only when a delivery is
   // bound to it; a pasted marker, or a copy of a delivered message, stays the operator's.
+  const spoken = featureEnabled("voice") ? spokenLedger.bound(conversation, messages).rows : undefined;
   const reviews = reviewMessageTurns(conversation, messages);
   /**
    * The launch turn's native id, once this page has established it.
@@ -53,6 +56,8 @@ export function attributeTranscript(
   let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
+    const voice = spoken?.get(message.id);
+    if (voice) return { ...message, presentation: { kind: "spoken", displayText: voice.spokenWords, received: voice.received } };
     const residentText = residentWakePresentation(message, conversation);
     if (residentText !== null) return { ...message, origin: "resident", presentation: { kind: "resident", displayText: residentText } };
     const review = reviews.bound.get(message.id);

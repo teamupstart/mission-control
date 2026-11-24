@@ -74,7 +74,7 @@ export function deliverySchedule(
   if (expedited) {
     return supportsDeliveryAction(session, expedited) ? [{ at: turn.deadlineAt!, action: expedited }] : [];
   }
-  if (idleOnlyTurn(turn)) return [];
+  if (idleOnlyTurn(turn) || turn.spokenWords !== undefined) return [];
   return ([["steer", MESSAGE_STEER_AFTER_MS], ["interrupt", MESSAGE_INTERRUPT_AFTER_MS]] as const)
     .filter(([action]) => supportsDeliveryAction(session, action))
     .map(([action, delay]) => ({ at: turn.createdAt + delay, action }));

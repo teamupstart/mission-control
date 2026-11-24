@@ -191,6 +191,7 @@ export type PendingTurnState = (typeof PENDING_TURN_STATES)[number];
  * handoff may have crossed its runtime boundary but its outcome cannot be proven.
  */
 export interface PendingTurn {
+  spokenWords?: string;
   id: string;
   /** Stable conversation key (`agentSessionId ?? session.id`), never a transient pane id. */
   noteKey: string;
@@ -4476,6 +4477,7 @@ export interface TranscriptAdvisor {
  */
 export type TranscriptPresentation =
   | { kind: "launch" | "resident"; displayText: string | null }
+  | { kind: "spoken"; displayText: string; received: string }
   | { kind: "review-message"; envelope: "answer" | "remind-later"; reviewIds: string[] };
 
 /**

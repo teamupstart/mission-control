@@ -1043,6 +1043,7 @@ function safeStackStanding(...args: Parameters<typeof stackStandingFor>): Return
 }
 
 function foremanWriteRefusal(
+  registry: Registry,
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
@@ -1055,6 +1056,7 @@ function foremanWriteRefusal(
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
+  if (registry.voiceHold(session.id)) return { error: "voice-message-pending", status: 409 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
   // The daemon's half of the blocker hold, for a worker that predates it and outlives a
   // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
@@ -1090,6 +1092,7 @@ function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string 
  */
 export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
   if (origin !== "foreman") return null;
+  if (registry.voiceHold(sessionId)) return "voice-message-pending";
   const live = registry.getSession(sessionId);
   return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
@@ -2332,14 +2335,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerPauseRoutes(app, pauses);
 
   // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
-  registerHibernationRoutes(
-    app,
-    new HibernationManager(registry, sdkSessions ?? null, {
-      workflows,
-      pause: pauses,
-      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
-    }),
-  );
+  const hibernation = new HibernationManager(registry, sdkSessions ?? null, {
+    workflows,
+    pause: pauses,
+    ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+  });
+  registerHibernationRoutes(app, hibernation);
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -6272,7 +6273,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
+      ? foremanWriteRefusal(registry, composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -6402,7 +6403,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
+    const refusal = foremanWriteRefusal(registry, composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -6524,7 +6525,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
+    const refusal = foremanWriteRefusal(registry, composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6568,7 +6569,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
+    const refusal = foremanWriteRefusal(registry, composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6733,7 +6734,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
+    const refusal = foremanWriteRefusal(registry, composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
@@ -6766,7 +6767,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (candidate.error !== undefined) return candidate.error;
         if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
         if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
-        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        const refusal = foremanWriteRefusal(registry, composerActivity, candidate.session, origin);
         if (refusal) return refusal.error;
         const queue = queues.get(session.id);
         if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
@@ -6799,7 +6800,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
         if (candidate.error !== undefined) return candidate.error;
         if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "Stack prompt delivery channel changed";
-        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        const refusal = foremanWriteRefusal(registry, composerActivity, candidate.session, origin);
         if (refusal) return refusal.error;
         const queue = queues.get(session.id);
         if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
@@ -7026,7 +7027,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       ...(turn ? { identity: c.req.param("turnId") } : {}),
     });
     return turn
-      ? c.json({ ok: true as const, text: turn.text })
+      ? c.json({ ok: true as const, text: turn.spokenWords ?? turn.text })
       : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
   });
 
@@ -9310,10 +9311,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
-    async deliver(target, text, _utteranceId, command) {
-      if (target.state !== "running" || !target.sessionId) return "not-running";
-      const session = registry.getSession(target.sessionId);
-      if (!session || session.state === "exited") return "not-running";
+    openQuestions: sessionId => reviews.openAsks(sessionId).length,
+    async deliver(target, text, utteranceId, command, active) {
+      if (target.state === "not-running") return "not-running";
+      let sessionId = target.sessionId;
+      if (target.state === "hibernated") {
+        if (command === "stop" || !target.taskId) return "not-running";
+        const record = registry.getTask(target.taskId)?.hibernation;
+        if (record?.runtime === "sdk") await registry.waitForPendingEviction(record.sessionId);
+        if (!active?.() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
+        const resumed = await hibernation.resume(target.taskId);
+        if (!resumed.ok) return { outcome: "failed", detail: resumed.error };
+        if (!active?.() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
+        sessionId = resumed.task.sessionId;
+      }
+      const session = sessionId && registry.getSession(sessionId);
+      if (!session || session.state === "exited" || session.state === "stopping") return "not-running";
       if (command === "stop") {
         const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
         if (unsupported) return { outcome: "failed", detail: unsupported };
@@ -9321,8 +9334,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
-      const result = pendingTurns.submit(target.sessionId, text);
-      return result.ok ? "queued" : { outcome: "failed", detail: result.error || "Queue refused the message." };
+      const result = pendingTurns.submitSpoken(session.id, text, utteranceId);
+      if (!result.ok) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      if (target.state === "hibernated") return "queued";
+      if (session.pendingReviews > 0 || session.state === "awaiting_review") return "held";
+      return session.state === "working" ? "queued" : "sent";
     },
   }, (card) => registry.emitVoiceCard(card));
 

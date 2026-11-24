@@ -5,17 +5,17 @@ import {
   insertOtherSend,
   loadOtherSends,
   pruneOtherSends,
+  type BindableDelivery,
 } from "./db.ts";
 import type { SessionMessages } from "./harness/index.ts";
 import { injectionFingerprint } from "./injections.ts";
 
+export type { BindableDelivery } from "./db.ts";
+
 /**
  * Which user turn a recorded daemon delivery wrote, durably: the one binding rule.
  *
- * Two tables record deliveries this way - a controlling session's delegated message
- * (`session_delegated_turns`) and Mission Control's own messages about a review
- * (`session_review_deliveries`) - and both answer the same question with this module, so
- * there is one rule rather than two that drift.
+ * Delegated messages, review messages and spoken turns share this transcript binding rule.
  *
  * Each delivery is its own row, reserved BEFORE the send and carrying the target
  * transcript's byte size at that moment. Its turn is the first user turn with its words
@@ -51,20 +51,6 @@ const BIND_PAGE_TURNS = 50;
 export interface DeliveryConversation {
   key: string;
   transcript: SessionMessages | null;
-}
-
-/** The columns every delivery ledger shares. */
-export interface BindableDelivery {
-  id: string;
-  noteKey: string;
-  fingerprint: string;
-  deliveredAt: number;
-  /** The target transcript's size at send; null when none was located or its size could not be read, and the row never binds. */
-  transcriptOffset: number | null;
-  /** Another send of the same words was in flight with it, so its turn cannot be told apart. */
-  contested: boolean;
-  messageId: string | null;
-  messageTs: number | null;
 }
 
 /** One table's persistence, and who its rows would be credited to. */

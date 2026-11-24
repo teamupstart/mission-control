@@ -5,7 +5,8 @@ import type { VoiceBackend, VoiceConfig, VoiceState } from "@shared/voice.ts";
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
 
 export interface VoiceDeliverer {
-  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand): Promise<DeliveryResult>;
+  openQuestions?(sessionId: string): number;
+  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand, active?: () => boolean): Promise<DeliveryResult>;
 }
 
 export interface PendingVoiceAction {
@@ -73,6 +74,11 @@ export class VoiceRouter {
     }
   }
 
+  holdsSession(sessionId: string, taskId?: string): boolean {
+    return this.activeCards().some(card => card.state === "pending" && card.parts.some(({ target }) =>
+      target?.sessionId === sessionId || (taskId && target?.taskId === taskId)));
+  }
+
   async accept(utterance: VoiceUtterance): Promise<boolean> {
     const { mode, roster, backend } = this.state();
     if ((mode !== "listening" && mode !== "push-to-talk") || backend !== utterance.backend) return false;
@@ -137,7 +143,9 @@ export class VoiceRouter {
     }
     if (card.state === "pending") {
       const window = this.window();
-      if (!window.enabled) { void this.sendNow(card.id); return; }
+      const sessionId = card.parts[0]?.target?.sessionId;
+      card.openQuestions = sessionId ? this.deliverer.openQuestions?.(sessionId) ?? 0 : 0;
+      if (item.command === "stop" || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
@@ -194,7 +202,7 @@ export class VoiceRouter {
     try {
       if (target) {
         this.publish(inFlight);
-        result = await this.deliverer.deliver(target, part.text, id, item.command);
+        result = await this.deliverer.deliver(target, part.text, id, item.command, () => this.delivering.get(id) === inFlight);
       }
     } catch (error) {
       result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
@@ -204,9 +212,22 @@ export class VoiceRouter {
     this.delivering.delete(id);
     const outcome = typeof result === "string" ? result : result.outcome;
     if (typeof result !== "string") item.entry.detail = result.detail;
-    else if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
+    const recipient = target ?? part.target;
+    if (outcome === "not-running" && !target) {
+      item.entry.detail = "The selected session is unavailable.";
+    } else if (outcome === "not-running" && recipient) {
+      item.entry.detail = `${recipient.name} isn't running. Nothing was sent. ${recipient.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`;
+    }
     item.entry.outcome = outcome;
-    if (this.state().mode !== "off") this.publish({ ...item.card, state: outcome, deadline: null });
+    const current = this.state();
+    if (current.mode !== "off") {
+      const latest = (target && current.roster.find(name => name.key === target.key)) ?? recipient;
+      this.publish({ ...item.card, state: outcome, deadline: null,
+        parts: [{ ...part, target: latest }],
+        openQuestions: latest?.sessionId ? this.deliverer.openQuestions?.(latest.sessionId) ?? 0 : 0,
+        ...(item.entry.detail && { detail: item.entry.detail }),
+      });
+    }
     return true;
   }
 

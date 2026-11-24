@@ -61,8 +61,7 @@ Ambiguous exact or phonetic matches with message text open an unsure card, as do
 two-word match. No model is called.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
-the window off, the daemon submits the remaining text verbatim to the running target’s operator
-queue. The card and Recently heard show `queued` when the queue accepts the message.
+the window off, the daemon submits the remaining text as a spoken turn. The card and Recently heard show the delivery outcome.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
 so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
@@ -72,7 +71,7 @@ Quotes and brackets around an address must close in matching pairs. For example,
 ordinary message text. `[Will, stop` queues the word `stop`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+“Steve, stop” bypasses the cancel window and interrupts immediately. A bare command may end with sentence punctuation
 such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
 the message `"stop"`. A bare “cancel” stops the newest action that
 is still pending and was opened by the time the cancel was spoken. Quoting the word
@@ -98,6 +97,18 @@ card history exist only in memory and disappear on daemon restart or disabling v
 toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
 a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
+
+## Spoken delivery
+
+An idle agent starts a turn. A busy agent receives the message after its current turn ends.
+A blocking question holds delivery until it is answered. A hibernated task resumes its
+conversation before the daemon queues the message. A stopped agent receives nothing. The
+dashboard identifies the stopped agent and suggests relaunching a resident or starting a
+follow-up task.
+
+At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
+and “When you have finished this, post a report.” A retry uses that exact text. The conversation
+labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
 
 ## Turning voice on
 
@@ -353,8 +364,8 @@ agent answers to the same name: a resident, a task that is running or hibernated
 stopped later. Schema 52 adds the nullable `tasks.retired_call_sign` column to record displacement
 without changing the configured call sign. The displaced name stays off the roster even if the other agent gives it up or the
 daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
-A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
-phase can say "<name> isn't running".
+A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so the
+dashboard can say "<name> isn't running".
 
 When a task stopped is not always known across a daemon restart, so the 24 hours are not an
 absolute bound:

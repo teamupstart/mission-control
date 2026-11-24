@@ -8,12 +8,16 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import { spokenLedger } from "./delivery-ledgers.ts";
+import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
+import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
+  recordSpokenHandoff,
   createReviewContinuationPendingTurn,
   createSnoozeInstructionPendingTurn,
   SNOOZE_INSTRUCTION_TURN_PREFIX,
@@ -109,6 +113,7 @@ export interface PendingTurnSubmitResult {
 }
 
 interface PendingTurnDeps {
+  unseenReports: (session: Session) => string | null;
   now: () => number;
   id: () => string;
   inject: typeof injectPrompt;
@@ -159,6 +164,7 @@ interface PickupCandidate {
   sessionId: string;
   turn: PendingTurn;
   boundaryAt: number;
+  generation: number;
   injectionSucceeded: boolean;
   pickupObserved: boolean;
   pickupObservedAt: number | null;
@@ -224,10 +230,16 @@ function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
  */
 type OutboxSend =
   | { kind: "review"; noteKey: string; id: string }
+  | { kind: "spoken"; noteKey: string; id: string }
   | { kind: "other"; handle: OtherSendHandle };
 
 function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
   const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
+  if (turn.spokenWords !== undefined) {
+    const spokenWords = turn.spokenWords;
+    const row = spokenLedger.reserve(conversation, turn.text, base => ({ ...base, spokenWords, received: turn.text }));
+    return { kind: "spoken", noteKey: conversation.key, id: row.id };
+  }
   // Only a row the daemon queued about a review: an operator's message that happens to begin
   // with the marker line is the operator's, and is noted like any other send.
   const id = isReviewMessageTurn(turn) ? reserveReviewDelivery(conversation, turn.text, session.workCycle) : null;
@@ -237,6 +249,7 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
 /** Positive evidence that nothing landed: give the record back. */
 function withdrawOutboxSend(send: OutboxSend): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
+  else if (send.kind === "spoken") spokenLedger.release(send.noteKey, send.id);
   else withdrawOtherSend(send.handle);
 }
 
@@ -283,6 +296,7 @@ export class PendingTurnManager {
     deps: Partial<PendingTurnDeps> = {},
   ) {
     this.deps = {
+      unseenReports: deps.unseenReports ?? (() => null),
       now: deps.now ?? Date.now,
       id: deps.id ?? randomUUID,
       inject: deps.inject ?? injectPrompt,
@@ -410,6 +424,10 @@ export class PendingTurnManager {
     return this.queueMessage(sessionId, text, "");
   }
 
+  submitSpoken(sessionId: string, words: string, utteranceId: string): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, words, VOICE_TURN_PREFIX, utteranceId);
+  }
+
   /**
    * Queue a Stuck row's fixed Nudge, Continue or push message (`inbox`). The manager chooses
    * both the words and the turn id, so the row is always recorded as daemon-written
@@ -421,7 +439,7 @@ export class PendingTurnManager {
   }
 
   /** The one queueing path both kinds of message share; `idPrefix` is the authorship mark. */
-  private queueMessage(sessionId: string, text: string, idPrefix: string): PendingTurnSubmitResult {
+  private queueMessage(sessionId: string, text: string, idPrefix: string, utteranceId?: string): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -447,7 +465,8 @@ export class PendingTurnManager {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
     }
     const pendingTurn = createPendingTurn({
-      id: `${idPrefix}${this.deps.id()}`,
+      id: `${idPrefix}${utteranceId ?? this.deps.id()}`,
+      ...(utteranceId !== undefined && { spokenWords: text }),
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
@@ -667,6 +686,11 @@ export class PendingTurnManager {
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);
+    if (event.type === "feature_flags") {
+      for (const session of this.registry.liveSessions()) {
+        if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));
+      }
+    }
   }
 
   private observeSession(session: Session): void {
@@ -864,15 +888,19 @@ export class PendingTurnManager {
    */
   private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
     return session.pendingTurns.flatMap((row) => {
-      if (row.interruptAttemptedAt != null) return [];
+      if (this.spokenBlocked(session, row) || row.interruptAttemptedAt != null) return [];
       const stage = deliveryStage(session, this.rebased(session, row), this.deps.now());
       return stage ? [{ turn: row, ...stage }] : [];
     });
   }
 
+  private spokenBlocked(session: Session, turn: PendingTurn): boolean {
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+  }
+
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
-    const first = session.pendingTurns[0];
+    const first = session.pendingTurns.find(turn => !this.spokenBlocked(session, turn));
     if (!first) return null;
     const stages = this.stages(session);
     const due = stages.find(stage => stage.at <= this.deps.now());
@@ -997,7 +1025,10 @@ export class PendingTurnManager {
     this.draining.add(key);
     let turn: PendingTurn | null = null;
     try {
-      turn = claimNextPendingTurn(key, this.deps.now(), next.turn);
+      turn = claimNextPendingTurn(key, this.deps.now(), next.turn, words => spokenMessageText(words, {
+        openQuestions: openQuestionsNote(this.registry.outstandingReviews(session.id).filter(isAgentAsk)),
+        unseenReports: this.deps.unseenReports(session),
+      }));
       if (!turn) return;
       this.registry.refreshPendingTurns(key);
       if (next.action === "interrupt") {
@@ -1176,11 +1207,16 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
+    let generation = session.workCycle?.generation ?? 0;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) {
+          generation = this.registry.getSession(session.id)?.workCycle?.generation ?? 0;
+          if (turn.spokenWords !== undefined && !recordSpokenHandoff(turn.id, turn.revision, generation)) {
+            return "The spoken turn is no longer claimed for delivery.";
+          }
           handoff.acceptanceBoundaryCrossed = true;
           // Registered at the acceptance guard, which runs inside the supervisor's serialized
           // boundary immediately before the driver is handed the turn. Earlier, the row could
@@ -1194,6 +1230,7 @@ export class PendingTurnManager {
           if (!author && !reviewMessage) humanEcho ??= expectHumanEcho(session.id, turn.text, {
             noteKey: turn.noteKey,
             cycle: this.registry.getSession(session.id)?.workCycle,
+            spokenWords: turn.spokenWords,
             now: this.deps.now(),
           });
         }
@@ -1245,7 +1282,7 @@ export class PendingTurnManager {
         try {
           // A daemon-written row is nobody's ask, so it never becomes a Goal revision.
           if (!author && !reviewMessage && !echo.captured
-            && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
+            && this.registry.captureAcceptedPrompt(session.id, turn.spokenWords ?? turn.text, turn.noteKey)
             && humanEcho) {
             markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
           }
@@ -1276,7 +1313,7 @@ export class PendingTurnManager {
           });
           this.watchSteerReceipt(turn.noteKey, receiptFrom);
         }
-        this.journalDelivered(session.id, turn);
+        this.journalDelivered(session.id, turn, generation);
       }
     } catch (err) {
       if (
@@ -1330,6 +1367,7 @@ export class PendingTurnManager {
     const personSend = announced.personSend;
     const outboxSend = recordOutboxSend(session, turn);
     let boundaryCrossed = false;
+    let spokenEcho: HumanEchoTicket | null = null;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
       if (
@@ -1337,7 +1375,7 @@ export class PendingTurnManager {
         current.runtime !== "terminal" ||
         noteKeyFor(current) !== turn.noteKey ||
         this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id ||
-        !this.readyToDrain(current)
+        this.spokenBlocked(current, turn) || !this.readyToDrain(current)
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
@@ -1348,13 +1386,23 @@ export class PendingTurnManager {
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
+        const generation = current.workCycle?.generation ?? 0;
+        if (turn.spokenWords !== undefined && !recordSpokenHandoff(turn.id, turn.revision, generation)) {
+          return "The spoken turn is no longer claimed for delivery.";
+        }
         boundaryCrossed = true;
         // The write is next: a review message's echo belongs to the cycle as it stands now.
         if (outboxSend.kind === "review") stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, current.workCycle);
+        if (turn.spokenWords !== undefined) {
+          spokenEcho = expectHumanEcho(session.id, turn.text, {
+            noteKey: turn.noteKey, cycle: current.workCycle, spokenWords: turn.spokenWords, now: this.deps.now(),
+          });
+        }
         this.pickup.set(turn.noteKey, {
           sessionId: session.id,
           turn,
           boundaryAt: this.deps.now(),
+          generation,
           injectionSucceeded: false,
           pickupObserved: false,
           pickupObservedAt: null,
@@ -1375,6 +1423,11 @@ export class PendingTurnManager {
         pasted: true,
         submitVerified: false,
       };
+    }
+
+    if (spokenEcho) {
+      if (result.ok || result.pasted) confirmHumanEcho(spokenEcho, { now: this.deps.now() });
+      else releaseHumanEcho(spokenEcho, this.deps.now());
     }
 
     const candidate = this.pickup.get(turn.noteKey);
@@ -1489,6 +1542,7 @@ export class PendingTurnManager {
       handoff.ownershipUncertain = true;
       return "The SDK conversation owner changed before delivery.";
     }
+    if (this.spokenBlocked(current, handoff.turn)) return "Voice is off or the agent is waiting on a review.";
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
@@ -1684,7 +1738,7 @@ export class PendingTurnManager {
     });
     this.pickup.delete(turn.noteKey);
     this.retireDelivered(turn);
-    this.journalDelivered(sessionId, turn);
+    this.journalDelivered(sessionId, turn, candidate.generation);
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
@@ -1735,7 +1789,7 @@ export class PendingTurnManager {
    * reason stated once on `prompt-journal.ts`, and the emit runs listeners that the
    * Registry's own contract already forbids from throwing.
    */
-  private journalDelivered(sessionId: string, turn: PendingTurn): void {
+  private journalDelivered(sessionId: string, turn: PendingTurn, generation: number): void {
     const now = this.deps.now();
     // No try/catch: `journalScoutPrompt` cannot throw, and the reason is stated once on
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
@@ -1745,8 +1799,11 @@ export class PendingTurnManager {
     // origin through the injection observer; only the operator's words are journaled as human.
     const author = daemonAuthorOf(turn);
     if (author) recordInjection(sessionId, turn.text, author);
-    else journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
-    this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
+    else journalScoutPrompt(this.registry, sessionId, turn.spokenWords ?? turn.text, "human", turn.id, now);
+    this.registry.turnDelivered({
+      sessionId, turnId: turn.id, deliveredAt: now,
+      ...(turn.spokenWords !== undefined && { spoken: { generation } }),
+    });
   }
 
   private armPickupTimeout(sessionId: string, turn: PendingTurn): void {

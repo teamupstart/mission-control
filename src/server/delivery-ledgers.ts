@@ -1,16 +1,22 @@
 import {
   bindDelegatedTurn,
   bindReviewDelivery,
+  bindSpokenTurn,
   contestDelegatedTurn,
   contestReviewDelivery,
+  contestSpokenTurn,
   deleteDelegatedTurn,
   deleteReviewDelivery,
+  deleteSpokenTurn,
   insertDelegatedTurn,
   insertReviewDelivery,
+  insertSpokenTurn,
   loadDelegatedTurns,
   loadReviewDeliveries,
+  loadSpokenTurns,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
+  type SpokenTurnRow,
 } from "./db.ts";
 import { DeliveryLedger, onSend, registerDeliveryLedgers } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
@@ -73,4 +79,14 @@ export function onReviewLedgerForget(hook: () => void): void {
 // what the file already holds (`review-steer-echo.ts`), so the new send's turn can never take it.
 onSend(settleSteerEchoesBeforeSend(reviewLedger));
 
-registerDeliveryLedgers([delegatedLedger, reviewLedger]);
+export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
+  label: "a spoken message",
+  load: loadSpokenTurns,
+  insert: insertSpokenTurn,
+  remove: deleteSpokenTurn,
+  contest: contestSpokenTurn,
+  bind: bindSpokenTurn,
+  sender: row => row.spokenWords,
+});
+
+registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger]);

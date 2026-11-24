@@ -303,6 +303,8 @@ import {
   workEpisodeRepoPr,
   workEpisodeRepoPrsForTask,
   workCycleFor as dbWorkCycleFor,
+  hasDeliveredSpokenHold,
+  workCycleForBoundSession,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -399,23 +401,19 @@ export interface PrOpened {
   repoRoot: string | null;
 }
 
-/**
- * One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`.
- *
- * It carries the turn's `id` rather than its text, because the only question a subscriber
- * asks of it is "was this the turn I am waiting on" - and the id is the correlation every
- * caller of `submit()` already holds. `pending_turns` gains no column for this.
- */
 /** A driver-run session's conversation was compacted. See `Registry.onCompacted`. */
 export interface SessionCompacted {
   sessionId: string;
 }
 
+/** One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`. */
 export interface TurnDelivered {
   sessionId: string;
   /** The `pending_turns` row id returned by `submit()`. */
   turnId: string;
   deliveredAt: number;
+  /** For a spoken message, the work-cycle generation observed at handoff. */
+  spoken?: { generation: number };
 }
 
 /** Daemon-minted authority for the interval before a managed Pipeline host is registered. */
@@ -1652,6 +1650,15 @@ export class Registry extends EventEmitter {
   }
 
   voiceRouter?: VoiceRouter;
+
+  voiceHold(sessionId: string): boolean {
+    if (!featureEnabled(VOICE_FLAG)) return false;
+    const session = this.getSession(sessionId);
+    if (!session) return false;
+    if (this.voiceRouter?.holdsSession(sessionId, session.task?.id) ||
+        session.pendingTurns.some(turn => turn.spokenWords !== undefined)) return true;
+    return hasDeliveredSpokenHold(noteKeyFor(session));
+  }
 
   emitVoiceCard(card: VoiceCard): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_card", card });
@@ -3256,7 +3263,7 @@ export class Registry extends EventEmitter {
     base.workCycle =
       prev && noteKeyFor(prev) === noteKeyFor(base)
         ? prev.workCycle
-        : (dbWorkCycleFor(noteKeyFor(base)) ?? undefined);
+        : (workCycleForBoundSession(base.id, noteKeyFor(base)) ?? undefined);
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
     // been discovered yet has no live session to apply to, so it only ever reaches
@@ -3491,7 +3498,7 @@ export class Registry extends EventEmitter {
     s.pendingTurns = this.pendingTurnsFor(s);
     s.steeredTurns = this.steeredTurnsFor(s);
     s.steerReceipts = this.steerReceiptsFor(s);
-    s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
+    s.workCycle = workCycleForBoundSession(s.id, noteKeyFor(s)) ?? undefined;
     // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
     // the one that matters most: a driver session's questions are answered natively, so its
     // steering evidence exists ONLY as a review row.
@@ -3758,7 +3765,7 @@ export class Registry extends EventEmitter {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
     if (noteKeyFor(next) !== noteKeyFor(s)) {
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
     // than on some later event, exactly as `applyHook` does and for the same reason: until
@@ -4094,7 +4101,7 @@ export class Registry extends EventEmitter {
         gitBranch,
       };
       if (noteKeyFor(next) !== noteKeyFor(target)) {
-        next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+        next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
       }
       if (workCycleSignal) {
         next = this.withWorkCycleSignal(next, workCycleSignal, ts, now);
@@ -4323,7 +4330,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath: null,
-      workCycle: dbWorkCycleFor(agentSessionId) ?? undefined,
+      workCycle: workCycleForBoundSession(s.id, agentSessionId) ?? undefined,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -6781,7 +6788,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
@@ -6887,7 +6894,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(key) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
@@ -7493,6 +7500,23 @@ export class Registry extends EventEmitter {
     // pre-exit copy.
     const current = this.sessions.get(s.id);
     if (current) this.emit("session_exit", current);
+  }
+
+  /** A voice resume can arrive while the hibernated SDK card still owns its id. */
+  async waitForPendingEviction(id: string): Promise<void> {
+    if (!this.exitTimers.has(id)) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        unsubscribe();
+        clearTimeout(timer);
+        resolve();
+      };
+      const unsubscribe = this.subscribe(event => {
+        if (event.type === "session_remove" && event.id === id) finish();
+      });
+      // A rediscovered session may cancel eviction. Resume rechecks ownership in either case.
+      const timer = setTimeout(finish, EXIT_LINGER_MS + 1000);
+    });
   }
 
   private remove(id: string): void {
@@ -10695,7 +10719,7 @@ export class Registry extends EventEmitter {
       // The echo is spent FIRST, whatever the capture then does: it has arrived, and an entry
       // still open to it would absorb the next identical send's echo instead.
       markHumanEchoSeen(claim.ticket, now);
-      if (this.captureAcceptedPrompt(s.id, prompt, noteKey, now)) {
+      if (this.captureAcceptedPrompt(s.id, claim.spokenWords ?? prompt, noteKey, now)) {
         markHumanEchoCaptured(claim.ticket, { echoed: true, now });
       }
       return;

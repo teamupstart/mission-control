@@ -9348,6 +9348,15 @@ kbd {
 }
 /* A floor on the gap, for the byline long enough to reach across the row. The folded tool
    run gets the same guarantee from its row `gap`. */
+.turn-role .turn-spoken {
+  margin-inline-start: 7px;
+}
+.turn-spoken {
+  color: var(--working);
+  font: 500 10px/1.35 var(--sans);
+  text-transform: none;
+  letter-spacing: normal;
+}
 .turn-role .turn-time {
   padding-left: 10px;
 }

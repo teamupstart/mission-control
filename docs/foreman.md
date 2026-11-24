@@ -761,3 +761,11 @@ per pass keeps PR follow-through ahead of ship recovery and ordinary queue work.
 marks retain their existing clocks; CodeRabbit generations and claims live in the adoption
 ledger, never in the Foreman process. Unknown delivery stays spent across restarts and appears
 in Shipping with manual messaging available. Nothing in this source authorizes a merge.
+
+## Spoken messages
+
+While Voice addressing is enabled, a pending addressed message holds Foreman writes to its session.
+Any undelivered spoken row, including an uncertain handoff, keeps the hold until delivery or removal.
+After confirmed delivery, the receiving turn holds Foreman until it finishes. This hold survives
+a daemon restart and has no time limit. If the daemon misses the completion signal, Foreman
+continues to wait.

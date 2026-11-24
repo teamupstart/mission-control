@@ -220,3 +220,12 @@ backup is pending and is cleared on success or failure. This preserves the onlin
 and its WAL semantics; it neither changes the scheduling clock nor times out a still-active
 SQLite operation. `test/database-backup-idle.test.ts` exercises an otherwise quiet child
 process with a parent watchdog and verifies that the helper leaves no timer behind.
+
+## Spoken delivery
+
+Schema 54 records the original words, composition time, and receiving work-cycle generation on
+spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
+and generation on the outbox row. Confirming delivery and retiring the row atomically set `session_work_cycles.spoken_hold` if that generation is still current. Completing
+the work cycle clears the hold in the same write that advances its generation.
+The `session_spoken_turns` ledger binds the spoken words to the native transcript turn, so its
+disclosure survives retirement of the pending row and daemon restarts.

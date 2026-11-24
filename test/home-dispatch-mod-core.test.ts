@@ -791,3 +791,26 @@ test("the mod-calls scan treats a $ in a quoted path as an ordinary character, a
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the mod-calls scan treats a regex literal inside ${} as one unit, so its braces do not end the template early", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-regex-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A lone `{` or `}` in a regex must not shift the brace count; the comment after it stays a comment.
+    assert.deepEqual(scan("const x = `${/\\{/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    assert.deepEqual(scan("const x = `${/}/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    assert.deepEqual(scan("const x = `${/[{]/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    // A brace quantifier balances on its own and is still read correctly.
+    assert.deepEqual(scan("const x = `${/a{2}/.test(y)}`; const bad = \"/api/after\";\n"), ["/api/after"]);
+    // Division is not a regex: the template ends where it should and a later call is found.
+    assert.deepEqual(scan("const x = `${a / b}`; const bad = \"/api/div\";\n"), ["/api/div"]);
+    assert.deepEqual(scan("const x = `${a / b / c}` + `${/\\}/.test(d)}`; const bad = '/api/two';\n"), ["/api/two"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

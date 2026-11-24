@@ -33,6 +33,23 @@ function startsRegex(out) {
   return /(?:^|[^\w])(?:return|typeof|case|in|of|void|delete|throw|yield|await)$/.test(before);
 }
 
+/**
+ * The index just past a regular expression literal whose opening `/` is at `i`. An escaped character
+ * and a `[...]` class are walked whole, so a `/`, `{` or `}` inside either does not end it.
+ */
+function skipRegex(text, i) {
+  let j = i + 1;
+  let inClass = false;
+  while (j < text.length && text[j] !== "\n") {
+    if (text[j] === "\\") j += 2;
+    else if (text[j] === "[") { inClass = true; j += 1; }
+    else if (text[j] === "]") { inClass = false; j += 1; }
+    else if (text[j] === "/" && !inClass) return j + 1;
+    else j += 1;
+  }
+  return j;
+}
+
 /** The index just past a quoted string that starts at `i`. */
 function skipString(text, i) {
   const quote = text[i];
@@ -60,6 +77,7 @@ function skipTemplate(text, i) {
 
 /** The index just past the `}` that closes a `${` whose expression starts at `j`. */
 function skipExpression(text, j) {
+  const start = j;
   let depth = 1;
   while (j < text.length && depth > 0) {
     const c = text[j];
@@ -69,6 +87,9 @@ function skipExpression(text, j) {
     else if (c === "/" && text[j + 1] === "*") {
       const end = text.indexOf("*/", j + 2);
       j = end === -1 ? text.length : end + 2;
+    } else if (c === "/" && startsRegex(text.slice(start, j))) {
+      // A regex literal is one unit: a `{` or `}` in it (`/\{/`, `/a{2}/`) is not a brace of the code.
+      j = skipRegex(text, j);
     } else {
       if (c === "{") depth += 1;
       else if (c === "}") depth -= 1;
@@ -98,17 +119,9 @@ export function stripComments(text) {
       out += text.slice(i, stop).replace(/[^\n]/g, " ");
       i = stop;
     } else if (c === "/" && startsRegex(out)) {
-      let j = i + 1;
-      let inClass = false;
-      while (j < text.length && text[j] !== "\n") {
-        if (text[j] === "\\") j += 2;
-        else if (text[j] === "[") { inClass = true; j += 1; }
-        else if (text[j] === "]") { inClass = false; j += 1; }
-        else if (text[j] === "/" && !inClass) break;
-        else j += 1;
-      }
-      out += text.slice(i, j + 1);
-      i = j + 1;
+      const stop = skipRegex(text, i);
+      out += text.slice(i, stop);
+      i = stop;
     } else if (c === '"' || c === "'" || c === "`") {
       const stop = c === "`" ? skipTemplate(text, i) : skipString(text, i);
       out += text.slice(i, stop);

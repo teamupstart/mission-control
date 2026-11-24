@@ -8,6 +8,7 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 // Replaces only the registry module in reader tests.
 export const FEATURE_FLAGS = [{

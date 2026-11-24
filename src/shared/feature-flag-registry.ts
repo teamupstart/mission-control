@@ -19,6 +19,9 @@ export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
+/** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -156,6 +159,15 @@ export const FEATURE_FLAGS = [
     description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
     keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
+  {
+    id: MARKDOWN_QUESTIONS_FLAG_ID,
+    label: "Markdown questions",
+    description:
+      "Render the context an agent sends with request_input as Markdown, so its lists, headings and code " +
+      "read as they were written: on the question card, in the attention inbox and in the conversation.",
+    stage: "preview",
+    keywords: ["request_input", "question", "context", "markdown", "bullets", "inbox"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

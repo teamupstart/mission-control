@@ -4,6 +4,7 @@ import type { Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { serveStallPoll } from "../fixtures/stall-poll.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
 import type { Stall, StallFacts } from "../../src/shared/stall.ts";
@@ -96,7 +97,7 @@ test("each Stuck control sends its request and lands its effect, a failure shows
 
   // The stall list the dashboard polls every five seconds, served from here.
   let served: Stall[] = [];
-  await page.route("**/api/away/stalls", (route) => route.fulfill({ json: served }));
+  await serveStallPoll(page, () => served);
   const posts: Array<{ path: string; body: unknown }> = [];
   page.on("request", (request: Request) => {
     if (request.method() !== "POST") return;

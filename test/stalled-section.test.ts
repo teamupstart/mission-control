@@ -12,6 +12,7 @@ import { orderSessions, stalledInOrder } from "../src/web/lib/fleet-order.ts";
 import { attentionDismissalKeys, foldAttention, stallDismissalKey } from "../src/web/lib/attention.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 
 function stall(sessionId: string, kind: Stall["kind"], fingerprint = `${kind}-${sessionId}`): Stall {
   return { sessionId, kind, forMs: 30 * 60_000, reason: `stall ${kind}`, fingerprint };
@@ -156,6 +157,19 @@ test("a cached open-task stall expires when the session changes or closes its ta
   assert.equal(currentStalls(cached, [session]), cached);
   for (const changed of [mkTaskSummary({ id: "new-task" }), mkTaskSummary({ status: "done" }), null]) {
     assert.deepEqual(currentStalls(cached, [{ ...session, task: changed }]), []);
+  }
+});
+
+test("a parked card expires when its run leaves that session, waiting state or round", () => {
+  const session = idleSession(PARKED.sessionId);
+  const run = { ...LADDER_SUMMARY, sessionId: session.id, status: "waiting_for_session" as const };
+  const cached: Stall[] = [{ ...PARKED, workflowRunId: run.id, facts: {
+    kind: "workflow-parked", runId: run.id, workflowName: run.workflowName, round: run.round, status: run.status,
+    resubmittable: true, externalSource: null, unpushedCommits: 0,
+  } }];
+  assert.equal(currentStalls(cached, [session], [run]), cached);
+  for (const runs of [[], [{ ...run, status: "running" as const }], [{ ...run, round: run.round + 1 }], [{ ...run, sessionId: null }]]) {
+    assert.deepEqual(currentStalls(cached, [session], runs), []);
   }
 });
 

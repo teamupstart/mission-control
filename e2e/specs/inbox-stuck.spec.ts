@@ -346,9 +346,10 @@ test("Resubmit on a real parked run's Stuck row reopens that run through the dae
   writeFileSync(join(cwd, "stuck-fix.txt"), "the findings are fixed\n");
   execFileSync("git", ["-C", cwd, "add", "stuck-fix.txt"]);
   execFileSync("git", ["-C", cwd, "-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-q", "-m", "fix the findings"]);
+  // Keep the previous round in every stall poll so only a live run update can retire its controls.
+  const previousRound = await api(daemon, "/api/away/stalls");
+  await page.route("**/api/away/stalls", route => route.fulfill({ json: previousRound }));
   await row.getByRole("button", { name: "Resubmit", exact: true }).click();
-  await expect(row.getByRole("status")).toHaveText("Resubmitted the run.", { timeout: 30_000 });
-  await expect(row.getByRole("alert")).toHaveCount(0);
 
   // The daemon opened the next round on the same run.
   await expect.poll(async () => (await runOf(daemon, runId)).round, { timeout: 60_000 }).toBe(parked.round + 1);

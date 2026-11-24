@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { workflowRunParkedOnSession, type WorkflowRunSummary } from "@shared/workflow.ts";
 import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, stallFingerprint, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
@@ -48,11 +49,25 @@ function currentStall(stall: ObservedStall, session: Session | undefined): Obser
   return updated === facts && fingerprint === stall.fingerprint ? stall : { ...stall, facts: updated, fingerprint };
 }
 
-export function currentStalls(stalls: ObservedStall[] | undefined, sessions: readonly Session[]): Stall[] | undefined {
+export function currentStalls(
+  stalls: ObservedStall[] | undefined,
+  sessions: readonly Session[],
+  runs?: readonly WorkflowRunSummary[],
+): Stall[] | undefined {
   if (!stalls?.length) return stalls;
   const byId = new Map(sessions.map(session => [session.id, session]));
+  const byRun = runs && new Map(runs.map(run => [run.id, run]));
   const current: ObservedStall[] = [];
   for (const stall of stalls) {
+    if (stall.kind === "workflow-parked" && byRun) {
+      const facts = stall.facts?.kind === "workflow-parked" ? stall.facts : undefined;
+      const id = facts?.runId ?? stall.workflowRunId;
+      if (id) {
+        const run = byRun.get(id);
+        if (!run || run.sessionId !== stall.sessionId || !workflowRunParkedOnSession(run.status)) continue;
+        if (facts && (run.round !== facts.round || run.status !== facts.status)) continue;
+      }
+    }
     const latest = currentStall(stall, byId.get(stall.sessionId));
     if (latest) current.push(latest);
   }
@@ -81,7 +96,7 @@ export function currentStalls(stalls: ObservedStall[] | undefined, sessions: rea
  * consumer cannot tell a stall that is news from one that was there all along (see
  * withKnownStalls).
  */
-export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
+export function useStalls(sessions: readonly Session[], runs: readonly WorkflowRunSummary[] | undefined): Stall[] | undefined {
   const [stalls, setStalls] = useState<ObservedStall[] | undefined>(undefined);
   const currentSessions = useRef(sessions);
   currentSessions.current = sessions;
@@ -114,5 +129,5 @@ export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
     };
   }, []);
 
-  return useMemo(() => currentStalls(stalls, sessions), [stalls, sessions]);
+  return useMemo(() => currentStalls(stalls, sessions, runs), [stalls, sessions, runs]);
 }

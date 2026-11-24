@@ -405,6 +405,50 @@ test("a standalone relaunch keeps its feedback and retry ID while another card o
   await expect(page.getByRole("combobox", { name: "Voice message" })).toHaveCount(0, { timeout: 3000 });
 });
 
+test("an accepted resident relaunch keeps its retry ID across dashboard and standalone routes", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const accepted = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const attempts: string[] = [];
+  await page.route("**/api/residents/profiles/*/launch", async route => {
+    attempts.push(route.request().postDataJSON().requestId);
+    if (attempts.length > 1) return route.continue();
+    const result = await route.fetch();
+    accepted.resolve(result.status());
+    await release.promise;
+    await route.fulfill({ status: 503, json: { error: "The launch reply was lost" } });
+  });
+  await say(daemon, "Marlowe, check the build");
+  const card = page.getByRole("status").filter({ hasText: "Marlowe" });
+  await card.getByRole("button", { name: "Send now" }).click();
+  const relaunch = card.getByRole("button", { name: "Relaunch Marlowe" });
+  await relaunch.click();
+  try {
+    const status = await accepted.promise;
+    expect(status).toBeGreaterThanOrEqual(200);
+    expect(status).toBeLessThan(300);
+    for (const placement of ["pill", "popover"]) {
+      await page.goto(daemon.baseURL + "/#/voice/" + placement);
+      await expect(page.locator(".voice-standalone")).toBeVisible();
+      await expect(relaunch).toBeDisabled({ timeout: 2000 });
+    }
+  } finally {
+    release.resolve();
+  }
+  await expect(card).toContainText("The launch reply was lost");
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await expect(page.locator(".app")).toBeVisible();
+  await expect(card).toContainText("The launch reply was lost");
+  await captureCard(card, "relaunch-retry-after-route-changes");
+  await relaunch.click();
+  await expect(card).toContainText("Relaunch requested.");
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toBe(attempts[0]);
+});
+
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {
   const fleet = page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Fleet" });
   for (const placement of ["pill", "popover"]) {

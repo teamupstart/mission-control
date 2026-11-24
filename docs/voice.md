@@ -68,8 +68,9 @@ when you selected another pending delivery. A stop receipt updates its own card 
 the current countdown selected. When the new window closes, the surface returns to your
 selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
-while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
-the same launch request.
+while hidden. Returning to the card starts a fresh eight-second reading interval. Switching
+between the dashboard and either standalone route preserves the relaunch progress and feedback.
+Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect

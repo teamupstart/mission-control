@@ -5145,9 +5145,9 @@ export function App(): React.JSX.Element {
         activeRunId={activeTourBinding?.activeRunId ?? null}
       >
       {!standalone && <ContextMenuHost ref={contextMenuRef} />}
-      <div className={standalone ? undefined : `app app-${layout}`}>
-        {standalone ? <main className="voice-standalone">{voiceCardHost}</main> : <>
+      <div className={standalone ? "voice-standalone" : `app app-${layout}`} role={standalone ? "main" : undefined}>
         {voiceCardHost}
+        {!standalone && <>
         <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}

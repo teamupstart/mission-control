@@ -4,10 +4,9 @@ name: Agent SDK update
 # judges them before they land.
 #
 # The lockfile is what decides: both CI and `scripts/install-app.mjs` install with `npm ci`,
-# which ignores semver ranges, so widening a range would change nothing here. Only these
-# three are bumped, because two of them vendor a CLI into `node_modules/.bin` - their
-# version decides which agent build the daemon can run, not just which library it compiles
-# against.
+# which ignores semver ranges, so widening a range would change nothing here. Two SDKs
+# vendor a CLI into `node_modules/.bin`, so their version decides which agent build the
+# daemon can run.
 #
 # The GitHub App token is required: a pull request opened with `GITHUB_TOKEN` does not
 # trigger `on: pull_request`, so it would arrive with no CI.
@@ -48,10 +47,19 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
+          pi_version="$(npm view @earendil-works/pi-coding-agent@latest version)"
+          pi_ai_version="$(npm view "@earendil-works/pi-coding-agent@$pi_version" 'dependencies.@earendil-works/pi-ai')"
+          # The bundled OAuth loaders and the Pi runtime must use the same pi-ai instance.
+          if [[ ! "$pi_ai_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected Pi $pi_version to declare an exact pi-ai version, got '$pi_ai_version'." >&2
+            exit 1
+          fi
+          npm pkg set \
+            "dependencies.@earendil-works/pi-coding-agent=$pi_version" \
+            "dependencies.@earendil-works/pi-ai=$pi_ai_version"
           npm install --save \
             @openai/codex-sdk@latest \
-            @anthropic-ai/claude-agent-sdk@latest \
-            @earendil-works/pi-coding-agent@latest
+            @anthropic-ai/claude-agent-sdk@latest
           if git diff --quiet -- package.json package-lock.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Every agent SDK is already at its latest release."
@@ -60,8 +68,9 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
           {
             echo 'summary<<SDKEOF'
-            for pkg in @openai/codex-sdk @anthropic-ai/claude-agent-sdk @earendil-works/pi-coding-agent; do
-              printf -- '- `%s` -> %s\n' "$pkg" "$(node -p "require('./node_modules/$pkg/package.json').version")"
+            for pkg in @openai/codex-sdk @anthropic-ai/claude-agent-sdk @earendil-works/pi-coding-agent @earendil-works/pi-ai; do
+              locked_version="$(node -p 'require("./package-lock.json").packages["node_modules/" + process.argv[1]].version' "$pkg")"
+              printf -- "- \`%s\` -> %s\n" "$pkg" "$locked_version"
             done
             echo SDKEOF
           } >> "$GITHUB_OUTPUT"

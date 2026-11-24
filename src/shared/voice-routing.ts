@@ -109,8 +109,12 @@ function messageAfterAddress(text: string, end: number): { body: string; wrapper
   while (wrappers.length) {
     const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
     if (!closing || !WRAPPER_PAIRS.has(wrappers.at(-1)! + closing[1])) break;
+    const afterMark = bodyStart + closing[0].length;
+    // A straight quote can open the next word instead of closing the address.
+    if ((closing[1] === '"' || closing[1] === "'") &&
+        /^[^\s,\p{Sentence_Terminal}…\p{Pe}\p{Pf}"']/u.test(rest.slice(afterMark))) break;
     wrappers.pop();
-    bodyStart += closing[0].length;
+    bodyStart = afterMark;
   }
   if (bodyStart > separatorLength) {
     // Terminal punctuation attached to a standalone closer also belongs to the quoted name.

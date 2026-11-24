@@ -476,10 +476,16 @@ test("a delayed spoken pick can only queue an unsure capture that preceded it", 
 });
 
 test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
-  await say('Will,"ship it"', "quote");
-  assert.equal(cards[0]?.parts[0]?.text, '"ship it"');
-  assert.equal((await act("quote", "send-now")).status, 200);
-  assert.equal(queued("Will").at(-1), '"ship it"');
+  for (const [text, body] of [
+    ['Will,"ship it"', '"ship it"'], ['"Will, "ship it"', '"ship it"'],
+    ["'Will, 'ship it'", "'ship it'"], ['"Will, "stop', '"stop'],
+  ] as const) {
+    const id = randomUUID();
+    await say(text, id);
+    assert.equal(cards.at(-1)?.parts[0]?.text, body);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(queued("Will").at(-1), body);
+  }
 });
 
 test("punctuation-only messages reach the named agent and leave an unsure card open", async () => {

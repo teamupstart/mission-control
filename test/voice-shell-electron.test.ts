@@ -34,10 +34,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let unavailableHandshakes = 1;
   let refusals = 0;
   let reconnectSnapshot: string | undefined;
+  const heartbeatMs = 750;
+  let keepalive: "ping" | "registry" | "silent" = "ping";
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
   let holdReport = false;
+  let refuseReport = false;
   let heldReport: ServerResponse | undefined;
   const publicRequests: { path?: string; credential: boolean }[] = [];
   const server = createServer((req, res) => {
@@ -64,6 +67,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       events = res;
       connects++;
       res.flushHeaders();
+      const ping = setInterval(() => {
+        if (keepalive === "ping") res.write("event: ping\ndata: \n\n");
+        if (keepalive === "registry") res.write('data: {"type":"session_remove","id":"fixture"}\n\n');
+      }, heartbeatMs);
+      res.once("close", () => clearInterval(ping));
       if (connects === 1) res.write('data: {"type":"snapshot"}\n\n');
       else if (reconnectSnapshot) res.write("data: " + reconnectSnapshot + "\n\n");
       return;
@@ -76,6 +84,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       if (muteResponse === "refused") res.statusCode = 503;
     }
     if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
+      if (refuseReport) { res.writeHead(503).end(); return; }
       reports.push(JSON.parse(body));
       if (holdReport) {
         holdReport = false;
@@ -130,7 +139,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         let labels = [];
         let lastMenu;
         tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
-        const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice);
+        const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
         global.fixture = { tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
@@ -238,6 +247,21 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode: "unavailable" } }) + "\n\n");
   await until(async () => (await read()).mode === "unavailable");
+  await t.test("a shell report outage logs its HTTP status once until delivery recovers", async () => {
+    const check = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone());
+    const failures = () => readFileSync(join(root, "daemon.log"), "utf8").match(/Voice shell report failed status=503/g)?.length ?? 0;
+    try {
+      refuseReport = true;
+      await assert.rejects(check(), /report was not accepted/);
+      await assert.rejects(check(), /report was not accepted/);
+      assert.equal(failures(), 1);
+      refuseReport = false;
+      assert.equal(await check(), "checked");
+      refuseReport = true;
+      await assert.rejects(check(), /report was not accepted/);
+      assert.equal(failures(), 2);
+    } finally { refuseReport = false; }
+  });
   await t.test("microphone repair retries a rejected prompt, reports denial, opens Privacy settings and reports a grant", async () => {
     const fix = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.fixMicrophone());
     const configure = (status: string, answer: string) => app.evaluate((_, args) => {
@@ -323,7 +347,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     try { process.kill(pid, 0); return false; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
   };
-  await t.test("capture stops on stream loss and a fresh snapshot restores it after two HTTP 503 handshakes", async () => {
+  await t.test("capture stops on stream loss, ignores an early incremental update and resumes from a fresh snapshot after two HTTP 503s", async () => {
     const [first] = pids();
     assert.equal(exited(first!), false);
     unavailableHandshakes = 2;
@@ -332,9 +356,25 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     await until(() => connects === 2);
     assert.equal(refusals, 3);
     assert.equal((await read()).mode, "off");
+    const duringReconnect = await app.evaluate(async () => {
+      const f = (globalThis as unknown as {fixture: Fixture}).fixture;
+      const before = f.calls.length;
+      f.configurePermission("not-determined", "granted");
+      const ask = await f.voice.fixMicrophone();
+      f.configurePermission("denied", "denied");
+      const settings = await f.voice.fixMicrophone();
+      f.configurePermission("granted", "granted");
+      return { ask, settings, osCalls: f.calls.length - before };
+    });
+    assert.deepEqual(duringReconnect, { ask: "unavailable", settings: "unavailable", osCalls: 0 });
     assert.deepEqual(pids(), [first]);
+    const imagesBeforeSnapshot = (await read()).captures.length;
+    const early = { ...ready, mode: "listening", model: { ...ready.model, directory: "/pre-snapshot-model" } };
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: early }) + "\n\n");
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");
     await until(() => pids().length === 2);
+    assert.equal((await read()).captures.length, imagesBeforeSnapshot + 1, "only the snapshot updated the tray");
+    assert.doesNotMatch(readFileSync(join(root, "daemon.log"), "utf8"), /modelRevision="pre-snapshot-model"/);
     const second = pids()[1]!;
     assert.notEqual(second, first);
     assert.equal(exited(second), false);
@@ -351,6 +391,35 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     } }) + "\n\n");
     await until(() => exited(pid));
     assert.equal(pids().length, before + 1);
+  });
+  await t.test("stalled streams stop capture and reconnect, even when pings arrive before the first snapshot", async () => {
+    const snapshot = JSON.stringify({type: "snapshot", voice: ready});
+    const before = pids().length;
+    const firstStream = connects;
+    events!.write("data: " + snapshot + "\n\n");
+    await until(() => pids().length === before + 1);
+    const active = pids().at(-1)!;
+    try {
+      keepalive = "registry";
+      await new Promise(resolve => setTimeout(resolve, 4 * heartbeatMs));
+      assert.equal(connects, firstStream, "ordinary registry messages keep a quiet voice stream alive");
+      keepalive = "silent";
+      await until(() => exited(active));
+      assert.equal((await read()).mode, "off");
+      keepalive = "ping";
+      await until(() => connects === firstStream + 1);
+      // This stream returns headers and pings, but withholds its snapshot. Only its successor gets one.
+      events!.write("data: " + JSON.stringify({type: "voice_state", state: ready}) + "\n\n");
+      reconnectSnapshot = snapshot;
+      await until(() => connects === firstStream + 2 && pids().length === before + 2);
+      assert.equal((await read()).mode, ready.mode);
+      const recovered = pids().at(-1)!;
+      events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
+      await until(() => exited(recovered));
+    } finally {
+      reconnectSnapshot = undefined;
+      keepalive = "ping";
+    }
   });
   await t.test("malformed events stop the active child and reconnect for a fresh snapshot without another state change", async () => {
     const snapshot = JSON.stringify({type: "snapshot", voice: ready});

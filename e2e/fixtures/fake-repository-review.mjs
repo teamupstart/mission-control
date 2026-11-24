@@ -24,6 +24,7 @@ async function review(mcp, prompt) {
     : mcp.args;
   const child = spawn(mcp.command, args, { env: mcp.env, stdio: ["pipe", "pipe", "inherit"] });
   const closed = once(child, "close");
+  void closed.catch(() => {}); // Observe launch errors while stdout is still draining.
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   let id = 0;
   async function request(method, params) {

@@ -836,7 +836,7 @@ export class WorkflowManager {
       // reset session's chip kept naming a workflow that no longer existed and could never
       // run. Every other path that ends a binding retires it here as well.
       for (const id of removed.bindingIds) this.registry.removeWorkflowBinding(id);
-    });
+    }, noteKey => this.store.workflowResetBlocker(noteKey));
   }
 
   start(): void {
@@ -6888,7 +6888,7 @@ export class WorkflowManager {
       undefined,
       true,
       undefined,
-      (capturedSubmission) => this.sealSessionActionContinuation({
+      (capturedSubmission) => this.prepareSessionActionContinuation({
         attempt,
         snapshot,
         version,
@@ -6919,7 +6919,7 @@ export class WorkflowManager {
    * capture guard requires the run and submission to be `capturing`, and neither is any more -
    * so recovery has to be able to seal an already-captured child directly.
    */
-  private async sealSessionActionContinuation(input: {
+  private async prepareSessionActionContinuation(input: {
     attempt: WorkflowNodeAttempt;
     snapshot: SessionActionSnapshot;
     version: WorkflowVersion;
@@ -6929,7 +6929,7 @@ export class WorkflowManager {
     child: WorkflowSubmission;
     /** Where to resolve the captured abbreviation, or null when it cannot be resolved. */
     repositoryRoot: string | null;
-  }): Promise<boolean> {
+  }): Promise<false | (() => boolean)> {
     const { attempt, snapshot, version, node, expectation, adapter, child } = input;
     const context = WorkflowContextSnapshotSchema.safeParse(child.context);
     if (!context.success) {
@@ -6976,19 +6976,13 @@ export class WorkflowManager {
         completion: snapshot.completion.kind,
       }),
     }));
-    const completed = Boolean(this.store.completeSessionActionContinuation({
+    return () => Boolean(this.store.completeSessionActionContinuation({
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
       warnings,
       now: Date.now(),
     }));
-    // Capture starts while the action still holds the conversation. Re-offer only after
-    // its completion is durable, including when sealing a captured child after restart.
-    const run = completed ? this.store.getRun(child.runId) : null;
-    const binding = run ? this.store.getBinding(run.bindingId) : null;
-    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
-    return completed;
   }
 
   private trackBackgroundTask(task: Promise<void>): void {
@@ -7506,7 +7500,7 @@ export class WorkflowManager {
     expectation?: WorkflowCaptureExpectation,
     // Awaited, because the one guard that uses it has to ask git which commit the capture
     // actually holds before it can say whether the capture is the one the adapter proved.
-    beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
+    beforeActivate?: (captured: WorkflowSubmission) => Promise<false | (() => boolean)>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     // The root's durable boundary also covers Foreman capture and interrupted retries.
     allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
@@ -8190,7 +8184,8 @@ export class WorkflowManager {
           context.compaction.reusedFromSubmissionId ?? submission.id,
         readiness: readiness?.status ?? "not_evaluated",
       }, Date.now());
-      if (beforeActivate && !(await beforeActivate(runnable))) {
+      const sealAction = beforeActivate ? await beforeActivate(runnable) : undefined;
+      const guardConflict = (): WorkflowRuntimeMutation<WorkflowSubmitResult> => {
         this.publishRun(run.id);
         return {
           ok: false,
@@ -8198,79 +8193,80 @@ export class WorkflowManager {
           message: "The captured evidence did not satisfy this submission's activation guard",
           current: this.presentRun(this.store.getRun(run.id)),
         };
-      }
-      if (version && !shippingOnlyContinuation) {
-        const evaluated = evidenceReadinessEvaluatedEvent({
-          submission: runnable,
-          readiness,
-          coverage: frozenCoverage,
-          version,
-        });
-        this.store.appendEvent(
-          run.id,
-          "evidence_readiness_evaluated",
-          evaluated.payload,
-          Date.now(),
-          evaluated.eventId,
-        );
-      }
-      if (enforcingReadiness && context.reconciliation?.status !== "complete"
-          && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
-        if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
-        const blocked = this.store.failEvidencePreparation({
-          submissionId: submission.id, kind: "mapping",
-          automatic: this.automaticEvidencePreparation(binding, submission),
-          detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
-          now: Date.now(),
-        });
-        releaseClaim = false; // Mapping recovery inherits the frozen context and its exact artifact.
-        this.store.appendEvent(run.id, "evidence_reconciliation_error", {
-          submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
-        }, Date.now());
-        this.publishRun(run.id);
-        return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
-      }
-      if (enforcingReadiness && readiness?.status === "gaps") {
-        if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
-        if (this.continueExhaustedEvidenceReadiness(run.id, submission.id, binding, Date.now())) {
-          releaseClaim = false;
-          return { ok: true, value: { run: this.store.getRun(run.id)!, submission: runnable } };
+      };
+      if (sealAction === false) return guardConflict();
+
+      // Validate the action asynchronously, then commit its receipts and the exact
+      // checkout disposition together. Only publish or activate after SQLite commits.
+      const disposition = this.store.transact(() => {
+        if (sealAction && !sealAction()) return "conflict";
+        if (version && !shippingOnlyContinuation) {
+          const evaluated = evidenceReadinessEvaluatedEvent({
+            submission: runnable,
+            readiness,
+            coverage: frozenCoverage,
+            version,
+          });
+          this.store.appendEvent(
+            run.id,
+            "evidence_readiness_evaluated",
+            evaluated.payload,
+            Date.now(),
+            evaluated.eventId,
+          );
         }
-        const waitedAt = Date.now();
-        const waitingSubmission = this.store.setSubmissionState(
-          submission.id,
-          "waiting_for_evidence_readiness",
-          waitedAt,
-        );
-        const waitingRun = this.store.setRunState(
-          run.id,
-          "waiting_for_evidence_readiness",
-          "evidence_readiness",
-          {
+        if (enforcingReadiness && context.reconciliation?.status !== "complete"
+            && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
+          if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
+          this.store.failEvidencePreparation({
+            submissionId: submission.id, kind: "mapping",
+            automatic: this.automaticEvidencePreparation(binding, submission),
+            detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
+            now: Date.now(),
+          });
+          this.store.appendEvent(run.id, "evidence_reconciliation_error", {
+            submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
+          }, Date.now());
+          return "mapping";
+        }
+        if (enforcingReadiness && readiness?.status === "gaps") {
+          if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
+          if (binding.state === "active" && this.store.continueExhaustedEvidenceReadiness(submission.id, Date.now())) return "exhausted";
+          const waitedAt = Date.now();
+          this.store.setSubmissionState(
+            submission.id,
+            "waiting_for_evidence_readiness",
+            waitedAt,
+          );
+          this.store.setRunState(
+            run.id,
+            "waiting_for_evidence_readiness",
+            "evidence_readiness",
+            {
+              submissionId: submission.id,
+              gapCodes: readiness.gapCodes,
+            },
+            waitedAt,
+          );
+          this.store.appendEvent(run.id, "evidence_readiness_waiting", {
             submissionId: submission.id,
+            round: submission.round,
+            segment: submission.segment,
             gapCodes: readiness.gapCodes,
-          },
-          waitedAt,
-        );
-        this.store.appendEvent(run.id, "evidence_readiness_waiting", {
-          submissionId: submission.id,
-          round: submission.round,
-          segment: submission.segment,
-          gapCodes: readiness.gapCodes,
-        }, waitedAt, `evidence-readiness-wait:${submission.id}`);
-        releaseClaim = false; // Readiness override activates this exact claim.
-        this.publishRun(run.id);
-        this.scheduleEvidenceReadinessDelivery(submission.id);
-        return { ok: true, value: { run: waitingRun, submission: waitingSubmission } };
-      }
-      if (digest) {
-        this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture });
-        releaseClaim = false;
-      }
-      this.engine.activateSubmission(submission.id);
-      const updatedRun = this.store.getRun(run.id) ?? run;
+          }, waitedAt, `evidence-readiness-wait:${submission.id}`);
+          return "waiting";
+        }
+        if (digest) this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture });
+        if (sealAction) this.store.setRunState(run.id, "running", "activating", null, Date.now());
+        return "activate";
+      });
+      if (disposition === "conflict") return guardConflict();
+      releaseClaim = false;
+      if (disposition === "activate" || disposition === "exhausted") this.engine.activateSubmission(submission.id);
       this.publishRun(run.id);
-      return { ok: true, value: { run: updatedRun, submission: digest ? this.store.getSubmission(submission.id)! : runnable } };
+      if (disposition === "waiting") this.scheduleEvidenceReadinessDelivery(submission.id);
+      if (sealAction || disposition === "exhausted") this.scheduleQueuedDeliveries(binding.noteKey);
+      return { ok: true, value: { run: this.store.getRun(run.id)!, submission: disposition === "activate" && !digest ? runnable : this.store.getSubmission(submission.id)! } };
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -8555,7 +8551,8 @@ export class WorkflowManager {
     if (!resolved) return false;
     const { attempt, snapshot, state, binding, version, node } = resolved;
     if (!WorkflowContextSnapshotSchema.safeParse(child.context).success) return false;
-    const sealed = await this.sealSessionActionContinuation({
+    if (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(child.id)) return false;
+    const seal = await this.prepareSessionActionContinuation({
       attempt,
       snapshot,
       version,
@@ -8565,7 +8562,8 @@ export class WorkflowManager {
       child,
       repositoryRoot: binding.sessionRepoRoot ?? null,
     });
-    if (!sealed) return false;
+    if (!seal || !seal()) return false;
+    this.scheduleQueuedDeliveries(binding.noteKey);
     this.store.appendEvent(child.runId, "session_action_continuation_resealed", {
       attemptId: attempt.id,
       submissionId: child.id,

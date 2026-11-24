@@ -1,7 +1,7 @@
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { repositoryCitationLabel } from "@shared/repository-access.ts";
-import { RepositoryQueryHistory } from "./RepositoryQueryHistory.tsx";
+import { RepositoryQueryHistory, type RepositoryCitation } from "./RepositoryQueryHistory.tsx";
 import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
@@ -295,21 +295,27 @@ function ErrorLine({
   );
 }
 
-const RepositoryCitations = createContext<NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"]>({});
+const RepositoryCitations = createContext<{
+  citations: Record<string, RepositoryCitation>;
+  open: (citation: RepositoryCitation) => void;
+} | null>(null);
 
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Element | null {
-  const citations = useContext(RepositoryCitations);
+  const review = useContext(RepositoryCitations);
   if (evidence.length === 0) return null;
   return (
     <ul className="wf-run-evidence">
-      {evidence.map((item, index) => (
-        <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
-          <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
-          <span>{item.kind === "repository"
-            ? citations[item.evidenceHandleId] ? repositoryCitationLabel(citations[item.evidenceHandleId]!) : "Repository range unavailable"
-            : item.quote}</span>
-        </li>
-      ))}
+      {evidence.map((item, index) => {
+        const citation = item.kind === "repository" && review?.citations[item.evidenceHandleId];
+        return (
+          <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
+            <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
+            {item.kind === "repository" && citation && review && citation.operationId === item.operationId ? <Tooltip label="Open the recorded query and cited range">
+              <button className="btn" onClick={() => review.open(citation)}>{repositoryCitationLabel(citation)}</button>
+            </Tooltip> : <span>{item.kind === "repository" ? "Repository range unavailable" : item.quote}</span>}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -3764,6 +3770,8 @@ export function WorkflowRunView({
    */
   const grantNotice = runGrantNotice(detail);
   const announcedGrant = useRef<string | null>(null);
+  const [queryTarget, setQueryTarget] = useState<{ runId: string; citation: RepositoryCitation; selection: number } | null>(null);
+  const target = queryTarget?.runId === detail.run.id ? queryTarget : null;
   const [grantAnnouncement, setGrantAnnouncement] = useState("");
   useEffect(() => {
     if (announcedGrant.current === grantNotice) return;
@@ -3773,7 +3781,10 @@ export function WorkflowRunView({
     setGrantAnnouncement(`${grantNotice} ${parkedSentence ?? "The review can continue."}`);
   }, [grantNotice, parkedSentence]);
   return (
-    <RepositoryCitations.Provider value={detail.repositoryReview?.citations ?? {}}>
+    <RepositoryCitations.Provider value={{
+      citations: detail.repositoryReview?.citations ?? {},
+      open: citation => setQueryTarget(previous => ({ runId: detail.run.id, citation, selection: (previous?.selection ?? 0) + 1 })),
+    }}>
     <section className="wf-run-detail">
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
@@ -4454,7 +4465,8 @@ export function WorkflowRunView({
         ]}
       />
 
-      {detail.repositoryReview && <RepositoryQueryHistory key={detail.run.id} runId={detail.run.id} review={detail.repositoryReview} />}
+      {detail.repositoryReview && <RepositoryQueryHistory key={detail.run.id + ":" + (target?.selection ?? 0)}
+        runId={detail.run.id} review={detail.repositoryReview} target={target?.citation} />}
 
       <section className="wf-run-section">
         <header className="wf-run-section-head">

@@ -5193,7 +5193,7 @@ export interface WorkflowRunDetail {
     failed: number;
     cancelled: number;
     snapshot: { digest: string; state: string; retainedCommits: number; bounded: boolean } | null;
-    citations: Record<string, import("./repository-access.ts").RepositoryEvidenceHandle>;
+    citations: Record<string, import("./repository-access.ts").RepositoryEvidenceHandle & { queryId: number }>;
   };
   /** Included in a requested export only. */
   repositoryQueries?: import("./repository-access.ts").RepositoryQueryAuditMetadata[];

@@ -3214,9 +3214,15 @@ test("terminal-run maintenance verifies local lease and home ownership without r
   const engine = new WorkflowEngine(store, () => {});
   const setNonce = db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?");
   setNonce.run(randomUUID(), callId);
+  const binding = store.getBinding(store.getRun(runId)!.bindingId)!;
+  assert.throws(() => store.resetForNoteKey(binding.noteKey), /cleanup must finish/);
+  // An already exited group is independently confirmed even if lease cleanup then fails.
+  db.prepare("UPDATE workflow_repository_local_owners SET group_pid=?, group_identity=? WHERE workload_id=?")
+    .run(2147483647, "fixture-exited", callId);
   await engine.reconcileTerminalRepositoryWorkloads();
   assert.ok(existsSync(lease.objectDirectory) && existsSync(providerHome));
-  assert.ok(store.repositoryLocalOwner(callId));
+  assert.equal(store.repositoryLocalOwner(callId)?.group_pid, null);
+  assert.equal(store.repositoryLocalOwner(callId)?.group_identity, null);
   setNonce.run(nonce, callId);
   await engine.reconcileTerminalRepositoryWorkloads();
   assert.equal(store.repositoryLocalOwner(callId), undefined);
@@ -3387,7 +3393,7 @@ test("repository review verifies executor capability, the live grant at material
   // that owns no event-loop handles and never settles its promises.
   const keepAlive = setTimeout(() => {}, 15_000);
   t.after(() => clearTimeout(keepAlive));
-  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "stale"] as const;
+  const scenarios = ["unsupported", "cancel acknowledged", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "stale"] as const;
   // The permission decision must hold even when the supervisor's watchdog has never fired.
   t.mock.timers.enable({ apis: ["setInterval"] });
   for (const [index, scenario] of scenarios.entries()) {
@@ -3420,7 +3426,7 @@ test("repository review verifies executor capability, the live grant at material
           await lease.release();
         }
         if (scenario === "unresponsive") await new Promise<void>(() => {});
-        if (scenario === "conflict") yield { ...accepted, timestamp: 8 };
+        if (scenario === "conflict" || scenario === "cancel acknowledged") yield { ...accepted, timestamp: 8 };
         if (scenario === "equal replay") yield accepted;
         try {
           yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
@@ -3447,7 +3453,7 @@ test("repository review verifies executor capability, the live grant at material
         cancellations.push({ workloadId, generation });
         if (scenario === "unresponsive") await new Promise<void>(() => {});
       },
-      async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
+      async reconcile(workloadId) { return { workloadId, state: scenario === "cancel acknowledged" ? "running" : "terminal", events: [] }; },
     };
     if (scenario === "revoked during cleanup") {
       const { LocalPersonaWorkloadExecutor } = await import("../src/server/workflows/persona-workload/executor.ts");
@@ -3468,7 +3474,7 @@ test("repository review verifies executor capability, the live grant at material
     }, signal);
     if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
     else await assert.rejects(response, {
-      unsupported: /executor capability mismatch/i, conflict: /conflicting repository event/i,
+      unsupported: /executor capability mismatch/i, "cancel acknowledged": /has not confirmed cleanup/i, conflict: /conflicting repository event/i,
       gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
       "revoked before materialization": { code: "artifact_unavailable" },
       "revoked during cleanup": /ownership expired before verdict acceptance/i,
@@ -3476,8 +3482,8 @@ test("repository review verifies executor capability, the live grant at material
     }[scenario]);
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
     assert.equal(leaseOpened, scenario === "equal replay", scenario);
-    if (scenario === "unresponsive") {
-      assert.deepEqual(store.pendingRepositoryCancellations(runId, "p1").map(row => ({ ...row })), [{ id: callId, generation: 1 }]);
+    if (scenario === "unresponsive" || scenario === "cancel acknowledged") {
+      assert.ok(store.pendingRepositoryCancellations(runId, "p1").some(row => row.id === callId && row.generation === 1));
     }
     if (scenario === "revoked during cleanup") {
       assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
@@ -3489,7 +3495,7 @@ test("repository review verifies executor capability, the live grant at material
       ? [] : [{ workloadId: callId, generation: 1 }], scenario);
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
-      unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
+      unsupported: [], "cancel acknowledged": [1], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
       unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
     }[scenario]);
   }

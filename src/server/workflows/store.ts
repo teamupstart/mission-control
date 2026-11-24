@@ -11549,13 +11549,14 @@ export class WorkflowStore {
       retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
       // The `ranked` population in `runRetention` above, counted rather than windowed -
       // finished, with a completion time, and not pinned by an uncertain delivery. This is
-      // deliberately the SAME three predicates and not an approximation of them: the number
+      // deliberately the SAME predicates and not an approximation of them: the number
       // exists so the settings panel can show `maxCompletedRuns` against the rows that limit
       // actually ranks, and a count over a slightly different set would be a gauge that
       // disagrees with the sweep it claims to describe.
       completedRunCount: scalar(
         `SELECT COUNT(*) AS count FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND r.completed_at IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
@@ -11803,7 +11804,7 @@ export class WorkflowStore {
     }
     const citations: NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"] = {};
     if (!requested.size) return citations;
-    const rows = this.db.prepare(`SELECT json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
+    const rows = this.db.prepare(`SELECT q.id, json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
       FROM json_each(?) refs
       JOIN workflow_repository_handles h ON h.id=json_extract(refs.value,'$[2]') AND h.operation_id=json_extract(refs.value,'$[1]')
       JOIN workflow_repository_queries q ON q.operation_id=h.operation_id
@@ -11811,7 +11812,7 @@ export class WorkflowStore {
       .all("[" + [...requested].join(",") + "]");
     for (const row of rows) {
       const handle = RepositoryEvidenceHandleSchema.parse(JSON.parse(String(row.value)));
-      citations[handle.evidenceHandleId] = handle;
+      citations[handle.evidenceHandleId] = { ...handle, queryId: Number(row.id) };
     }
     return citations;
   }
@@ -12090,6 +12091,12 @@ export class WorkflowStore {
     }
   }
 
+  workflowResetBlocker(noteKey: string): string | null {
+    const pending = this.db.prepare(`SELECT 1 FROM workflow_runs r JOIN workflow_bindings b ON b.id=r.binding_id
+      WHERE b.note_key=? AND EXISTS (${repositoryCleanupForRun}) LIMIT 1`).get(noteKey);
+    return pending ? "Repository reviewer cleanup must finish before this session can be reset" : null;
+  }
+
   /**
    * Everything a reset removed, so the caller can retire it from the fleet stream too.
    *
@@ -12101,6 +12108,8 @@ export class WorkflowStore {
    */
   resetForNoteKey(noteKey: string): { runIds: string[]; bindingIds: string[] } {
     return transaction(this.db, () => {
+      const blocker = this.workflowResetBlocker(noteKey);
+      if (blocker) throw new Error(blocker);
       const runRows = this.db.prepare(
         `SELECT r.id FROM workflow_runs r
           JOIN workflow_bindings b ON b.id = r.binding_id

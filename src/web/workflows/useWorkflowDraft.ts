@@ -124,13 +124,6 @@ export function workflowSummaryAction(input: {
   return metadataChanged && !dirty ? "reload" : "ignore";
 }
 
-export function versionMetadata(version: WorkflowVersion): WorkflowVersionMetadata {
-  const { graph, ...metadata } = version;
-  const readPersonaIds = graph.nodes.flatMap(node =>
-    node.kind === "persona" && node.persona.repositoryAccess === "read" ? [node.persona.sourcePersonaId] : []);
-  return { ...metadata, readPersonaIds };
-}
-
 export function workflowSavePreflight(
   workflow: WorkflowDefinition | null,
   conflict: WorkflowSummary | null,
@@ -229,7 +222,7 @@ export function useWorkflowDraft(
     if (workflowIdRef.current === requestedId) setVersions(next);
   }, []);
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = useCallback(async (afterPublish = false): Promise<void> => {
     const requestedId = workflowId;
     const generation = ++loadGeneration.current;
     if (!requestedId) {
@@ -246,18 +239,25 @@ export function useWorkflowDraft(
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setError(null);
-    history.current = [];
-    future.current = [];
-    setHistoryVersion((value) => value + 1);
+    if (!afterPublish) {
+      setLoading(true);
+      setError(null);
+      history.current = [];
+      future.current = [];
+      setHistoryVersion((value) => value + 1);
+    }
     try {
       const detail = await workflowRequest<WorkflowDetail>(`/api/workflows/${requestedId}`);
       if (loadGeneration.current !== generation || workflowIdRef.current !== requestedId) return;
-      setWorkflow(detail.workflow);
-      workflowRef.current = detail.workflow;
       setVersions(detail.versions);
       setVersionsStale(false);
+      // A publish receipt identifies an immutable version. Only a fresh read owns the
+      // current pointer, and an edit started during that read still belongs to the editor.
+      const local = workflowRef.current;
+      if (afterPublish && local && (conflictRef.current || inFlight.current ||
+        editableFingerprint(local) !== savedFingerprintRef.current || local.draftRevision > detail.workflow.draftRevision)) return;
+      setWorkflow(detail.workflow);
+      workflowRef.current = detail.workflow;
       const loadedFingerprint = editableFingerprint(detail.workflow);
       setSavedFingerprint(loadedFingerprint);
       savedFingerprintRef.current = loadedFingerprint;
@@ -266,7 +266,8 @@ export function useWorkflowDraft(
       versionRefreshRef.current = null;
     } catch (caught) {
       if (loadGeneration.current !== generation || workflowIdRef.current !== requestedId) return;
-      setError(caught instanceof Error ? caught.message : "Could not load workflow");
+      setError(afterPublish ? "Version published, but the workflow could not be refreshed."
+        : caught instanceof Error ? caught.message : "Could not load workflow");
     } finally {
       if (loadGeneration.current === generation && workflowIdRef.current === requestedId) setLoading(false);
     }
@@ -418,23 +419,13 @@ export function useWorkflowDraft(
       if (!response?.version) throw new Error("Could not confirm the published version");
       await settlePublish(current.id, intent.requestId);
       if (workflowIdRef.current !== current.id) return response.version;
-      const local = workflowRef.current;
-      if (local && local.draftRevision <= response.workflow.draftRevision && editableFingerprint(local) === savedFingerprintRef.current) {
-        setWorkflow(response.workflow);
-        workflowRef.current = response.workflow;
-        const publishedFingerprint = editableFingerprint(response.workflow);
-        setSavedFingerprint(publishedFingerprint);
-        savedFingerprintRef.current = publishedFingerprint;
-      }
-      setVersions((items) => items.some((item) => item.id === response.version.id)
-        ? items
-        : [versionMetadata(response.version), ...items]);
+      await reload(true);
       return response.version;
     } catch (caught) {
       if (workflowIdRef.current === current.id) setError(caught instanceof Error ? caught.message : "Could not publish workflow");
       return null;
     }
-  }, [currentConflict, dirty, pendingPublish, saving]);
+  }, [currentConflict, dirty, pendingPublish, reload, saving]);
 
   const duplicate = useCallback(async (name: string): Promise<WorkflowSummary | null> => {
     const current = workflowRef.current;

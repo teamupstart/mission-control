@@ -60,7 +60,9 @@ test("repository access is opt-in and survives reload for custom and built-in re
     if (reviewer.builtin) await expect(dashboard.getByText(/This local override applies/)).toBeVisible();
     await captureState(dashboard, reviewer.builtin ? "builtin" : "custom", grant);
     await grant.selectOption("none");
+    const saved = dashboard.waitForResponse(response => response.request().method() === "PATCH" && response.url().endsWith("/repository-access"));
     await dashboard.getByRole("button", { name: "Save repository access" }).click();
+    expect((await saved).ok()).toBe(true);
     await dashboard.reload();
     await expect(grant).toHaveValue("none");
   }
@@ -268,6 +270,16 @@ for (const { title, provider, marker } of scenarios) {
         await expect(row.getByText("submitted.txt · lines [2, 3)", { exact: true })).toHaveCount(items - 1);
       }
       await captureState(dashboard, "query-snapshots", history);
+      const worklist = dashboard.getByRole("region", { name: "Review worklist" });
+      const range = "submitted.txt · lines [1, 2)";
+      for (const [round, digest] of [[2, latest], [1, first]] as const) {
+        await dashboard.locator(".wf-run-scrubber").getByRole("button", { name: new RegExp("^Round " + round) }).click();
+        await worklist.getByRole("button", { name: range, exact: true }).click();
+        const selected = history.locator("details[open]").filter({ hasText: digest });
+        await expect(selected.getByRole("mark")).toHaveText(range);
+        await expect(selected.getByRole("mark")).toBeFocused();
+      }
+      await captureState(dashboard, "citation-query", history.getByRole("mark"));
       return;
     }
     if (marker === "E2E_REPOSITORY_QUOTA") {
@@ -342,6 +354,19 @@ for (const { title, provider, marker } of scenarios) {
       await expect(history.getByRole("alert")).toHaveCount(0);
       await expect(history.getByRole("button", { name: "Next queries" })).toHaveCount(0);
       await expect(history.getByText(/git_log · revision_out_of_range/)).toBeVisible();
+      const releasePage = Promise.withResolvers<void>();
+      await dashboard.route("**/repository-queries?after=0&limit=10", async route => {
+        await releasePage.promise;
+        await route.continue();
+      }, { times: 1 });
+      try {
+        await history.getByRole("button", { name: "First queries" }).click();
+        await expect(history.getByText(/git_log · revision_out_of_range/)).toHaveCount(0);
+        await expect(history.getByRole("button", { name: "Next queries" })).toHaveCount(0);
+      } finally {
+        releasePage.resolve();
+      }
+      await expect(history.getByRole("button", { name: "Next queries" })).toBeVisible();
       return;
     }
     await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
@@ -447,6 +472,35 @@ for (const { title, provider, marker } of scenarios) {
       expect(granted.ok()).toBe(true);
       await publish.click();
       await expect(dashboard.getByRole("button", { name: /^Version 4/ })).toBeVisible();
+      await expect(publish).toBeDisabled();
+      const accessUrl = daemon.baseURL + "/api/personas/" + persona.id + "/repository-access";
+      const removed = await dashboard.request.patch(accessUrl, {
+        data: { repositoryAccess: "none", expectedAccessRevision: (await granted.json()).repositoryAccessRevision },
+      });
+      expect(removed.ok()).toBe(true);
+      const releaseReceipt = Promise.withResolvers<void>();
+      await dashboard.route("**/api/workflows/" + workflow.id + "/publish", async route => {
+        const receipt = await route.fetch();
+        await releaseReceipt.promise;
+        await route.fulfill({ response: receipt });
+      }, { times: 1 });
+      try {
+        await publish.click();
+        await expect(dashboard.getByRole("button", { name: /^Version 5/ })).toBeVisible();
+        const restored = await dashboard.request.patch(accessUrl, {
+          data: { repositoryAccess: "read", expectedAccessRevision: (await removed.json()).repositoryAccessRevision },
+        });
+        expect(restored.ok()).toBe(true);
+        const newer = await post("/api/workflows/" + workflow.id + "/publish", {
+          expectedDraftRevision: 4, requestId: "separate-grant-at-same-revision",
+        });
+        expect(newer.version.version).toBe(6);
+        await expect(dashboard.getByRole("button", { name: /^Version 6/ })).toBeVisible();
+      } finally {
+        releaseReceipt.resolve();
+      }
+      await expect.poll(() => dashboard.evaluate(id => localStorage.getItem("mission.workflow.publish." + id), workflow.id)).toBeNull();
+      await expect(dashboard.getByRole("button", { name: "Duplicate", exact: true })).toBeEnabled();
       await expect(publish).toBeDisabled();
     }
   });

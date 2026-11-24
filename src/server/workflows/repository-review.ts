@@ -75,6 +75,11 @@ export class RepositoryReview {
     }
   }
 
+  private requireTerminal(id: string, status: Awaited<ReturnType<PersonaWorkloadExecutor["reconcile"]>>) {
+    if (status.workloadId !== id || status.state !== "terminal")
+      throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+  }
+
   private async confirmCancellation(id: string, generation: number) {
     if (this.store.repositoryLocalOwner(id)) {
       await this.recoverLocal(id);
@@ -88,8 +93,7 @@ export class RepositoryReview {
       await untilAbort(executor.cancel(id, generation), timeout);
       status = await untilAbort(executor.reconcile(id, 0), timeout);
     }
-    if (status.workloadId !== id || status.state !== "terminal")
-      throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+    this.requireTerminal(id, status);
     this.store.confirmRepositoryCancellation(id, generation);
   }
 
@@ -257,6 +261,10 @@ export class RepositoryReview {
       signal.removeEventListener("abort", stop);
       await this.closeDispatch(streamFinished ? undefined : events, stopping);
       if (!this.injected) await this.finishLocal(id, service);
+      else if (stopping) {
+        const status = await untilAbort(executor.reconcile(id, 0), AbortSignal.timeout(cleanupTimeoutMs));
+        this.requireTerminal(id, status);
+      }
       const accepted = this.store.finishRepositoryWorkload(id, generation, errorCode, !this.injected, () =>
         verdictJson !== undefined && !signal.aborted && Date.now() < input.deadline && Boolean(this.current(id)));
       if (!accepted) verdictJson = undefined;

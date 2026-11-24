@@ -476,12 +476,14 @@ test("retention preserves unconfirmed external workloads and local owners until 
   db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
     VALUES('retention-call',?,'digest','cancellation_pending',1)`).run(attempt);
   const sweep = () => store.runRetention({ rawEvidenceBefore: 0, completedRunsBefore: 10, maxCompletedRuns: 0, now: 10 }).deletedRunIds;
+  assert.equal(store.workflowStatusCounts().completedRunCount, 0);
   assert.deepEqual(sweep(), []);
   db.exec("INSERT INTO workflow_repository_local_owners(workload_id) VALUES('retention-call')");
   db.exec("UPDATE workflow_repository_workloads SET state='failed' WHERE id='retention-call'");
   assert.deepEqual(sweep(), []);
   assert.ok(store.repositoryLocalOwner("retention-call"));
   db.exec("DELETE FROM workflow_repository_local_owners WHERE workload_id='retention-call'");
+  assert.equal(store.workflowStatusCounts().completedRunCount, 1);
   assert.deepEqual(sweep(), [run]);
 });
 

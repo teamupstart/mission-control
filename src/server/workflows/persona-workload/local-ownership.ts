@@ -43,9 +43,7 @@ export class LocalRepositoryWorkloadOwnership {
     });
     if (outcome.emptiness !== "empty") throw new Error("Repository provider group cleanup is unconfirmed");
     const supervisor = outcome.supervisor;
-    if (supervisor) this.store.transact(db => db.prepare(`UPDATE workflow_repository_local_owners
-      SET group_pid=NULL, group_identity=NULL WHERE workload_id=? AND group_pid=? AND group_identity=?`)
-      .run(id, supervisor.pid, supervisor.identity));
+    if (supervisor) this.clearEmptyGroup(id, supervisor.pid, supervisor.identity);
     const { text, truncatedBytes } = reply.read();
     if (truncatedBytes || outcome.result.kind !== "exited" || outcome.result.exitCode !== 0)
       throw new Error("Repository provider worker did not return a complete result");
@@ -57,6 +55,12 @@ export class LocalRepositoryWorkloadOwnership {
     throw new Error(result.code);
   }
 
+  private clearEmptyGroup(id: string, pid: number, identity: string) {
+    this.store.transact(db => db.prepare(`UPDATE workflow_repository_local_owners
+      SET group_pid=NULL, group_identity=NULL WHERE workload_id=? AND group_pid=? AND group_identity=?`)
+      .run(id, pid, identity));
+  }
+
   /** A gated but never launched provider has no PID. Unknown identities and foreign directories stay held. */
   async confirmClosed(id: string, service: WorkflowRepositoryArtifactService) {
     const row = this.store.repositoryLocalOwner(id);
@@ -66,6 +70,7 @@ export class LocalRepositoryWorkloadOwnership {
       if (!Number.isSafeInteger(pid) || pid <= 1 || typeof row.group_identity !== "string" || !row.group_identity
           || await terminateCheckGroup(pid, row.group_identity) !== "empty")
         throw new Error("Repository provider group cleanup is unconfirmed");
+      this.clearEmptyGroup(id, pid, row.group_identity);
       unwatchCheckGroup(pid);
     }
     if (row.lease_id !== null) await service.releaseLocalLease(String(row.lease_id), String(row.lease_nonce));

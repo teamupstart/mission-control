@@ -204,9 +204,12 @@ export class VoiceRouter {
     const { mode, roster } = this.state();
     if (mode === "off") return false;
     const part = item.card.parts[0]!;
-    // A roster key can outlive the session shown on the pending card.
     const selected = part.target;
-    const target = selected && roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
+    // A sleeping task may have woken during the cancel window. A live session stays pinned.
+    const matchesTarget = (name: SpokenName) => selected && name.key === selected.key && (selected.state === "hibernated"
+      ? selected.taskId !== null && name.taskId === selected.taskId
+      : name.sessionId === selected.sessionId);
+    const target = roster.find(matchesTarget);
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
     const active = () => this.delivering.get(id) === inFlight;
@@ -240,7 +243,7 @@ export class VoiceRouter {
     item.entry.outcome = outcome;
     const current = this.state();
     if (current.mode !== "off") {
-      const latest = (target && current.roster.find(name => name.key === target.key)) ?? recipient;
+      const latest = (target && current.roster.find(matchesTarget)) ?? recipient;
       const card: VoiceCard = { ...item.card, state: outcome, deadline: null,
         parts: [{ ...part, target: latest }],
         openQuestions: latest?.sessionId ? this.deliverer.openQuestions?.(latest.sessionId) ?? 0 : 0,

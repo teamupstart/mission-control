@@ -229,6 +229,32 @@ function signal() {
   return { promise, resolve };
 }
 
+test("a pending capture follows its hibernated task after another capture wakes it", async t => {
+  const target = name("Mira");
+  target.state = "hibernated";
+  target.sessionId = null;
+  roster.push(target);
+  t.after(() => { roster.splice(roster.indexOf(target), 1); });
+  const resume = t.mock.method(HibernationManager.prototype, "resume", async (id: string) => {
+    target.state = "running";
+    target.sessionId = "sdk:Bill";
+    return { ok: true as const, task: mkTask({ id, sessionId: target.sessionId, status: "running" }) };
+  });
+  for (const [text, id] of [["inspect the build", "wake"], ["check the result", "after-wake"], ["publish it", "stale-task"]] as const) {
+    await say("Mira, " + text, id);
+  }
+  await act("wake", "send-now");
+  await act("after-wake", "send-now");
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal(cards.at(-1)?.parts[0]?.target?.sessionId, target.sessionId);
+  assert.equal((await readHeard()).find(entry => entry.id === "after-wake")?.outcome, "queued");
+  target.taskId = "another-task";
+  await act("stale-task", "send-now");
+  assert.equal(cards.at(-1)?.state, "not-running");
+  assert.deepEqual(queued("Bill"), ["inspect the build", "check the result"]);
+  assert.equal(resume.mock.callCount(), 1);
+});
+
 test("overlapping spoken messages share one hibernated resume and queue each active delivery", async t => {
   const sleeping = { ...name("Mira"), state: "hibernated" as const, sessionId: null };
   roster.push(sleeping);

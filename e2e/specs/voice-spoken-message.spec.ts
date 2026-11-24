@@ -13,7 +13,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   for (const id of ["async-input", "inbox", "filed-plan-decisions", "task-hibernation", "voice"]) {
     expect((await request.put(`${daemon.baseURL}/api/feature-flags`, { data: { kind: "flag", id, enabled: true } })).ok()).toBe(true);
   }
-  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
   const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
     repoRoot: daemon.repo, title: "Inspect the build", intent: "Inspect the build", callSign: "Steve",
     kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
@@ -28,13 +28,19 @@ test("spoken words and the exact delivered payload in both conversation views", 
   }, { timeout: 60_000 }).toBe("idle");
   const parked = await request.post(`${daemon.baseURL}/api/sessions/${session.id}/hibernate`);
   expect(parked.ok(), await parked.text()).toBe(true);
-  expect(await (await say(daemon, "Steve, resume the inspection")).json()).toEqual({ accepted: true });
-  await expect.poll(async () => {
-    const entries = (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries;
-    return entries[0]?.outcome;
-  }).toBe("sent");
+  expect(await (await say(daemon, "Steve, resume the inspection", { id: "wake" })).json()).toEqual({ accepted: true });
+  expect(await (await say(daemon, "Steve, check the result", { id: "after-wake" })).json()).toEqual({ accepted: true });
+  for (const id of ["wake", "after-wake"]) {
+    expect((await request.post(`${daemon.baseURL}/api/voice/cards/${id}/send-now`)).ok()).toBe(true);
+    await expect.poll(async () => {
+      const entries = (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries;
+      return entries.find((entry: { id: string }) => entry.id === id)?.outcome;
+    }).toBe("sent");
+  }
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { cancelWindow: { enabled: false } } })).ok()).toBe(true);
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
   await expect(page.getByText(/Mock reply to: resume the inspection/).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/Mock reply to: check the result/).first()).toBeVisible({ timeout: 30_000 });
   const title = "Which build should I inspect?";
   const filed = await request.post(`${daemon.baseURL}/mcp/reviews`, {
     headers: { "x-harness-token": voiceToken(daemon) },

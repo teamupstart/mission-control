@@ -28,7 +28,7 @@ interface CorpusCase {
   category: string;
   question:
     | { kind: "who"; text: string; candidates: string[] }
-    | { kind: "split"; text: string; first: string; second: string }
+    | { kind: "split"; text: string; first: string; second: string; nameOffset: number }
     | { kind: "option"; text: string; card: string };
   expected: string;
 }
@@ -48,6 +48,8 @@ interface Row {
   ms: number;
   error: string | null;
   runner: string;
+  /** Occurrence identified in the split prompt. Historical runs omitted it. */
+  nameOffset?: number;
   /** Absent on results written before transport was recorded. */
   transport?: ClaudeTransport | CodexTransport;
 }
@@ -68,7 +70,14 @@ function toQuestion(corpus: Corpus, row: CorpusCase): VoiceQuestion {
   const agent = (name: string) => ({ id: name, label: name, detail: corpus.roster[name] ?? "" });
   const q = row.question;
   if (q.kind === "who") return { kind: "who", text: q.text, candidates: q.candidates.map(agent) };
-  if (q.kind === "split") return { kind: "split", text: q.text, first: agent(q.first), second: agent(q.second) };
+  if (q.kind === "split") {
+    if (!Number.isInteger(q.nameOffset) || q.nameOffset <= 0 || !q.text.startsWith(q.second, q.nameOffset)
+      || /[\p{L}\p{M}\p{N}]$/u.test(q.text.slice(0, q.nameOffset))
+      || /^[\p{L}\p{M}\p{N}]/u.test(q.text.slice(q.nameOffset + q.second.length))) {
+      throw new Error(`Case ${row.id}: nameOffset must point to the specified later name.`);
+    }
+    return { kind: "split", text: q.text, first: agent(q.first), second: agent(q.second), nameOffset: q.nameOffset };
+  }
   const card = corpus.cards[q.card]!;
   return { kind: "option", text: q.text, prompt: card.prompt, options: card.options.map((o) => ({ id: o.label, label: o.label, detail: o.detail })) };
 }
@@ -172,8 +181,9 @@ async function runCorpus(): Promise<void> {
   const dest = join(OUT, `retest-${label}.jsonl`);
   const selectedCases = corpus.cases.slice(start, start + limit);
   checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selectedCases.map(({ id }) => ({ id, runner, transport }))]);
-  for (const row of selectedCases) {
-    const question = toQuestion(corpus, row);
+  const questions = selectedCases.map(row => toQuestion(corpus, row));
+  for (const [index, question] of questions.entries()) {
+    const row = selectedCases[index]!;
     const began = performance.now();
     let choice: string | null = null;
     let confidence = 0;
@@ -189,7 +199,8 @@ async function runCorpus(): Promise<void> {
     }
     const member = choice !== null && voiceQuestionChoices(question).includes(choice);
     const result: Row = { id: row.id, category: row.category, expected: row.expected, choice, confidence, member,
-      ms: Math.round(performance.now() - began), error, runner, transport };
+      ms: Math.round(performance.now() - began), error, runner, transport,
+      ...(question.kind === "split" && { nameOffset: question.nameOffset }) };
     appendFileSync(dest, `${JSON.stringify(result)}\n`);
     console.log(JSON.stringify(result));
   }

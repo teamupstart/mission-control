@@ -470,6 +470,10 @@ attempt, one fresh process per case, one case at a time, under a throwaway state
 time is measured around the whole call, process start included. Expected answers and category
 labels are never sent. This used the operator's own `claude` login.
 
+The measured split and mention prompts identified the later agent by name. The current
+router and retest also specify the character offset and quote the text starting there, so
+they can distinguish repeated names. The figures below describe the earlier prompt.
+
 **Tuning set.** The spike's 60 cases recast as these questions (`routing-tuning.json`). No wrong
 answer was accepted at any floor from 0.5 to 0.99; at 0.9, 56 of 60 were accepted. Wall time
 p50 3,412 ms, p95 4,094 ms, maximum 5,077 ms (one call over five seconds). The tuning set is not

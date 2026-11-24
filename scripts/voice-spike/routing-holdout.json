@@ -386,7 +386,8 @@
         "kind": "split",
         "text": "Theo, fix the build, and Iris, rerun the tests",
         "first": "Theo",
-        "second": "Iris"
+        "second": "Iris",
+        "nameOffset": 25
       },
       "expected": "split"
     },
@@ -397,7 +398,8 @@
         "kind": "split",
         "text": "Maya, center the logo, then Clara, check the colors",
         "first": "Maya",
-        "second": "Clara"
+        "second": "Clara",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -408,7 +410,8 @@
         "kind": "split",
         "text": "Ruby, add the index. Ezra, bump the database memory",
         "first": "Ruby",
-        "second": "Ezra"
+        "second": "Ezra",
+        "nameOffset": 21
       },
       "expected": "split"
     },
@@ -419,7 +422,8 @@
         "kind": "split",
         "text": "Owen, hold the release; Felix, audit the new dependency",
         "first": "Owen",
-        "second": "Felix"
+        "second": "Felix",
+        "nameOffset": 24
       },
       "expected": "split"
     },
@@ -430,7 +434,8 @@
         "kind": "split",
         "text": "Nora, update the changelog and Owen, publish it after",
         "first": "Nora",
-        "second": "Owen"
+        "second": "Owen",
+        "nameOffset": 31
       },
       "expected": "split"
     },
@@ -441,7 +446,8 @@
         "kind": "split",
         "text": "Hugo, write the spec. Maya, start on the layout",
         "first": "Hugo",
-        "second": "Maya"
+        "second": "Maya",
+        "nameOffset": 22
       },
       "expected": "split"
     },
@@ -452,7 +458,8 @@
         "kind": "split",
         "text": "Iris, add a test for the crash, and Theo, make CI fail on warnings",
         "first": "Iris",
-        "second": "Theo"
+        "second": "Theo",
+        "nameOffset": 36
       },
       "expected": "split"
     },
@@ -463,7 +470,8 @@
         "kind": "split",
         "text": "Felix, rotate the keys, Ezra, restart the gateway",
         "first": "Felix",
-        "second": "Ezra"
+        "second": "Ezra",
+        "nameOffset": 24
       },
       "expected": "split"
     },
@@ -474,7 +482,8 @@
         "kind": "split",
         "text": "Clara, send me the mockups, and Hugo, set the priority",
         "first": "Clara",
-        "second": "Hugo"
+        "second": "Hugo",
+        "nameOffset": 32
       },
       "expected": "split"
     },
@@ -485,7 +494,8 @@
         "kind": "split",
         "text": "Ezra, check the disk alerts. Also Ruby, vacuum the old tables",
         "first": "Ezra",
-        "second": "Ruby"
+        "second": "Ruby",
+        "nameOffset": 34
       },
       "expected": "split"
     },
@@ -496,7 +506,8 @@
         "kind": "split",
         "text": "Theo, pin the node version, and Nora, mention it in the docs",
         "first": "Theo",
-        "second": "Nora"
+        "second": "Nora",
+        "nameOffset": 32
       },
       "expected": "split"
     },
@@ -507,7 +518,8 @@
         "kind": "split",
         "text": "Owen, cut a beta, and Iris, smoke test it when it's out",
         "first": "Owen",
-        "second": "Iris"
+        "second": "Iris",
+        "nameOffset": 22
       },
       "expected": "split"
     },
@@ -518,7 +530,8 @@
         "kind": "split",
         "text": "Theo, ask Iris why the tests are flaky",
         "first": "Theo",
-        "second": "Iris"
+        "second": "Iris",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -529,7 +542,8 @@
         "kind": "split",
         "text": "Maya, check with Clara before changing the colors",
         "first": "Maya",
-        "second": "Clara"
+        "second": "Clara",
+        "nameOffset": 17
       },
       "expected": "mention"
     },
@@ -540,7 +554,8 @@
         "kind": "split",
         "text": "Ruby, tell Ezra when the migration is done",
         "first": "Ruby",
-        "second": "Ezra"
+        "second": "Ezra",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -551,7 +566,8 @@
         "kind": "split",
         "text": "Owen, wait for Felix to sign off before the release",
         "first": "Owen",
-        "second": "Felix"
+        "second": "Felix",
+        "nameOffset": 15
       },
       "expected": "mention"
     },
@@ -562,7 +578,8 @@
         "kind": "split",
         "text": "Nora, use Hugo's spec for the guide",
         "first": "Nora",
-        "second": "Hugo"
+        "second": "Hugo",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -573,7 +590,8 @@
         "kind": "split",
         "text": "Hugo, what did Maya say about the layout",
         "first": "Hugo",
-        "second": "Maya"
+        "second": "Maya",
+        "nameOffset": 15
       },
       "expected": "mention"
     },
@@ -584,7 +602,8 @@
         "kind": "split",
         "text": "Iris, pair with Theo on the CI failure",
         "first": "Iris",
-        "second": "Theo"
+        "second": "Theo",
+        "nameOffset": 16
       },
       "expected": "mention"
     },
@@ -595,7 +614,8 @@
         "kind": "split",
         "text": "Felix, review the change Ezra made to the gateway",
         "first": "Felix",
-        "second": "Ezra"
+        "second": "Ezra",
+        "nameOffset": 25
       },
       "expected": "mention"
     },
@@ -606,7 +626,8 @@
         "kind": "split",
         "text": "Clara, send the mockups to Hugo",
         "first": "Clara",
-        "second": "Hugo"
+        "second": "Hugo",
+        "nameOffset": 27
       },
       "expected": "mention"
     },
@@ -617,7 +638,8 @@
         "kind": "split",
         "text": "Ezra, let Ruby know the disk is almost full",
         "first": "Ezra",
-        "second": "Ruby"
+        "second": "Ruby",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -628,7 +650,8 @@
         "kind": "split",
         "text": "Theo, the build broke after Nora's docs change, can you look",
         "first": "Theo",
-        "second": "Nora"
+        "second": "Nora",
+        "nameOffset": 28
       },
       "expected": "mention"
     },
@@ -639,7 +662,8 @@
         "kind": "split",
         "text": "Owen, hand the release checklist over to Iris",
         "first": "Owen",
-        "second": "Iris"
+        "second": "Iris",
+        "nameOffset": 41
       },
       "expected": "mention"
     },

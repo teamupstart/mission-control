@@ -347,7 +347,8 @@
         "kind": "split",
         "text": "Steve, check the build, and Will, review the tests",
         "first": "Steve",
-        "second": "Will"
+        "second": "Will",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -358,7 +359,8 @@
         "kind": "split",
         "text": "Will, check the build, and Luna, review the tests",
         "first": "Will",
-        "second": "Luna"
+        "second": "Luna",
+        "nameOffset": 27
       },
       "expected": "split"
     },
@@ -369,7 +371,8 @@
         "kind": "split",
         "text": "Luna, check the build, and Atlas, review the tests",
         "first": "Luna",
-        "second": "Atlas"
+        "second": "Atlas",
+        "nameOffset": 27
       },
       "expected": "split"
     },
@@ -380,7 +383,8 @@
         "kind": "split",
         "text": "Atlas, check the build, and Nova, review the tests",
         "first": "Atlas",
-        "second": "Nova"
+        "second": "Nova",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -391,7 +395,8 @@
         "kind": "split",
         "text": "Nova, check the build, and Jordan, review the tests",
         "first": "Nova",
-        "second": "Jordan"
+        "second": "Jordan",
+        "nameOffset": 27
       },
       "expected": "split"
     },
@@ -402,7 +407,8 @@
         "kind": "split",
         "text": "Jordan, check the build, and Quinn, review the tests",
         "first": "Jordan",
-        "second": "Quinn"
+        "second": "Quinn",
+        "nameOffset": 29
       },
       "expected": "split"
     },
@@ -413,7 +419,8 @@
         "kind": "split",
         "text": "Quinn, check the build, and Sage, review the tests",
         "first": "Quinn",
-        "second": "Sage"
+        "second": "Sage",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -424,7 +431,8 @@
         "kind": "split",
         "text": "Sage, check the build, and Phoenix, review the tests",
         "first": "Sage",
-        "second": "Phoenix"
+        "second": "Phoenix",
+        "nameOffset": 27
       },
       "expected": "split"
     },
@@ -435,7 +443,8 @@
         "kind": "split",
         "text": "Phoenix, check the build, and Rowan, review the tests",
         "first": "Phoenix",
-        "second": "Rowan"
+        "second": "Rowan",
+        "nameOffset": 30
       },
       "expected": "split"
     },
@@ -446,7 +455,8 @@
         "kind": "split",
         "text": "Rowan, check the build, and Steve, review the tests",
         "first": "Rowan",
-        "second": "Steve"
+        "second": "Steve",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -457,7 +467,8 @@
         "kind": "split",
         "text": "Steve, check the build, and Will, review the documentation",
         "first": "Steve",
-        "second": "Will"
+        "second": "Will",
+        "nameOffset": 28
       },
       "expected": "split"
     },
@@ -468,7 +479,8 @@
         "kind": "split",
         "text": "Will, check the build, and Luna, review the documentation",
         "first": "Will",
-        "second": "Luna"
+        "second": "Luna",
+        "nameOffset": 27
       },
       "expected": "split"
     },
@@ -479,7 +491,8 @@
         "kind": "split",
         "text": "Steve, ask Will about the failing tests",
         "first": "Steve",
-        "second": "Will"
+        "second": "Will",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -490,7 +503,8 @@
         "kind": "split",
         "text": "Will, ask Luna about the failing tests",
         "first": "Will",
-        "second": "Luna"
+        "second": "Luna",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -501,7 +515,8 @@
         "kind": "split",
         "text": "Luna, ask Atlas about the failing tests",
         "first": "Luna",
-        "second": "Atlas"
+        "second": "Atlas",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -512,7 +527,8 @@
         "kind": "split",
         "text": "Atlas, ask Nova about the failing tests",
         "first": "Atlas",
-        "second": "Nova"
+        "second": "Nova",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -523,7 +539,8 @@
         "kind": "split",
         "text": "Nova, ask Jordan about the failing tests",
         "first": "Nova",
-        "second": "Jordan"
+        "second": "Jordan",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -534,7 +551,8 @@
         "kind": "split",
         "text": "Jordan, ask Quinn about the failing tests",
         "first": "Jordan",
-        "second": "Quinn"
+        "second": "Quinn",
+        "nameOffset": 12
       },
       "expected": "mention"
     },
@@ -545,7 +563,8 @@
         "kind": "split",
         "text": "Quinn, ask Sage about the failing tests",
         "first": "Quinn",
-        "second": "Sage"
+        "second": "Sage",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -556,7 +575,8 @@
         "kind": "split",
         "text": "Sage, ask Phoenix about the failing tests",
         "first": "Sage",
-        "second": "Phoenix"
+        "second": "Phoenix",
+        "nameOffset": 10
       },
       "expected": "mention"
     },
@@ -567,7 +587,8 @@
         "kind": "split",
         "text": "Phoenix, ask Rowan about the failing tests",
         "first": "Phoenix",
-        "second": "Rowan"
+        "second": "Rowan",
+        "nameOffset": 13
       },
       "expected": "mention"
     },
@@ -578,7 +599,8 @@
         "kind": "split",
         "text": "Rowan, ask Steve about the failing tests",
         "first": "Rowan",
-        "second": "Steve"
+        "second": "Steve",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -589,7 +611,8 @@
         "kind": "split",
         "text": "Steve, ask Will about the release checklist",
         "first": "Steve",
-        "second": "Will"
+        "second": "Will",
+        "nameOffset": 11
       },
       "expected": "mention"
     },
@@ -600,7 +623,8 @@
         "kind": "split",
         "text": "Will, ask Luna about the release checklist",
         "first": "Will",
-        "second": "Luna"
+        "second": "Luna",
+        "nameOffset": 10
       },
       "expected": "mention"
     },

@@ -87,6 +87,32 @@ const QUESTION: VoiceQuestion = {
   second: { id: "task:alice", label: "Alice", detail: "code reviewer" },
 };
 
+test("the retest sends the specified occurrence of a repeated name through the job prompt", () => {
+  const text = "Steve, Alice is busy. Alice, review the PR";
+  const nameOffset = text.lastIndexOf("Alice");
+  const cases = record("split-cases.json");
+  const run = (label: string) => spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
+    join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), "--yes", "--transport", "print",
+    "--cases", cases, "--label", label], { cwd: home, encoding: "utf8",
+      env: { ...process.env, TSX_TSCONFIG_PATH: join(import.meta.dirname, "../tsconfig.json") } });
+  const corpus = { roster: { Steve: "build", Alice: "review" }, cards: {}, cases: [{ id: "repeat", category: "split",
+    question: { kind: "split", first: "Steve", second: "Alice", nameOffset, text }, expected: "split" }] };
+  writeFileSync(cases, JSON.stringify(corpus));
+  const result = run("occurrence");
+  assert.equal(result.status, 0, result.stderr);
+  const prompt = readFileSync(record("claude-stdin"), "utf8");
+  assert.ok(prompt.includes(`Judge only the name at offset ${nameOffset}.`));
+  assert.ok(prompt.includes(JSON.stringify(text.slice(nameOffset))));
+  const row = JSON.parse(readFileSync(join(home, ".tmp/voice-spike/retest-occurrence.jsonl"), "utf8"));
+  assert.equal(row.nameOffset, nameOffset);
+  corpus.cases.push({ ...corpus.cases[0]!, id: "bad-offset", question: { ...corpus.cases[0]!.question, nameOffset: 1 } });
+  writeFileSync(cases, JSON.stringify(corpus));
+  const invalid = run("invalid");
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Case bad-offset: nameOffset/);
+  assert.equal(existsSync(join(home, ".tmp/voice-spike/retest-invalid.jsonl")), false);
+});
+
 test("on Codex: reasoning effort none, the system prompt ahead of the questions, the strict schema and Luna", async () => {
   const answers = await runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs: 10_000 });
   assert.deepEqual(answers, [{ choice: "split", confidence: 0.99 }]);

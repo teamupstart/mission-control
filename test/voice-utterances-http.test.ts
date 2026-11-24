@@ -326,6 +326,28 @@ test("ordered shell reports ignore a delayed idle heartbeat and release on host 
   assert.equal(voiceStateStore.directive().capture, false, "an unsequenced launcher cannot open a hold");
 });
 
+test("a backward wall-clock step preserves verified held speech and its original capture time", async (t) => {
+  const capturedAt = Date.now();
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
+  await report({ reportedAtHostUs: 500_000, pushToTalk: true, pushToTalkPressedAtHostUs: 490_000 });
+  const held = voiceStateStore.directive().revision;
+  t.mock.method(Date, "now", () => capturedAt - 60_000);
+  await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 700_000 });
+  const send = async (end: number) => (await app.request(utterancePath(held), {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token,
+      "x-voice-listener-id": listenerId, "x-voice-capture-end-host-ms": String(end) },
+    body: JSON.stringify({ ...capture("Steve check the release", String(end)), capturedAt }),
+  })).json();
+  const count = queued("Steve").length;
+  assert.deepEqual(await send(489), { accepted: false });
+  assert.deepEqual(await send(701), { accepted: false });
+  assert.deepEqual(await send(700), { accepted: true });
+  assert.deepEqual((await readHeard()).map(({ id, time }) => [id, time]), [["700", capturedAt]]);
+  assert.deepEqual(queued("Steve").slice(count), ["check the release"]);
+});
+
 test("a fresh snapshot with a stale key event renews call state and applies permission without authorizing audio", async (t) => {
   let elapsed = performance.now();
   t.mock.method(performance, "now", () => elapsed);

@@ -77,7 +77,8 @@ export class VoiceRouter {
     const { mode, roster, backend } = this.state();
     if (!(voiceCaptures(mode) || (mode === "auto-muted" && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
-    if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    // Released holds already passed the route's monotonic key-down/key-up bounds.
+    if (!heldBeforeRelease && capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     const unsureCards = Array.from(this.open.values())
       .filter(({ card, entry }) => card.state === "unsure" && entry.time <= capturedAt)

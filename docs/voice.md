@@ -170,7 +170,9 @@ or leaving the call revokes it.
 With the window off the daemon acknowledges the capture as soon as it claims delivery.
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
-backend selection. The daemon drops captures dated more than one second ahead of its clock.
+backend selection. During ordinary listening the daemon drops captures dated more than
+one second ahead of its clock. For released holds it checks the monotonic key interval,
+so a backward wall-clock adjustment still lets pre-release speech reach the queue.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
 The listener posts captures in spoken order, waiting for each response before posting the next
 capture (including a cancel or pick). This lets the daemon apply a control to an action that

@@ -93,9 +93,9 @@ function messageAfterAddress(text: string, start: number, end: number): string {
   // Wrappers already closed before the comma belong to the address token itself.
   const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
   for (const opener of [...opening].reverse().slice(closed)) {
-    const closer = rest.slice(bodyStart).match(/^[\p{Pe}\p{Pf}"']/u)?.[0];
-    if (!closer || !closesWrapper(opener, closer)) break;
-    bodyStart += closer.length;
+    const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
+    if (!closing || !closesWrapper(opener, closing[1]!)) break;
+    bodyStart += closing[0].length;
   }
   // An inner comma in “Will,” may be followed by one outer address separator.
   if (bodyStart > 1 && rest[bodyStart] === ",") bodyStart++;

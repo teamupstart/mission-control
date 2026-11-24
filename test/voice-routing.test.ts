@@ -118,6 +118,9 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will"!,"ship it"', '"ship it"'],
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ["“Will,  ” “ship   it!”", "“ship   it!”"],
+    ['「“Will,  ”  」 "ship it"', '"ship it"'],
+    ["“Will,  “ship it”", "“ship it”"],
     ["“Will,”, ???", "???"],
     ['「“Will,”」"ship it"', '"ship it"'],
   ] as const) {

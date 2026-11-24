@@ -259,6 +259,17 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });
 
+test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
+  const before = interrupts.length;
+  await say("“Will, ” stop", "address-quote");
+  assert.equal((await act("address-quote", "send-now")).status, 200);
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  await say("“Will, ” “stop”", "message-quote");
+  assert.equal((await act("message-quote", "send-now")).status, 200);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
+  assert.equal(interrupts.length, before + 1);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   await say("Will, " + body, "mention");

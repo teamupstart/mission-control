@@ -26,6 +26,7 @@ import {
   recordSpokenHandoff,
   processSpokenReleases,
   spokenTranscriptLocators,
+  spokenTranscriptState,
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
@@ -33,8 +34,9 @@ import {
   type SpokenTurnRow,
 } from "./db.ts";
 import type { PreparedTranscriptBoundaries, TranscriptSession } from "./harness/types.ts";
-import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
-import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
+import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, finishHandoffWalk, handoffNeedsTranscript, handoffSenderState, reconcileHandoffRows, settledHandoffOffsets, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
+import { injectionFingerprint } from "./injections.ts";
+import { readSteerEcho, settleSteerEchoesBeforeSend, STEER_ECHO_UNREADABLE, STEER_ECHO_PENDING } from "./review-steer-echo.ts";
 
 export {
   noteOtherSend,
@@ -157,7 +159,15 @@ export function followSpokenConversationKey(sessionId: string, fromKey: string, 
   if (fromKey === sessionId && fromKey !== toKey && moveSpokenTurns(fromKey, toKey)) spokenLedger.forgetCaches();
 }
 
-export type PreparedSpokenTranscript = { path: string; capture: PreparedTranscriptBoundaries | null };
+export interface PreparedSpokenTranscript {
+  path: string;
+  capture: PreparedTranscriptBoundaries;
+  fingerprint: string;
+  senderState: string;
+  receipt: string | null;
+  decisions: NonNullable<DeliveryConversation["preparedHandoff"]>;
+  checkFile: boolean;
+}
 export const SPOKEN_TRANSCRIPT_CHANGED = "The transcript changed while preparing the spoken message.";
 export class SpokenTranscriptChanged extends Error {
   constructor() { super(SPOKEN_TRANSCRIPT_CHANGED); }
@@ -169,20 +179,56 @@ export class SpokenTranscriptUnavailable extends Error {
   }
 }
 
-export async function prepareSpokenTranscript(key: string, transcript: NonNullable<DeliveryConversation["transcript"]>): Promise<PreparedSpokenTranscript> {
-  // Reserving can also settle an older pending delivery. Its prefix must not be read on
-  // the daemon thread inside the write transaction either.
+export async function prepareSpokenTranscript(key: string, transcript: NonNullable<DeliveryConversation["transcript"]>,
+  text: string, clientMessageIds = false, now = Date.now()): Promise<PreparedSpokenTranscript> {
+  const { path, read } = transcript;
+  const fingerprint = injectionFingerprint(text);
   const offsets = spokenLedger.rows(key).filter(row => row.messageId === null && !row.contested && row.transcriptBoundary !== null)
     .map(row => row.transcriptOffset ?? 0);
-  const prepare = transcript.read.prepareHandoffBoundaries;
-  if (!prepare) return { path: transcript.path, capture: {
-    version: transcript.read.snapshot?.(transcript.path)?.version ?? null, eof: null, proofs: new Map(),
-  } };
+  offsets.push(...settledHandoffOffsets(key, fingerprint, now));
+  let capture: PreparedTranscriptBoundaries | null;
   try {
-    return { path: transcript.path, capture: await prepare(transcript.path, offsets) };
+    capture = read.prepareHandoffBoundaries && (!clientMessageIds || offsets.length)
+      ? await read.prepareHandoffBoundaries(path, offsets, !clientMessageIds)
+      : { version: read.snapshot?.(path)?.version ?? null, eof: null, proofs: new Map() };
   } catch (error) {
     throw new SpokenTranscriptUnavailable(error);
   }
+  if (!capture) throw new SpokenTranscriptChanged();
+  const verified = { path, read: { ...read, boundary: (_path: string, offset?: number) =>
+    offset === undefined ? capture.eof : capture.proofs.get(offset) ?? null } };
+  const check = () => {
+    if ((read.snapshot?.(path)?.version ?? null) !== capture.version) throw new SpokenTranscriptChanged();
+  };
+  const checkFile = !clientMessageIds || handoffNeedsTranscript(key, fingerprint, now);
+  if (checkFile) {
+    check();
+    if (capture.version !== null) {
+      await reconcileHandoffRows(key, verified, now, check, async () => {
+        const prior = handoffSenderState(key, fingerprint, now);
+        const receipt = spokenTranscriptState(key)?.receipt;
+        await yieldToDaemon();
+        check();
+        if (prior !== handoffSenderState(key, fingerprint, now) || receipt !== spokenTranscriptState(key)?.receipt) {
+          throw new SpokenTranscriptChanged();
+        }
+      });
+    }
+  }
+  const senderState = handoffSenderState(key, fingerprint, now);
+  const receipt = spokenTranscriptState(key)?.receipt ?? null;
+  const reviewEchoes = new Map<string, string | null>();
+  let otherInFlight = false;
+  if (checkFile) {
+    for (const row of reviewLedger.rows(key)) {
+      if (row.messageId === null || row.fingerprint !== fingerprint || row.steerEcho !== null) continue;
+      const echo = await finishHandoffWalk(readSteerEcho(row, verified), check);
+      if (echo !== STEER_ECHO_UNREADABLE) reviewEchoes.set(row.id, echo === STEER_ECHO_PENDING ? null : echo);
+    }
+    otherInFlight = await finishHandoffWalk(spokenLedger.otherSendInFlight({ key, transcript: verified }, fingerprint, now, true), check);
+    check();
+  }
+  return { path, capture, fingerprint, senderState, receipt, decisions: { otherInFlight, reviewEchoes }, checkFile };
 }
 
 export interface SpokenPageAnchor {
@@ -239,18 +285,22 @@ export function reserveSpokenHandoff(conversation: SpokenConversation, turn: Pen
   const transcript = conversation.transcript;
   const capture = prepared?.capture;
   const checkRevision = () => {
-    if (clientMessageIds) return;
+    if (clientMessageIds && !prepared?.checkFile) return;
     if (transcript?.path !== prepared?.path || (transcript &&
-        (!capture || (transcript.read.snapshot?.(transcript.path)?.version ?? null) !== capture.version))) {
-      throw new SpokenTranscriptChanged();
-    }
+        (!capture || (transcript.read.snapshot?.(transcript.path)?.version ?? null) !== capture.version))) throw new SpokenTranscriptChanged();
   };
   checkRevision();
-  const atHandoff = !clientMessageIds && transcript && capture ? { ...conversation, transcript: {
+  if (prepared && (injectionFingerprint(turn.text) !== prepared.fingerprint ||
+      handoffSenderState(conversation.key, prepared.fingerprint, now) !== prepared.senderState ||
+      (spokenTranscriptState(conversation.key)?.receipt ?? null) !== prepared.receipt)) throw new SpokenTranscriptChanged();
+  if (transcript && !prepared && clientMessageIds && handoffNeedsTranscript(conversation.key, injectionFingerprint(turn.text), now)) {
+    throw new SpokenTranscriptChanged();
+  }
+  const atHandoff = prepared && transcript && capture ? { ...conversation, preparedHandoff: prepared.decisions, transcript: {
     path: transcript.path, read: { ...transcript.read,
       boundary: (_path: string, offset?: number) => offset === undefined ? capture.eof : capture.proofs.get(offset) ?? null,
     },
-  } } : conversation;
+  } } : clientMessageIds && transcript ? { ...conversation, preparedHandoff: { otherInFlight: false, reviewEchoes: new Map() } } : conversation;
   // Process invalidations from prior outbox transactions before the ledger is read inside this one.
   spokenLedger.rows(conversation.key);
   try {

@@ -205,7 +205,7 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   const queued = db.createPendingTurn({ id: "stream-receipt", noteKey: key, spokenWords: words, text: words, now });
   const claim = db.claimNextPendingTurn(key, now, queued, () => payload)!;
   const transcript = sessionMessages(session)!;
-  const prepared = await prepareSpokenTranscript(key, transcript);
+  const prepared = await prepareSpokenTranscript(key, transcript, claim.text);
   const reservation = reserveSpokenHandoff({ key, session, transcript }, claim, words, false, 0, now, prepared)!;
   appendFileSync(path, JSON.stringify({ type: "user", uuid: "early-user", timestamp: new Date(now).toISOString(),
     message: { role: "user", content: payload } }) + "\n");
@@ -297,7 +297,7 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   const missing = "an instruction the runtime has not written";
   const outbox = db.createPendingTurn({ id: "stream-unmatched-terminal", noteKey: key, spokenWords: missing, text: missing, now });
   const textClaim = db.claimNextPendingTurn(key, now, outbox, s => s)!;
-  const prepared = await prepareSpokenTranscript(key, native);
+  const prepared = await prepareSpokenTranscript(key, native, textClaim.text);
   const waiting = reserveSpokenHandoff({ key, session, transcript: native }, textClaim, missing, false, 0, now, prepared)!;
   assert.ok(db.retireDeliveredPendingTurn(textClaim.id, textClaim.revision, now, waiting.id));
 
@@ -391,7 +391,7 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   for (const id of ["visible-first", "visible-second"]) {
     const queued = db.createPendingTurn({ id, noteKey: key, spokenWords: id, text: id, now });
     const claim = db.claimNextPendingTurn(key, now, queued, text => text)!;
-    const prepared = await prepareSpokenTranscript(key, native);
+    const prepared = await prepareSpokenTranscript(key, native, claim.text);
     const row = reserveSpokenHandoff({ key, session, transcript: native }, claim, id, false, 0, now, prepared)!;
     offsets.push(row.transcriptOffset!);
     assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));

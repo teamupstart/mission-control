@@ -56,6 +56,8 @@ export interface DeliveryConversation {
   transcript: SessionMessages | null;
   /** The page's spoken walks completed cooperatively. These rows have a unique timestamp fallback. */
   preparedSpokenFallbacks?: ReadonlySet<string>;
+  /** Transcript-dependent send decisions checked against the file and senders at the write guard. */
+  preparedHandoff?: { otherInFlight: boolean; reviewEchoes: ReadonlyMap<string, string | null> };
 }
 
 /** One table's persistence, and who its rows would be credited to. */
@@ -271,9 +273,59 @@ function visibleSpokenCandidate(key: string, messages: readonly TranscriptMessag
   };
 }
 
+/** Existing synchronous callers and the cooperative spoken preflight share the same page walks. */
+export function finishWalk<T>(walk: Generator<void, T>): T {
+  let step = walk.next();
+  while (!step.done) step = walk.next();
+  return step.value;
+}
+
+export async function finishHandoffWalk<T>(walk: Generator<void, T>, check: () => void): Promise<T> {
+  for (;;) {
+    check();
+    const step = walk.next();
+    if (step.done) return step.value;
+    await yieldToDaemon();
+  }
+}
+
+/** Native client UUIDs need file evidence only when a competing send might have landed. */
+export function handoffNeedsTranscript(key: string, fingerprint: string, now: number): boolean {
+  return recentSends(key, fingerprint, now).length > 0 || ledgers.some(ledger => ledger.rows(key).some(row => row.fingerprint === fingerprint));
+}
+
+/** Changes to a matching sender, claim or pending row invalidate a prepared reservation. */
+export function handoffSenderState(key: string, fingerprint: string, now: number): string {
+  return JSON.stringify([recentSends(key, fingerprint, now),
+    ...ledgers.map(ledger => ledger.rows(key).filter(row => row.fingerprint === fingerprint)
+      .map(row => [row.id, row.messageId, row.contested]))]);
+}
+
+export function settledHandoffOffsets(key: string, fingerprint: string, now: number): number[] {
+  return recentSends(key, fingerprint, now).flatMap(send => send.spokenBoundary && send.offset !== null ? [send.offset] : []);
+}
+
+export async function reconcileHandoffRows(key: string, transcript: SessionMessages, now: number, check: () => void,
+  pause: () => Promise<void>): Promise<void> {
+  try {
+    for (const ledger of ledgers) {
+      for (const row of ledger.rows(key).filter(row => !row.contested && row.messageId === null)) {
+        do {
+          await pause();
+        } while (!ledger.bindLanded(key, transcript, now, { pagedRow: row.id, beforeBind: check }));
+        check();
+      }
+    }
+  } catch (error) {
+    // Partial walks in delegated/review ledgers also belong to the captured revision.
+    for (const ledger of ledgers) ledger.forgetConversation(key);
+    throw error;
+  }
+}
+
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
 function bindAll(conversation: DeliveryConversation, now: number, candidate?: SpokenCandidate): void {
-  if (!conversation.transcript) return;
+  if (!conversation.transcript || conversation.preparedHandoff) return;
   for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, { candidate });
 }
 
@@ -449,7 +501,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       deliveredAt: now,
       // Null when the size could not be read. Never assume an unknown boundary is byte zero.
       transcriptOffset: transcriptSize(conversation.transcript),
-      contested: this.otherSendInFlight(conversation, rows, fingerprint, now),
+      contested: conversation.preparedHandoff?.otherInFlight ?? finishWalk(this.otherSendInFlight(conversation, fingerprint, now)),
       messageId: null,
       messageTs: null,
     });
@@ -518,7 +570,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
   bindLanded(noteKey: string, transcript: SessionMessages, now: number,
-    options: { candidate?: SpokenCandidate; pagedRow?: string; strict?: boolean } = {}): boolean {
+    options: { candidate?: SpokenCandidate; pagedRow?: string; strict?: boolean; beforeBind?: () => void } = {}): boolean {
     const rows = this.rows(noteKey);
     let version: string | undefined;
     if (rows.length && this.store.textBoundary) {
@@ -540,7 +592,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const pending = rows.filter(row => row.messageId === null && !row.contested &&
       (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !options.candidate || options.candidate(row)) &&
       (options.pagedRow === undefined || row.id === options.pagedRow));
-    return !pending.length || this.bindPending(pending, transcript, now, options.strict ?? false, options.pagedRow !== undefined, version);
+    return !pending.length || this.bindPending(pending, transcript, now, options.strict ?? false, options.pagedRow !== undefined, version, options.beforeBind);
   }
 
   /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
@@ -644,12 +696,12 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * written to the transcript, not counting turns any ledger's rows already own. Without a
    * transcript to count against, any recent send counts as in flight.
    */
-  private otherSendInFlight(conversation: DeliveryConversation, rows: Row[], fingerprint: string, now: number): boolean {
+  *otherSendInFlight(conversation: DeliveryConversation, fingerprint: string, now: number, reconciled = false): Generator<void, boolean> {
     const sends = recentSends(conversation.key, fingerprint, now);
     if (!sends.length) return false;
     const transcript = conversation.transcript;
     if (!transcript || sends.some((send) => send.offset === null)) return true;
-    bindAll(conversation, now);
+    if (!reconciled) bindAll(conversation, now);
     // A contested delivery's turn may already be among the matches below, and nothing says
     // which one it is, so no landed turn can be credited to the other sends: still in flight.
     if (openRows(conversation.key, fingerprint).some(({ row }) => row.contested || row.transcriptOffset === null)) return true;
@@ -665,6 +717,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         }
         if (page.atEnd || page.end <= from) break;
         from = page.end;
+        yield;
       }
     } catch {
       return true;
@@ -676,7 +729,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Walk the transcript forward from each unbound row's offset, in reservation order, and bind
    * the row to the first user turn with its words that no earlier row has claimed.
    */
-  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, singlePage: boolean, version?: string): boolean {
+  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, singlePage: boolean, version?: string, beforeBind?: () => void): boolean {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
@@ -734,6 +787,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           if (requireReadable && (boundary === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
           if (!stable || !boundary) continue;
         }
+        beforeBind?.();
         if (!this.store.bind(row, found.id, found.ts, boundary || undefined)) continue;
         if (boundary) this.verifiedTextRows.add(row.id);
       } catch (err) {

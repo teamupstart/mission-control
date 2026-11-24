@@ -280,7 +280,10 @@ For a confirmed transport without client identifiers, a file created after reser
 supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
 The first binding saves that file's identity at offset zero in the same transaction as the
 native message ID. For an existing file, the handoff hashes through its captured offset.
-A worker failure and a changed file revision at the write guard count toward the same
+Before reserving the next spoken handoff, the daemon reconciles earlier receipts one transcript
+page at a time and yields between pages. The guard checks the outbox claim, transcript revision
+and competing senders before it records the reservation. A worker failure and a changed file
+revision at the write guard count toward the same
 three-attempt limit. The outbox records the count across restart. Between attempts the
 message is queued and can be recalled. After the third failure, the daemon releases the pending
 hold and tells the operator they can repeat the message.

@@ -1084,13 +1084,14 @@ export class PendingTurnManager {
         }
       }
       let prepared: PreparedSpokenTranscript | undefined;
-      if (turn.spokenWords !== undefined && !(session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds)) {
+      if (turn.spokenWords !== undefined) {
         const transcript = sessionMessages(session);
         if (transcript) {
           try {
-            prepared = await prepareSpokenTranscript(key, transcript);
+            prepared = await prepareSpokenTranscript(key, transcript, turn.text,
+              session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds === true, this.deps.now());
           } catch (error) {
-            if (error instanceof SpokenTranscriptUnavailable) this.spokenPreparationFailed(turn);
+            if (error instanceof SpokenTranscriptUnavailable || error instanceof SpokenTranscriptChanged) this.spokenPreparationFailed(turn);
             else releasePendingTurn(turn.id, turn.revision, errorMessage(error), this.deps.now());
             this.registry.refreshPendingTurns(key);
             return;

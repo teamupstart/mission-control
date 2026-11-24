@@ -264,14 +264,14 @@ test("terminal proof preparation leaves the daemon responsive and rechecks the f
   try {
     let daemonResponded = false;
     setImmediate(() => { daemonResponded = true; });
-    const prepared = await prepareSpokenTranscript(key, transcript);
+    const prepared = await prepareSpokenTranscript(key, transcript, turn.text);
     assert.equal(daemonResponded, true);
     assert.deepEqual(prepared.capture?.eof, expected);
     assert.deepEqual(db.loadSpokenTurns(key), []);
     appendFileSync(path, "\n");
     assert.throws(() => reserveSpokenHandoff(conversation, turn, words, false, 0, 3, prepared), SpokenTranscriptChanged);
     assert.deepEqual(db.loadSpokenTurns(key), []);
-    const current = await prepareSpokenTranscript(key, transcript);
+    const current = await prepareSpokenTranscript(key, transcript, turn.text);
     assert.ok(db.releasePendingTurn(turn.id, turn.revision, "refused", 4));
     assert.equal(reserveSpokenHandoff(conversation, turn, words, false, 0, 5, current), null);
     const next = db.claimNextPendingTurn(key, 6, db.listPendingTurns(key)[0]!, s => s)!;
@@ -282,6 +282,68 @@ test("terminal proof preparation leaves the daemon responsive and rechecks the f
   } finally {
     reads.mock.restore();
     syncBuiltinESMExports();
+  }
+});
+
+test("a new spoken handoff reconciles an older receipt across a long suffix outside the guard and rechecks senders, file and claim", async t => {
+  const { prepareSpokenTranscript, reserveSpokenHandoff, reserveSpokenTurn, noteOtherSend, withdrawOtherSend,
+    SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-handoff-reconcile-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const now = Date.now();
+  const words = "inspect the build";
+  const line = (id: string, text: string) => JSON.stringify({ type: "user", uuid: id,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content: text } }) + "\n";
+  const history = Array.from({ length: 600 }, (_, i) => line("history-" + i, "x".repeat(4096))).join("");
+  for (const sdk of [false, true]) {
+    const key = "handoff-reconcile-" + sdk;
+    const path = join(dir, key + ".jsonl");
+    writeFileSync(path, line("prefix", "before handoff"));
+    let pages = 0;
+    let callbacks = 0;
+    let guardedReads = 0;
+    const native = claudeTranscript.messages!;
+    const read = { ...native, after: (...args: Parameters<typeof native.after>) => {
+      if (db.openDb().isTransaction) guardedReads++;
+      const page = native.after(...args);
+      if (!page.atEnd) {
+        pages++;
+        setImmediate(() => { callbacks++; });
+      }
+      return page;
+    } };
+    const transcript = { path, read };
+    const conversation = { key, transcript };
+    const first = claimSpoken(key, words, words);
+    const earlier = reserveSpokenTurn(conversation, words, words, false, first, now);
+    assert.ok(db.retireDeliveredPendingTurn(first.id, first.revision, now, earlier.id));
+    appendFileSync(path, history + line("earlier-native", words));
+    const queued = db.createPendingTurn({ id: key + "-next", noteKey: key, text: words, spokenWords: words, now });
+    const claim = db.claimNextPendingTurn(key, now, queued, s => s)!;
+    const prepare = () => prepareSpokenTranscript(key, transcript, claim.text, sdk, now);
+    const guard = (proof: Awaited<ReturnType<typeof prepare>>, turn = claim) =>
+      reserveSpokenHandoff(conversation, turn, words, sdk, 0, now, proof);
+    const staleFile = await prepare();
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "earlier-native");
+    assert.ok(pages > 2);
+    assert.equal(callbacks, pages);
+    appendFileSync(path, line("changed-file", "more output"));
+    assert.throws(() => guard(staleFile), SpokenTranscriptChanged);
+    const staleSender = await prepare();
+    const rival = noteOtherSend(conversation, words, now);
+    assert.throws(() => guard(staleSender), SpokenTranscriptChanged);
+    withdrawOtherSend(rival);
+    const ready = await prepare();
+    assert.ok(db.releasePendingTurn(claim.id, claim.revision, "recall", now));
+    assert.equal(guard(ready), null);
+    const next = db.claimNextPendingTurn(key, now, db.listPendingTurns(key)[0]!)!;
+    const current = await prepare();
+    const reserved = guard(current, next);
+    assert.ok(reserved);
+    assert.ok(db.retireDeliveredPendingTurn(next.id, next.revision, now, reserved.id));
+    assert.equal(guardedReads, 0);
+    t.diagnostic(`${sdk ? "SDK" : "terminal"}: ${Buffer.byteLength(history)} bytes, ${callbacks} interleaved callbacks, zero guard page reads.`);
   }
 });
 
@@ -1357,7 +1419,7 @@ test("hourly terminal cleanup prepares handoff proofs off-thread and retries a c
   const words = "inspect the archive";
   const pending = db.createPendingTurn({ id: key, noteKey: key, text: words, spokenWords: words, now });
   const claim = db.claimNextPendingTurn(key, now, pending, text => text)!;
-  const prepared = await prepareSpokenTranscript(key, source);
+  const prepared = await prepareSpokenTranscript(key, source, claim.text);
   const row = reserveSpokenHandoff({ key, transcript: source }, claim, words, false, 0, now, prepared)!;
   assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
   appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-archive", timestamp: new Date(now).toISOString(),
@@ -1403,7 +1465,7 @@ test("cleanup reopens an evicted terminal's native transcript before expiring it
     const q = db.createPendingTurn({ id: key + "-queued", noteKey: key, spokenWords: words, text: words, now });
     const turn = db.claimNextPendingTurn(key, now, q, () => payload)!;
     const conversation = { key, transcript, session: { agent: "claude" as const, cwd, transcriptPath: null } };
-    const prepared = transcript ? await prepareSpokenTranscript(key, transcript) : undefined;
+    const prepared = transcript ? await prepareSpokenTranscript(key, transcript, turn.text) : undefined;
     const row = reserveSpokenHandoff(conversation, turn, words, false, 0, now, prepared)!;
     assert.ok(db.retireDeliveredPendingTurn(turn.id, turn.revision, now, row.id));
     appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-" + key, timestamp: new Date(now + 1000).toISOString(),

@@ -59,7 +59,8 @@ export interface VoiceSplitPoint {
 function splitHead(text: string): string {
   // A comma may separate independent commands, or introduce one joining phrase.
   // Everything before that boundary belongs to the first message, including punctuation.
-  const raw = text.trim().replace(/,$/u, "").trimEnd();
+  const prefix = text.trim();
+  const raw = prefix.replace(/,$/u, "").trimEnd();
   const conjunction = /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and\s+then|and|then|also|plus)$/iu.exec(raw)
     ?? /\s+(?:and\s+then|and|then)$/iu.exec(raw);
   if (!conjunction) return raw;
@@ -72,6 +73,12 @@ function splitHead(text: string): string {
     // "Say, then" still needs its object. "Update the keyword, and" already has one.
     const bareDirective = literalVerb && /^(?:please\s+)?$/iu.test(before.slice(0, literalVerb.index));
     return bareDirective ? raw : preceding;
+  }
+  if (prefix.endsWith(",") && /^\s+and\s+then$/iu.test(conjunction[0])) {
+    // In "between if and then, Alice", the comma ends the comparison. Its "and" pairs
+    // the two operands. A comparison already containing that "and" can take a joiner.
+    const clause = before.split(/[.!?;:]/u).at(-1) ?? "";
+    if (clause.match(/\b(?:between|and)\b/giu)?.at(-1)?.toLowerCase() === "between") return raw;
   }
   if (literalVerb || /\b(?:word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
   if (/\b(?:or|use)$/iu.test(before)) return raw;

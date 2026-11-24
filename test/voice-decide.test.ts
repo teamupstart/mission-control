@@ -1366,6 +1366,23 @@ test("an explicit comma before the joiner ends a complete replacement instructio
   assert.deepEqual(delivered, [["Steve", "replace foo with the text", "replace"], ["Alice", "review the PR", "replace#2"]]);
 });
 
+test("a comma after 'and then' keeps the second operand of a comparison", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [spoken, expected] of [
+      ["explain the difference between if and then", "explain the difference between if and then"],
+      ["compare performance between client and server and then", "compare performance between client and server"],
+    ]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken}, Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+    }
+  }
+});
+
 test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let chooseFirst!: (result: VoiceDecisionResult) => void;

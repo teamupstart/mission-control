@@ -1348,7 +1348,7 @@ test("a confirmed split keeps the last word of an incomplete first instruction",
   for (const choice of ["split", null]) {
     const { router, say, delivered } = routerRig(() => answered(choice));
     t.after(() => router.reset());
-    for (const first of ["explain how to use then", "compare or and"]) {
+    for (const first of ["explain how to use then", "compare or and", "replace foo with the text and", "rename it to the string then"]) {
       const id = String(delivered.length);
       await say(`Steve, ${first}, Alice, review the PR`, id);
       if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
@@ -1356,6 +1356,14 @@ test("a confirmed split keeps the last word of an incomplete first instruction",
       assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
     }
   }
+});
+
+test("an explicit comma before the joiner ends a complete replacement instruction", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, replace foo with the text, and Alice, review the PR", "replace");
+  assert.ok(await router.sendNow("replace"));
+  assert.deepEqual(delivered, [["Steve", "replace foo with the text", "replace"], ["Alice", "review the PR", "replace#2"]]);
 });
 
 test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {

@@ -76,6 +76,7 @@ interface OpenCard {
   resolvingVisible?: boolean;
   remainingSplits?: VoiceSplitPoint[];
   commands?: VoiceSplitPoint["commands"];
+  splitStops?: { delivery: CardDelivery; done: Promise<void[]> };
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -188,6 +189,7 @@ export class VoiceRouter {
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
+  private lifetime = new AbortController();
   private readonly outbox = new Map<string, OutboxReceipt>();
   // Earlier choice rows can block a delayed spoken pick, but can never be picked again.
   private readonly priorChoices: {
@@ -439,7 +441,14 @@ export class VoiceRouter {
     if (card.state === "pending") {
       const window = this.window();
       card.openQuestions = this.openQuestionCount(card);
-      if ((card.parts.length === 1 && item.commands?.[0] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
+      if (card.parts.length > 1 && item.commands?.includes("stop")) {
+        const delivery = this.newDelivery(item);
+        const { signal } = this.lifetime;
+        const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
+          ? [this.deliverPart(delivery, index, "stop", () => !signal.aborted)] : []);
+        item.splitStops = { delivery, done: Promise.all(stops) };
+      }
+      if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
@@ -466,6 +475,14 @@ export class VoiceRouter {
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
     this.publish({ ...item.card, state: "cancelled", deadline: null });
+    if (item.splitStops) {
+      const { delivery, done } = item.splitStops;
+      const { signal } = this.lifetime;
+      for (const index of item.card.parts.keys()) {
+        if (item.commands?.[index] !== "stop") delivery.results[index] = { outcome: "cancelled" };
+      }
+      void done.then(() => { if (!signal.aborted) this.publishDelivery(delivery); });
+    }
     return true;
   }
 
@@ -538,6 +555,50 @@ export class VoiceRouter {
     this.publish({ ...card, state, ...(detail && { detail }) });
   }
 
+  private newDelivery(item: OpenCard): CardDelivery {
+    return { card: { ...item.card, parts: [...item.card.parts], deadline: null },
+      entry: new WeakRef(item.entry), routingDetail: item.entry.detail, results: [], ready: false };
+  }
+
+  private async deliverPart(delivery: CardDelivery, index: number, command: VoiceAddressedCommand | undefined, active: () => boolean): Promise<void> {
+    const { id, parts } = delivery.card;
+    const part = parts[index]!;
+    const target = this.checkedTarget(this.state().roster, part.target);
+    const receipt = { delivery, index };
+    let registeredId: string | undefined;
+    let result: DeliveryResult = "not-running";
+    try {
+      if (target) {
+        const partId = index === 0 ? id : `${id}#${index + 1}`;
+        result = await this.deliverer.deliver(target, part.text, partId, command, active, turnId => {
+          if (!active()) return;
+          registeredId = turnId;
+          this.outbox.set(turnId, receipt);
+        });
+      }
+    } catch (error) {
+      result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (registeredId !== undefined && this.outbox.get(registeredId) === receipt) this.outbox.delete(registeredId);
+    if (!active()) return;
+    const roster = this.state().roster;
+    let latest = this.checkedTarget(roster, part.target) ?? target ?? part.target;
+    let detail = typeof result !== "string" && result.outcome === "failed" ? result.detail : undefined;
+    if (result === "not-running") {
+      const stopped = roster.find(row => row.key === part.target?.key && row.state === "not-running");
+      latest = stopped ?? latest;
+      detail = (stopped || target) && latest
+        ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
+        : "The selected session is unavailable.";
+    }
+    delivery.card.parts[index] = { ...part, target: latest };
+    // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
+    if (!delivery.results[index]) {
+      delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
+      if (typeof result !== "string" && "turnId" in result) this.outbox.set(result.turnId, receipt);
+    }
+  }
+
   async sendNow(id: string): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
@@ -546,48 +607,15 @@ export class VoiceRouter {
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
     const active = () => this.delivering.get(id) === inFlight && this.state().mode !== "off";
-    const delivery: CardDelivery = {
-      card: { ...item.card, parts: [...item.card.parts], deadline: null }, entry: new WeakRef(item.entry),
-      routingDetail: item.entry.detail, results: [], ready: false,
-    };
+    const delivery = item.splitStops?.delivery ?? this.newDelivery(item);
     if (item.card.parts.length > 1 || this.checkedTarget(this.state().roster, item.card.parts[0]!.target)) this.publish(inFlight);
-    for (const [index, part] of item.card.parts.entries()) {
+    for (const index of item.card.parts.keys()) {
       if (!active()) return true;
-      const target = this.checkedTarget(this.state().roster, part.target);
-      const receipt = { delivery, index };
-      let registeredId: string | undefined;
-      let result: DeliveryResult = "not-running";
-      try {
-        if (target) {
-          const partId = index === 0 ? id : `${id}#${index + 1}`;
-          result = await this.deliverer.deliver(target, part.text, partId, item.commands?.[index], active, turnId => {
-            if (!active()) return;
-            registeredId = turnId;
-            this.outbox.set(turnId, receipt);
-          });
-        }
-      } catch (error) {
-        result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
-      }
-      if (registeredId !== undefined && this.outbox.get(registeredId) === receipt) this.outbox.delete(registeredId);
-      if (!active()) return true;
-      const roster = this.state().roster;
-      let latest = this.checkedTarget(roster, part.target) ?? target ?? part.target;
-      let detail = typeof result !== "string" && result.outcome === "failed" ? result.detail : undefined;
-      if (result === "not-running") {
-        const stopped = roster.find(row => row.key === part.target?.key && row.state === "not-running");
-        latest = stopped ?? latest;
-        detail = (stopped || target) && latest
-          ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
-          : "The selected session is unavailable.";
-      }
-      delivery.card.parts[index] = { ...part, target: latest };
-      // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
-      if (!delivery.results[index]) {
-        delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
-        if (typeof result !== "string" && "turnId" in result) this.outbox.set(result.turnId, receipt);
-      }
+      if (item.splitStops && item.commands?.[index] === "stop") continue;
+      await this.deliverPart(delivery, index, item.commands?.[index], active);
     }
+    if (item.splitStops) await item.splitStops.done;
+    if (!active()) return true;
     this.delivering.delete(id);
     delivery.ready = true;
     delivery.card.openQuestions = this.openQuestionCount(delivery.card);
@@ -610,6 +638,8 @@ export class VoiceRouter {
     }
     this.open.clear();
     this.resolutions.clear();
+    this.lifetime.abort();
+    this.lifetime = new AbortController();
     this.delivering.clear();
     this.outbox.clear();
     this.pendingVoiceActions.length = 0;

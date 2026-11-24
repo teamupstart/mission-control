@@ -1044,7 +1044,7 @@ test("a quiet native binding survives a failed transcript read and advances attr
   // The retry must request a strict read and keep its marker when that read fails.
   let requestedStrict = false;
   t.mock.method(native.read, "after", (...args: Parameters<typeof after>) => {
-    requestedStrict = args[3] === true;
+    requestedStrict = Boolean(args[3]);
     if (requestedStrict) throw new Error("transient native read failure");
     return { messages: [], start: args[1], end: args[1], atEnd: true };
   }, { times: 1 });

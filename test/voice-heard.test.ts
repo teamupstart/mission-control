@@ -158,3 +158,28 @@ test("direct and picked stops interrupt immediately while ordinary speech keeps 
     router.reset();
   }
 });
+
+test("a split interrupts its second recipient before waiting for the first one's resume", async t => {
+  const sleeping: SpokenName = { key: "task:steve", name: "Steve", kind: "session", sessionId: null,
+    taskId: "steve", role: "", colorId: null, agent: "claude", state: "hibernated" };
+  const will: SpokenName = { ...sleeping, key: "task:will", name: "Will", taskId: "will", sessionId: "sdk:will", state: "running" };
+  let finishResume!: () => void;
+  const resume = new Promise<void>(resolve => { finishResume = resolve; });
+  const calls: string[] = [];
+  const cards: VoiceCard[] = [];
+  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [sleeping, will] }),
+    () => ({ enabled: false, seconds: 30 }), { async deliver(target, _text, _id, command) {
+      if (command === "stop") { calls.push("interrupt " + target.name); return "sent"; }
+      calls.push("resume " + target.name);
+      await resume;
+      return "queued";
+    } }, card => cards.push(card), { ask: async () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "test" }) });
+  t.after(() => router.reset());
+  await router.accept({ id: "resume-and-stop", text: "Steve, inspect the build, and Will, stop", capturedAt: 1, backend: "fluidaudio", words: [] });
+  await router.resolution("resume-and-stop");
+  assert.deepEqual(calls, ["interrupt Will", "resume Steve"]);
+  finishResume();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.match(cards.at(-1)!.detail!, /Part 1 \(Steve\) queued\. Part 2 \(Will\) sent\./);
+});

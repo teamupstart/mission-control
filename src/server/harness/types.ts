@@ -282,6 +282,8 @@ export interface TranscriptForwardPage {
   partialTailEnd?: number;
   /** A complete native record exceeded the parse budget and its contents were not inspected. */
   skippedRecord?: true;
+  /** A cooperative reader stopped at its parse budget. Resume to locate the newline or verified partial EOF. */
+  finishOversizedRecord?(signal?: AbortSignal): Promise<TranscriptForwardPage>;
 }
 
 /** A live stream's opening history: turns, where to resume, and where to page back from. */
@@ -357,9 +359,10 @@ export interface TranscriptMessages {
    * a recorded boundary to the last complete turn without ever holding more than one page.
    * Returns an empty page with `atEnd` when the anchor is already past the last complete
    * record. A caller that needs proof of a successful read can request `requireReadable`:
-   * an I/O failure then throws, including on an empty file.
+   * an I/O failure then throws, including on an empty file. The cooperative mode also
+   * returns a continuation when locating the end of one record would exceed the page budget.
    */
-  after(path: string, after: number, wantTurns?: number, requireReadable?: boolean): TranscriptForwardPage;
+  after(path: string, after: number, wantTurns?: number, requireReadable?: boolean | "cooperative"): TranscriptForwardPage;
   /** Complete turns from `pos` to the captured EOF (default: current EOF). Throws if unreadable. */
   appended(path: string, pos: number, through?: number): TranscriptStreamRead;
   /**

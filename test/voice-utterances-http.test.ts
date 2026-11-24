@@ -646,7 +646,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(999);
   assert.ok(!queued("Steve").includes("check the build"));
   t.mock.timers.tick(1);
-  await Promise.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
   assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["pending", "pending", "cancelled", "delivering", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
@@ -907,7 +907,7 @@ test("a stop after an unclosed address wrapper queues as text at the deadline", 
   const messages = queued("Will");
   for (const text of ["[Will, stop", "“Will, STOP!", "「[Will, ] stop", ", [Will, stop"]) await say(text);
   t.mock.timers.tick(1000);
-  await Promise.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(interrupts.length, before);
   assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
   assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
@@ -963,12 +963,26 @@ test("split delivery interrupts on each bare stop and queues quoted stop verbati
   ] as const) {
     const before = interrupts.length;
     const id = randomUUID();
+    const queuedBefore = queued(messaged).length;
     await say(text, id);
     await resolved(id);
+    assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
+    assert.equal(queued(messaged).length, queuedBefore);
     assert.equal((await act(id, "send-now")).status, 200);
     assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
     assert.equal(queued(messaged).at(-1), '"stop"');
   }
+});
+
+test("cancelling a split keeps the immediate interrupt and drops only the ordinary message", async () => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  const before = interrupts.length;
+  await say("Steve, inspect the build, and Will, stop", "split-cancel");
+  await resolved("split-cancel");
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  assert.equal((await act("split-cancel", "cancel")).status, 200);
+  assert.equal(queued("Steve").length, 0);
+  assert.match((await readHeard())[0]!.detail, /Part 1 \(Steve\) cancelled\. Part 2 \(Will\) sent\./);
 });
 
 test("Recently heard names both deliveries when the second part of a split fails", async (t) => {

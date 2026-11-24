@@ -758,8 +758,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         for (;;) {
           // An empty best-effort page can mean a failed read. Spoken binding needs to
           // distinguish that case from EOF so a quiet connection can finish its retry.
-          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, requireReadable || !!this.store.textBoundary);
-          if (this.store.textBoundary && page.skippedRecord) {
+          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, this.store.textBoundary ? "cooperative" : requireReadable);
+          if (this.store.textBoundary && (page.skippedRecord || page.finishOversizedRecord)) {
             // The skipped record could be the delivery. A later copy cannot establish the first match.
             this.scanned.set(row.id, "skipped");
             this.deferredBindings.delete(row.id);
@@ -845,8 +845,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const handoff = this.store.textBoundary ? row.transcriptOffset ?? 0 : 0;
     try {
       while (!state.final) {
-        const page = transcript.read.after(transcript.path, state.from, BIND_PAGE_TURNS, !!this.store.textBoundary);
-        if (this.store.textBoundary && page.skippedRecord) {
+        const page = transcript.read.after(transcript.path, state.from, BIND_PAGE_TURNS, this.store.textBoundary ? "cooperative" : false);
+        if (this.store.textBoundary && (page.skippedRecord || page.finishOversizedRecord)) {
           this.twins.set(row.id, "ineligible");
           return false;
         }

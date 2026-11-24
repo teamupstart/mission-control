@@ -324,7 +324,9 @@ answers, the card keeps its place in the cancel order and becomes `pending` (one
 two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
 both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
 cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
-each captured session immediately before delivering its part, in spoken order. If a session
+each captured session immediately before delivering its part. Addressed stops interrupt as soon
+as the split is confirmed. Ordinary message parts keep their cancel window and delivery order.
+Cancelling the remaining message leaves an interrupt that already ran in the delivery history. If a session
 has left or been replaced, the other recipient can still receive their part. Recently heard
 lists each recipient and delivery result. The card carries the worse of the two outcomes.
 The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.

@@ -173,16 +173,32 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
   }
   // Neither command inspects file content. In particular no status/diff command
   // gets a chance to run an attribute-selected clean or textconv driver.
-  await records([...override, "ls-files", "-z", "-v", "--stage"], row => {
+  // --debug appends a fixed stat block after each NUL-terminated stage record.
+  // Read only the cached size. Git porcelain uses a nonzero size mismatch as
+  // an immediate modification, even when the normalized patch is empty.
+  const indexStatSizes: Record<string, number> = {};
+  let previousKey: string | undefined;
+  function consumeStat(row: Buffer) {
+    if (previousKey === undefined) return row;
+    const stat = /^  ctime: \d+:\d+\n  mtime: \d+:\d+\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: (\d+)\tflags: [0-9a-f]+\n/.exec(row.toString("latin1", 0, 256));
+    if (!stat) return unavailable();
+    indexStatSizes[previousKey] = Number(stat[1]);
+    return row.subarray(stat[0].length);
+  }
+  function readIndexEntry(raw: Buffer) {
+    const row = consumeStat(raw);
     const tab = row.indexOf(9);
     if (tab < 0 || tab > 100) unavailable();
     const [tag, mode, id, stage] = row.toString("ascii", 0, tab).split(" ");
     if (stage !== "0" || !/^(100644|100755|120000|160000)$/.test(mode!)) unavailable();
     const key = collectPath(row.subarray(tab + 1));
+    previousKey = key;
     index.set(key, { mode: mode!, id: oid.parse(id) });
     if (tag === "S" || tag === "s") skipWorktree.add(key);
     if (tag === "h" || tag === "s") assumeUnchanged.add(key);
-  });
+  }
+  await checkoutRecords(executable, directories, [...override, "ls-files", "-z", "-v", "--stage", "--debug"],
+    signal, maxRecordBytes + 256, readIndexEntry, { tail: raw => { if (consumeStat(raw).length) unavailable(); } });
   // Intent-to-add has the id of the empty blob in ls-files, but no entry in the
   // staged tree. Ask Git for index names against its virtual empty tree only when
   // there is an ambiguous empty entry. A cached, names-only diff reads no worktree.
@@ -220,7 +236,7 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
   });
   const sorted = [...paths].sort();
   const lineEndings = await lineEndingModes(executable, directories, sorted, signal);
-  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, assumeUnchanged, intentModes, embedded, paths: sorted, lineEndings };
+  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, indexStatSizes, skipWorktree, assumeUnchanged, intentModes, embedded, paths: sorted, lineEndings };
 }
 
 const require = createRequire(import.meta.url);
@@ -245,7 +261,8 @@ async function openChecked(path: Buffer, directory = false) {
   }
 }
 
-async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSignal, limit = MAX_CAPTURE_OBJECT_BYTES) {
+async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSignal, limit = MAX_CAPTURE_OBJECT_BYTES,
+  chargeRead?: (size: number) => void) {
   const fd = await openChecked(path).catch(error => {
     if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? ""))
       throw new RepositoryCaptureChanged();
@@ -257,6 +274,7 @@ async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSigna
       throw new RepositoryCaptureChanged();
     if (stat.size > limit)
       throw Object.assign(new Error("Worktree file exceeds capture limit"), { code: "worktree_file_too_large" });
+    chargeRead?.(stat.size);
     const data = await readExactFile(fd, stat.size, signal);
     if (data === null) throw new RepositoryCaptureChanged();
     return { data, mode: stat.mode & 0o100 ? "100755" : "100644" };
@@ -292,6 +310,7 @@ export async function workingFile(
   key: string,
   embedded: boolean,
   signal: AbortSignal,
+  chargeRead: (size: number) => void,
 ) {
   signal.throwIfAborted();
   const { root, common, index } = state;
@@ -321,7 +340,7 @@ export async function workingFile(
       }
       let admin = marker;
       if (stat.isFile()) {
-        const text = (await readWorkingFile(Buffer.from(marker), stat, signal)).data.toString("utf8").trimEnd();
+        const text = (await readWorkingFile(Buffer.from(marker), stat, signal, MAX_CAPTURE_OBJECT_BYTES, chargeRead)).data.toString("utf8").trimEnd();
         if (!text.startsWith("gitdir: ")) unavailable();
         admin = resolve(sub, text.slice(8));
       } else if (!stat.isDirectory()) unavailable();
@@ -346,7 +365,9 @@ export async function workingFile(
         const binding = require(nativeStateLockAddonPath()) as {
           readRepositoryLink(fd: number, name: Buffer): Buffer;
         };
+        chargeRead(st.size);
         const data = binding.readRepositoryLink(parentFd.fd, path.subarray(parent.length + 1));
+        if (data.length > st.size) chargeRead(data.length - st.size);
         return { data, mode: "120000" };
       } catch (error) {
         // lstat saw a link. If it vanished or became a different kind of entry,
@@ -360,7 +381,7 @@ export async function workingFile(
       }
     }
     if (!st.isFile()) unavailable();
-    const file = await readWorkingFile(path, st, signal);
+    const file = await readWorkingFile(path, st, signal, MAX_CAPTURE_OBJECT_BYTES, chargeRead);
     const indexedMode = indexed?.mode ?? state.intentModes[key];
     if (!state.symlinks && indexedMode === "120000") file.mode = "120000";
     else if (!state.fileMode && indexedMode) file.mode = indexedMode === "100755" ? "100755" : "100644";

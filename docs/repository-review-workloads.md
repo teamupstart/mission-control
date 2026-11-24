@@ -75,6 +75,9 @@ All unique Git objects required by the base, HEAD, index and worktree share a 51
 storage allowance, including their Git headers. Capture checks the combined blob sizes
 before copying any blob. Both the boundary sample and sealing count unique allowed
 working blobs as they are read and stop at the first blob that exceeds the allowance.
+Independently, each worktree scan reads at most 512 MiB of payload across all paths.
+Denied files, repeated content and literal link targets all consume this allowance.
+Sealing makes two bounded passes, one to measure the checkout and one to copy it.
 Pending candidates and private reader leases share a 2 GiB
 allowance for object files, manifests and lease data. Each write reserves its bytes
 before it starts. A candidate or lease holds its share until its directory is removed.
@@ -113,7 +116,9 @@ v1 artifacts.
 Worktree reads return literal submitted bytes, including CRLF. For status and diffs,
 capture applies Git's built-in text line-ending rules from attributes and
 `core.autocrlf`. When normalization changes bytes, the artifact also seals a
-comparison tree. Both trees obey the same sensitive-path and storage limits.
+comparison tree. Like Git porcelain, status can report a modified file whose size
+differs from the nonzero size cached in the index, even when its normalized diff
+is empty. Both trees obey the same sensitive-path and storage limits.
 Capture never runs repository filters or textconv to produce status. An unmerged
 index has no single tree and fails capture.
 

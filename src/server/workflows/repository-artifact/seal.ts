@@ -77,12 +77,19 @@ async function scanWorking(
   executable: string,
   state: CheckoutState,
   signal: AbortSignal,
+  readLimit: number,
   accept?: (id: string, bytes: Buffer, key: string, mode: string) => void | Promise<void>,
 ) {
   const layer: Layer = new Map();
   const embedded = new Set(state.embedded);
+  let remaining = readLimit;
+  const chargeRead = (size: number) => {
+    if (size > remaining)
+      throw Object.assign(new Error("Worktree scan exceeds read limit"), { code: "worktree_read_limit" });
+    remaining -= size;
+  };
   for (const key of state.paths) {
-    const file = await workingFile(executable, state, key, embedded.has(key), signal);
+    const file = await workingFile(executable, state, key, embedded.has(key), signal, chargeRead);
     if (!file) continue;
     if (file.entry) layer.set(key, file.entry);
     else if (file.data && file.mode) {
@@ -97,14 +104,15 @@ async function scanWorking(
   return layer;
 }
 
-type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage };
+const MAX_WORKTREE_READ_BYTES = 512 * 1024 ** 2;
+type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage; worktreeReadLimit?: number };
 export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal,
-  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions = {}) {
+  { storage = new RepositoryArtifactStorage(), worktreeReadLimit = MAX_WORKTREE_READ_BYTES, ...limits }: SealOptions = {}) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
   return withCheckoutSample(git.path, checkout, signal, limits, async state => {
     const charge = storage.requiredBlobBudget();
-    const work = await scanWorking(git.path, state, signal, (id, bytes, key) => {
+    const work = await scanWorking(git.path, state, signal, worktreeReadLimit, (id, bytes, key) => {
       if (pathAllowed(key)) charge(id, bytes.length);
     });
     await checkMetadata(git.path, checkout, signal, limits, state);
@@ -128,7 +136,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
 }
 
 async function sealSample(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
-  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions, executable: string, state: CheckoutState, commonFd: number) {
+  { storage = new RepositoryArtifactStorage(), worktreeReadLimit = MAX_WORKTREE_READ_BYTES, ...limits }: SealOptions, executable: string, state: CheckoutState, commonFd: number) {
   const { index, head, format, common } = state;
   // Workflow displays an abbreviated id. Expand that exact selection while the checkout
   // is still sampled, refusing ambiguous prefixes and never resolving a moving branch.
@@ -325,11 +333,14 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
       if (anchor === head) headLayer = layer;
     }
     const normalized: Layer = new Map();
+    const changedStatSize = new Set<string>();
     const indexHasCrlf = new Map<string, boolean>();
     const chargeBlob = storage.requiredBlobBudget(pending);
-    const worktree = await scanWorking(executable, state, signal, async (id, bytes, key, mode) => {
+    const worktree = await scanWorking(executable, state, signal, worktreeReadLimit, async (id, bytes, key, mode) => {
       sizes.set(id, bytes.length);
       if (allowed(key)) chargeBlob(id, bytes.length);
+      const cachedSize = state.indexStatSizes[key];
+      if (cachedSize && cachedSize !== bytes.length && (mode === "100644" || mode === "100755")) changedStatSize.add(key);
       const conversion = state.lineEndings.overrides[key] ?? state.lineEndings.fallback;
       if (state.assumeUnchanged.has(key) || mode === "120000" || conversion === "raw" || !bytes.includes("\r\n")) return;
       if (conversion === "auto") {
@@ -406,7 +417,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     // A shared nonempty blob would disclose denied bytes through the allowed path.
     // The canonical empty blob has no payload. Path policy still denies the sensitive name.
     for (const id of denied) if (id !== state.emptyBlob && needed.has(id)) unavailable();
-    const finalWork = await scanWorking(executable, state, signal, async (id, bytes, key) => {
+    const finalWork = await scanWorking(executable, state, signal, worktreeReadLimit, async (id, bytes, key) => {
       if (worktree.get(key)?.id !== id) throw new RepositoryCaptureChanged();
       if (needed.has(id) && !table.has(id)) await save("blob", bytes, id, requiredBlobs.has(id));
       const clean = normalized.get(key);
@@ -433,7 +444,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
       const equal = (a: typeof working, b: typeof working) => a?.id === b?.id && a?.mode === b?.mode;
       if (committed || (!staged && !working && !intent)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
-      if ((!assumeUnchanged && staged && !equal(staged, normalized.get(key) ?? working)) || missingIntent) classes.push("unstaged");
+      if ((!assumeUnchanged && staged && (changedStatSize.has(key) || !equal(staged, normalized.get(key) ?? working))) || missingIntent) classes.push("unstaged");
       if (working && !staged && !assumeUnchanged) classes.push(intent ? "unstaged" : "untracked");
       if ((committed && !staged) || (!assumeUnchanged && staged && !working) || missingIntent) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");

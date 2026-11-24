@@ -26,13 +26,15 @@ export async function lineEndingModes(executable: string, directories: CheckoutD
     if (field === 2) values.push(record.toString());
     field = (field + 1) % 3;
     if (values.length !== attributes.length) return;
+    // Git's convert_attrs calls git_path_check_crlf for text, then for legacy crlf.
+    // Both attributes accept "auto" and "input".
     const text = values.slice(0, 2).find(value => ["set", "unset", "auto", "input"].includes(value));
     const mode = text === "unset" ? "raw" : text === "auto" ? "auto" :
       text || values[2] === "lf" || values[2] === "crlf" ? "text" : fallback;
     if (mode !== fallback) overrides[key] = mode;
     values.length = 0;
     position++;
-  }, names());
+  }, { input: names() });
   if (position !== paths.length || field || values.length) unavailable();
   return { fallback, overrides };
 }

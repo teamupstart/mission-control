@@ -82,12 +82,13 @@ function gitExit(child: ChildProcess) {
 
 /** Consume NUL-delimited Git output with backpressure and stop Git on the first refused path. */
 export async function checkoutRecords(executable: string, directories: CheckoutDirectories, args: string[], signal: AbortSignal,
-  maxRecordBytes: number, accept: (record: Buffer) => void, input?: Iterable<Buffer>) {
+  maxRecordBytes: number, accept: (record: Buffer) => void,
+  options?: { input?: Iterable<Buffer>; tail?: (record: Buffer) => void }) {
   const child = spawn(executable, [...flags, ...args], {
     cwd: directories.root, signal, env: checkoutEnvironment(false, directories), timeout: 30_000, stdio: ["pipe", "pipe", "ignore"],
   });
   const finished = gitExit(child);
-  const source = input && Readable.from(input);
+  const source = options?.input && Readable.from(options.input);
   child.stdin.on("error", () => {}); // A refused or cancelled Git process closes its input first.
   if (source) source.pipe(child.stdin);
   else child.stdin.end();
@@ -109,7 +110,9 @@ export async function checkoutRecords(executable: string, directories: CheckoutD
     const status = await finished;
     signal.throwIfAborted();
     if (status instanceof Error) throw status;
-    if (status !== 0 || size) unavailable();
+    if (status !== 0) unavailable();
+    if (options?.tail) options.tail(Buffer.concat(parts, size));
+    else if (size) unavailable();
   } finally {
     source?.destroy();
     child.kill();

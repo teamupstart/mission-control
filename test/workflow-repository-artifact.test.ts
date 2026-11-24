@@ -651,6 +651,51 @@ test("required worktree bytes stop boundary sampling and sealing before the next
   }
 });
 
+test("worktree scan read budget counts denied payloads, duplicate files and literal symlink targets", async (t) => {
+  const f = fixture(t);
+  f.write(".env", "s".repeat(400));
+  f.git("add", "-f", ".env");
+  f.write("a", "a".repeat(300));
+  f.write("b", "a".repeat(300));
+  symlinkSync("a", join(f.checkout, "c"));
+  f.write("d", "x");
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  const reads: string[] = [];
+  const checkout = realpathSync(f.checkout);
+  const monitor = t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+    const fd = await open(...args);
+    const name = relative(checkout, String(args[0]));
+    if ([".env", "a", "b", "d"].includes(name)) {
+      const read = fd.read.bind(fd);
+      t.mock.method(fd, "read", (buf: Buffer, pos: number, length: number, offset: number) => {
+        reads.push(name);
+        return read(buf, pos, length, offset);
+      });
+    }
+    return fd;
+  });
+  syncBuiltinESMExports();
+  const input = { checkout: f.checkout, sourceBase: null };
+  const pending = () => mkdtempSync(join(dirname(f.checkout), "candidate-"));
+  try {
+    const limit = { worktreeReadLimit: 1001 };
+    for (const capture of [() => sampleCheckoutBoundary(f.checkout, signal, limit), () => seal(input, pending(), signal, limit)]) {
+      reads.length = 0;
+      await assert.rejects(capture(), { code: "worktree_read_limit" });
+      assert.deepEqual([...new Set(reads)], [".env", "a", "b"]);
+    }
+    const fits = { worktreeReadLimit: 1002 };
+    const boundary = await sampleCheckoutBoundary(f.checkout, signal, fits);
+    const sealed = await seal(input, pending(), signal, fits);
+    assert.equal(sealed.boundary, boundary);
+  } finally {
+    monitor.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 test("concurrent and sealed candidates retain their storage reservations until cleanup", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 180_000));
   f.write("file", Buffer.alloc(96_000, 0x61));
@@ -2320,6 +2365,28 @@ test("CRLF worktree reads preserve literal bytes while status and diffs use Git'
   await lease.release();
   await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
+});
+
+test("legacy crlf and text attributes match Git for CRLF-only edits, including a stat-only status change", async (t) => {
+  const f = fixture(t);
+  f.git("config", "core.autocrlf", "false");
+  f.write(".gitattributes", "legacy crlf=auto\nmodern text=input\nraw -text crlf=auto\n");
+  for (const path of ["legacy", "modern", "raw"]) f.write(path, "line\n");
+  f.git("add", ".");
+  f.git("commit", "-qm", "LF index and cached file sizes");
+  for (const path of ["legacy", "modern", "raw"]) f.write(path, "line\r\n");
+  const status = f.git("status", "--porcelain=v1").split("\n").map(row => row.trim().slice(2));
+  assert.deepEqual(status, ["legacy", "modern", "raw"]);
+  assert.equal(f.git("diff", "--name-only"), "raw");
+  const candidate = await f.prepare();
+  const view = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", candidate.id, "artifact", "manifest.json"), "utf8"))).view;
+  assert.deepEqual(view.worktree.filter(e => e.classifications.includes("unstaged")).map(e => e.path), status);
+  // git add updates the cached worktree sizes, but only the raw path changes blobs.
+  f.git("add", "-u");
+  assert.equal(view.worktreeDiffTree, f.git("write-tree"));
+  assert.notEqual(view.worktreeTree, view.worktreeDiffTree);
+  assert.equal(f.git("status", "--porcelain=v1"), "M  raw");
+  await f.service.discard(candidate);
 });
 
 test("CRLF normalization preserves the sensitive nonempty blob alias check", async (t) => {

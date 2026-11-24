@@ -1229,6 +1229,33 @@ available:
   deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
   never moves to **needs you**. The **Console** rail draws the same rule and a short track beside
   the row's state.
+- **The idle column has a Stalled section (preview).** While the **Stalled section in Idle**
+  preview (`idle-stalled`) is on, a session the daemon's
+  [stuck rules](attention-and-alerts.md#stuck-sessions) flag as **Idle with work open** or
+  **Workflow run parked** sorts under a **stalled** rule between the free agents and the held
+  ones, longest stalled first, and is no longer a row in the inbox. Free stays first because it is
+  what you dispatch to; stalled comes next because it is what you act on. The head counts it
+  (**1 free · 2 stalled · 1 held**), and the **Console** rail's head does too. Each stalled card
+  wears a yellow spine and a **stalled** tag, and a short fact sheet: the open **Task** and any
+  open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
+  then the session's **Last** activity line and Foreman's note when it has one. Below it are the
+  actions for the open work. **Nudge** asks the agent for a status update. **Message…** opens
+  the task session's composer, **Mark done** completes its task, and **Open queue** opens its work queue.
+  A parked run offers **Open run** and the available fix, such as **Resubmit**, **Tell it to push** or
+  **Continue**. When the run needs a new pushed head and no unpushed commit is reported,
+  **Open run** shows the waiting review, and **Message…** opens the reachable session’s composer
+  so you can ask the agent to prepare a commit. Older daemons that supply only a reason
+  still offer **Message…** for reachable sessions and **Open run** when they identify a parked run.
+  Every card offers **Dismiss**, which returns it to free or held until its stall changes. A dismissal here and on the inbox's
+  Stuck row is one dismissal. Stalled wins over held, as blocked does: a parked run's session is
+  stalled because its run did not move it. It also wins over a resident's pin: a pinned resident
+  with an idle stall leaves the top of the column for the Stalled section, and leaves the inbox.
+  It wins over a declared wait the same way: a stalled session leaves the Awaiting section for
+  Stalled, and its card still draws the wait's deadline track. A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
+  row. The section is not framed by repository or by run. The Console
+  rail marks the row **stalled** and shows the first fact beneath the session name. Selecting that row or
+  opening the Board card shows the full fact sheet and actions in the session detail. **Silent while working** and **Foreman escalation unanswered** stay inbox
+  rows, because neither describes a quiet idle session. With the preview off, nothing changes.
 - **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
   has an outline and soft glow in its profile's color and a short label chip, and, when its
   profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail

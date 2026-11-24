@@ -77,11 +77,13 @@ import {
   draftCallSign,
   draftFromTask,
   draftPersonaId,
+  draftStackStartEdge,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
   type DispatchDraft,
 } from "../lib/task-draft.ts";
+import { stackEdgeLabel } from "../lib/backlog-copy.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { repoLeaf } from "../lib/format.ts";
 import {
@@ -1662,6 +1664,8 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
+  const byId = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks]);
+  const stackEdge = editing && !pinSelection ? draftStackStartEdge(editing, draft, byId) : null;
   const unmetDependencyCount = pinSelection
     ? pinSelection.dependencies.filter(dependency => dependency.satisfiedAt === null).length
     : draft.dependencies.filter((dependency) => {
@@ -1671,7 +1675,7 @@ function DispatchModal({
           dependencyInputOf(candidate),
         ) === dependencyKey(dependency),
     );
-    if (stored?.satisfiedAt != null) return false;
+    if (stored === stackEdge || stored?.satisfiedAt != null) return false;
     // Only the source's sweep can satisfy an external item, only its publication a plan edge,
     // and nothing satisfies an edge this build does not know.
     if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
@@ -3799,6 +3803,7 @@ function DispatchModal({
                   <span className="field-hint">
                     Sessions without observable hooks cannot be selected.
                   </span>
+                  {stackEdge && !selectedDependenciesUnmet && <span className="field-hint">{stackEdgeLabel(stackEdge)}</span>}
                   {selectedDependenciesUnmet && (
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}

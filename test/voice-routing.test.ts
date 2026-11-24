@@ -76,6 +76,33 @@ test("later two-word roster mentions must be on the same side of a comma", () =>
   if (decision.kind === "needs-model") assert.deepEqual(decision.candidates.map(({ name }) => name), roster);
 });
 
+test("punctuation in the gap between two words belongs to the message", () => {
+  const names = ["Steve", "Steve Captain", "Release Captain"];
+  for (const body of ["??? Captain, run tests", "ask Release ??? Captain"]) {
+    assert.deepEqual(route("Steven " + body, names), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  assert.deepEqual(route("Steven \t Captain, run tests", names), {
+    kind: "addressed", target: agent("Steve Captain"), match: "phonetic", text: "run tests", pauseMs: null,
+  });
+});
+
+test("a sentence boundary cannot join a two-word address or later mention", () => {
+  const names = ["Release Captain"];
+  for (const text of ["Release. Captain, stop", "Release “Captain”, stop"]) {
+    assert.equal(route(text, names).kind, "ignored", text);
+  }
+  for (const body of ["ask Release. Captain", "ask Release “Captain”"]) {
+    assert.deepEqual(route("Steven " + body, ["Steve", ...names]), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  assert.deepEqual(route("Dr. Ada, run tests", ["Dr. Ada"]), {
+    kind: "addressed", target: agent("Dr. Ada"), match: "exact", text: "run tests", pauseMs: null,
+  });
+});
+
 test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
   const names = ["Steve", "Steve Captain"];
   for (const roster of [names, names.toReversed()]) {
@@ -109,6 +136,8 @@ test("a bare cancel and a bare candidate name take precedence over addressing", 
 
 test("punctuation around the address stays separate from the quoted message", () => {
   for (const [text, body] of [
+    ["Will,,,ship it", ",,ship it"],
+    ['"Will,"",ship it"', '",ship it"'],
     ['Will,"ship it"', '"ship it"'],
     ["Will,‘ship it’", "‘ship it’"],
     ["Will,' ship it '", "' ship it '"],
@@ -116,6 +145,13 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will"!,"ship it"', '"ship it"'],
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ["“Will,  ” “ship   it!”", "“ship   it!”"],
+    ["“ Will ”, “ship   it!”", "“ship   it!”"],
+    ["“ Will ”,,,", ",,"],
+    ["“ Will ” ,,,", ",,"],
+    ["“ Will ” , “ship it”", "“ship it”"],
+    ['「“Will,  ”  」 "ship it"', '"ship it"'],
+    ["“Will,  “ship it”", "“ship it”"],
     ["“Will,”, ???", "???"],
     ['「“Will,”」"ship it"', '"ship it"'],
   ] as const) {
@@ -134,4 +170,29 @@ test("a bare name without an unsure card has no message", () => {
   for (const text of ["Steve.", "Will?", "Steven,", "Release Captain"]) {
     assert.deepEqual(route(text, ["Steve", "Will", "Release Captain"]), { kind: "ignored", reason: "no-message" });
   }
+});
+
+test("a bare multiword call sign can pick a card but sends no message to its prefix", () => {
+  const roster = ["Release", "Release Captain"];
+  const unsure: VoiceCard = { id: "choice", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
+    candidates: [{ kind: "agent", id: "captain", title: "Release Captain", detail: "" }] };
+  for (const text of ["Release Captain", "RELEASE   Captain?"]) {
+    assert.deepEqual(route(text, roster), { kind: "ignored", reason: "no-message" });
+    assert.deepEqual(route(text, roster, [], [unsure]), {
+      kind: "control", command: "pick", cardId: "choice", candidateId: "captain",
+    });
+  }
+  for (const text of ["“RELEASE   Captain?”", "“ Release Captain? ”", "“ Release Captain ”!"]) {
+    assert.deepEqual(route(text, roster, [], [unsure]), { kind: "ignored", reason: "no-message" });
+  }
+  assert.deepEqual(route("Release, Captain", roster), {
+    kind: "addressed", target: agent("Release"), match: "exact", text: "Captain", pauseMs: null,
+  });
+});
+
+test("an apostrophe inside a candidate name is part of an unquoted pick", () => {
+  const card: VoiceCard = { id: "open", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
+    candidates: [{ kind: "agent", id: "oneil", title: "O’Neil", detail: "" }] };
+  assert.deepEqual(route("O’Neil!", ["O’Neil"], [], [card]), { kind: "control", command: "pick", cardId: "open", candidateId: "oneil" });
+  assert.deepEqual(route("“O’Neil”!", ["O’Neil"], [], [card]), { kind: "ignored", reason: "no-message" });
 });

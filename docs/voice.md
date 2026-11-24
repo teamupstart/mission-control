@@ -17,26 +17,43 @@ names no agent until the flag is on again.
 ## Routing a text utterance
 
 A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh id per capture and epoch milliseconds for `capturedAt`.
+`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
+milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
+with its own clock converts its timestamps to host time at capture.
+A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
+underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+The capture must name the backend in the live listener’s hello and agree with any explicit
+backend selection. The daemon drops captures dated more than one second ahead of its clock.
+Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
+The daemon starts each delivery deadline when it opens the pending card.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
 descriptive only. Recently heard measures from the last address word to the first message word,
 skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
-A two-word call sign must stay on one side of a comma, both in an address and in a later mention.
+Only whitespace can separate the two tokens of a call sign, both in an address and in a later mention.
+For example, `Release. Captain, stop` does not address Release Captain. Punctuation spelled
+inside a roster name such as `Dr. Ada` participates in exact matching.
 “Release Captain, run tests”
 can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
 “Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,
 “Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
-a candidate when exactly one option across all open unsure cards matches. Multiple matches
+a candidate when exactly one option matches across open unsure cards captured by the time
+the name was spoken. A final sentence mark is optional. `Will.` selects Will, while
+`,Will`, `Will,` and `“Will”` leave the card open. An apostrophe within a name such as
+`O’Neil` is part of the name. Multiple matches
 leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
-no matching option records `no-message`.
+no matching option records `no-message`. This includes “Release Captain” when both Release
+and Release Captain are on the roster.
 Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
 
@@ -44,15 +61,32 @@ During the cancel window, the message stays in memory. At the deadline, or immed
 the window off, the daemon submits the remaining text verbatim to the running target’s operator
 queue. The card and Recently heard show `queued` when the queue accepts the message.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
-`Will, ???` queues `???`.
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
+Quotes and brackets around an address must close in matching pairs. For example,
+`[Will, ) stop` queues `) stop` as message text.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
-pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
-Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
+the message `"stop"`. A bare “cancel” stops the newest action that
+is still pending and was opened by the time the cancel was spoken. Quoting the word
+in a standalone `“cancel”` leaves pending actions open. The daemon uses capture
+timestamps when listener requests arrive out of order. For equal timestamps, the last action
+opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
+An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
+The router allows up to 50 open or delivering cards in total. At capacity a capture that
+would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
+Existing cards keep their deadlines, and the operator can still pick or cancel them.
+Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
+timestamp. For a pick through the card API, the daemon records the host time when it applies
+the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
+arrives after the pick.
+The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
-`GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
+`GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
+time with the latest arrival first for ties. Entries include
 ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
 card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview
@@ -265,6 +299,8 @@ something to say. It is `identity.referenceName` in the profile's revision JSON,
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.
 
+If Voice is switched off during an edit, saving the profile preserves its stored reference name.
+
 A reference name is a spoken name, not a launch setting, so it applies as soon as it is saved,
 also to a resident that is running: the roster reads the profile as it stands, and so does the
 display name a card prints. Every other profile edit still applies at the next launch.
@@ -312,7 +348,9 @@ taskId, sessionId, role, colorId, agent, state }`:
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
-stopped later. A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
+stopped later. The displaced name stays off the roster even if the other agent gives it up or the
+daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
+A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
 phase can say "<name> isn't running".
 
 When a task stopped is not always known across a daemon restart, so the 24 hours are not an
@@ -345,6 +383,8 @@ called by it on the inbox, the review modal, question cards, alert titles, the A
 report's author, and a resident by its reference name in its board colour. They are voice's names,
 so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
+New reports capture both author labels when posted. Switching Voice changes which label is shown,
+even after the session exits. Older reports with a single recorded label keep that attribution.
 
 ## The voice state
 

@@ -5,7 +5,8 @@ import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -120,12 +121,13 @@ import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
+import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
-import { orderSessions } from "./lib/fleet-order.ts";
+import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
 import { useDisplayItems } from "./lib/board-card.ts";
 import { isTopbarItemShown, PAGE_SEGMENTS, useTopbarLayout } from "./lib/topbar-items.ts";
 import {
@@ -146,7 +148,7 @@ import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
-import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
+import { foldAttention, foldWhileDismissalsUnknown, stallDismissalKey } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -434,7 +436,7 @@ export function App(): React.JSX.Element {
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
-  const stalls = useStalls();
+  const { reported: reportedStalls, current: stalls } = useStalls(sessions, hasSnapshot ? workflowRuns : undefined);
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
   const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
@@ -451,7 +453,7 @@ export function App(): React.JSX.Element {
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
     () => ({
-      sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      sessions, tasks, reviews, stalls: reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
       // Reports too: a report's announce stamp raises its notification, whether or not reports
       // are listed in the inbox.
       ...(inboxNames ? { names: residentNames, spokenNames, reports } : {}),
@@ -459,7 +461,7 @@ export function App(): React.JSX.Element {
       // still news (see `AlertScope.takenAt`).
       takenAt: Date.now(),
     }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentNames, spokenNames, reports],
+    [sessions, tasks, reviews, reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentNames, spokenNames, reports],
   );
   // Who can be addressed by voice, for the fields that check a new name against it.
   const voiceRoster = voice?.roster ?? NO_SPOKEN_NAMES;
@@ -695,6 +697,8 @@ export function App(): React.JSX.Element {
   // coming back to the board reopened the session you left while the tile cursor sat on a
   // different one - and it needed the arrow keys to remember to keep the two in step.
   // `boardOpenId` below derives the invariant instead of restating it.
+  const [queueTabSession, setQueueTabSession] = useState<string | null>(null);
+  const clearQueueTab = useCallback(() => setQueueTabSession(null), []);
   const [boardOpen, setBoardOpen] = useState(false);
   // What the dispatch form was last asked to be, or null for closed - ONE value, written
   // whole by whichever opener ran last. It used to be three (an open flag, a task being
@@ -847,8 +851,8 @@ export function App(): React.JSX.Element {
     toggleSurface: (): void => {},
     openDetail: (_sessionId: string): void => {},
   });
-  const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
-  const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [fleetActionError, setFleetActionError] = useState<string | null>(null);
+  const fleetActionErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
@@ -2657,17 +2661,17 @@ export function App(): React.JSX.Element {
       residentsTourReachedEnd.current = true;
     },
   }), [navigate]);
-  const showLauncherFocusError = useCallback((message: string) => {
-    if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
-    setLauncherFocusError(message);
-    launcherFocusErrorTimer.current = setTimeout(() => {
-      launcherFocusErrorTimer.current = null;
-      setLauncherFocusError(null);
+  const showFleetActionError = useCallback((message: string) => {
+    if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
+    setFleetActionError(message);
+    fleetActionErrorTimer.current = setTimeout(() => {
+      fleetActionErrorTimer.current = null;
+      setFleetActionError(null);
     }, 6000);
   }, []);
   useEffect(
     () => () => {
-      if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+      if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
     },
     [],
   );
@@ -2908,6 +2912,24 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // The inbox and Idle share dismissals. Until the first read, the inbox holds back dismissible
+  // rows and their counts. Idle shows stalled cards so a delayed or failed read still leaves
+  // their fixes reachable. A previously dismissed card can appear briefly after a reload.
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision, stalls);
+  // Idle's Stalled section (`idle-stalled`): the idle stalls, by session, that the Board and the
+  // Console rail draw under the Stalled rule and the inbox no longer folds. One map, handed to the
+  // fleet ordering below and to both views, so the arrow keys walk the order the columns draw.
+  const idleStalledEnabled = resolveFeatureFlag(IDLE_STALLED_FLAG_ID, featureFlags);
+  const stalledById = useMemo(
+    () => stalledSessions(stalls, idleStalledEnabled, attentionDismissals.dismissed),
+    [stalls, idleStalledEnabled, attentionDismissals.dismissed],
+  );
+  const dismissAttention = attentionDismissals.dismiss;
+  const dismissStall = useCallback(async (sessionId: string, stall: Stall) => {
+    const name = sessionsRef.current.find(session => session.id === sessionId)?.name;
+    const error = await dismissAttention([stallDismissalKey(sessionId, stall)]);
+    if (error) showFleetActionError(name ? `${name} · ${error}` : error);
+  }, [dismissAttention, showFleetActionError]);
   // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
   // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
   // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
@@ -2948,12 +2970,29 @@ export function App(): React.JSX.Element {
     });
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
-      awaitingIds,
+      awaitingIds, stalledById,
     );
   }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
     residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
-    pinnedResidents, blockedPlacement, awaitingIds]);
+    pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
+  // The sessions Idle's Stalled section draws, which are the only stalls the inbox leaves out
+  // (`inboxStalls`). Read off the ordering itself rather than re-derived from the stall kinds, so
+  // a stalled session the fleet does not hold - a resident in the residents drawer - keeps its
+  // Stuck row instead of being shown nowhere. Ordered over the placed fleet WITHOUT the search
+  // filter: a card a search hides is still in Idle, and finding it again must not move its stall.
+  const stalledDrawn = useMemo(() => {
+    if (stalledById.size === 0) return NO_STALLED_DRAWN;
+    if (!fleetQuery) return stalledInOrder(fleet.groups);
+    const placed = placement.excluded.size > 0
+      ? sessions.filter((s) => !placement.excluded.has(s.id))
+      : sessions;
+    return stalledInOrder(orderSessions(
+      placed, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds, stalledById,
+    ).groups);
+  }, [stalledById, fleetQuery, fleet, placement, sessions, heldIds, groupByRepo, pipelineCommissionById,
+    pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
    * open resident, which no fleet list holds. The views draw the detail from this, and the
@@ -3140,15 +3179,6 @@ export function App(): React.JSX.Element {
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
   //
-  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
-  // popping back up on the next frame, the next reload or in a second window. The fold applies
-  // them, so the figure and the list still cannot disagree.
-  //
-  // Until the dismissals have been read once they are UNKNOWN, and every row that can be dismissed
-  // is held back: drawn over "nothing dismissed" instead, every dismissed row flashed back into the
-  // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
-  // and control requests have no dismissal action, so they are still folded and counted (`foldWhileDismissalsUnknown`).
-  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
   // contract, which the session detail reads so its send composer gives way to that box.
   const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
@@ -3180,8 +3210,9 @@ export function App(): React.JSX.Element {
             // are listed in the inbox" off does the same without marking anything read; each
             // conversation keeps its reports.
             ...(inboxNames && alertSettings.reportsInInbox ? { reports, mutedAuthors: mutedReportAuthors } : {}),
-            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
-            ...(inboxNames && stalls ? { stalls } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on, and leave
+            // the idle ones to Idle's Stalled section while `idle-stalled` is on.
+            ...(inboxNames && stalls ? { stalls: inboxStalls(stalls, stalledDrawn) } : {}),
           }),
     [
       sessions,
@@ -3189,6 +3220,7 @@ export function App(): React.JSX.Element {
       inboxNames,
       sessionControlRequestsEnabled,
       stalls,
+      stalledDrawn,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,
@@ -3792,9 +3824,12 @@ export function App(): React.JSX.Element {
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,
+    queueTabSession,
+    onQueueTabOpened: clearQueueTab,
     onSelect:
       layout === "board"
-        ? (id) => {
+        ? (id, tab) => {
+            setQueueTabSession(tab === "queue" ? id : null);
             setSelectedId(id);
             setBoardOpen(true);
           }
@@ -3873,6 +3908,8 @@ export function App(): React.JSX.Element {
       onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
     }),
     awaitingIds,
+    stalledById,
+    onDismissStall: dismissStall,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
@@ -4656,7 +4693,7 @@ export function App(): React.JSX.Element {
           if (action === "focus") {
             void api.focus(sel.id).then((result) => {
               if (!result.ok) {
-                showLauncherFocusError(result.error ?? "could not focus");
+                showFleetActionError(result.error ?? "could not focus");
               }
             });
             return;
@@ -4742,7 +4779,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showFleetActionError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -4997,7 +5034,7 @@ export function App(): React.JSX.Element {
             closeLineDrawer();
             setReportOpen(true);
           }}
-          launcherFocusError={launcherFocusError}
+          fleetActionError={fleetActionError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
           onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}

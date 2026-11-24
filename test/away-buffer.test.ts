@@ -354,6 +354,15 @@ test("the reports rollup names who posted: one, two, three, and many", () => {
   assert.equal(rollupLine(buf), "6 reports waiting: Steve, Carol and 3 others");
 });
 
+test("a waiting report changes its buffered attribution without counting another announcement", () => {
+  const before = foldAlerts(emptyBuffer(0), [reportAlert("r-1", "Alice")], 10);
+  const report = mkReport({ id: "r-1", author: { key: "session:a", name: "Check the parser", residentProfileId: null } });
+  const updated = reconcileReports(before, [report], 20, false);
+  assert.equal(rollupLine(updated), "1 report waiting: Check the parser");
+  assert.equal(updated.events[0]?.lastAt, 10);
+  assert.equal(updated.events[0]?.count, 1);
+});
+
 test("reports take their place in the rollup beside everything else, and keep their names across a merge", () => {
   const first = foldAlerts(emptyBuffer(0), [reportAlert("r-1", "Steve"), mkAlert({ id: "stuck:a", kind: "stuck", title: "a looks stuck", severity: "attention" })], 10);
   const second = foldAlerts(emptyBuffer(100), [reportAlert("r-2", "Carol"), mkAlert()], 110);

@@ -70,6 +70,70 @@ test("token and schema gates, muted drop, and push-to-talk acceptance", async ()
   assert.deepEqual(await (await say("Steve push to talk")).json(), { accepted: true });
 });
 
+test("only the selected live recognizer can open or cancel a card after switching backends", async (t) => {
+  const configure = (backend: string) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ backend }) });
+  const sayWithSherpa = (text: string, id: string) =>
+    post("/voice/utterances", { ...capture(text, id), backend: "sherpa-onnx" }, token);
+  t.after(async () => { await configure("auto"); });
+  await say("Will keep this", "pending");
+  assert.equal((await configure("sherpa-onnx")).status, 200);
+  assert.deepEqual(await (await say("cancel", "retry")).json(), { accepted: false });
+  assert.deepEqual(await (await sayWithSherpa("cancel", "retry")).json(), { accepted: false });
+  await post("/voice/listener/hello", { backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true }, token);
+  await configure("auto");
+  assert.deepEqual(await (await say("Will stale", "stale")).json(), { accepted: false });
+  assert.deepEqual(await (await say("cancel", "retry")).json(), { accepted: false });
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["pending"]);
+  assert.deepEqual(await (await sayWithSherpa("cancel", "retry")).json(), { accepted: true });
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
+});
+
+test("future captures beyond clock tolerance are dropped and a cancel on the same listener clock can act immediately", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const unsure = capture("Steven ask Will", "clock");
+  const postAt = (capturedAt: number) => post("/voice/utterances", { ...unsure, capturedAt }, token);
+  assert.deepEqual(await (await postAt(now + 1001)).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  assert.equal(cards.length, 0);
+  assert.deepEqual(await (await postAt(now + 1000)).json(), { accepted: true });
+  await post("/voice/utterances", { ...capture("cancel"), capturedAt: now + 1000 }, token);
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["clock", "unsure"], ["clock", "cancelled"]]);
+});
+
+test("a listener clock ahead of the daemon preserves out-of-order cancel and pick eligibility", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, offset: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt: now + offset }, token);
+  await postAt("older", "Will discard this", 100);
+  await postAt("newer", "Will keep this", 500);
+  assert.equal(cards.at(-1)?.deadline, now + 1000);
+  await postAt("delayed-cancel", "cancel", 300);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["older", "cancelled"]);
+  await postAt("unsure", "Steven ask Will", 700);
+  await postAt("delayed-pick", "Will", 600);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "pending"], ["unsure", "unsure"]]);
+  assert.deepEqual((await readHeard()).map((entry) => [entry.id, entry.time - now]), [
+    ["unsure", 700], ["delayed-pick", 600], ["newer", 500], ["delayed-cancel", 300], ["older", 100],
+  ]);
+});
+
+test("capture IDs must address a single card action URL segment", async () => {
+  for (const id of [".", "..", "%2e", "a/b", "x?y", "x#y", "a b"]) {
+    assert.equal((await say("Steve check the build", id)).status, 400, id);
+  }
+  assert.deepEqual(await readHeard(), []);
+  assert.equal(cards.length, 0);
+  const id = "call.1~A_b-c";
+  assert.equal((await say("Steven ask Will", id)).status, 200);
+  assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+  assert.equal((await act(id, "cancel")).status, 200);
+  assert.equal(cards.at(-1)?.state, "cancelled");
+});
+
 test("turning voice off clears pending actions and gates every contract D route", async () => {
   await say("Steve stale", "disabled");
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
@@ -115,6 +179,17 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
+test("quoted or comma-prefixed cancel leaves the pending card open until a bare cancel dismisses it", async () => {
+  await say("Will check the build", "waiting");
+  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel».", ",cancel"]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.outcome, "ignored");
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["waiting", "pending"]]);
+  }
+  await say("Cancel!");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["waiting", "cancelled"]);
+});
+
 test("successive cancels stop exactly one action across kinds; a duplicate capture does nothing", async () => {
   await say("Will first", "a");
   const actions = registry.voiceRouter!.pendingVoiceActions;
@@ -128,6 +203,70 @@ test("successive cancels stop exactly one action across kinds; a duplicate captu
   await say("cancel");
   assert.deepEqual(cards.filter((c) => c.state === "cancelled").map((c) => c.id), ["b", "a"]);
   assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+});
+
+test("a delayed spoken cancel targets the latest preceding capture even when POSTs arrive out of order", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postCapture = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  await postCapture("middle", "Will discard the middle message", now - 300);
+  await postCapture("oldest", "Will keep the first message", now - 400);
+  await postCapture("newest", "Will keep the last message", now - 100);
+  await postCapture("delayed", "cancel", now - 200);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["middle", "cancelled"]);
+  assert.equal((await readHeard()).find((entry) => entry.id === "delayed")?.detail, "middle");
+
+  await postCapture("before-all", "cancel", now - 500);
+  assert.equal((await readHeard()).find((entry) => entry.id === "before-all")?.rule, "nothing-pending");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.id), ["oldest", "newest"]);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(queued("Will").slice(-2), ["keep the first message", "keep the last message"]);
+});
+
+test("a picked card's new cancel window follows the time of the pick", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  await post("/voice/utterances", { ...capture("Steven ask Will", "choice"), capturedAt: now - 400 }, token);
+  await post("/voice/utterances", { ...capture("Will"), capturedAt: now - 200 }, token);
+
+  await post("/voice/utterances", { ...capture("cancel", "before-pick"), capturedAt: now - 300 }, token);
+  assert.equal((await readHeard()).find((entry) => entry.id === "before-pick")?.rule, "nothing-pending");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await post("/voice/utterances", { ...capture("cancel"), capturedAt: now - 100 }, token);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+});
+
+test("an API pick and a spoken cancel use the shared host clock", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  await postAt("choice", "Steven ask Will about the clock", now);
+  t.mock.timers.tick(900);
+  assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
+  assert.equal(cards.at(-1)?.deadline, Date.now() + 1000);
+  await postAt("before-click", "cancel", now + 850);
+  assert.equal((await readHeard()).find((entry) => entry.id === "before-click")?.rule, "nothing-pending");
+  t.mock.timers.tick(200);
+  await postAt("after-click", "cancel", now + 1100);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  t.mock.timers.tick(1000);
+  assert.ok(!queued("Will").includes("ask Will about the clock"));
+});
+
+test("capture transport delay does not move an API pick before a pre-click cancel", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  await postAt("choice", "Steven ask Will about transit", now - 300);
+  t.mock.timers.tick(500);
+  assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
+  t.mock.timers.tick(50);
+  await postAt("in-transit", "cancel", now + 400);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(({ id, state }) => [id, state]), [["choice", "pending"]]);
+  assert.equal((await readHeard()).find(({ id }) => id === "in-transit")?.rule, "nothing-pending");
 });
 
 test("Cancel targets its own card, Send now queues once, and clearing history leaves no entry", async () => {
@@ -150,6 +289,74 @@ test("window off queues immediately and an addressed stop interrupts the session
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
   assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
+});
+
+test("quoted stop messages reach the queue verbatim while bare stop still interrupts", async () => {
+  const before = interrupts.length;
+  const messages = ['"stop"', "'STOP!'", "“stop”", "«stop»."];
+  for (const [index, message] of messages.entries()) {
+    const id = "quoted-stop-" + index;
+    await say("Steve, " + message, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  for (const command of ["stop", "Stop!"]) {
+    const id = randomUUID();
+    await say("Steve, " + command, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
+});
+
+test("extra message punctuation is queued verbatim and cannot turn stop into an interrupt", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["Will,,,stop", ",,stop"], ["“Will,”,,,stop", ",,stop"], ["Will, #stop!", "#stop!"], ["Will, stop,", "stop,"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  await say("Will, STOP。", "punctuated-command");
+  await act("punctuated-command", "send-now");
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+});
+
+test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
+  const before = interrupts.length;
+  for (const text of ["“Will, ” stop", "“ Will ” , stop"]) {
+    const id = randomUUID();
+    await say(text, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
+  await say("“Will, ” “stop”", "message-quote");
+  assert.equal((await act("message-quote", "send-now")).status, 200);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
+  assert.equal(interrupts.length, before + 2);
+});
+
+test("mismatched address wrappers stay in the queued message and cannot trigger a stop", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["[Will, ) stop", ") stop"], ["“Will, ’ stop", "’ stop"], ["[Will), stop", "), stop"],
+    ["「[Will, ] 』 stop", "』 stop"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  for (const captureText of ["[Will, ] stop", "「[Will, ] 」 stop"]) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
@@ -199,6 +406,40 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
 });
 
+test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const before = queued("Will");
+  await say("Steven ask Will about the results", "choice");
+  for (const text of [",Will", " ?Will.", "Will,", "(Will)", "“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.rule, "no-message");
+    assert.deepEqual(queued("Will"), before);
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.state), ["unsure"]);
+  }
+  await say("Will.");
+  assert.deepEqual(queued("Will"), [...before, "ask Will about the results"]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+});
+
+test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const now = Date.now();
+  const postAt = (id: string, text: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
+  const before = queued("Will");
+  await postAt("newer", "Steven ask Will about tomorrow", now - 100);
+  await postAt("too-early", "Will", now - 400);
+  assert.deepEqual(queued("Will"), before);
+  assert.equal((await readHeard()).find((entry) => entry.id === "too-early")?.rule, "no-message");
+  await postAt("older", "Steven ask Will about yesterday", now - 300);
+  await postAt("between", "Will", now - 200);
+  assert.deepEqual(queued("Will"), [...before, "ask Will about yesterday"]);
+  assert.equal((await readHeard()).find((entry) => entry.id === "between")?.rule, "pick");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "unsure"]]);
+});
+
 test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
   await say('Will,"ship it"', "quote");
   assert.equal(cards[0]?.parts[0]?.text, '"ship it"');
@@ -213,6 +454,9 @@ test("punctuation-only messages reach the named agent and leave an unsure card o
     ["adjacent", "Will,!!!", "!!!"],
     ["plain", "Will ...", "..."],
     ["commas", "Will, ,,,", ",,,"],
+    ["adjacent-commas", "Will,,,", ",,"],
+    ["quoted-name", '"Will",,,', ",,"],
+    ["inner-and-outer-separator", "“Will,”,,,", ",,"],
   ] as const) {
     await say(text, id);
     const card = cards.at(-1);
@@ -326,6 +570,41 @@ test("the downstream say fixture establishes a listener and posts contiguous or 
   assert.deepEqual(entries.map((entry) => [entry.matchedName, entry.rule]), [["Will", "exact"], ["Will", "exact"]]);
 });
 
+test("the listener posts a delayed message before a concurrently spoken cancel", async (t) => {
+  const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");
+  const daemon = { home, baseURL: "http://localhost" };
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  const posted: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/voice/utterances")) {
+      const { id } = JSON.parse(String(init.body));
+      posted.push(id);
+      if (id === "first") {
+        markStarted();
+        await delayed;
+      }
+    }
+    return app.request(url, init);
+  });
+
+  const message = sayFixture(daemon, "Will discard these words", { id: "first" });
+  await started;
+  const cancel = sayFixture({ ...daemon }, "cancel", { id: "second" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const inFlight = [...posted];
+  release();
+  const responses = await Promise.all([message, cancel]);
+  assert.deepEqual(inFlight, ["first"]);
+  assert.deepEqual(posted, ["first", "second"]);
+  for (const response of responses) assert.deepEqual(await response.json(), { accepted: true });
+  assert.deepEqual(cards.map(({ id, state }) => [id, state]), [["first", "pending"], ["first", "cancelled"]]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.ok(!queued("Will").includes("discard these words"));
+});
+
 test("two weak matches followed by a bare name leave only ignored history", async () => {
   const before = queued("Will");
   for (const text of ["fill in the form", "till tomorrow", "Will?"]) await say(text);
@@ -347,6 +626,40 @@ test("a sixth unsure card cancels the oldest unsure card and preserves pending d
   assert.deepEqual(cards.filter((card) => card.state === "cancelled").map((card) => card.id), ["unsure-0"]);
   assert.equal((await readHeard()).find((entry) => entry.id === "unsure-0")?.outcome, "cancelled");
   assert.equal((await act("unsure-0", "pick", { id: "task:Will" })).status, 409);
+});
+
+test("at capacity the router rejects new cards but preserves deadlines, picks, cancels and retries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await say("Steven ask Will", "choice");
+  for (let i = 1; i < 50; i++) {
+    assert.deepEqual(await (await say("Will wait", "pending-" + i)).json(), { accepted: true });
+  }
+  const snapshot = registry.snapshot().voiceCards;
+  assert.equal(snapshot?.length, 50);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: false });
+  assert.deepEqual(registry.snapshot().voiceCards, snapshot);
+  assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 50);
+  assert.ok(!(await readHeard()).some(({ id }) => id === "overflow"));
+  assert.deepEqual(await (await say("Will")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await say("cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["overflow", "pending"]);
+});
+
+test("out-of-order unsure captures keep the five newest choices, including when the incoming card is oldest", async () => {
+  const postUnsure = (id: string, capturedAt: number) =>
+    post("/voice/utterances", { ...capture("Steven ask Will", id), capturedAt }, token);
+  for (const time of [30, 10, 50, 20, 40]) await postUnsure(String(time), time);
+  await postUnsure("stale", 5);
+  assert.deepEqual(cards.filter((card) => card.id === "stale").map((card) => card.state), ["cancelled"]);
+  assert.equal((await act("stale", "pick", { id: "task:Will" })).status, 409);
+  await postUnsure("tie", 10);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.id), ["30", "50", "20", "40", "tie"]);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["30", "50", "20", "40", "tie"]);
+  const cancelled = (await readHeard()).filter((entry) => entry.outcome === "cancelled");
+  assert.deepEqual(cancelled.map((entry) => entry.id), ["10", "stale"]);
 });
 
 test("Recently heard keeps the refusal reasons from the queue and interrupt adapters", async (t) => {

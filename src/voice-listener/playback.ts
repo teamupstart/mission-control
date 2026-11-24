@@ -50,7 +50,12 @@ export async function playRecording(client: ListenerClient,
         await response.body?.cancel();
         throw new Error("Utterance HTTP " + response.status);
       }
-      if (!(await response.json()).accepted) {
+      const acknowledgment = await response.json().catch((error: unknown) => {
+        if (error instanceof SyntaxError) return null;
+        throw error;
+      });
+      if (typeof acknowledgment?.accepted !== "boolean") throw new Error("Invalid voice utterance acknowledgment");
+      if (!acknowledgment.accepted) {
         const current = await client.poll(undefined, lifetime.signal);
         if (current.revision === directive.revision) throw new Error("Daemon refused the capture");
         // Capture changed during decoding. Discard this segment and continue from the next one.

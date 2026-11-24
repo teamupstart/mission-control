@@ -425,6 +425,24 @@ test("an incompatible directive ends playback before a second poll or a recordin
   assert.equal(polls, 1);
 });
 
+test("a malformed utterance acknowledgment stops playback before the next segment", async () => {
+  for (const body of ['{"accepted":"false"}', '{}', 'null', 'invalid JSON']) {
+    let reads = 0;
+    const client = new ListenerClient("http://localhost", tokenPath(), async url => {
+      if (new URL(url).pathname === "/voice/utterances") return new Response(body);
+      return Response.json({ revision: "current", capture: true, roster: [], inputDevice: "built-in" });
+    });
+    await assert.rejects(playRecording(client, () => ({
+      exhausted: false,
+      next() {
+        assert.equal(++reads, 1);
+        return { done: false, value: { samples: Float32Array.of(1) } };
+      },
+    }), async () => ({ text: "test", tokens: [], timestamps: [], durations: [] })),
+    { message: "Invalid voice utterance acknowledgment" });
+  }
+});
+
 test("scanning a silent recording lets the event loop run before reaching EOF", async () => {
   const lifetime = new AbortController();
   const windows = 256;

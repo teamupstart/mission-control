@@ -24,9 +24,23 @@ export class RepositoryArtifactStorage {
 
   constructor(private readonly requiredLimit = 512 * 1024 ** 2, private readonly temporaryLimit = 2 * 1024 ** 3) {}
 
-  checkRequired(pending: string, extra: number) {
-    if ((this.accounts.get(pending)?.required ?? 0) + extra > this.requiredLimit)
+  private checkRequired(pending: string | undefined, extra: number) {
+    if ((pending ? this.accounts.get(pending)?.required ?? 0 : 0) + extra > this.requiredLimit)
       throw Object.assign(new Error("Required repository objects exceed storage limit"), { code: "required_storage_limit" });
+  }
+
+  /** Include each required blob once, before reading the next worktree path. */
+  requiredBlobBudget(pending?: string) {
+    const seen = new Set<string>();
+    let total = 0;
+    return (id: string, size: number) => {
+      if (!seen.has(id)) {
+        total += size + Buffer.byteLength(`blob ${size}\0`);
+        seen.add(id);
+      }
+      // Metadata written since the last scan also consumes the required allowance.
+      this.checkRequired(pending, total);
+    };
   }
 
   private checkTemporary(extra: number) {

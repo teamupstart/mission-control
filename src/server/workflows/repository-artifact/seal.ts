@@ -43,10 +43,34 @@ export interface RepositoryCaptureInput {
 }
 
 function metadataBoundary(state: CheckoutState) {
-  return JSON.stringify({ ...state, index: [...state.index], skipWorktree: [...state.skipWorktree] });
+  return JSON.stringify({ ...state, index: [...state.index], skipWorktree: [...state.skipWorktree], assumeUnchanged: [...state.assumeUnchanged] });
 }
 function checkoutBoundary(state: CheckoutState, working: Layer) {
   return sha256(JSON.stringify([metadataBoundary(state), [...working]]));
+}
+
+/** Comparisons honor the index flag even when a working directory replaced
+ * the flagged file. Reads and untracked path listings use the literal layer. */
+function comparisonLayer(worktree: Layer, normalized: Layer, state: CheckoutState): Layer {
+  const comparison = new Map([...worktree, ...normalized]);
+  if (!state.assumeUnchanged.size) return comparison;
+  function* ancestors(key: string) {
+    const raw = Buffer.from(key, "hex");
+    for (let i = raw.indexOf(47); i >= 0; i = raw.indexOf(47, i + 1)) yield key.slice(0, 2 * i);
+  }
+  for (const key of worktree.keys()) {
+    for (const parent of ancestors(key)) {
+      if (state.assumeUnchanged.has(parent) && state.index.has(parent)) { comparison.delete(key); break; }
+    }
+  }
+  for (const key of state.assumeUnchanged) {
+    const staged = state.index.get(key);
+    if (staged) {
+      for (const parent of ancestors(key)) comparison.delete(parent);
+      comparison.set(key, staged);
+    } else comparison.delete(key); // An intent-to-add entry has no staged blob.
+  }
+  return comparison;
 }
 
 async function scanWorking(
@@ -73,11 +97,16 @@ async function scanWorking(
   return layer;
 }
 
-export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
+type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage };
+export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal,
+  { storage = new RepositoryArtifactStorage(), ...limits }: SealOptions = {}) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
   return withCheckoutSample(git.path, checkout, signal, limits, async state => {
-    const work = await scanWorking(git.path, state, signal);
+    const charge = storage.requiredBlobBudget();
+    const work = await scanWorking(git.path, state, signal, (id, bytes, key) => {
+      if (pathAllowed(key)) charge(id, bytes.length);
+    });
     await checkMetadata(git.path, checkout, signal, limits, state);
     return checkoutBoundary(state, work);
   });
@@ -90,7 +119,6 @@ async function checkMetadata(executable: string, checkout: string, signal: Abort
   });
 }
 
-type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage };
 export async function seal(input: RepositoryCaptureInput, pending: string, signal: AbortSignal,
   options: SealOptions = {}) {
   const git = await locateExecutable("git");
@@ -298,10 +326,12 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     }
     const normalized: Layer = new Map();
     const indexHasCrlf = new Map<string, boolean>();
+    const chargeBlob = storage.requiredBlobBudget(pending);
     const worktree = await scanWorking(executable, state, signal, async (id, bytes, key, mode) => {
       sizes.set(id, bytes.length);
+      if (allowed(key)) chargeBlob(id, bytes.length);
       const conversion = state.lineEndings.overrides[key] ?? state.lineEndings.fallback;
-      if (mode === "120000" || conversion === "raw" || !bytes.includes("\r\n")) return;
+      if (state.assumeUnchanged.has(key) || mode === "120000" || conversion === "raw" || !bytes.includes("\r\n")) return;
       if (conversion === "auto") {
         if (!autoText(bytes)) return;
         const staged = index.get(key);
@@ -317,6 +347,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
       const cleanId = createHash(format).update(`blob ${clean.length}\0`).update(clean).digest("hex");
       normalized.set(key, { mode, id: cleanId });
       sizes.set(cleanId, clean.length);
+      if (allowed(key)) chargeBlob(cleanId, clean.length);
     });
     collect(index);
     collect(worktree);
@@ -324,13 +355,12 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     for (const key of Object.keys(state.intentModes)) capturedPaths.add(key);
     const indexTree = await saveTree(index),
       worktreeTree = await saveTree(worktree);
-    const worktreeDiffTree = normalized.size ? await saveTree(new Map([...worktree, ...normalized])) : undefined;
+    const worktreeDiffTree = normalized.size || state.assumeUnchanged.size
+      ? await saveTree(comparisonLayer(worktree, normalized, state)) : undefined;
     const requiredBlobs = new Set(needed);
-    let requiredBlobBytes = 0;
     for (const blob of requiredBlobs) {
       const size = sizes.get(blob) ?? (await reader.get(blob, "blob", true)).size;
-      requiredBlobBytes += size + Buffer.byteLength(`blob ${size}\0`);
-      storage.checkRequired(pending, requiredBlobBytes);
+      chargeBlob(blob, size);
     }
     const retainedRevisions: RepositoryViewDescriptor["retainedRevisions"] = [];
     const queue = head ? [head] : [];
@@ -398,13 +428,14 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
         working = worktree.get(key);
       const classes: Classifications = [];
       const intent = Boolean(state.intentModes[key]);
-      const missingIntent = intent && !working;
+      const assumeUnchanged = state.assumeUnchanged.has(key);
+      const missingIntent = intent && !working && !assumeUnchanged;
       const equal = (a: typeof working, b: typeof working) => a?.id === b?.id && a?.mode === b?.mode;
       if (committed || (!staged && !working && !intent)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
-      if ((staged && !equal(staged, normalized.get(key) ?? working)) || missingIntent) classes.push("unstaged");
-      if (working && !staged) classes.push(intent ? "unstaged" : "untracked");
-      if ((committed && !staged) || (staged && !working) || missingIntent) classes.push("deleted");
+      if ((!assumeUnchanged && staged && !equal(staged, normalized.get(key) ?? working)) || missingIntent) classes.push("unstaged");
+      if (working && !staged && !assumeUnchanged) classes.push(intent ? "unstaged" : "untracked");
+      if ((committed && !staged) || (!assumeUnchanged && staged && !working) || missingIntent) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
       const path = decodedPath(key);
       if (path && RepositoryPathSchema.safeParse(path).success) {

@@ -617,6 +617,40 @@ test("aggregate required storage is checked across layers before copying any blo
   }
 });
 
+test("required worktree bytes stop boundary sampling and sealing before the next file is opened", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(2_500, 100_000));
+  f.write(".env", "s".repeat(2_000));
+  f.write("a", "a".repeat(1_000));
+  f.write("b", "a".repeat(1_000));
+  f.write("c", "c".repeat(1_000));
+  f.write("d", "d".repeat(1_000));
+  f.write("last", "unread after refusal");
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  const opened: string[] = [];
+  const checkout = realpathSync(f.checkout);
+  const watch = t.mock.method(fs, "open", (...args: Parameters<typeof open>) => {
+    const name = relative(checkout, String(args[0]));
+    if ([".env", "a", "b", "c", "d", "last"].includes(name)) opened.push(name);
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const capture of [() => f.service.sampleBoundary(f.checkout, signal), () => f.prepare()]) {
+      opened.length = 0;
+      await assert.rejects(capture(), { code: "artifact_unavailable" });
+      assert.deepEqual(opened, [".env", "a", "b", "c", "d"]);
+    }
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+    rmSync(join(f.checkout, "d"));
+    await f.service.discard(await f.prepare());
+  } finally {
+    watch.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 test("concurrent and sealed candidates retain their storage reservations until cleanup", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 180_000));
   f.write("file", Buffer.alloc(96_000, 0x61));
@@ -2295,6 +2329,52 @@ test("CRLF normalization preserves the sensitive nonempty blob alias check", asy
   f.write(".env", "same bytes\r\n");
   await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
   assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+});
+
+test("assume-unchanged follows Git status and comparisons while retaining the literal working paths", async (t) => {
+  const f = fixture(t);
+  for (const path of ["changed", "removed", "swapped", "staged", "sparse"]) f.write(path, "first");
+  f.git("add", ".");
+  f.git("commit", "-qm", "tracked files");
+  f.write("staged", "staged");
+  f.git("add", "staged");
+  f.git("update-index", "--assume-unchanged", "changed", "removed", "swapped", "staged", "sparse");
+  f.git("update-index", "--skip-worktree", "sparse");
+  f.write("changed", "working");
+  for (const path of ["removed", "swapped", "staged", "sparse"]) rmSync(join(f.checkout, path));
+  mkdirSync(join(f.checkout, "swapped"));
+  f.write("swapped/inside", "child");
+  assert.deepEqual(f.git("status", "--porcelain=v1", "-uall").split("\n"), ["M  staged", "?? swapped/inside"]);
+  assert.equal(f.git("diff", "--name-status"), "");
+  const candidate = await f.prepare();
+  f.git("update-index", "--no-assume-unchanged", "changed");
+  assert.equal(await f.service.stillCurrent(candidate, signal), false);
+  await f.service.discard(candidate);
+  f.git("update-index", "--assume-unchanged", "changed");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.activate(snapshot);
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  assert.equal(lease.descriptor.worktreeDiffTree, f.git("write-tree"));
+  rmSync(f.checkout, { recursive: true });
+  const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+    workloadId: request.workloadId, attemptId: request.attemptId, gitBinary: "git", signal, budgets: {}, audit: async () => {} });
+  const status = await reader.query("git_status", {});
+  const changed = status.items.filter(item => {
+    const classes = item.metadata?.classifications;
+    assert.ok(Array.isArray(classes));
+    return classes.some(c => c !== "committed");
+  });
+  assert.deepEqual(changed.map(item => [item.path, item.metadata?.classifications]).sort(),
+    [["staged", ["committed", "staged"]], ["swapped/inside", ["untracked"]]]);
+  for (const [path, bytes] of [["changed", "working"], ["swapped/inside", "child"], ["sparse", "first"]]) {
+    assert.equal((await reader.query("read", { path })).items[0]?.text, bytes);
+  }
+  assert.equal((await reader.query("read", { path: "staged" })).code, "unavailable");
+  assert.equal((await reader.query("read", { path: "staged", layer: "index" })).items[0]?.text, "staged");
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
 });
 
 test("core.fileMode follows the indexed executable bit for tracked files and preserves working bytes", async (t) => {

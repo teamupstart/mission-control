@@ -73,7 +73,9 @@ a single capture, including when the checkout and artifact are on different volu
 An abbreviated base must identify one distinct object across loose files and pinned packs.
 All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
 storage allowance, including their Git headers. Capture checks the combined blob sizes
-before copying any blob. Pending candidates and private reader leases share a 2 GiB
+before copying any blob. Both the boundary sample and sealing count unique allowed
+working blobs as they are read and stop at the first blob that exceeds the allowance.
+Pending candidates and private reader leases share a 2 GiB
 allowance for object files, manifests and lease data. Each write reserves its bytes
 before it starts. A candidate or lease holds its share until its directory is removed.
 A repair also reserves the actual size of the old digest before moving it into the
@@ -90,6 +92,9 @@ including intent-to-add entries. Untracked regular files retain their on-disk mo
 With `core.symlinks=false`, a regular file representing an indexed symlink supplies
 its literal target bytes and retains symlink mode. Changing either setting invalidates
 a pending stable capture.
+An index entry marked assume-unchanged supplies its staged value to status and Git
+comparisons. Reads still see the submitted worktree contents, and an absent file
+with a staged change still appears in status. Changing the flag invalidates a pending capture.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
 When a symlink replaces a tracked directory, capture records its literal target and

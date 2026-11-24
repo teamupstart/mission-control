@@ -60,7 +60,14 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
   const view = RepositoryViewDescriptorSchema.parse(options.view);
   const statusEntries = view.statusDeletions?.length
     ? [...view.worktree, ...view.statusDeletions.map(entry => ({ ...entry, kind: null, binary: null }))]
-    : view.worktree;
+    : [...view.worktree];
+  // A staged, assume-unchanged path may be absent on disk. Its index change
+  // remains visible in status without manufacturing a readable worktree file.
+  const listed = new Set(statusEntries.map(entry => entry.path));
+  for (const entry of view.index) {
+    if (!listed.has(entry.path) && entry.classifications.includes("staged") && !entry.classifications.includes("deleted"))
+      statusEntries.push({ ...entry, kind: null, binary: null });
+  }
   const budgets = RepositoryBudgetsSchema.parse(options.budgets);
   const secret = randomBytes(32);
   const started = Date.now();

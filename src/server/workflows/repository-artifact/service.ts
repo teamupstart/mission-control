@@ -276,7 +276,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     });
   }
   sampleBoundary(checkout: string, signal: AbortSignal) {
-    return this.measured("repository_boundary", () => sampleCheckoutBoundary(checkout, signal));
+    return this.measured("repository_boundary", () => sampleCheckoutBoundary(checkout, signal, { storage: this.storage }));
   }
   async stillCurrent(candidate: WorkflowRepositoryArtifactCandidate, signal: AbortSignal) {
     const checkout = this.checkouts.get(candidate);

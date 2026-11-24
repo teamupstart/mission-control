@@ -141,6 +141,7 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
   }
   const index: Layer = new Map();
   const skipWorktree = new Set<string>();
+  const assumeUnchanged = new Set<string>();
   const readBoolean = async (name: string) => {
     const setting = await git(["config", "--includes", "--type=bool", "--get", name], true);
     return !setting.length || line(setting) === "true";
@@ -172,14 +173,15 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
   }
   // Neither command inspects file content. In particular no status/diff command
   // gets a chance to run an attribute-selected clean or textconv driver.
-  await records([...override, "ls-files", "-z", "-t", "--stage"], row => {
+  await records([...override, "ls-files", "-z", "-v", "--stage"], row => {
     const tab = row.indexOf(9);
     if (tab < 0 || tab > 100) unavailable();
     const [tag, mode, id, stage] = row.toString("ascii", 0, tab).split(" ");
     if (stage !== "0" || !/^(100644|100755|120000|160000)$/.test(mode!)) unavailable();
     const key = collectPath(row.subarray(tab + 1));
     index.set(key, { mode: mode!, id: oid.parse(id) });
-    if (tag === "S") skipWorktree.add(key);
+    if (tag === "S" || tag === "s") skipWorktree.add(key);
+    if (tag === "h" || tag === "s") assumeUnchanged.add(key);
   });
   // Intent-to-add has the id of the empty blob in ls-files, but no entry in the
   // staged tree. Ask Git for index names against its virtual empty tree only when
@@ -218,7 +220,7 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
   });
   const sorted = [...paths].sort();
   const lineEndings = await lineEndingModes(executable, directories, sorted, signal);
-  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: sorted, lineEndings };
+  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, assumeUnchanged, intentModes, embedded, paths: sorted, lineEndings };
 }
 
 const require = createRequire(import.meta.url);

@@ -60,6 +60,21 @@ test("with no key anywhere the report names no provider and each source as not s
   assert.deepEqual(body, { provider: null, keys: { openai: { source: null }, jev: { source: null } } });
 });
 
+test("the dashboard reads the saved selection and active provider at the same revision", async () => {
+  process.env.OPENAI_API_KEY = OPENAI_KEY;
+  let previous: string | undefined;
+  for (const [selection, active] of [[null, "openai"], ["openai", "openai"], ["off", null]] as const) {
+    await setProvider(selection);
+    const dashboard = await app.request("/api/voice/decision-key", {
+      headers: { ...headers, "x-voice-provider-revision": "read" },
+    });
+    const data = await dashboard.json() as Report & { selection: string | null; providerRevision: string };
+    assert.deepEqual([data.selection, data.provider], [selection, active]);
+    assert.ok(data.providerRevision && data.providerRevision !== previous);
+    previous = data.providerRevision;
+  }
+});
+
 test("disabling Voice while a key PUT reads its body prevents saving the credential", async () => {
   const payload = new TextEncoder().encode(JSON.stringify({ provider: "jev", key: JEV_KEY }));
   const body = new ReadableStream<Uint8Array>({

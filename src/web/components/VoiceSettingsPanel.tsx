@@ -298,7 +298,10 @@ function FasterRoutingGroup({ state, keys }: {
   keys: VoiceDecisionKeyState;
 }): React.JSX.Element {
   const { config, update, confirmedDecisionProvider } = state;
-  const stored = config?.decisionProvider ?? null;
+  // A key report observes the selection and effective provider together, even if the
+  // independent config poll is stalled. Keep an optimistic selection until its write settles.
+  const stored = state.pendingDecisionProvider !== undefined ? state.pendingDecisionProvider
+    : keys.report ? keys.report.selection : config?.decisionProvider ?? null;
   const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "auto";
   const provider = keys.report?.provider ?? null;
   const status = keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
@@ -326,11 +329,11 @@ function FasterRoutingGroup({ state, keys }: {
             <select
               className="settings-select"
               value={chosen}
-              disabled={!config}
+              disabled={!config && !keys.report}
               aria-label="Decision model provider"
               onChange={(event) => {
                 const next = DECISION_PROVIDER_CHOICES.find((choice) => choice.value === event.target.value);
-                if (next) void update({ decisionProvider: next.stored });
+                if (next) void update({ decisionProvider: next.stored }, keys.report?.providerRevision);
               }}
             >
               {DECISION_PROVIDER_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
@@ -373,7 +376,7 @@ export function VoiceSettingsPanel({
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
   const inputs = voiceInputChoices(devices.devices, inputDevice);
-  const keys = useVoiceDecisionKey(true, state.confirmedDecisionProvider);
+  const keys = useVoiceDecisionKey(true, state.providerRevision);
   return (
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />

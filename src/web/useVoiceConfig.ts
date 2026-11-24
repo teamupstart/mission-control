@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
-import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
+import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
 import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices } from "./lib/api.ts";
 
 // Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
@@ -23,10 +23,12 @@ export interface VoiceConfigState {
   config: VoiceConfig | null;
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
+  providerRevision: string;
+  pendingDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Show an edit immediately and resolve to whether the daemon kept it.
    */
-  update: (patch: VoiceConfigPatch) => Promise<boolean>;
+  update: (patch: VoiceConfigPatch, observedProviderRevision?: string) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by an edit made after it that does. */
   error: string | null;
 }
@@ -92,15 +94,15 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     };
   }, [enabled, setConfirmed]);
 
-  const update = useCallback((patch: VoiceConfigPatch): Promise<boolean> => {
-    if (!confirmedRef.current) return Promise.resolve(false);
-    const edit: PendingEdit = { id: ++nextEdit.current, patch };
+  const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;
     const changesProvider = decisionProvider !== undefined;
     const changesSettings = Object.keys(settings).length > 0;
+    if (!confirmedRef.current && !(changesProvider && !changesSettings && observedProviderRevision)) return Promise.resolve(false);
+    const edit: PendingEdit = { id: ++nextEdit.current, patch };
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, providerRevision.current) : undefined;
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observedProviderRevision ?? providerRevision.current) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
@@ -118,7 +120,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
       const kept = res.ok && res.config !== undefined;
-      const current = confirmedRef.current;
+      const current = confirmedRef.current ?? res.config;
       if (res.config && current && (kept || res.status === 409)) {
         const applyProvider = sendProvider && edit.id > confirmedProviderEdit.current;
         if (applyProvider && res.providerRevision) {
@@ -155,7 +157,10 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     [confirmed, pending],
   );
 
-  return { config, confirmedDecisionProvider: confirmed?.decisionProvider, update, error };
+  return {
+    config, confirmedDecisionProvider: confirmed?.decisionProvider, providerRevision: providerRevision.current,
+    pendingDecisionProvider: pending.find(edit => edit.id === latestProviderEdit.current)?.patch.decisionProvider, update, error,
+  };
 }
 
 export interface VoiceDevicesState {
@@ -192,7 +197,7 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
 export interface VoiceDecisionKeyState {
   busy: boolean;
   /** Undefined until the first read, null when the latest read failed. */
-  report: VoiceDecisionKeyReport | null | undefined;
+  report: Awaited<ReturnType<typeof fetchVoiceDecisionKey>> | undefined;
   /** Save a key. Resolves to whether the daemon kept it; the key is never read back. */
   save(provider: VoiceKeyProvider, key: string): Promise<boolean>;
   remove(provider: VoiceKeyProvider): Promise<boolean>;
@@ -205,10 +210,10 @@ export interface VoiceDecisionKeyState {
  * the chosen provider changes, and on the same poll as the config, so a key saved in another
  * window or a provider chosen there shows here too.
  */
-export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceConfigState["confirmedDecisionProvider"]): VoiceDecisionKeyState {
+export function useVoiceDecisionKey(enabled: boolean, providerRevision: string): VoiceDecisionKeyState {
   const [status, setStatus] = useState<{
-    selection: VoiceConfigState["confirmedDecisionProvider"];
-    report: VoiceDecisionKeyReport | null;
+    revision: string;
+    report: Awaited<ReturnType<typeof fetchVoiceDecisionKey>>;
   }>();
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
@@ -227,7 +232,7 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
       const read = await fetchVoiceDecisionKey();
       if (alive && writes.current === at && id > appliedRead) {
         appliedRead = id;
-        setStatus({ selection: confirmedProvider, report: read });
+        setStatus({ revision: providerRevision, report: read });
       }
     };
     refresh.current = tick;
@@ -238,7 +243,7 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
       refresh.current = null;
       clearInterval(id);
     };
-  }, [enabled, confirmedProvider]);
+  }, [enabled, providerRevision]);
 
   const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>, failed: string): Promise<boolean> => {
     if (writing.current) return false;
@@ -267,6 +272,6 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
     mutate(() => api.removeVoiceDecisionKey(provider), "The key could not be removed."), [mutate]);
 
-  const report = status?.selection === confirmedProvider ? status?.report : undefined;
+  const report = status?.revision === providerRevision ? status.report : undefined;
   return { report, save, remove, error, busy };
 }

@@ -319,12 +319,21 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(providerMenu(other)).toHaveValue("auto");
     // Hold the polling window's view at its original revision.
     await page.route("**/api/voice/config", route => route.request().method() === "GET" ? route.abort() : route.continue());
+    const releaseReport = Promise.withResolvers<void>();
+    await page.route("**/api/voice/decision-key", async route => {
+      await releaseReport.promise;
+      await route.continue();
+    });
     await saveKey(other, "Jev", SAVED_JEV);
     await providerMenu(other).selectOption("jev");
     await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(daemon, "/api/voice/config")).config.decisionProvider).toBe("jev");
     const conflict = page.waitForResponse(r => r.url().endsWith("/api/voice/config/provider-intent") && r.status() === 409);
-    await providerMenu(page).selectOption("off");
-    await conflict;
+    try {
+      await providerMenu(page).selectOption("off");
+      await conflict;
+    } finally {
+      releaseReport.resolve();
+    }
     await expect(line(page)).toHaveText(NOT_SET, { timeout: 2_000 });
     await expect(providerMenu(page)).toHaveValue("off");
     expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
@@ -518,6 +527,27 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     expect(decisions.requests, "Off sent nothing more to the provider").toHaveLength(1);
   });
 
+  test("an active provider can be turned Off before the first config read returns", async ({ dashboard: page, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    const releaseConfig = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config", async route => {
+      if (route.request().method() === "GET") await releaseConfig.promise;
+      await route.continue();
+    });
+    try {
+      await openVoiceSettings(page, daemon);
+      await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+      await expect(providerMenu(page)).toBeEnabled({ timeout: 1_500 });
+      await providerMenu(page).selectOption("off");
+      await expect(line(page)).toHaveText(NOT_SET);
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+      expect(decisions.requests).toHaveLength(0);
+    } finally {
+      releaseConfig.resolve();
+    }
+  });
+
   test("a fresh provider report discloses routing enabled in another window while config is stalled", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);
@@ -530,7 +560,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(providerMenu(writer)).toHaveValue("off");
     const releaseConfig = Promise.withResolvers<void>();
     await page.route("**/api/voice/config", async route => {
-      await releaseConfig.promise;
+      if (route.request().method() === "GET") await releaseConfig.promise;
       await route.continue();
     });
     try {
@@ -544,6 +574,13 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       expect(entry.detail).toBe("OpenAI Decisions answered: split");
       expect(decisions.requests).toHaveLength(1);
       await capture(line(page), "19-fresh-active-provider");
+      await expect(providerMenu(page)).toHaveValue("auto", { timeout: 1_500 });
+      await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "24-active-menu-during-config-stall");
+      await providerMenu(page).selectOption("off");
+      await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+      await expect(providerMenu(page)).toHaveValue("off");
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+      expect(decisions.requests).toHaveLength(1);
     } finally {
       releaseConfig.resolve();
     }

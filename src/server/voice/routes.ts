@@ -118,8 +118,15 @@ export function registerVoiceRoutes(
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
     const saved = savedDecisionKeys();
-    const report = keyReport(decisionKeyAvailability(saved ?? {}, process.env));
-    return c.json(saved === null ? { ...report, savedKeysUnavailable: true } : report);
+    const config = getVoiceConfig();
+    const report = voiceDecisionKeyReport(config, decisionKeyAvailability(saved ?? {}, process.env));
+    return c.json({
+      ...report,
+      ...(saved === null && { savedKeysUnavailable: true }),
+      ...(c.req.header("x-voice-provider-revision") === "read" && {
+        selection: config.decisionProvider, providerRevision: providerRevision(),
+      }),
+    });
   });
   app.put("/api/voice/decision-key", gate, limitBody, async (c) => {
     // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key

@@ -19,7 +19,7 @@ import { Hono } from "hono";
 import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
-import { VOICE_CONFIG_DEFAULTS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_MODEL_STATE_NONE } from "../src/shared/voice.ts";
+import { VOICE_CONFIG_DEFAULTS, VOICE_HELLO_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_MODEL_STATE_NONE } from "../src/shared/voice.ts";
 import { VOICE_INSTANCE_HEADER, VOICE_SPEECH_DEFAULT_NEURAL } from "../src/shared/voice-speech.ts";
 
 Object.assign(process.env, fixtureSupervisorEnv);
@@ -221,6 +221,61 @@ test("only the capture owner's acknowledgement of the paused directive enables p
   assert.deepEqual((await holder.poll()).speak, { id: second, stop: true });
   assert.equal((await holder.event(second, "ended")).status, 200);
 });
+
+test("the speech holder can acknowledge its own microphone pause after its heartbeat expires", async t => {
+  let steady = Math.ceil(performance.now());
+  t.mock.method(performance, "now", () => steady);
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.poll()).capture, true);
+  steady += VOICE_HELLO_LAPSE_MS - 1;
+  const id = await audition();
+  steady++;
+  const pause = await holder.poll();
+  assert.equal(pause.capture, false);
+  assert.equal(pause.speak, null);
+  assert.equal((await holder.event(id, "started")).status, 409);
+  const ready = await (await holder.request("/voice/listener/directive?revision=" + pause.revision)).json();
+  assert.equal(ready.speak.id, id);
+  assert.equal((await holder.event(id, "ended")).status, 200);
+});
+
+for (const proof of ["pause", "exit"] as const) {
+  test(`an expired microphone grant still needs its original owner's ${proof} proof after takeover`, async t => {
+    let steady = Math.ceil(performance.now());
+    t.mock.method(performance, "now", () => steady);
+    const original = player(), replacement = player(crypto.randomUUID());
+    await original.announce(); await original.hello();
+    assert.equal((await original.poll()).capture, true);
+    steady += VOICE_HELLO_LAPSE_MS;
+    await replacement.announce();
+    assert.equal((await replacement.hello()).status, 200);
+    assert.equal((await replacement.poll()).capture, true);
+    const id = await audition();
+    const ownPause = await replacement.poll();
+    assert.equal(ownPause.speak, null);
+    // A long poll from the replacement acknowledges its microphone alone.
+    const waiting = replacement.request("/voice/listener/directive?revision=" + ownPause.revision);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await replacement.event(id, "started")).status, 409);
+    const past = await original.poll();
+    assert.equal(past.capture, false);
+    assert.equal(past.speak, null);
+    assert.deepEqual(past.roster, []);
+    if (proof === "pause") {
+      assert.equal((await original.request("/voice/listener/directive?revision=" + past.revision)).status, 409);
+    } else {
+      assert.equal((await replacement.report("exited", original.instance)).status, 403);
+      assert.equal((await replacement.poll()).speak, null);
+      assert.equal((await original.report("exited")).status, 200);
+    }
+    const ready = await (await waiting).json();
+    assert.equal(ready.speak.id, id);
+    assert.equal(ready.capture, false);
+    assert.equal((await replacement.event(id, "ended")).status, 200);
+    assert.equal((await replacement.poll()).capture, true);
+  });
+}
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });

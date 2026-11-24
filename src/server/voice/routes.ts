@@ -136,7 +136,11 @@ export function registerVoiceRoutes(
   };
   const drainGate = allowDrain();
   const directiveRefusal = (c: Context) => {
-    if (store.speech.speak(c.req.header(VOICE_INSTANCE_HEADER))) return;
+    const speak = store.speech.speak(c.req.header(VOICE_INSTANCE_HEADER));
+    if (speak && "stop" in speak) return;
+    const pause = store.formerOwnerPause(c.req.header(VOICE_LISTENER_ID_HEADER));
+    if (pause) return c.json(pause);
+    if (speak) return;
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
     if (disabled) return disabled;
     if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) {
@@ -325,6 +329,7 @@ export function registerVoiceRoutes(
     if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
     if (result === "unavailable") return c.json({ error: "supervisor_record_unavailable" }, 503);
+    if (state === "exited") store.retireCapture(instance);
     return c.json({ ok: true });
   });
   app.get("/voice/speech/jobs/:id/audio", gate, c => {
@@ -355,10 +360,10 @@ export function registerVoiceRoutes(
   app.get("/voice/listener/directive", drainGate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
+    store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"));
     const refusal = directiveRefusal(c);
     if (refusal) return refusal;
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
-    store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"));
     const current = store.directiveFor(instance);
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal, instance);

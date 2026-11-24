@@ -1077,10 +1077,14 @@ is ready for handoff.
 If the current owner received a capture grant, its first playback-time poll
 returns `capture: false` and `speak: null`. After closing microphone input,
 it sends that directive's revision in the next poll. Only then does the daemon
-offer the holder playback and serve its audio. With no active capture grant
-the holder can receive the job immediately. Stop bypasses this wait. The directive
+offer the holder playback and serve its audio. Expiry or transfer of the lease
+leaves the pause obligation with each listener that received a grant. During a
+speech hold a former owner can receive a pause with an empty roster and
+acknowledge it, and a verified supervisor exit retires its launch's grants.
+With every grant accounted for the holder can receive the job immediately.
+Stop bypasses this wait. The directive
 poll checks the capture lease or playback holder both on arrival and after
-waiting for a change. A non-owner polling during a hold receives 409 with
+waiting for a change. An unrelated non-owner polling during a hold receives 409 with
 `capture: false` and `speak: null`, without the roster or revision. Only the job's holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its

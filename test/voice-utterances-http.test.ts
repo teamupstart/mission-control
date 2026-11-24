@@ -136,6 +136,17 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
+test("quoted cancel leaves the pending card open until a bare cancel dismisses it", async () => {
+  await say("Will check the build", "waiting");
+  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel»."]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.outcome, "ignored");
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["waiting", "pending"]]);
+  }
+  await say("Cancel!");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["waiting", "cancelled"]);
+});
+
 test("successive cancels stop exactly one action across kinds; a duplicate capture does nothing", async () => {
   await say("Will first", "a");
   const actions = registry.voiceRouter!.pendingVoiceActions;
@@ -203,6 +214,24 @@ test("window off queues immediately and an addressed stop interrupts the session
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
   assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
+});
+
+test("quoted stop messages reach the queue verbatim while bare stop still interrupts", async () => {
+  const before = interrupts.length;
+  const messages = ['"stop"', "'STOP!'", "“stop”", "«stop»."];
+  for (const [index, message] of messages.entries()) {
+    const id = "quoted-stop-" + index;
+    await say("Steve, " + message, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  for (const command of ["stop", "Stop!"]) {
+    const id = randomUUID();
+    await say("Steve, " + command, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {

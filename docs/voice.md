@@ -55,8 +55,10 @@ For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 so `Will,,,` queues `,,`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest action that
-is still pending and was opened by the time the cancel was spoken. The daemon uses capture
+“Steve, stop” uses the session interrupt path. Quoting the word in `Steve, "stop"` queues
+the message `"stop"`. A bare “cancel” stops the newest action that
+is still pending and was opened by the time the cancel was spoken. Quoting the word
+in a standalone `“cancel”` leaves pending actions open. The daemon uses capture
 timestamps when listener requests arrive out of order. For equal timestamps, the last action
 opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
 An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.

@@ -77,6 +77,8 @@ type Decision =
       splits: VoiceSplitPoint[]; ambiguousSplitTarget: boolean }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
+const QUOTATION_MARK = /\p{Quotation_Mark}/u;
+
 function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
@@ -140,7 +142,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
   const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
-  if (phrase === "cancel") return { kind: "control", command: "cancel" };
+  if (phrase === "cancel" && !QUOTATION_MARK.test(text)) return { kind: "control", command: "cancel" };
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === phrase)
     .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
@@ -188,7 +190,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
+  const stop = normalized(body) === "stop" && !QUOTATION_MARK.test(body);
+  const command = stop ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   // A later roster name may start a message of its own or only be talked about. The first

@@ -507,7 +507,9 @@ Memory use during a file could have been higher. [Sherpa spike findings](voice-s
 On macOS or Linux, build the helper, select sherpa in the daemon, download its model
 in Setup, unmute, then run
 `npm run voice:listener -- --backend sherpa-onnx --input-file sample.wav` from the
-checkout. Use 16 kHz mono PCM WAV. The listener validates the recording before claiming
+checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
+The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
+The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
 permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances. During
 playback the development listener reports its file input as granted and enumerates

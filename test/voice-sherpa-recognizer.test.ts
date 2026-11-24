@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -79,6 +79,18 @@ test("the published sherpa addon transcribes a recording through the listener an
   // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
   const wav = await readFile(fixture);
   assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("refuses an oversized file and an overstated WAV data chunk before hello", async () => {
+    const path = join(cwd, "oversized.wav");
+    await writeFile(path, wav.subarray(0, 44));
+    await truncate(path, 32 * 1024 * 1024 + 1);
+    await assert.rejects(play(path), /32 MiB WAV limit/);
+    const truncated = Buffer.from(wav);
+    truncated.writeUInt32LE(0xffffffff, 40);
+    await writeFile(path, truncated);
+    await assert.rejects(play(path), /Truncated WAV chunk/);
+    assert.equal(hellos, 0);
+    assert.equal(posts, 0);
+  });
   await t.test("rejects a 16 kHz stereo WAV with speech on channel two before hello", async () => {
     const data = wav.subarray(44);
     const stereo = Buffer.alloc(44 + data.length * 2);

@@ -283,7 +283,11 @@ function dispatchWorld(on) {
   seen.registered = []
   seen.tools = []
   on('command.register', (_, e) => { seen.registered.push(e.name); return { value: { command: e.name } } })
-  on('tool.register', (_, e) => { seen.tools.push(e.name); return { value: { tool: `mcp__mission-control__${e.name}` } } })
+  on('tool.register', (_, e) => {
+    const tool = `mcp__mission-control__${e.name}`
+    seen.tools.push({ name: e.name, tool })
+    return { value: { tool } }
+  })
   return seen
 }
 
@@ -294,7 +298,7 @@ test('the command and the tool are registered, and the inbox argument opens the 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
   expect(seen.registered).toEqual(['mission-dispatch'])
-  expect(seen.tools).toEqual(['start_dispatch'])
+  expect(seen.tools.map(({ name }) => name)).toEqual(['start_dispatch'])
 
   const before = seen.openArgs.length
   await $.command.run(COMMAND('inbox'))
@@ -683,13 +687,14 @@ test('the registered command completes a dispatch: the dialog answer is a pick, 
   expect(seen.toasts.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
 })
 
-test('the registered tool completes a dispatch and returns the receipt, with the words and the context sent apart', async ($, on) => {
+test('the host tool.call routes the registered dispatch tool and returns its receipt', async ($, on) => {
   const seen = dispatchWorld(on)
   dispatchRoutes(seen)
   answerDialogs(on, seen, (q) => q.header === 'Confirm' ? 'Start now' : q.options[0].label)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
-  const result = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'add retries to the webhook client', context: 'client.ts throws on a 502', intent: 'now' })
+  expect(seen.tools.map(({ name }) => name)).toEqual(['start_dispatch'])
+  const result = await $.tool.call({ tool: seen.tools[0].tool, brief: 'add retries to the webhook client', context: 'client.ts throws on a 502', intent: 'now' })
   expect(JSON.stringify(result)).toMatch(/Started mc-9: /)
   const draft = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts'))
   expect(draft.body.words).toBe('add retries to the webhook client')

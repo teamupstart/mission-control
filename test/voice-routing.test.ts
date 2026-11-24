@@ -76,6 +76,33 @@ test("later two-word roster mentions must be on the same side of a comma", () =>
   if (decision.kind === "needs-model") assert.deepEqual(decision.candidates.map(({ name }) => name), roster);
 });
 
+test("punctuation in the gap between two words belongs to the message", () => {
+  const names = ["Steve", "Steve Captain", "Release Captain"];
+  for (const body of ["??? Captain, run tests", "ask Release ??? Captain"]) {
+    assert.deepEqual(route("Steven " + body, names), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  assert.deepEqual(route("Steven \t Captain, run tests", names), {
+    kind: "addressed", target: agent("Steve Captain"), match: "phonetic", text: "run tests", pauseMs: null,
+  });
+});
+
+test("a sentence boundary cannot join a two-word address or later mention", () => {
+  const names = ["Release Captain"];
+  for (const text of ["Release. Captain, stop", "Release “Captain”, stop"]) {
+    assert.equal(route(text, names).kind, "ignored", text);
+  }
+  for (const body of ["ask Release. Captain", "ask Release “Captain”"]) {
+    assert.deepEqual(route("Steven " + body, ["Steve", ...names]), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  assert.deepEqual(route("Dr. Ada, run tests", ["Dr. Ada"]), {
+    kind: "addressed", target: agent("Dr. Ada"), match: "exact", text: "run tests", pauseMs: null,
+  });
+});
+
 test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
   const names = ["Steve", "Steve Captain"];
   for (const roster of [names, names.toReversed()]) {

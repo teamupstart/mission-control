@@ -1158,17 +1158,25 @@ export function WorkflowActionWait({ runs, idPrefix }: { runs: readonly Workflow
  * explanation, while "held by a workflow" is a state the fleet has no other words for, and
  * saying it once per section beats repeating it on every tile below.
  */
+/** What each section rule prints, the word a reader scans the column for. */
+export const FLEET_SECTION_TITLES = {
+  free: "free",
+  awaiting: "awaiting background work",
+  stalled: "stalled",
+  held: "held by a workflow",
+} as const;
+
 export function FleetSectionHead({
   kind,
   count,
 }: {
-  kind: "free" | "held" | "awaiting";
+  kind: "free" | "held" | "awaiting" | "stalled";
   count: number;
 }): React.JSX.Element {
   return (
     <div className={`fleet-section fleet-section-${kind}`} role="presentation">
       <span className="fleet-section-line">
-        <b>{kind === "free" ? "free" : kind === "held" ? "held by a workflow" : "awaiting background work"}</b>
+        <b>{FLEET_SECTION_TITLES[kind]}</b>
         <span className="fleet-section-n">{count}</span>
       </span>
       {kind === "awaiting" && (
@@ -1176,6 +1184,14 @@ export function FleetSectionHead({
         // are quiet on purpose, and nothing will nudge them before the deadline on each card.
         <span className="fleet-section-why">
           Each resumes on its own when its process reports back. Nothing nudges them before their deadline.
+        </span>
+      )}
+      {kind === "stalled" && (
+        // Count-agnostic like the others. The section replaces the inbox's Stuck rows for these
+        // stalls (`idle-stalled`), so it says what the cards below it carry: the open work and
+        // the step that moves it.
+        <span className="fleet-section-why">
+          Went quiet with work still open. Each card says what is open and what would move it.
         </span>
       )}
       {kind === "held" && (

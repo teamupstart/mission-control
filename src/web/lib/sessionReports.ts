@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
-import type { ReportItem } from "@shared/reports.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { reportAuthorName, type ReportAuthor, type ReportItem } from "@shared/reports.ts";
 import { api } from "./api.ts";
 import { historyRetryDelay } from "./timelineReviews.ts";
+
+/** Historical cards can stay open across a flag change after their report leaves the inbox. */
+export function useReportAuthorName(author: ReportAuthor): string {
+  return reportAuthorName(author, useFeatureFlag(VOICE_FLAG));
+}
 
 /**
  * What a conversation entry for a report needs from the dashboard: which report is open on

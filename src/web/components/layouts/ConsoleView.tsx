@@ -13,7 +13,9 @@ import {
   repoSessionTotals,
   type FleetBlock,
   type FleetToneGroup,
+  stalledInOrder,
 } from "../../lib/fleet-order.ts";
+import { NO_STALLED_SESSIONS } from "../../lib/stalled.ts";
 import { BlockedRailHead } from "../BlockedGroup.tsx";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
@@ -90,7 +92,10 @@ export function ConsoleView(props: SessionViewProps & {
     blockedPlacement,
     // App's one set, on App's one clock, so this draws the order the arrow keys walk.
     props.awaitingIds ?? NO_AWAITING_SESSIONS,
+    props.stalledById ?? NO_STALLED_SESSIONS,
   );
+  // The rows drawn under Idle's Stalled rule, which alone carry the stalled mark.
+  const stalledHere = stalledInOrder(order.groups);
   const pending = provisioningTasks(props.tasks);
   // Every open failure: the rail has no Backlog column and its rows carry no notices, so a
   // returned or kept failure has nowhere else to be found here.
@@ -164,6 +169,7 @@ export function ConsoleView(props: SessionViewProps & {
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
       resident={props.residentBySession?.get(s.id) ?? null}
+      stall={stalledHere.has(s.id) ? props.stalledById?.get(s.id) ?? null : null}
     />
   };
 
@@ -231,6 +237,11 @@ export function ConsoleView(props: SessionViewProps & {
             {head.free! > 0 && (
               <Tooltip label={`${head.free} of ${g.sessions.length} idle agents can take work`}>
                 <span className="n-free">{head.free} free</span>
+              </Tooltip>
+            )}
+            {head.stalled !== null && (
+              <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
+                <span className="n-stalled">{head.stalled} stalled</span>
               </Tooltip>
             )}
             {/* Split by a wait alone, with nothing held, there is no held side. */}
@@ -353,6 +364,7 @@ export function ConsoleView(props: SessionViewProps & {
             key={active.id}
             view={props}
             session={active}
+            stall={stalledHere.has(active.id) ? props.stalledById?.get(active.id) ?? null : null}
             // A folded rail has no head, so the Board drill-in's way back moves to the detail
             // head. Undefined in the Console layout, which has no board to go back to.
             onBack={railFolded ? props.onBackToBoard : undefined}

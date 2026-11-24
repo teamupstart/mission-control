@@ -264,7 +264,7 @@
   "POST /api/sessions/:id/hibernate": "404 {\"error\":\"Hibernate is a preview feature that is switched off\",\"ok\":false}",
   "POST /api/sessions/:id/html-block-anchor": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/html-block-target": "404 {\"error\":\"no such session\"}",
-  "POST /api/sessions/:id/inbox-message": "403 {\"error\":\"the inbox preview flag is off\",\"ok\":false}",
+  "POST /api/sessions/:id/inbox-message": "403 {\"error\":\"the inbox and Stalled section preview flags are off\",\"ok\":false}",
   "POST /api/sessions/:id/inject": "404 {\"error\":\"no such session\",\"pasted\":false}",
   "POST /api/sessions/:id/interrupt": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/kill": "404 {\"error\":\"no such session\"}",

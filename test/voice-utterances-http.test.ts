@@ -477,6 +477,38 @@ test("space before an address's closing quote preserves bare and quoted stop beh
   assert.equal(interrupts.length, before + 2);
 });
 
+test("mismatched address wrappers stay in the queued message and cannot trigger a stop", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["[Will, ) stop", ") stop"], ["“Will, ’ stop", "’ stop"], ["[Will), stop", "), stop"],
+    ["「[Will, ] 』 stop", "』 stop"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  for (const captureText of ["[Will, ] stop", "「[Will, ] 」 stop"]) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
+});
+
+test("a stop after an unclosed address wrapper queues as text at the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const before = interrupts.length;
+  const messages = queued("Will");
+  for (const text of ["[Will, stop", "“Will, STOP!", "「[Will, ] stop", ", [Will, stop"]) await say(text);
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.equal(interrupts.length, before);
+  assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
+  assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   await say("Will, " + body, "mention");
@@ -745,6 +777,26 @@ test("a sixth unsure card cancels the oldest unsure card and preserves pending d
   assert.deepEqual(cards.filter((card) => card.state === "cancelled").map((card) => card.id), ["unsure-0"]);
   assert.equal((await readHeard()).find((entry) => entry.id === "unsure-0")?.outcome, "cancelled");
   assert.equal((await act("unsure-0", "pick", { id: "task:Will" })).status, 409);
+});
+
+test("at capacity the router rejects new cards but preserves deadlines, picks, cancels and retries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await say("Steven ask Will", "choice");
+  for (let i = 1; i < 50; i++) {
+    assert.deepEqual(await (await say("Will wait", "pending-" + i)).json(), { accepted: true });
+  }
+  const snapshot = registry.snapshot().voiceCards;
+  assert.equal(snapshot?.length, 50);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: false });
+  assert.deepEqual(registry.snapshot().voiceCards, snapshot);
+  assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 50);
+  assert.ok(!(await readHeard()).some(({ id }) => id === "overflow"));
+  assert.deepEqual(await (await say("Will")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
+  await say("cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.deepEqual(await (await say("Will try again", "overflow")).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["overflow", "pending"]);
 });
 
 test("out-of-order unsure captures keep the five newest choices, including when the incoming card is oldest", async () => {

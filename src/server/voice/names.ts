@@ -17,8 +17,8 @@ import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 //
 // It holds one entry per live resident profile and one per task with a call sign, computed from
 // what the daemon's Registry already holds - profiles, open runs, tasks and live sessions - and
-// recomputed when one of their frames says something it reads may have moved. Nothing here is
-// stored: a restart computes the same roster from the same rows, less the memory of when a task
+// recomputed when one of their frames says something it reads may have moved. A displaced name is marked on its task row. A restart
+// otherwise computes the same roster from the same rows, less the memory of when a task
 // that was not finished stopped running, which then counts from the restart.
 
 /** How long a task that stopped running keeps its name on the roster, marked not running. */
@@ -43,6 +43,7 @@ export interface VoiceNameDeps {
    * until its day is up; a deleted one leaves at once.
    */
   taskStored(id: string): boolean;
+  retirement?: { read(id: string): string | null; write(id: string, name: string | null): void };
   /**
    * Finished tasks with a call sign that stopped at or after `since`, read from storage. Read once,
    * at start, for the ones the Registry did not reload (it reloads the 50 most recent finished
@@ -62,6 +63,7 @@ export interface VoiceRosterInputs {
   liveSessions: readonly Session[];
   /** When a task that is not running stopped, for its 24 hours. */
   stoppedAt(task: Task): number;
+  retiredNames?: ReadonlyMap<string, string | null>;
   now: number;
 }
 
@@ -71,6 +73,7 @@ export interface VoiceRosterResult {
   nextExpiry: number | null;
   /** The tasks listed, by id, so a caller can keep one the Registry later evicts. */
   listedTasks: Map<string, Task>;
+  retiredNames: Map<string, string>;
 }
 
 /** A role as one line: whitespace collapsed, ends trimmed. */
@@ -142,11 +145,17 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
 
   interface Candidate { entry: SpokenName; task: Task; stoppedAt: number | null }
   const candidates: Candidate[] = [];
+  const retiredNames = new Map<string, string>();
   for (const task of inputs.tasks) {
     if (!taskHasSpokenName(task)) continue;
     const live = sessionForTask.get(task.id) ?? null;
     const state = taskState(task, live);
     const stoppedAt = state === "not-running" ? inputs.stoppedAt(task) : null;
+    const name = normalizeSpokenName(task.callSign!);
+    if (stoppedAt !== null && inputs.retiredNames?.get(task.id) === name) {
+      retiredNames.set(task.id, name);
+      continue;
+    }
     if (stoppedAt !== null && inputs.now >= stoppedAt + VOICE_NAME_RETENTION_MS) continue;
     candidates.push({
       task,
@@ -170,12 +179,13 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
   const kept = candidates.filter((candidate) => {
     if (candidate.stoppedAt === null) return true;
     const name = normalizeSpokenName(candidate.entry.name);
-    if (residentNames.has(name)) return false;
-    return !candidates.some((other) => other !== candidate
+    const displaced = residentNames.has(name) || candidates.some((other) => other !== candidate
       && normalizeSpokenName(other.entry.name) === name
       && (other.stoppedAt === null
         || other.stoppedAt > candidate.stoppedAt!
         || (other.stoppedAt === candidate.stoppedAt && other.entry.key > candidate.entry.key)));
+    if (displaced) retiredNames.set(candidate.task.id, name);
+    return !displaced;
   });
 
   const expiries = kept.flatMap((candidate) =>
@@ -183,6 +193,7 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
   return {
     roster: [...residents.sort(byName), ...kept.map((candidate) => candidate.entry).sort(byName)],
     nextExpiry: expiries.length > 0 ? Math.min(...expiries) : null,
+    retiredNames,
     listedTasks: new Map(kept.map((candidate) => [candidate.task.id, candidate.task])),
   };
 }
@@ -218,6 +229,8 @@ export class VoiceNameRegistry {
   private readonly stopped = new Map<string, number>();
   /** Tasks listed at the last compute, so an evicted one can be kept. */
   private listed = new Map<string, Task>();
+  /** Cached only while the task is in the input catalogs. Eviction leaves the row intact. */
+  private readonly retiredNames = new Map<string, string | null>();
   /** Listed tasks the Registry evicted from memory while their rows remain. */
   private readonly retained = new Map<string, Task>();
   /** Which task each live session runs, so a session frame that changes neither is ignored. */
@@ -286,13 +299,13 @@ export class VoiceNameRegistry {
       case "task_upsert":
         // Only a task that has a call sign, or had one when last listed, can move the roster;
         // a resident's own task moves it through its run and session frames.
-        if (!event.task.callSign && !this.listed.has(event.task.id) && !this.retained.has(event.task.id)) return;
+        if (!event.task.callSign && !this.listed.has(event.task.id) && !this.retained.has(event.task.id) && !this.retiredNames.has(event.task.id)) return;
         this.retained.delete(event.task.id);
         break;
       case "task_remove": {
         const listed = this.listed.get(event.id);
         if (listed && this.deps.taskStored(event.id)) this.retained.set(event.id, listed);
-        else if (!this.retained.delete(event.id) && !listed) return;
+        else if (!this.retained.delete(event.id) && !listed && !this.retiredNames.has(event.id)) return;
         break;
       }
       default:
@@ -306,8 +319,14 @@ export class VoiceNameRegistry {
     const inMemory = this.sources.listTasks();
     const ids = new Set(inMemory.map((task) => task.id));
     const tasks = [...inMemory, ...[...this.retained.values()].filter((task) => !ids.has(task.id))];
+    for (const task of tasks) {
+      if (task.callSign && !this.retiredNames.has(task.id)) {
+        this.retiredNames.set(task.id, this.deps.retirement?.read(task.id) ?? null);
+      }
+    }
     const stoppedNow = new Set<string>();
     const result = computeVoiceRoster({
+      retiredNames: this.retiredNames,
       profiles: this.sources.listResidentProfiles(),
       runs: this.sources.listResidentRuns(),
       tasks,
@@ -327,6 +346,17 @@ export class VoiceNameRegistry {
     // Deleting the entry a Map iterator is on is safe: iteration continues with the next.
     for (const id of this.stopped.keys()) if (!stoppedNow.has(id)) this.stopped.delete(id);
     for (const id of this.retained.keys()) if (!result.listedTasks.has(id)) this.retained.delete(id);
+    for (const task of tasks) {
+      const retired = result.retiredNames.get(task.id) ?? null;
+      if ((this.retiredNames.get(task.id) ?? null) !== retired) {
+        this.deps.retirement?.write(task.id, retired);
+        this.retiredNames.set(task.id, retired);
+      }
+      if (!task.callSign) this.retiredNames.delete(task.id);
+    }
+    for (const id of this.retiredNames.keys()) {
+      if (!ids.has(id) && !this.retained.has(id)) this.retiredNames.delete(id);
+    }
     this.listed = result.listedTasks;
     this.current = result.roster;
     this.currentKey = canonicalVoiceRoster(result.roster);

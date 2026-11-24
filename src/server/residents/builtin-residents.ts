@@ -2,7 +2,7 @@ import { personaDescriptionFromMarkdown, personaNameFromMarkdown } from "@shared
 import {
   BUILTIN_RESIDENT_PROFILE_ID_PREFIX,
   RESIDENT_LIMITS,
-  ResidentProfileRevisionSchema,
+  NewResidentProfileSettingsSchema,
   type ResidentProfileRevision,
   type ResidentProfileRevisionInput,
 } from "@shared/residents.ts";
@@ -37,6 +37,8 @@ type BuiltinResidentSettings = Omit<ResidentProfileRevisionInput, "identity" | "
 
 const BUILTIN_RESIDENT_SETTINGS: Record<string, BuiltinResidentSettings> = {
   "agent-shepherd": {
+    // Preserve this shipped profile’s existing server set when reconciling an upgrade.
+    mcp: { nativeSources: "pinned" },
     execution: { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" },
     board: { colorId: "amber", label: null, pin: true },
     loop: { spendCapUsd: 40 },
@@ -64,7 +66,7 @@ export function builtinResidentsFrom(
     if (!rest) throw new Error(`residents/${source.slug}.md has no settings in builtin-residents.ts`);
     return {
       id: builtinResidentProfileId(source.slug),
-      settings: ResidentProfileRevisionSchema.parse({
+      settings: NewResidentProfileSettingsSchema.parse({
         ...rest,
         identity: {
           name: personaNameFromMarkdown(source.instructionsMarkdown, source.slug),

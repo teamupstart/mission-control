@@ -907,6 +907,16 @@ test("a report alerts once, on its stamp, worded by it and named by the name it 
   assert.deepEqual(detectAlerts(reportsScope([stamped("back")]), reportsScope([stamped("back")])), []);
 });
 
+test("a report alert uses the current Voice flag and a label change alone never announces it again", () => {
+  const author = { key: "session:a", name: "Alice", residentProfileId: null, labels: { spoken: "Alice", fallback: "Check the parser" } };
+  const waiting = reportsScope([mkReport({ id: "r-1", author })]);
+  const off = reportsScope([stamped("working", { author })], { spokenNames: false });
+  const on = { ...off, spokenNames: true };
+  assert.equal(detectAlerts(waiting, off)[0]?.agentName, "Check the parser");
+  assert.equal(detectAlerts(waiting, on)[0]?.agentName, "Alice");
+  assert.deepEqual(detectAlerts(off, on), []);
+});
+
 test("a report read or replaced before its stamp, and a session stopping without one, raise nothing", () => {
   const posted = reportsScope([mkReport({ id: "r-1" })]);
   assert.deepEqual(detectAlerts(posted, reportsScope([stamped("back", { readAt: 4, readBy: "mark-read" })])), []);

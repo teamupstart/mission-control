@@ -34,6 +34,30 @@ afterEach(async () => {
 });
 after(() => rmSync(home, { recursive: true, force: true }));
 
+// The real poller gives gh eight seconds, including process startup. Use only shell builtins
+// so a loaded worker can answer without starting another Node runtime.
+function writeFakeGh(name: string, body: string): { bin: string; log: string } {
+  const bin = join(home, name);
+  writeFileSync(bin, [
+    "#!/bin/sh",
+    // Join these tab-free arguments into one append, preserving spaces in search qualifiers.
+    "IFS='\t'",
+    'printf "%s\\n" "$*" >> "$0.log"',
+    body,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return { bin, log: `${bin}.log` };
+}
+
+function fakeGhCalls(log: string): string[][] {
+  return readFileSync(log, "utf8").trimEnd().split("\n").map(line => line.split("\t"));
+}
+
+// Quote the entire fixture response as a single literal shell argument.
+function printGhResponse(stdout: string): string {
+  return `printf '%s' '${stdout.replaceAll("'", "'\\''")}'`;
+}
+
 /**
  * What is at stake: a task whose pull request MERGED, sitting in a state that says it did
  * not.
@@ -1011,17 +1035,22 @@ test("production discovery searches each episode window and retained SHA before 
     mergeCommit: { oid: "f".repeat(40) } };
   const newer = { ...older, url: "https://github.com/example/repo/pull/1319", number: 1319,
     createdAt: new Date(f.next.startedAt + 1).toISOString(), headRefOid: "a".repeat(40) };
-  const bin = join(home, "candidate-gh");
-  const log = join(home, "candidate-gh.log");
-  writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs');
-const args = process.argv.slice(2); const search = args[args.indexOf('--search') + 1];
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-const rows = search && search.includes('created:') ? [${JSON.stringify(newer)}, ${JSON.stringify(older)}] : [${JSON.stringify(newer)}];
-process.stdout.write(JSON.stringify(rows));\n`, { mode: 0o755 });
+  // A search bounded by creation time finds both candidates; any other search finds the newer.
+  const { bin, log } = writeFakeGh("candidate-gh", `
+while [ "$#" -ge 2 ]; do
+  if [ "$1" = "--search" ]; then
+    case "$2" in
+      *created:*) ${printGhResponse(JSON.stringify([newer, older]))}; exit 0 ;;
+    esac
+    break
+  fi
+  shift
+done
+${printGhResponse(JSON.stringify([newer]))}`);
   await withProcessEnv({ MISSION_GH_BIN: bin }, async () => {
     await pollAndReconcilePrs(f.registry, undefined, async () => null);
   });
-  const args = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+  const args = fakeGhCalls(log);
   const lower = new Date(Math.floor(f.episode.startedAt / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
   const upper = new Date(Math.ceil(f.next.startedAt / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
   assert.ok(args.some(a => a.includes(`created:${lower}..${upper}`)));
@@ -1083,24 +1112,18 @@ for (const failure of ["command-failure", "invalid-json", "non-array"] as const)
     const historyBefore = historicalTaskWorkEpisodeBindingsForTask(f.taskId);
     const dependentBefore = f.registry.getTask(f.dependentId)!;
     const sourceBefore = f.registry.getTask(f.taskId)!;
-    const bin = join(home, `gh-${failure}`);
-    const log = join(home, `gh-${failure}.log`);
     // A failed command can still print plausible PR data. Its exit code must win.
     const output = failure === "command-failure" ? JSON.stringify([{
       url: "https://github.com/example/repo/pull/1321", number: 1321, state: "MERGED",
       createdAt: new Date(f.episode.startedAt + 1).toISOString(),
       mergedAt: new Date().toISOString(), headRefOid: "historical-head",
     }]) : failure === "invalid-json" ? "{invalid-json" : "{}";
-    writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-process.stdout.write(${JSON.stringify(output)});
-process.exitCode = ${failure === "command-failure" ? 23 : 0};\n`, { mode: 0o755 });
+    const { bin, log } = writeFakeGh(`gh-${failure}`, `${printGhResponse(output)}\nexit ${failure === "command-failure" ? 23 : 0}`);
     await withProcessEnv({ MISSION_GH_BIN: bin }, async () => {
       // Use the production branch search and parser, not an injected "error" result.
       await pollAndReconcilePrs(f.registry, undefined, async () => null);
     });
-    const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    const calls = fakeGhCalls(log);
     assert.ok(calls.some(args => args.includes("--search") && args.includes(f.episode.branch!)), "the real episode search must invoke the fake CLI");
     assert.deepEqual(taskWorkEpisodeForTask(f.taskId), bindingBefore);
     assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(f.taskId), historyBefore);
@@ -1274,13 +1297,15 @@ test("production URL lookup distinguishes closed PRs and rediscovers a replaceme
   }, async () => null);
   const candidate = { url: newUrl, number: 1330, state: "MERGED", headRefOid: "head",
     createdAt: new Date(f.episode.startedAt + 2).toISOString(), mergedAt: new Date().toISOString() };
-  const bin = join(home, "gh-closed-replacement"); const log = join(home, "gh-closed-replacement.log");
-  writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'pr' && args[1] === 'view') process.stdout.write(JSON.stringify({ state: 'CLOSED', mergedAt: null }));
-else process.stdout.write(JSON.stringify([${JSON.stringify(candidate)}]));\n`, { mode: 0o755 });
+  // `gh pr view` reports the old PR closed; every search finds the replacement.
+  const { bin, log } = writeFakeGh("gh-closed-replacement", `
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  ${printGhResponse(JSON.stringify({ state: "CLOSED", mergedAt: null }))}
+else
+  ${printGhResponse(JSON.stringify([candidate]))}
+fi`);
   await withProcessEnv({ MISSION_GH_BIN: bin }, async () => { await pollAndReconcilePrs(f.registry); });
-  const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+  const calls = fakeGhCalls(log);
   assert.ok(calls.some(args => args[0] === "pr" && args[1] === "view" && args.includes(oldUrl)));
   assert.ok(calls.some(args => args.includes("--search") && args.includes(f.episode.branch!)));
   assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]!), newUrl);

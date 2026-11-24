@@ -61,8 +61,8 @@ function barePhrase(text: string): string {
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
   const first = normalized(token[0]);
-  if (!next || text.slice(token.index, next.index).includes(",")) return [first];
-  return [first, first + " " + normalized(next[0])];
+  if (!next || !/^\s+$/u.test(text.slice(token.index + token[0].length, next.index))) return [first];
+  return [first, normalized(text.slice(token.index, next.index + next[0].length))];
 }
 
 function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
@@ -80,25 +80,34 @@ function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[]
   return null;
 }
 
-function closesWrapper(opener: string, closer: string): boolean {
-  if (opener === '"' || opener === "'") return closer === opener;
-  if (/\p{Ps}/u.test(opener)) return /\p{Pe}/u.test(closer);
-  return /\p{Pf}/u.test(closer);
-}
+// Unicode paired brackets and typographic quote pairs. An unknown closer stays in the message.
+const WRAPPER_PAIRS = new Set(`
+  "" '' () [] {} «» ‹› ‘’ “” ‛’ ‟” ‚’ „” 〝〞 〝〟
+  ༺༻ ༼༽ ᚛᚜ ⁅⁆ ⁽⁾ ₍₎ ⌈⌉ ⌊⌋ 〈〉 ❨❩ ❪❫ ❬❭ ❮❯ ❰❱ ❲❳ ❴❵
+  ⟅⟆ ⟦⟧ ⟨⟩ ⟪⟫ ⟬⟭ ⟮⟯ ⦃⦄ ⦅⦆ ⦇⦈ ⦉⦊ ⦋⦌ ⦍⦐ ⦏⦎ ⦑⦒ ⦓⦔ ⦕⦖ ⦗⦘
+  ⧘⧙ ⧚⧛ ⧼⧽ ⸂⸃ ⸄⸅ ⸉⸊ ⸌⸍ ⸜⸝ ⸠⸡ ⸢⸣ ⸤⸥ ⸦⸧ ⸨⸩ ⹕⹖ ⹗⹘ ⹙⹚ ⹛⹜
+  〈〉 《》 「」 『』 【】 〔〕 〖〗 〘〙 〚〛 ︗︘ ︵︶ ︷︸ ︹︺ ︻︼ ︽︾ ︿﹀ ﹁﹂ ﹃﹄ ﹇﹈
+  ﹙﹚ ﹛﹜ ﹝﹞ （） ［］ ｛｝ ｟｠ ｢｣
+`.trim().split(/\s+/u));
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
-function messageAfterAddress(text: string, end: number): string {
+function messageAfterAddress(text: string, end: number): { body: string; wrappersClosed: boolean } {
   const rest = text.slice(end).trimStart();
   const separatorLength = rest.startsWith(",") ? 1 : 0;
   let bodyStart = separatorLength;
   const address = text.slice(0, end).trimStart();
-  const opening = address.match(/^[\p{Ps}\p{Pi}"'\s]+/u)?.[0].replace(/\s/gu, "") ?? "";
+  const prefix = address.match(/^[\p{P}\s]+/u)?.[0] ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
-  // Some closing marks are attached to the final name token and have already been consumed.
-  const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
-  for (const opener of [...opening].reverse().slice(closed)) {
+  const wrappers = prefix.match(/[\p{Ps}\p{Pi}"']/gu) ?? [];
+  for (const mark of trailing.matchAll(/[\p{Pe}\p{Pf}"']/gu)) {
+    if (!WRAPPER_PAIRS.has((wrappers.pop() ?? "") + mark[0])) {
+      return { body: text.slice(end - trailing.length + mark.index).trimEnd(), wrappersClosed: false };
+    }
+  }
+  while (wrappers.length) {
     const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
-    if (!closing || !closesWrapper(opener, closing[1]!)) break;
+    if (!closing || !WRAPPER_PAIRS.has(wrappers.at(-1)! + closing[1])) break;
+    wrappers.pop();
     bodyStart += closing[0].length;
   }
   if (bodyStart > separatorLength) {
@@ -106,7 +115,7 @@ function messageAfterAddress(text: string, end: number): string {
     if (!separatorLength) bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
     bodyStart += rest.slice(bodyStart).match(/^\s*,/u)?.[0].length ?? 0;
   }
-  return rest.slice(bodyStart).trimStart();
+  return { body: rest.slice(bodyStart).trimStart(), wrappersClosed: wrappers.length === 0 };
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -120,7 +129,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const [firstToken, secondToken] = tokens;
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, token.index + token[0].length);
-  const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
+  const phrase = bodyAfter(tokens.at(-1)!).body ? null : normalized(text);
   const controlPhrase = barePhrase(text);
   if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
   const pickName = phrase !== null ? controlPhrase : null;
@@ -140,6 +149,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   for (const kind of ["exact", "phonetic"] as const) {
     for (const [index, heard] of leadingNames.entries()) {
       const length = index + 1;
+      // Internal punctuation may belong to a literal roster name such as "Dr. Ada".
+      // A phonetic key would erase it and could cross a sentence boundary.
+      if (kind === "phonetic" && /\p{P} | \p{P}/u.test(heard)) continue;
       const heardKey = kind === "phonetic" ? phoneticKey(heard) : "";
       const matches = names.filter(({ name }) => {
         if (name.split(" ").length !== length) return false;
@@ -168,10 +180,10 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
     return { kind: "ignored", reason: "near-miss" };
   }
-  const body = bodyAfter(tokens[count - 1]!);
+  const { body, wrappersClosed } = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = barePhrase(body) === "stop" ? { command: "stop" as const } : {};
+  const command = wrappersClosed && barePhrase(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {

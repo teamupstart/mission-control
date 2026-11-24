@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
   VOICE_CAPTURE_END_HEADER,
+  VOICE_DRAINING_REVISIONS_HEADER,
   VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
@@ -118,7 +119,10 @@ export function registerVoiceRoutes(
     const state = store.state();
     const next = store.directive(state);
     if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);
-    const release = store.releasedCapture(next);
+    const draining = store.drainingRevisions();
+    if (draining.length) c.header(VOICE_DRAINING_REVISIONS_HEADER, draining.join(","));
+    // The poll may have missed capture-off between key-up and the following press.
+    const release = store.releasedCapture(c.req.query("revision")) ?? store.releasedCapture();
     if (release) {
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
@@ -172,7 +176,7 @@ export function registerVoiceUtteranceRoutes(
         return c.json({ accepted: false });
       }
     }
-    const release = voiceStateStore.releasedCapture(directive);
+    const release = revision ? voiceStateStore.releasedCapture(revision) : undefined;
     const heldBeforeRelease = release !== undefined && revision === release.revision;
     if (heldBeforeRelease) {
       const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);

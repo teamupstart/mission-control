@@ -424,6 +424,7 @@ export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
 export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-at";
 export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-ended-at";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
+export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();
 
 /** The values macOS reports for a media permission, which a Linux listener can also name. */

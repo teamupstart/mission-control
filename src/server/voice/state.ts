@@ -68,7 +68,8 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean };
-  private release?: { revision: string; at: number };
+  private releases = new Map<string, number>();
+  private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -100,14 +101,22 @@ export class VoiceStateStore {
     if (last && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
       last.recipients === recipients) return last.directive;
     const directive = { capture, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
-    this.release = undefined;
+    // Only successive key presses and releases share pending delivery rights.
+    const keyTransition = (last?.mode === "auto-muted" && state.mode === "push-to-talk") ||
+      (last?.mode === "push-to-talk" && state.mode === "auto-muted");
+    if (!keyTransition || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
+        last.recipients !== recipients) this.releases.clear();
+    this.latestRelease = undefined;
     this.lastDirective = { directive, recipients, mode: state.mode, granted };
     return directive;
   }
 
-  /** Only the current capture-off revision can finish the immediately preceding held capture. */
-  releasedCapture(directive: VoiceListenerDirective) {
-    return this.lastDirective?.directive === directive ? this.release : undefined;
+  drainingRevisions() { return [...this.releases.keys()]; }
+
+  releasedCapture(revision = this.latestRelease) {
+    if (!revision) return undefined;
+    const at = this.releases.get(revision);
+    return at === undefined ? undefined : { revision, at };
   }
 
   /**
@@ -220,7 +229,11 @@ export class VoiceStateStore {
     }
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
-    if (!ownerId || ownerId !== nextOwnerId) this.lastDirective = undefined;
+    if (!ownerId || ownerId !== nextOwnerId || live?.hello.backend !== hello.backend) {
+      this.lastDirective = undefined;
+      this.releases.clear();
+      this.latestRelease = undefined;
+    }
     this.hello = { at, ownerId: nextOwnerId, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
@@ -238,7 +251,10 @@ export class VoiceStateStore {
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && keyUp !== undefined && keyUp <= at && this.state().mode === "auto-muted") {
       this.directive();
-      this.release = { revision: held.revision, at: keyUp };
+      // Keep the wire header and drain backlog bounded even if a client never posts.
+      if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
+      this.releases.set(held.revision, keyUp);
+      this.latestRelease = held.revision;
     }
     this.publish();
   }
@@ -266,7 +282,8 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
-    this.release = undefined;
+    this.releases.clear();
+    this.latestRelease = undefined;
     this.lastDirective = undefined;
     this.hello = null;
     this.refused = null;

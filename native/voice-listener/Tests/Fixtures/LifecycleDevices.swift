@@ -49,7 +49,15 @@ final class Segment {
             source.resume()
         }
         if held {
-            heldPhrases = (1...4).map { Segment("phrase \($0)") }
+            if selection == "rapid-press" && opening == 1 {
+                heldPhrases = [Segment("first hold")]
+            } else {
+                heldPhrases = (1...4).map { Segment("phrase \($0)") }
+            }
+            if opening > 1 {
+                Recognizer.pendingDecode?.resume()
+                Recognizer.pendingDecode = nil
+            }
             observe("holding audio")
         } else if selection == "two-segments" {
             source.yield(Segment("undecodable"))
@@ -108,7 +116,7 @@ struct FixtureUtterance: Encodable { let text: String }
     func transcribe(_ segment: Segment, boosting: Bool?) async throws -> FixtureUtterance? {
         observe("decode " + segment.label)
         if segment.label == "undecodable" { throw CocoaError(.coderReadCorrupt) }
-        if segment.label == "in-flight" {
+        if segment.label == "in-flight" || segment.label == "first hold" {
             // Model inference can complete after its task is cancelled. Return
             // the old result only once the second capture is already active.
             await withCheckedContinuation { Self.pendingDecode = $0 }

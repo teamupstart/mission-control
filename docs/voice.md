@@ -74,14 +74,18 @@ directive after 25 seconds. A heartbeat with identical capture settings leaves t
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
 response header. The native helper retains completed phrases in capture order and decodes
 them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
-An overflow discards the entire hold and the helper reports it on stderr.
+The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
+If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
 When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
 `x-voice-release-revision` (the held capture revision) and `x-voice-release-at` (epoch
 milliseconds). A helper applying that exact held revision uses key-up as the boundary for
 the unfinished phrase. If its input tap still owes samples through that time, the helper
 collects the pre-release portion of the last callback before closing. A stalled input
 closes after 250 ms. Manual mute stops the input immediately. The helper can finish decoding and posting
-the held audio with the original revision. An ordinary capture stop discards unfinished work.
+the held audio with the original revision. A second key press can record while the helper
+finishes decoding previous holds in spoken order. The daemon lists up to eight authorized
+released revisions in `x-voice-draining-revisions`. A poll that missed an intervening key-up
+also receives the release time for its queried revision. An ordinary capture stop discards unfinished work.
 The native helper dates the samples from the input tap's audio timestamp on the shared host
 clock, so a delayed callback still includes speech recorded before key-up. A gap in
 the input timeline discards the interrupted utterance through the next silence boundary.
@@ -134,8 +138,9 @@ the daemon accepts the same owner's held revision for segments ending by the rel
 timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
 to Unix milliseconds for `x-voice-capture-ended-at`. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
-helper transcribes the clipped PCM again before retrying. A new directive, including manual
-mute, revokes that exception.
+helper transcribes the clipped PCM again before retrying. Successive key presses during the
+same call preserve the release exception. Manual mute, a change of recipient, listener or input,
+or leaving the call revokes it.
 With the window off the daemon acknowledges the capture as soon as it claims delivery.
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit

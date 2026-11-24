@@ -299,25 +299,31 @@ final class InputSegmenter {
 }
 
 // The tap owns this FIFO while the key is down. Inference and a slow daemon never
-// block its producer. Overflow invalidates the hold as a unit so it cannot route
-// a partial sequence of commands.
+// block its producer. Record when the first excess sample ends so the release
+// timestamp can settle overflow without ever storing more than the limit.
 struct HeldSpeech {
     private let limit: Int
     private var sampleCount = 0
-    private(set) var segments: [Segment] = []
-    private(set) var overflowed = false
+    private var segments: [Segment] = []
+    private var firstExcessEndNs: Int64?
 
     init(limit: Int = 120 * 16_000) { self.limit = limit }
 
     mutating func append(_ segment: Segment) {
-        guard !overflowed else { return }
-        guard segment.samples.count <= limit - sampleCount else {
-            segments.removeAll()
-            overflowed = true
-            return
+        guard firstExcessEndNs == nil else { return }
+        let room = limit - sampleCount
+        if segment.samples.count > room {
+            firstExcessEndNs = segment.startNs + Int64(room + 1) * Segment.sampleNs
+            if room > 0 { segments.append(Segment(samples: Array(segment.samples.prefix(room)), startNs: segment.startNs)) }
+        } else {
+            sampleCount += segment.samples.count
+            segments.append(segment)
         }
-        sampleCount += segment.samples.count
-        segments.append(segment)
+    }
+
+    func finish(at release: Int64) -> [Segment]? {
+        if let end = firstExcessEndNs, release >= (end + 999_999) / 1_000_000 { return nil }
+        return segments.compactMap { $0.through(release) }
     }
 }
 
@@ -420,10 +426,9 @@ final class Microphone {
             let final = segmenter?.finish(at: releasedAt)
             if heldSpeech == nil { return final.map { [$0] } ?? [] }
             if let final { heldSpeech?.append(final) }
-            if heldSpeech?.overflowed == true {
-                fputs("Voice listener discarded a push-to-talk hold exceeding the audio buffer limit.\n", stderr)
-            }
-            return heldSpeech?.segments ?? []
+            if let captured = heldSpeech?.finish(at: releasedAt) { return captured }
+            fputs("Voice listener discarded a push-to-talk hold exceeding the audio buffer limit.\n", stderr)
+            return []
         }
     }
 }

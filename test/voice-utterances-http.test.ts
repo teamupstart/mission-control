@@ -228,6 +228,43 @@ test("a held POST times out without routing and can retry the same ID after key-
   assert.deepEqual((await readHeard()).map(entry => entry.id), [words.id]);
 });
 
+test("a rapid second press preserves the first release, until a privacy or recipient change", async () => {
+  const press = (down: boolean) => post("/voice/shell-report", {
+    callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAt: Date.now() }),
+  }, token);
+  const submit = async (revision: string, at: number) => (await app.request(utterancePath(revision), {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token,
+      "x-voice-listener-id": listenerId, "x-voice-capture-ended-at": String(at) },
+    body: JSON.stringify({ ...capture("Steve do this"), capturedAt: at }),
+  })).json();
+  await press(true);
+  const at = Date.now();
+  const first = voiceStateStore.directive().revision;
+  await press(false);
+  await press(true);
+  const poll = await app.request("/voice/listener/directive?revision=" + first, {
+    headers: { "x-harness-token": token, "x-voice-listener-id": listenerId },
+  });
+  assert.equal((await poll.json()).capture, true);
+  assert.equal(poll.headers.get("x-voice-release-revision"), first, "poll can miss the intervening off directive");
+  assert.equal(poll.headers.get("x-voice-draining-revisions"), first);
+  assert.deepEqual(await submit(first, at), { accepted: true });
+  assert.deepEqual(await submit(first, at + 10_000), { accepted: false });
+  const second = voiceStateStore.directive().revision;
+  await press(false);
+  assert.deepEqual(await submit(first, at), { accepted: true });
+  voiceStateStore.useRoster(() => roster.slice(1));
+  try {
+    assert.deepEqual(await submit(first, at), { accepted: false });
+    assert.deepEqual(await submit(second, at), { accepted: false });
+  } finally { voiceStateStore.useRoster(() => roster); }
+  await press(true);
+  const third = voiceStateStore.directive().revision;
+  await press(false);
+  await post("/api/voice/mute", { muted: true });
+  assert.deepEqual(await submit(third, at), { accepted: false });
+});
+
 test("a delayed capture cannot follow a spoken name to a different recipient", async (t) => {
   let recipient = name("Steve");
   voiceStateStore.useRoster(() => [recipient]);

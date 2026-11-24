@@ -186,6 +186,27 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 
+  it("records a second hold while the first is decoding and drains both in spoken order", async t => {
+    const { events, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "rapid-press" });
+    function keyUp(res: ServerResponse, from: string, to: string) {
+      res.setHeader("x-voice-release-revision", from);
+      res.setHeader("x-voice-release-at", "1000");
+      res.setHeader("x-voice-draining-revisions", from === "first" ? "first" : "first,second");
+      apply(res, to, false);
+    }
+    keyUp(await nextPoll("first"), "first", "off");
+    await until(() => events.includes("decode first hold"), "first hold decoding before next press");
+    const second = await nextPoll("off");
+    second.setHeader("x-voice-held-revision", "second");
+    second.setHeader("x-voice-draining-revisions", "first");
+    apply(second, "second", true);
+    await until(() => posted.length === 2, "previous hold to finish while recording the next");
+    assert.deepEqual(posted.map(p => [p.revision, p.text]), [["first", "first hold"], ["first", "final phrase"]]);
+    keyUp(await nextPoll("second"), "second", "off-again");
+    await until(() => posted.length === 7, "second hold to drain");
+    assert.deepEqual(posted.slice(2).map(p => p.revision), Array(5).fill("second"));
+  });
+
   it("re-decodes a segment straddling key-up when the directive arrives during recognition", async (t) => {
     const { events, posted, nextPoll, apply } = await launch(t);
     await until(() => events.includes("decode in-flight"), "recognition before release");

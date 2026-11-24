@@ -313,15 +313,13 @@ final class ListenerTests: XCTestCase {
     }
 
     func testHeldAudioOverflowDiscardsTheWholeHoldIncludingLaterSpeech() {
-        let phrase = Segment(samples: Array(repeating: 0.5, count: 16), startNs: 0)
-        var hold = HeldSpeech(limit: 32)
-        hold.append(phrase)
-        hold.append(phrase)
-        XCTAssertEqual(hold.segments.count, 2)
-        hold.append(phrase)
-        XCTAssertTrue(hold.overflowed)
-        hold.append(phrase)
-        XCTAssertTrue(hold.segments.isEmpty)
+        let pcm = Array(repeating: Float(0.5), count: 32)
+        var hold = HeldSpeech(limit: 48)
+        for i in 0..<4 { hold.append(Segment(samples: pcm, startNs: Int64(i) * 2_000_000)) }
+        XCTAssertEqual(hold.finish(at: 2)?.map { $0.samples.count }, [32])
+        XCTAssertEqual(hold.finish(at: 3)?.map { $0.samples.count }, [32, 16])
+        XCTAssertNil(hold.finish(at: 4))
+        XCTAssertNil(hold.finish(at: 8))
     }
 
     @MainActor func testKeyUpBeforeFinalTapCallbackCollectsTheLastWord() async throws {

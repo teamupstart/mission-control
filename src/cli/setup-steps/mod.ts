@@ -11,6 +11,9 @@ export const id = "mod" as const;
 export const owner = "P14" as const;
 export const implemented = true;
 
+/** The phrases for a marketplace that is already registered, and nothing broader. */
+const ALREADY_ADDED = /\balready (?:been )?(?:added|registered)\b|\bmarketplace\s+["'][^"'\n]+["']\s+already exists\b(?!\s+but)/i;
+
 const failed = (message: string): SetupStepResult => ({ id, status: "failed", message });
 
 /** A failed install: the cause and the two commands that finish it by hand. */
@@ -63,9 +66,10 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
   }
 
-  // A marketplace that is already added is not an error.
+  // A marketplace that is already added is not an error; any other failure is, even one whose text
+  // happens to contain the word "already" ("already locked", "already exists but is unreadable").
   const add = await deps.exec(claude.path, ["plugin", "marketplace", "add", modDir], { timeoutMs: 120_000 });
-  if (add.code !== 0 && !/already/i.test(add.stderr + add.stdout)) {
+  if (add.code !== 0 && !ALREADY_ADDED.test(add.stderr + add.stdout)) {
     return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir);
   }
   // A stale or disabled user-scope install is replaced by uninstall and install, never `claude plugin

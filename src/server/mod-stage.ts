@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
 
 /**
  * Stages the built mod folder marketplace at `{stateDir}/mod` (spec 7.10a).
@@ -13,7 +14,6 @@ import { dirname, join } from "node:path";
  * back if the swap fails, so a failed stage never leaves the path empty.
  */
 
-const PLUGIN_NAME = "mission-control";
 
 export interface StagedMod {
   /** The folder marketplace root, `dest`. */

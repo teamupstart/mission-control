@@ -286,14 +286,16 @@ test("dismissing a dialog or leaving the pane sends nothing", async () => {
   assert.deepEqual(w.filed.filter((c) => c !== "cancel"), []);
   assert.deepEqual(w.tasks.map((t) => t.taskId), ["mc-q"]);
 
+  // An empty written answer, submitted while the ask and its input are open, sends nothing.
+  const open = w.draw().inputs?.[0];
+  assert.ok(open, "the open ask has its text input, so the submit below really runs");
+  await open.onSubmit("   ");
+  assert.deepEqual(w.posts, []);
+
   // Back out of the open ask: no request of any kind goes to the daemon and no answer is posted.
-  w.draw();
   const before = w.daemon.requests.length;
   await w.fake.press("b Back");
   w.draw();
   assert.equal(w.daemon.requests.length, before);
-  assert.deepEqual(w.posts, []);
-  // An empty written answer sends nothing either.
-  await w.draw().inputs![0]?.onSubmit("   ");
   assert.deepEqual(w.posts, []);
 });

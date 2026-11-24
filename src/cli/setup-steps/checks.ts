@@ -91,21 +91,48 @@ export async function checkClaude(deps: SetupDeps): Promise<{ check: DoctorCheck
   };
 }
 
-export async function fetchHealth(deps: SetupDeps): Promise<unknown> {
+/** What asking the daemon for `/api/health` produced: its body, or what went wrong. */
+export interface HealthReading {
+  body: unknown;
+  /** Why there is no usable body; `null` when there is one. */
+  problem: { kind: "unreachable" | "timeout" | "http" | "not-json"; detail: string } | null;
+}
+
+const HEALTH_TIMEOUT_MS = 3000;
+
+export async function fetchHealth(deps: SetupDeps): Promise<HealthReading> {
+  let reply: Awaited<ReturnType<SetupDeps["fetch"]>>;
   try {
-    const reply = await deps.fetch(`${daemonBaseUrl(deps.env)}/api/health`, { signal: AbortSignal.timeout(3000) });
-    return reply.ok ? await reply.json() : null;
+    reply = await deps.fetch(`${daemonBaseUrl(deps.env)}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    if (name === "TimeoutError" || name === "AbortError") return { body: null, problem: { kind: "timeout", detail: `no answer within ${HEALTH_TIMEOUT_MS / 1000} s` } };
+    const cause = error instanceof Error ? (error.cause as { code?: string } | undefined)?.code ?? error.message : String(error);
+    return { body: null, problem: { kind: "unreachable", detail: String(cause) } };
+  }
+  if (!reply.ok) return { body: null, problem: { kind: "http", detail: `HTTP ${reply.status}` } };
+  try {
+    return { body: await reply.json(), problem: null };
   } catch {
-    return null;
+    return { body: null, problem: { kind: "not-json", detail: "the reply was not JSON" } };
   }
 }
 
-export function checkDaemon(health: unknown, deps: SetupDeps): DoctorCheck {
-  const url = daemonBaseUrl(deps.env);
-  if (typeof health === "object" && health !== null && (health as { service?: unknown }).service === "mission-control") {
-    return { name: "daemon", status: "ok", message: `Mission Control answers at ${url}/api/health` };
+export function checkDaemon(reading: HealthReading, deps: SetupDeps): DoctorCheck {
+  const url = `${daemonBaseUrl(deps.env)}/api/health`;
+  const body = reading.body;
+  if (typeof body === "object" && body !== null && (body as { service?: unknown }).service === "mission-control") {
+    return { name: "daemon", status: "ok", message: `Mission Control answers at ${url}` };
   }
-  return { name: "daemon", status: "fail", message: `no Mission Control daemon answered at ${url}/api/health`, fix: "Start Mission Control (the app, or `npm run dev`), then run `mctl doctor` again." };
+  const problem = reading.problem;
+  if (problem === null) {
+    return { name: "daemon", status: "fail", message: `${url} answered, but not as Mission Control`, fix: "Another program may be using this port; check MISSION_PORT, then run `mctl doctor` again." };
+  }
+  if (problem.kind === "unreachable") {
+    return { name: "daemon", status: "fail", message: `no Mission Control daemon answered at ${url} (${problem.detail})`, fix: "Start Mission Control (the app, or `npm run dev`), then run `mctl doctor` again." };
+  }
+  // The daemon is there but unwell: starting it again would not help.
+  return { name: "daemon", status: "fail", message: `${url} did not give a usable answer (${problem.detail})`, fix: "Mission Control may be busy or stuck; wait, or restart it, then run `mctl doctor` again." };
 }
 
 export function checkFlag(health: unknown): DoctorCheck {
@@ -199,7 +226,7 @@ export async function checkModCallsAt(claude: ClaudeCli | null, deps: SetupDeps,
 export async function runChecks(deps: SetupDeps): Promise<DoctorCheck[]> {
   const { check, claude } = await checkClaude(deps);
   const health = await fetchHealth(deps);
-  const checks: DoctorCheck[] = [check, checkDaemon(health, deps), checkFlag(health)];
+  const checks: DoctorCheck[] = [check, checkDaemon(health, deps), checkFlag(health.body)];
   if (claude) checks.push(...(await checkInstalled(claude, deps)));
   else checks.push({ name: "mod-enabled", status: "fail", message: "cannot be checked without claude", fix: "Fix the claude check first." });
   checks.push(await checkModCalls(claude, deps));

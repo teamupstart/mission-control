@@ -10,6 +10,8 @@ import { cp, rename } from "node:fs/promises";
 import { findClaude, realExec } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import type { CliIo } from "../src/cli/commands/index.ts";
+import { checkDaemon, fetchHealth } from "../src/cli/setup-steps/checks.ts";
+import { resolveDeps } from "../src/cli/setup-steps/context.ts";
 import { calledPaths, recoveryCommands, shellArg } from "../src/cli/setup-steps/checks.ts";
 import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
@@ -775,4 +777,54 @@ test("mod-calls does not pass when plugin validation could not be run for want o
   } finally {
     await r.cleanup();
   }
+});
+
+test("a marketplace add that fails for a reason that merely contains the word already is a failure", async () => {
+  for (const stderr of ["marketplace directory already locked by another process", "path already exists but is not readable", "Marketplace 'x' already exists but its manifest is invalid"]) {
+    const r = await rig();
+    try {
+      r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr, times: 5 } } });
+      const result = await r.run("setup");
+      assert.equal(result.code, 1, stderr);
+      assert.ok(result.out.includes("`claude plugin marketplace add` failed: " + stderr), stderr);
+      assert.ok(!pluginCalls(r.claude).includes("install"), "nothing is installed against a marketplace that was never added");
+    } finally {
+      await r.cleanup();
+    }
+  }
+  for (const stderr of ["Marketplace 'mission-control' already exists", "marketplace already added", "already registered"]) {
+    const r = await rig();
+    try {
+      r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr, times: 5 } } });
+      assert.equal((await r.run("setup")).code, 0, stderr);
+    } finally {
+      await r.cleanup();
+    }
+  }
+});
+
+test("the daemon check says what actually happened: refused, timed out, an error status, not JSON, or someone else", async () => {
+  const withFetch = (fetchImpl: ReturnType<typeof resolveDeps>["fetch"]) => resolveDeps({ env: { MISSION_PORT: "7317" }, fetch: fetchImpl, stateDir: "/x", modSource: "/x", home: "/x" });
+  const reading = async (fetchImpl: ReturnType<typeof resolveDeps>["fetch"]) => {
+    const deps = withFetch(fetchImpl);
+    return checkDaemon(await fetchHealth(deps), deps);
+  };
+  const refused = await reading(async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ECONNREFUSED" }) }); });
+  assert.match(refused.message, /no Mission Control daemon answered at .*\(ECONNREFUSED\)/);
+  assert.match(refused.fix!, /^Start Mission Control/);
+
+  const slow = await reading(async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }); });
+  assert.match(slow.message, /did not give a usable answer \(no answer within 3 s\)/);
+  assert.doesNotMatch(slow.fix!, /^Start Mission Control/, "a daemon that is running is not told to start");
+  assert.match(slow.fix!, /busy or stuck/);
+
+  const broken = await reading(async () => ({ ok: false, status: 500, json: async () => ({}) }));
+  assert.match(broken.message, /\(HTTP 500\)/);
+  const garbled = await reading(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token"); } }));
+  assert.match(garbled.message, /\(the reply was not JSON\)/);
+  const other = await reading(async () => ({ ok: true, status: 200, json: async () => ({ service: "something-else" }) }));
+  assert.match(other.message, /answered, but not as Mission Control/);
+  assert.match(other.fix!, /MISSION_PORT/);
+  const fine = await reading(async () => ({ ok: true, status: 200, json: async () => ({ service: "mission-control" }) }));
+  assert.equal(fine.status, "ok");
 });

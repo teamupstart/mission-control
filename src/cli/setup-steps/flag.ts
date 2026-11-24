@@ -9,6 +9,6 @@ export const implemented = true;
 
 export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const deps = resolveDeps(options.deps);
-  const check = checkFlag(await fetchHealth(deps));
+  const check = checkFlag((await fetchHealth(deps)).body);
   return { id, status: check.status === "fail" ? "failed" : "ok", message: check.fix ? check.message + ". " + check.fix : check.message, checks: [check] };
 }

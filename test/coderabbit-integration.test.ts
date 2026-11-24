@@ -78,6 +78,7 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
     { name: "identical comparison reuses the pass", prior: comparison, current: { ...comparison }, runs: 0 },
     { name: "changed head executes a fresh review", prior: comparison, current: { ...comparison, head: "d".repeat(40) }, runs: 1 },
     { name: "changed severity executes a fresh review", prior: comparison, current: { ...comparison, severity: "minor" as const }, runs: 1 },
+    { name: "current --fresh executes after an ordinary clean review", prior: comparison, current: fresh, runs: 1 },
     { name: "--fresh executes even on an identical comparison", prior: fresh, current: fresh, runs: 1 },
   ];
   for (const { name, prior, current, runs } of cases) {
@@ -104,7 +105,9 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
         assert.equal(result.outcome.status, "passed");
         assert.match(result.outcome.note, /Reused complete CodeRabbit review/);
       } else {
-        assert.deepEqual(execute.mock.calls[0]?.arguments[0].coderabbit, current);
+        const request = execute.mock.calls[0]!.arguments[0];
+        assert.deepEqual(request.coderabbit, current);
+        assert.equal(request.command.includes("--fresh"), current.command.includes("--fresh"));
         assert.equal(result.outcome.status, "failed");
         assert.equal(result.outcome.exitCode, 2);
         assert.equal(result.outcome.output, "fresh review output");

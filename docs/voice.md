@@ -26,6 +26,9 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
@@ -69,7 +72,10 @@ in a standalone `“cancel”` leaves pending actions open. The daemon uses capt
 timestamps when listener requests arrive out of order. For equal timestamps, the last action
 opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
 An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
-Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
+timestamp. For a pick through the card API, the daemon estimates the pick time on the listener
+clock by adding the time the card has been open to its capture timestamp.
+The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
 `GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture

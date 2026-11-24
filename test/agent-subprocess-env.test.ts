@@ -486,3 +486,32 @@ test("an incomplete process scan keeps watching a known wrapper until its actual
   t.mock.timers.tick(5_000);
   assert.equal(await exited, true);
 });
+
+test("persistent inventory loss retires the observer with an uncertain result and leaves its receipt for restart", async (t) => {
+  const { createDisposableAgentStateHome, cleanupDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  const { discardTerminalReceipt, restoredTerminalInactive, WRAPPER_EXIT_FILE } = await import("../src/server/terminal/dispatch-observation.ts");
+  const home = createDisposableAgentStateHome();
+  t.after(() => cleanupDisposableAgentStateHome(home));
+  const inventory = t.mock.fn(async () => "unknown" as const);
+  const observation = observeTerminalWrapperExit(home, inventory);
+  const pending = observation.persist(Date.now());
+  assert.ok(pending);
+  t.after(() => discardTerminalReceipt(pending.receipt));
+  writeFileSync(join(home, LAUNCH_PID_FILE), "42\n");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let result: boolean | undefined;
+  void observation.waitForExit(() => true).then((exited) => { result = exited; }).finally(observation.close);
+  for (let i = 0; i < 15; i++) {
+    t.mock.timers.tick(5000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(result, false, "unavailable inventory never authorizes cleanup");
+  const reads = inventory.mock.callCount();
+  t.mock.timers.tick(120000);
+  assert.equal(inventory.mock.callCount(), reads);
+  assert.ok(existsSync(home));
+  // The owning wrapper completes after polling has stopped. Restart can use that positive evidence.
+  writeFileSync(join(home, WRAPPER_EXIT_FILE), "x");
+  cleanupDisposableAgentStateHome(home);
+  assert.equal(await restoredTerminalInactive(pending, () => true), true);
+});

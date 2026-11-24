@@ -55,7 +55,7 @@ export interface PreparedResume extends Pick<ResumeContext, "resolveNamedEnviron
   workUnitId: string | null;
   /** The note key the resumed agent binds to: the conversation's native id. */
   conversationKey: string;
-  beginLaunch(): void;
+  beginLaunch(startedAt?: number): void;
   dispose(): boolean;
 }
 const preparing = new Set<string>();
@@ -154,7 +154,7 @@ export async function prepareTerminalResume(session: ResumeSource, context: Resu
     return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper],
       resolveNamedEnvironment: context.resolveNamedEnvironment, stateHome: lease.home,
       lease, descriptor, requiredTools, instrumented, workUnitId, conversationKey: session.agentSessionId, dispose,
-      beginLaunch: () => { beginResumeLaunch(lease); preparing.delete(lease.id); } };
+      beginLaunch: (startedAt) => { beginResumeLaunch(lease, startedAt); preparing.delete(lease.id); } };
   } catch (error) {
     dispose();
     throw error;

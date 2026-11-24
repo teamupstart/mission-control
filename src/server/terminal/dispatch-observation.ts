@@ -9,6 +9,10 @@ import { type PendingTerminalLaunch, TERMINAL_RECEIPT_NAME } from "@shared/launc
 import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, readTerminalWrapperProcess, type LaunchProcess } from "./launch-process.ts";
 import { RESUME_START_MS } from "./resume-lease.ts";
 
+const POLL_INTERVAL_MS = 5_000;
+// Give a temporarily unavailable process table a minute to recover. The durable receipt
+// remains available to restart if this daemon exhausts the consecutive failed probes.
+const MAX_UNKNOWN_PROBES = 12;
 export const WRAPPER_EXIT_FILE = "terminal-wrapper.exit";
 
 function sameFile(a: Stats, b: Stats): boolean {
@@ -84,11 +88,15 @@ function observe(home: string, fd: number, readOwner: typeof readTerminalWrapper
     async waitForExit(stillOwned: () => boolean): Promise<boolean> {
       let owner: LaunchProcess | null = null;
       let retriedClaim = false;
+      let unknownProbes = 0;
       while (stillOwned()) {
         const exited = outcome();
         if (exited !== null) return exited;
         const current = await readOwner(home, owner?.pid);
-        if (current !== "unknown") {
+        if (current === "unknown") {
+          if (++unknownProbes >= MAX_UNKNOWN_PROBES) return outcome() === true;
+        } else {
+          unknownProbes = 0;
           if (owner && (!current || current.pid !== owner.pid || current.startMs !== owner.startMs)) return outcome() === true;
           if (!current && retriedClaim) return outcome() === true;
           owner = current;
@@ -96,7 +104,7 @@ function observe(home: string, fd: number, readOwner: typeof readTerminalWrapper
         }
         const observed = outcome();
         if (observed !== null) return observed;
-        await new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref());
+        await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS).unref());
       }
       return false;
     },

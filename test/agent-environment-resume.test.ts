@@ -195,3 +195,39 @@ test("an unmanaged terminal resume skips the configured environment lookup and l
 
 test("a managed resident terminal resume skips the named shell lookup, credential injection and missing-name warning",
   () => checkExcludedResume("resident-resume", mkTask({ kind: "resident" })));
+
+test("a slow resume lookup keeps one launch owner and gives the lease and handoff the same deadline", async (t) => {
+  const { readResumeEnvironmentSocket, resumeLeaseStatus, RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const source = { id: "slow-profile", agentSessionId: "slow-profile-native", agent: "claude", cwd,
+    runtime: "terminal", permissionMode: null } as const;
+  let finishLookup!: () => void;
+  const lookup = new Promise<void>((resolve) => { finishLookup = resolve; });
+  const resolver = t.mock.fn(async () => { await lookup; return { extraEnv: {}, missing: [removable] }; });
+  const prepared = await prepareTerminalResume(source, { ...resumeContext(source, mkTask(), false, false), resolveNamedEnvironment: resolver });
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: start });
+  const begin = prepared.beginLaunch;
+  prepared.beginLaunch = (startedAt) => {
+    begin(startedAt);
+    t.mock.timers.tick(2000); // Time spent committing intent before the socket opens.
+  };
+  const launch = () => launchPreparedResume({ name: "slow-resume", prepared }, async () => {
+    const deadline = resumeLeaseStatus(prepared.lease).deadline!;
+    assert.equal(deadline, start + 2 * RESUME_START_MS);
+    const path = readResumeEnvironmentSocket(prepared.lease)!;
+    t.mock.timers.tick(deadline - Date.now() - 1);
+    assert.ok(existsSync(path), "the pane can still collect the environment before the lease deadline");
+    t.mock.timers.tick(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(existsSync(path), false, "the socket expires at that same deadline");
+    return { outcome: "refused", value: null };
+  });
+  const first = launch();
+  await assert.rejects(launch(), /already attempted/);
+  t.mock.timers.tick(RESUME_START_MS);
+  assert.equal(resumeLeaseStatus(prepared.lease).state, "preparing");
+  finishLookup();
+  assert.equal((await first).outcome, "refused");
+  assert.equal(resolver.mock.callCount(), 1);
+});

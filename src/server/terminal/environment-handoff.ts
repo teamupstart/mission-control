@@ -84,6 +84,7 @@ export async function stopTerminalEnvironmentHandoffs(): Promise<void> {
  */
 export async function openTerminalEnvironmentHandoff(
   launch: { cwd: string; stateHome: string }, named: NamedAgentEnvironment,
+  deadline = Date.now() + RESUME_START_MS,
 ) {
   if (stopping) throw new Error("Terminal environment handoffs are stopping.");
   const patch = terminalEnvironmentPatch(launch, named);
@@ -119,7 +120,7 @@ export async function openTerminalEnvironmentHandoff(
   };
   // Listening on a Unix pathname binds it before listen returns. Track the handoff before
   // yielding so shutdown also drains listeners whose startup callback is still queued.
-  const timer = setTimeout(dispose, RESUME_START_MS).unref();
+  const timer = setTimeout(dispose, Math.max(0, deadline - Date.now())).unref();
   server.on("connection", (socket) => {
     if (disposed) { socket.destroy(); return; }
     readers.add(socket);

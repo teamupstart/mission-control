@@ -407,7 +407,10 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `hotkeyError`, `model` and `roster`. The capabilities and
+The state also carries `capabilities`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+The dashboard shows a shortcut only when the shell confirms the exact configured chord,
+reports the hotkey capability and has no registration error. Until then the indicator shows its
+click action. A missing or expired confirmation yields `registeredHotkey: null`. The capabilities and
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
@@ -436,8 +439,9 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version; a hello whose major
   version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
   `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
-  sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, registeredHotkey, hotkeyError }`,
+  sent by the desktop shell. Its optional `registeredHotkey` field names the chord the shell
+  actually registered. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.
 
 ### Following it

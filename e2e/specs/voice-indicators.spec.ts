@@ -59,7 +59,7 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(page.locator("button.vi .kb-hint")).toHaveCount(0);
     await expect(status).not.toContainText("⌃");
     const report = (hotkeyError: unknown, callActive = false, pushToTalk = false) => page.request.post(daemon.baseURL + "/voice/shell-report", {
-      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, hotkeyError, callActive, pushToTalk },
+      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m", hotkeyError, callActive, pushToTalk },
     });
     expect((await report(null)).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveText("⌃⌥M");
@@ -147,6 +147,43 @@ test("five selected indicators follow the daemon and advertise only a registered
     await page.reload();
     await expect(settings.getByRole("checkbox", { checked: true })).toHaveCount(0);
   } finally { listener.stop(); }
+});
+
+test("a changed voice shortcut stays hidden until the shell confirms the exact chord", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  const status = page.locator("button.vi-status-line");
+  const keycap = status.locator("kbd");
+  const report = (registeredHotkey?: string) => page.request.post(daemon.baseURL + "/voice/shell-report", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey },
+  });
+  try {
+    expect((await report()).ok()).toBe(true);
+    await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
+    await expect(keycap).toHaveCount(0, { timeout: 3000 });
+    expect((await report("ctrl+alt+m")).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌃⌥M to talk");
+
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { hotkey: "ctrl+alt+k" } })).ok()).toBe(true);
+    await expect(keycap).toHaveCount(0, { timeout: 10_000 });
+    await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
+    await expect(status).toContainText("Click to mute");
+    expect((await report("ctrl+alt+m")).ok()).toBe(true);
+    await expect(keycap).toHaveCount(0);
+    let capture: string | undefined;
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      capture = mkdtempSync(join(root, "chord-"));
+    }
+    if (capture) await status.screenshot({ path: join(capture, "pending.png") });
+    expect((await report("ctrl+alt+k")).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌃⌥K to talk");
+    if (capture) await status.screenshot({ path: join(capture, "confirmed.png") });
+  } finally {
+    listener.stop();
+  }
 });
 
 test("a failed mute keeps the indicator listening until a peer retries, then the error stays cleared", async ({ dashboard: page, daemon, context }) => {

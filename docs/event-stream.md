@@ -170,7 +170,7 @@ folds them. See [Task shaping](task-shaping.md#settings).
 ## Voice
 
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
-`mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+`mode`, `reasons`, `capabilities`, `registeredHotkey`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
 or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
 state moved. A model download publishes its progress at most every 250 ms, so a download is a

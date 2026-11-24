@@ -51,8 +51,9 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   </VoiceWindow.Provider>;
 }
 
-export function hotkeyShown(state: VoiceState, config: VoiceConfig | null): boolean {
-  return voiceCapable(state, "hotkey") && !state.hotkeyError && !!config?.hotkey;
+export function confirmedVoiceHotkey(state: VoiceState, config: VoiceConfig | null): string | null {
+  const chord = state.registeredHotkey;
+  return chord && chord === config?.hotkey && voiceCapable(state, "hotkey") && !state.hotkeyError ? chord : null;
 }
 
 const modes = {
@@ -106,8 +107,10 @@ export function useVoiceComposerHint(sessionId: string): string | null {
     }
     case "muted": return "Voice is muted";
     case "push-to-talk": return "Listening while held";
-    case "auto-muted": return hotkeyShown(state, settings.config)
-      ? `On a call · hold ${formatChord(settings.config!.hotkey!)}` : "On a call";
+    case "auto-muted": {
+      const chord = confirmedVoiceHotkey(state, settings.config);
+      return chord ? `On a call · hold ${formatChord(chord)}` : "On a call";
+    }
     default: return null;
   }
 }
@@ -117,7 +120,7 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
   const ui = useUiConfig();
   if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes(id)) return null;
   const { state, settings, openSetup, setMuted } = voice;
-  const chord = state.mode !== "unavailable" && hotkeyShown(state, settings.config) ? settings.config?.hotkey : null;
+  const chord = state.mode === "unavailable" ? null : confirmedVoiceHotkey(state, settings.config);
   const activate = () => {
     if (state.mode === "unavailable") openSetup();
     else void setMuted(id, state.mode !== "muted");

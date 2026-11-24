@@ -267,6 +267,8 @@ export interface VoiceState {
   reasons: VoiceUnavailableReason[];
   /** From the latest shell report, plus the daemon's own reading of `listener`. */
   capabilities: VoiceCapabilities;
+  /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
+  registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
   hotkeyError: VoiceHotkeyError | null;
   model: VoiceModelState;
@@ -372,6 +374,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.mode,
     state.reasons,
     capabilities,
+    state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     canonicalVoiceModel(state.model),
   ]);
@@ -402,7 +405,7 @@ export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
 
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", reasons: [], capabilities: {}, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
+  return { mode: "off", reasons: [], capabilities: {}, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----
@@ -454,6 +457,7 @@ export const VoiceShellReportSchema = z.object({
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
   pushToTalk: z.boolean().default(false),
+  registeredHotkey: ChordSchema.nullable().optional(),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),

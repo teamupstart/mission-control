@@ -108,6 +108,7 @@ export class VoiceStateStore {
       }),
       reasons,
       capabilities,
+      registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
       roster: [...(this.rosterSource?.() ?? [])],

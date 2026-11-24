@@ -21,6 +21,8 @@ export interface VoiceConfigState {
    * for its answer applied on top in the order it was made. Null until the first read lands.
    */
   config: VoiceConfig | null;
+  /** The provider the daemon currently acknowledges, independent of edits still queued. */
+  confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Make an edit. It shows at once and is saved after every earlier edit has been answered;
    * resolves to whether the daemon kept it. A refused edit leaves the panel, and nothing else.
@@ -112,7 +114,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     [confirmed, pending],
   );
 
-  return { config, update, error };
+  return { config, confirmedDecisionProvider: confirmed?.decisionProvider, update, error };
 }
 
 export interface VoiceDevicesState {
@@ -162,7 +164,7 @@ export interface VoiceDecisionKeyState {
  * the chosen provider changes, and on the same poll as the config, so a key saved in another
  * window or a provider chosen there shows here too.
  */
-export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string | null | undefined): VoiceDecisionKeyState {
+export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceConfigState["confirmedDecisionProvider"]): VoiceDecisionKeyState {
   const [report, setReport] = useState<VoiceDecisionKeyReport | null>();
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
@@ -192,7 +194,7 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
       refresh.current = null;
       clearInterval(id);
     };
-  }, [enabled, decisionProvider]);
+  }, [enabled, confirmedProvider]);
 
   const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>, failed: string): Promise<boolean> => {
     if (writing.current) return false;

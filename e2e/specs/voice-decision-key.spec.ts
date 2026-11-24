@@ -218,6 +218,45 @@ test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev name
 test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
   test.use({ environmentKey: ENVIRONMENT_KEY });
 
+  test("confirming Off refreshes the provider banner before the next poll and discards an older read", async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await page.clock.install();
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+
+    const commit = Promise.withResolvers<void>();
+    const readStarted = Promise.withResolvers<string | null>();
+    const releaseRead = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config", async route => {
+      if (route.request().method() === "PUT") await commit.promise;
+      await route.continue();
+    });
+    await page.route("**/api/voice/decision-key", async route => {
+      const old = await route.fetch();
+      readStarted.resolve((await old.json()).provider);
+      await releaseRead.promise;
+      await route.fulfill({ response: old, headers: { ...old.headers(), "x-e2e-old-provider": "yes" } });
+    }, { times: 1 });
+    const saved = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
+    const oldReport = page.waitForResponse(r => r.headers()["x-e2e-old-provider"] === "yes");
+    try {
+      await providerMenu(page).selectOption({ label: "Off" });
+      await page.clock.fastForward(5_000);
+      expect(await readStarted.promise).toBe("openai");
+      commit.resolve();
+      expect((await saved).ok()).toBe(true);
+      await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+    } finally {
+      commit.resolve();
+      releaseRead.resolve();
+      await (await oldReport).finished();
+    }
+    await page.clock.runFor(50);
+    await expect(providerMenu(page)).toHaveValue("off");
+    await expect(line(page)).toHaveText(NOT_SET);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "13-confirmed-off");
+  });
+
   test("the key alone switches OpenAI Decisions on and the group says so; Off stops it and the job answers instead", async ({ dashboard: page, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

@@ -346,7 +346,8 @@ test("mismatched address wrappers stay in the queued message and cannot trigger 
   const before = interrupts.length;
   for (const [captureText, message] of [
     ["[Will, ) stop", ") stop"], ["“Will, ’ stop", "’ stop"], ["[Will), stop", "), stop"],
-    ["「[Will, ] 』 stop", "』 stop"],
+    ["「[Will, ] 』 stop", "』 stop"], ["Will[ stop", "[ stop"], ["“Will”[ stop", "[ stop"],
+    ["Will“ stop”", "“ stop”"], ["Will[] stop", "[] stop"],
   ] as const) {
     const id = randomUUID();
     await say(captureText, id);

@@ -329,8 +329,11 @@ On Apple silicon running macOS 14 or newer, `auto` selects FluidAudio.
 Elsewhere it selects sherpa-onnx. Select either backend with `PUT /api/voice/config`
 or set `MISSION_VOICE_BACKEND` when starting the daemon. Switching keeps the other
 backend's verified files. The sherpa download includes the int8 Parakeet TDT 0.6B v2
-recognizer (about 661 MB) and a Silero speech detector (2.2 MB). Allow about 2 GB
-of resident memory for recognition, as measured in the spike.
+recognizer (about 661 MB) and a Silero speech detector (2.2 MB).
+
+The 2026-11-23 spike sampled the sherpa process's resident memory after each file on
+an M4 Pro Mac. The highest reading with the production model was about 2.0 GB.
+Memory use during a file could have been higher. [Sherpa spike findings](voice-spike-findings.md#s2-sherpa-onnx)
 
 **Sherpa currently accepts recordings only. Live microphone capture is unverified.**
 On macOS or Linux, build the helper, select sherpa in the daemon, download its model

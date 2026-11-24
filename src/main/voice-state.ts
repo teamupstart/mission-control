@@ -23,9 +23,9 @@ export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
 export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void) {
   const listener = nativeVoiceListener(binary);
-  const stream = new EventSource(BASE_URL + "/events", {
-    fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
-  });
+  let stream: EventSource;
+  let reconnect: NodeJS.Timeout | undefined;
+  let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
   let nextPromptAt = 0;
   let retryDelay = 5000;
@@ -102,22 +102,44 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     onState(state);
     void sync();
   }
-  stream.onmessage = ({ data }) => {
+  function requestSnapshot() {
+    stream.onmessage = stream.onerror = null;
+    stream.close();
+    update(voiceStateOff());
+    reconnect = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+  }
+  function receive(data: string) {
     let message: unknown;
     try { message = JSON.parse(data); }
-    catch { update(voiceStateOff()); return; }
+    catch { requestSnapshot(); return; }
     if (!message || typeof message !== "object" || !("type" in message) || typeof message.type !== "string") {
-      update(voiceStateOff());
+      requestSnapshot();
       return;
     }
     if (message.type !== "voice_state" && message.type !== "snapshot") return;
+    // An omitted voice field is a valid flag-off snapshot.
+    if (message.type === "snapshot" && !("voice" in message)) {
+      reconnectDelay = 500;
+      update(voiceStateOff());
+      return;
+    }
     const payload = message.type === "snapshot"
       ? ("voice" in message && message.voice)
       : ("state" in message && message.state);
     const parsed = ShellVoiceStateSchema.safeParse(payload);
-    update(parsed.success ? parsed.data : voiceStateOff());
-  };
-  stream.onerror = () => update(voiceStateOff());
+    if (!parsed.success) { requestSnapshot(); return; }
+    reconnectDelay = 500;
+    update(parsed.data);
+  }
+  function connect() {
+    stream = new EventSource(BASE_URL + "/events", {
+      fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
+    });
+    stream.onmessage = ({data}) => receive(data);
+    stream.onerror = () => update(voiceStateOff());
+  }
+  connect();
   const heartbeat = setInterval(() => void sync(), 5000);
   return {
     get state() { return state; },
@@ -139,6 +161,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       }).then(response => response.ok, () => false);
     },
     stop() {
+      clearTimeout(reconnect);
       stream.close();
       lifetime.abort();
       clearInterval(heartbeat);

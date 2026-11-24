@@ -28,6 +28,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   `, {mode: 0o755});
   let events: ServerResponse | undefined;
   let connects = 0;
+  let reconnectSnapshot: string | undefined;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
@@ -40,6 +41,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       connects++;
       res.flushHeaders();
       if (connects === 1) res.write('data: {"type":"snapshot"}\n\n');
+      else if (reconnectSnapshot) res.write("data: " + reconnectSnapshot + "\n\n");
       return;
     }
     let body = "";
@@ -151,6 +153,26 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await click("click");
   assert.equal((await read()).opens, 2);
   assert.equal(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.fixMicrophone()), "unavailable");
+  await t.test("rapid tray clicks send one request until the published mute state changes", async () => {
+    const publish = (mode: VoiceMode) => events!.write("data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n");
+    publish("listening");
+    await until(async () => (await read()).mode === "listening");
+    const since = requests.length;
+    await click("click");
+    await click("click");
+    await until(() => requests.length > since);
+    // The fixture has accepted the POST and deliberately withholds its state event.
+    await click("click");
+    await click("right-click");
+    await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.clickMenu("Mute Voice"));
+    publish("muted");
+    await until(async () => (await read()).mode === "muted");
+    await click("click");
+    await until(() => requests.at(-1) === false);
+    assert.deepEqual(requests.slice(since), [true, false]);
+    publish("off");
+    await until(async () => (await read()).mode === "off");
+  });
   await t.test("the tray opens with feedback on a refused mute or timeout and supports a menu retry", async () => {
     for (const response of ["refused", "timeout"] as const) {
       muteResponse = response;
@@ -168,6 +190,10 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       await until(() => requests.length > since);
       assert.equal(requests.at(-1), mode === "listening");
       await until(async () => { await click("right-click"); return !(await read()).labels.includes(error); });
+      if (mode === "listening") {
+        // A successful POST without its confirmation event eventually offers retry, too.
+        await until(async () => (await read()).labels.includes(error));
+      }
     }
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode: "unavailable" } }) + "\n\n");
@@ -273,10 +299,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
   });
-  await t.test("malformed events stop the active child and valid snapshots restore capture on the same stream", async () => {
+  await t.test("malformed events stop the active child and reconnect for a fresh snapshot without another state change", async () => {
     const snapshot = JSON.stringify({type: "snapshot", voice: ready});
     const send = (data: string) => events!.write("data: " + data + "\n\n");
-    const streamCount = connects;
+    const initialChildren = pids().length;
+    reconnectSnapshot = snapshot;
+    send(snapshot);
+    await until(() => pids().length === initialChildren + 1);
     for (const invalid of [
       "{", "null", JSON.stringify({type: "voice_state"}),
       JSON.stringify({type: "voice_state", state: {...ready, mode: "unexpected"}}),
@@ -284,13 +313,19 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       JSON.stringify({type: "snapshot", voice: {...ready, model: {...ready.model, directory: "/bad\0path"}}}),
     ]) {
       const count = pids().length;
-      send(snapshot);
-      await until(() => pids().length === count + 1);
+      const streamCount = connects;
       const pid = pids().at(-1)!;
       send(invalid);
       await until(async () => (await read()).mode === "off");
       await until(() => exited(pid));
+      await until(() => pids().length === count + 1);
+      assert.equal(connects, streamCount + 1);
     }
+    // A snapshot without voice is valid. It should stay off on the same connection.
+    const streamCount = connects;
+    send(JSON.stringify({type: "snapshot"}));
+    await until(async () => (await read()).mode === "off");
+    await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(connects, streamCount);
   });
   if (process.env.MC_EVIDENCE_DIR) {

@@ -30,7 +30,7 @@ export interface TrayHandlers {
 
 let presentation: ReturnType<typeof voiceTray> = null;
 let menu: Menu | null = null;
-let muteAttempt = 0;
+let muteConfirmation: NodeJS.Timeout | undefined;
 let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
@@ -38,7 +38,8 @@ let refreshMenu: (() => void) | null = null;
 export function setTrayVoice(state: Pick<VoiceState, "mode" | "muted">): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
   if (next?.nextMuted !== presentation?.nextMuted) {
-    ++muteAttempt;
+    clearTimeout(muteConfirmation);
+    muteConfirmation = undefined;
     muteError = "";
   }
   if (presentation?.image !== next?.image) updateImage?.(next?.image);
@@ -67,12 +68,23 @@ function summary(c: ReportCounts): string {
 }
 
 async function requestMute(handlers: TrayHandlers, muted: boolean): Promise<void> {
-  const attempt = ++muteAttempt;
-  const confirmed = await handlers.setMuted(muted);
-  if (attempt !== muteAttempt || presentation?.nextMuted !== muted) return;
-  muteError = confirmed ? "" : `${muted ? "Mute" : "Unmute"} not confirmed. Try again.`;
+  if (muteConfirmation || presentation?.nextMuted !== muted) return;
+  // The POST can succeed before the state event arrives. Keep both click paths
+  // disabled until the published mute bit changes, or offer retry after a missed event.
+  const deadline = setTimeout(failed, 5000);
+  muteConfirmation = deadline;
+  muteError = "";
   render(handlers);
-  if (muteError && menu) tray?.popUpContextMenu(menu);
+  if (!await handlers.setMuted(muted)) failed();
+
+  function failed() {
+    if (muteConfirmation !== deadline) return;
+    clearTimeout(deadline);
+    muteConfirmation = undefined;
+    muteError = `${muted ? "Mute" : "Unmute"} not confirmed. Try again.`;
+    render(handlers);
+    if (menu) tray?.popUpContextMenu(menu);
+  }
 }
 
 function render(handlers: TrayHandlers): void {
@@ -105,7 +117,7 @@ function render(handlers: TrayHandlers): void {
     template.splice(3, 0,
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
-      { label: action, click: () => void requestMute(handlers, nextMuted) },
+      { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
       { type: "separator" },
     );
   }
@@ -155,7 +167,8 @@ export function destroyTray(): void {
   if (poll) clearInterval(poll);
   poll = null;
   menu = null;
-  ++muteAttempt;
+  clearTimeout(muteConfirmation);
+  muteConfirmation = undefined;
   muteError = "";
   presentation = null;
   updateImage = refreshMenu = null;

@@ -25,8 +25,9 @@ app reads the current macOS permission and reports it to the daemon before Setup
 
 You can minimize the window while speaking. The menu-bar microphone means listening, and a
 struck microphone means muted or unavailable. Right-click for the status and existing app
-commands. Left-click to mute or unmute. If the daemon refuses the change or the request times
-out, the menu opens with the last reported status and the action to retry. The handset and microphone with waves represent the
+commands. Left-click to mute or unmute. While a change awaits confirmation, further clicks
+are ignored. If confirmation fails, the menu opens with the last reported status and the action
+to retry. The handset and microphone with waves represent the
 call and push-to-talk modes when the daemon reports them. The need-you count stays beside the
 icon in every mode. If the listener fails to start or exits unexpectedly, the desktop app
 records the launch error code, exit status or signal in `daemon.log`.

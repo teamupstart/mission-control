@@ -342,12 +342,18 @@ test("recovery inheritance refuses a child's conflicting digest even after its c
   f.db.prepare(`UPDATE workflow_submissions SET run_id=?, segment=1,
     parent_submission_id=?, refinement_reason='evidence_recovery' WHERE id=?`)
     .run(parent.submissionId, parent.submissionId, child.submissionId);
-  for (const state of ["provisional", "released"]) {
-    if (state === "released") await f.service.release(child.submissionId);
-    assert.throws(() => f.store.inheritRepositoryClaim(child.submissionId), /repository artifact is unavailable/);
-    const row = f.db.prepare("SELECT digest,state FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(child.submissionId);
-    assert.equal(row?.digest, child.digest);
-    assert.equal(row?.state, state);
+  try {
+    for (const state of ["provisional", "released"]) {
+      if (state === "released") await f.service.release(child.submissionId);
+      assert.throws(() => f.store.inheritRepositoryClaim(child.submissionId), /repository artifact is unavailable/);
+      const row = f.db.prepare("SELECT digest,state FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(child.submissionId);
+      assert.equal(row?.digest, child.digest);
+      assert.equal(row?.state, state);
+    }
+  } finally {
+    await f.service.release(child.submissionId);
+    await f.service.release(parent.submissionId);
+    await f.service.reconcile();
   }
 });
 

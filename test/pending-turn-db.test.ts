@@ -52,7 +52,7 @@ test("upgrading the existing outbox keeps old messages on next-turn delivery", (
 });
 
 test("the upgrade remembers live and retired spoken IDs across subsequent opens", () => {
-  const live = { id: "voice:live", noteKey: "upgrade", text: "go", spokenWords: "go", now: 10 };
+  const live = { id: "voice:live", noteKey: "upgrade", spokenSessionId: "sdk:upgrade", text: "go", spokenWords: "go", now: 10 };
   const queued = createPendingTurn(live);
   openDb().exec(`INSERT INTO session_spoken_turns
     (id, note_key, fingerprint, spoken_words, received, delivered_at, outbox_turn_id)

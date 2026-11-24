@@ -15578,7 +15578,9 @@ export function createPendingTurn(input: {
         d.exec("COMMIT");
         return rowToPendingTurn(existing);
       }
-      // Reserve the ID with the outbox insert. A retired turn must never link a later question.
+    }
+    // Only listener submissions have a capture identity. Reconstructed lower-level handoffs may reuse an outbox ID.
+    if (input.spokenSessionId !== undefined && input.spokenWords !== undefined) {
       if (!d.prepare("INSERT OR IGNORE INTO spoken_outbox_ids (turn_id) VALUES (?)").run(input.id).changes) {
         throw new Error("This spoken capture was already queued and has left the outbox.");
       }

@@ -40,7 +40,13 @@ test("a duplicate create recovers an open voice filing by capability even with a
     assert.equal(retry.status, 200);
     assert.deepEqual(await retry.json(), { id: original.id, sessionId, wait: "message", receipt });
   }
-  reviews.resolve(original.id, "dismiss", null);
+  reviews.resolve(original.id, "answer", "release-15");
+  assert.deepEqual((await reviews.wait(original.id, 500, undefined, true))?.converted, { receipt });
+  // A create has no retry identity after settlement. An intentional new question may use identical words.
+  const next = await (await create({})).json();
+  assert.equal(next.wait, "call");
+  assert.notEqual(next.id, original.id);
+  reviews.resolve(next.id, "dismiss", null);
 });
 
 test("conversion needs unanimous live poll capability and loses to an answer", async () => {

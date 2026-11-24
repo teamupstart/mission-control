@@ -219,11 +219,15 @@ const GH_TOKEN_VARIABLES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
  */
 async function shellOnlyGhTokenHint(deps: SetupDeps): Promise<string> {
   if (!deps.loginShellVariableNames) return "";
-  const absent = GH_TOKEN_VARIABLES.filter((name) => !deps.processEnv?.()[name]);
-  if (absent.length === 0) return "";
+  // A token the daemon already holds, under either name, is one gh read and rejected. That
+  // failure is not the launch gap, and unsetting only the login shell's names would leave it
+  // in place, so the hint stays out of it.
+  const daemonEnv = deps.processEnv?.() ?? {};
+  if (GH_TOKEN_VARIABLES.some((name) => daemonEnv[name])) return "";
   let names: string[];
   try {
-    names = (await deps.loginShellVariableNames(absent)).filter((name) => absent.includes(name as typeof absent[number]));
+    names = (await deps.loginShellVariableNames(GH_TOKEN_VARIABLES))
+      .filter((name) => (GH_TOKEN_VARIABLES as readonly string[]).includes(name));
   } catch {
     return "";
   }

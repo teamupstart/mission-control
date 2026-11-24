@@ -227,11 +227,15 @@ test("gh auth names a token the login shell sets but the desktop launch did not 
   const both = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
   assert.match(both.state === "needs-setup" ? both.why : "", /sets GH_TOKEN and GITHUB_TOKEN.*cannot see them.*`env -u GH_TOKEN -u GITHUB_TOKEN gh auth login`/);
 
-  // A token the daemon already has is not the launch gap; the login shell is not asked about it.
-  asked.length = 0;
-  const inherited = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({ GH_TOKEN: "x", GITHUB_TOKEN: "y" }), loginShellVariableNames: shellSets(["GITHUB_TOKEN"]) });
-  assert.equal(inherited.state === "needs-setup" && inherited.why, "The GitHub CLI is installed but is not authenticated to github.com.");
-  assert.deepEqual(asked, []);
+  // A token the daemon already has, under either name, is one gh rejected rather than the
+  // launch gap, so the login shell is not asked. Unsetting only the shell's name would leave
+  // the daemon's token in place.
+  for (const processEnv of [{ GH_TOKEN: "x", GITHUB_TOKEN: "y" }, { GH_TOKEN: "x" }, { GITHUB_TOKEN: "y" }]) {
+    asked.length = 0;
+    const inherited = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => processEnv, loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
+    assert.equal(inherited.state === "needs-setup" && inherited.why, "The GitHub CLI is installed but is not authenticated to github.com.", JSON.stringify(processEnv));
+    assert.deepEqual(asked, [], JSON.stringify(processEnv));
+  }
 
   for (const loginShellVariableNames of [shellSets([]), async () => { throw new Error("login shell failed"); }]) {
     const plain = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames });

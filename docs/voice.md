@@ -19,9 +19,13 @@ notifications. A split card shows an immediate stop’s result as soon as it arr
 desktop notification identifies that stop separately and counts down only the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
+At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
+it shows “Awaiting delivery confirmation”.
 
 A settled card stays visible while one of its controls has focus or its action is in
 progress. Once both end, the card gives you another eight seconds to read the result or retry.
+Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
+draft stays available when the follow-up closes.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three

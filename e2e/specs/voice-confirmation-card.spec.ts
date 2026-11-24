@@ -118,5 +118,9 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
   await expect.poll(() => withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["deliver this"]);
   await expect(notices).toHaveAttribute("data-closed-notices", "voice-early-close,voice-disconnected", { timeout: 2000 });
-  await expect(page.getByRole("status").filter({ hasText: "deliver this" })).toContainText("To Steve");
+  const card = page.getByRole("status").filter({ hasText: "deliver this" });
+  await expect(card).toContainText("Awaiting delivery confirmation", { timeout: 2000 });
+  await expect(card.getByRole("button")).toHaveCount(0);
+  await expect(card).not.toContainText("0s");
+  await captureCard(card, "awaiting-delivery-confirmation");
 });

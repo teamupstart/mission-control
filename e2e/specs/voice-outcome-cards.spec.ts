@@ -185,8 +185,10 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await intent.fill("Keep this unrelated dispatch");
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
-  const session = await runningAgent(page, daemon, "Steve");
-  expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+  for (const name of ["Steve", "Will"]) {
+    const session = await runningAgent(page, daemon, name);
+    expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+  }
   await page.clock.install();
   await say(daemon, "Steve, check again");
   const done = page.getByRole("status").filter({ hasText: "Steve has finished" });
@@ -201,6 +203,22 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(daemon.repo);
   await expect(intent).toHaveValue("");
   await intent.fill("Only for the follow-up");
+  const transfer = await page.evaluateHandle(() => {
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), c => c.charCodeAt(0));
+    const data = new DataTransfer();
+    data.items.add(new File([png], "first-follow-up.png", { type: "image/png" }));
+    return data;
+  });
+  await dialog.locator(".drop-zone").dispatchEvent("drop", { dataTransfer: transfer });
+  await transfer.dispose();
+  const attachment = dialog.getByRole("button", { name: "Remove first-follow-up.png" });
+  await expect(attachment).toBeVisible();
+  await say(daemon, "Will, check again");
+  await page.getByRole("status").filter({ hasText: "Will has finished" }).getByRole("button", { name: "Start a follow-up task" }).click();
+  await expectContentClearsBorder(dialog);
+  await expect(repo).toHaveValue(daemon.repo);
+  await expect(intent).toHaveValue("", { timeout: 2000 });
+  await expect(attachment).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await openDispatch.click();

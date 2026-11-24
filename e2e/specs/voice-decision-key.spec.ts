@@ -389,42 +389,47 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "33-same-window-supersedes");
   });
 
-  test("an earlier Jev reservation arriving after another window reserved Off cannot send speech", async ({ dashboard: page, context, daemon, decisions }) => {
-    await turnVoiceOn(daemon);
-    await codexAgents(daemon);
-    await openVoiceSettings(page, daemon);
-    await saveKey(page, "Jev", SAVED_JEV);
-    await providerMenu(page).selectOption("openai");
-    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
-    const other = await context.newPage();
-    await openVoiceSettings(other, daemon);
-    await expect(providerMenu(other)).toHaveValue("openai");
-    const held = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    await page.route("**/api/voice/config/provider-intent", async route => {
-      held.resolve();
-      await release.promise;
-      await route.continue();
-    }, { times: 1 });
-    const off = await holdProviderPut(other);
-    const reservation = page.waitForResponse(r => r.url().endsWith("/provider-intent"));
-    try {
-      await providerMenu(page).selectOption("jev");
-      await held.promise;
-      await providerMenu(other).selectOption("off");
-      await off.held;
-      release.resolve();
-      expect((await reservation).status()).toBe(409);
-      await expect(providerMenu(page)).toHaveValue("openai");
-    } finally {
-      release.resolve();
-      off.release();
-    }
-    await expect(line(other)).toHaveText(NOT_SET);
-    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
-    expect(decisions.requests).toHaveLength(0);
-    await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "32-off-reserved-first");
-  });
+  for (const [earlier, later, title, screenshot] of [
+    ["jev", "off", "an earlier Jev reservation arriving after another window reserved Off cannot send speech", "32-off-reserved-first"],
+    ["off", "jev", "an earlier Off reservation cannot overtake another window's uncommitted Jev ticket", "34-held-jev-ticket"],
+  ] as const) {
+    test(title, async ({ dashboard: page, context, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      await saveKey(page, "Jev", SAVED_JEV);
+      await providerMenu(page).selectOption("openai");
+      await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+      const other = await context.newPage();
+      await openVoiceSettings(other, daemon);
+      await expect(providerMenu(other)).toHaveValue("openai");
+      const held = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      await page.route("**/api/voice/config/provider-intent", async route => {
+        held.resolve();
+        await release.promise;
+        await route.continue();
+      }, { times: 1 });
+      const laterPut = await holdProviderPut(other);
+      const reservation = page.waitForResponse(r => r.url().endsWith("/provider-intent"));
+      try {
+        await providerMenu(page).selectOption(earlier);
+        await held.promise;
+        await providerMenu(other).selectOption(later);
+        await laterPut.held;
+        release.resolve();
+        expect((await reservation).status()).toBe(409);
+        await expect(providerMenu(page)).toHaveValue("openai");
+      } finally {
+        release.resolve();
+        laterPut.release();
+      }
+      await expect(line(other)).toHaveText(later === "off" ? NOT_SET : using("Jev"));
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe(later === "off" ? "job on codex answered: split" : "Jev answered: split");
+      expect(decisions.requests).toHaveLength(later === "off" ? 0 : 1);
+      await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), screenshot);
+    });
+  }
 
   test("an Off reservation delayed before reaching the daemon yields to a later Jev selection", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);

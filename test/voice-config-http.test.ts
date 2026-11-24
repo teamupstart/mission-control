@@ -163,24 +163,41 @@ test("reserving Off protects the still-current revision before its PUT arrives",
   const { ticket } = await intent.json() as { ticket: string };
   const conflict = await providerIntent(b, revision);
   assert.equal(conflict.status, 409);
-  const { intentWindow } = await conflict.json() as { intentWindow: { token: string; pendingOff: boolean } };
-  assert.equal(intentWindow.pendingOff, true);
+  const { intentWindow } = await conflict.json() as { intentWindow: { token: string; pendingSelection: boolean } };
+  assert.equal(intentWindow.pendingSelection, true);
   assert.equal((await choose("jev", ticket)).status, 409);
   assert.equal((await choose("off", ticket)).status, 200);
   const retry = await json("/api/voice/config/provider-intent", "POST", { writer: b, observedRevision: revision, unchangedSince: intentWindow.token });
   assert.equal(retry.status, 409);
 });
 
+test("an uncommitted provider ticket blocks a cross-window Off reservation against the same applied revision", async () => {
+  const observedRevision = await readProviderRevision();
+  const reserve = (writer: string, optOut: boolean) => json("/api/voice/config/provider-intent", "POST", {
+    writer, observedRevision, edit: 1, optOut,
+  });
+  const jev = await reserve(randomUUID(), false);
+  assert.equal(jev.status, 200);
+  const off = await reserve(randomUUID(), true);
+  assert.equal(off.status, 409);
+  assert.equal((await off.json()).intentWindow.pendingSelection, true);
+  assert.equal((await choose("jev", (await jev.json()).ticket)).status, 200);
+});
+
 test("a window can supersede only its own earlier pending Off", async () => {
   const a = randomUUID(), b = randomUUID(), revision = await readProviderRevision();
-  const reserve = (writer: string, edit: number, optOut: boolean) => json("/api/voice/config/provider-intent", "POST", {
-    writer, observedRevision: revision, edit, optOut,
+  const reserve = (writer: string, edit: number, optOut: boolean, unchangedSince?: string) => json("/api/voice/config/provider-intent", "POST", {
+    writer, observedRevision: revision, edit, optOut, unchangedSince,
   });
   assert.equal((await reserve(a, 2, true)).status, 200);
   assert.equal((await reserve(a, 1, false)).status, 409);
   assert.equal((await reserve(a, 3, false)).status, 200);
-  assert.equal((await reserve(b, 1, true)).status, 200);
-  const own = await reserve(a, 4, true);
+  const laterOff = await reserve(b, 1, true);
+  assert.equal(laterOff.status, 409);
+  assert.equal((await reserve(b, 1, true, (await laterOff.json()).intentWindow.token)).status, 200);
+  const foreign = await reserve(a, 4, true);
+  assert.equal(foreign.status, 409);
+  const own = await reserve(a, 4, true, (await foreign.json()).intentWindow.token);
   assert.equal(own.status, 200);
   assert.equal((await reserve(a, 5, false)).status, 409);
   assert.equal((await choose("off", (await own.json()).ticket)).status, 200);

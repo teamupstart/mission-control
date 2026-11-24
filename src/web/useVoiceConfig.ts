@@ -142,9 +142,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       // Compare elapsed durations, so the browser and daemon need no shared clock.
       // If the daemon was idle longer than the entire trip since the click, its
       // last intent predates this click. An opt-in must also have observed the
-      // current selection, even when the outstanding Off has yet to commit.
+      // current selection, even when the outstanding write has yet to commit.
       const window = order?.intentWindow;
-      const canRetry = optOut || (window?.pendingOff && res.providerRevision === observed);
+      const canRetry = optOut || (window?.pendingSelection && res.providerRevision === observed);
       if (canRetry && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
           window && window.quietForMs > performance.now() - selectedAt) {
         const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, optOut, edit.id, window.token);

@@ -2507,7 +2507,7 @@ export const api = {
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
   reserveVoiceProviderWrite: (writer: string, observedRevision: string, optOut: boolean, edit: number, unchangedSince?: string) =>
-    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; quietForMs: number; pendingOff: boolean } }>(
+    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; quietForMs: number; pendingSelection: boolean } }>(
       "/api/voice/config/provider-intent", { writer, observedRevision, optOut, edit, unchangedSince }),
   setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,

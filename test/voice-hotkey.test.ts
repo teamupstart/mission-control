@@ -28,6 +28,32 @@ test("reports the chord in force after first refusal, replacement, and unregistr
   hardware.stop();
 });
 
+test("stopping active voice hardware releases the mute shortcut and stops microphone polling", t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let shortcut: ((down: boolean, at: number) => void) | undefined;
+  let toggles = 0;
+  let polls = 0;
+  const hardware = new VoiceHardware({ value: {
+    register(_, onEdge) { shortcut = onEdge; return true; },
+    unregister() { shortcut = undefined; },
+  } }, { value: { running() { polls++; return false; } } },
+  () => -1, () => toggles++, () => {}, () => 0);
+  const tap = () => { shortcut?.(true, 0); shortcut?.(false, 100_000); };
+
+  hardware.update("ctrl+k", "listening");
+  tap();
+  assert.equal(toggles, 1);
+  assert.equal(polls, 1);
+  t.mock.timers.tick(500);
+  assert.equal(polls, 2);
+
+  hardware.stop();
+  tap();
+  t.mock.timers.tick(1500);
+  assert.equal(toggles, 1, "the released shortcut cannot toggle mute");
+  assert.equal(polls, 2, "no more microphone queries after shutdown");
+});
+
 test("tap toggles, hold during auto-mute publishes physical edges, other holds do nothing", t => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1000 });
   let edge!: (down: boolean, at: number) => void;

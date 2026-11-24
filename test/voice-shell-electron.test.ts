@@ -163,10 +163,18 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         const subscribe = systemPreferences.subscribeNotification.bind(systemPreferences);
         systemPreferences.subscribeNotification = (name, cb) => subscribe(
           name === "com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged" ? layoutEvent : name, cb);
+        // Count actual input queries, including polls whose result produces no shell report.
+        const nativeRequire = require("node:module").createRequire(__filename);
+        const activityPath = nativeRequire.resolve("./mic-activity.node");
+        const activity = nativeRequire(activityPath);
+        let polls = 0;
+        nativeRequire.cache[activityPath].exports = {
+          running(pid) { polls++; return activity.running(pid); }
+        };
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
-        const { post, releaseReservation } = require("node:module").createRequire(__filename)(${JSON.stringify(eventFixture)});
+        const { post, releaseReservation } = nativeRequire(${JSON.stringify(eventFixture)});
         const freeKeyAndNotify = () => { releaseReservation(); systemPreferences.postNotification(layoutEvent, {}, true); };
-        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
+        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -176,7 +184,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -243,6 +251,33 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     publish("UnknownKey");
     await until(() => !!reports.at(-1)?.hotkeyError);
     assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, null);
+  });
+  await t.test("disabling Voice releases its active system-wide shortcut and stops microphone queries", async () => {
+    const chord = "cmd+ctrl+shift+F9";
+    const polls = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.polls);
+    const canAcquireShortcut = () => app.evaluate(({ globalShortcut }) => {
+      const accelerator = "Command+Control+Shift+F9";
+      if (!globalShortcut.register(accelerator, () => {})) return false;
+      globalShortcut.unregister(accelerator);
+      return true;
+    });
+    events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord },
+    }) + "\n\n");
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    assert.equal(await canAcquireShortcut(), false, "Voice owns the shortcut while listening");
+    const [major, minor] = (await app.evaluate(() => process.getSystemVersion())).split(".").map(Number);
+    const listeningPolls = await polls();
+    if (major! > 14 || (major === 14 && minor! >= 2)) {
+      await until(async () => (await polls()) > listeningPolls);
+    }
+
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
+    await until(async () => (await read()).mode === "off");
+    const stoppedPolls = await polls();
+    assert.equal(await canAcquireShortcut(), true, "a second owner can acquire the shortcut once Voice is off");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    assert.equal(await polls(), stoppedPolls, "no native input query across two polling intervals while off");
   });
   await t.test("Carbon moves the same V shortcut from US to Dvorak and reuses an unchanged physical binding", async () => {
     const changes = await app.evaluate((_, path) => {

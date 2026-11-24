@@ -1230,6 +1230,8 @@ test("a mod-calls verdict is shared with the closing doctor only after the build
     // A setup whose publish succeeds does keep it.
     const ok = await runModStep({ live: false, deps: { env: r.env, runCache: {} } });
     assert.equal(ok.status, "ok", ok.message);
+    // A changed build is published again, so its verdict is kept; an unchanged one is not staged at all.
+    writeModBuild(r.source, "2.3.0", 'fetch("/api/health"); fetch("/dispatch/inbox"); // rebuilt');
     const kept: NonNullable<Parameters<typeof runModStep>[0]["deps"]>["runCache"] = {};
     await runModStep({ live: false, deps: { env: r.env, runCache: kept } });
     assert.equal(kept!.modCalls?.status, "ok");
@@ -1293,5 +1295,31 @@ test("a lock left by a dead run is taken over, and one held by a running run is 
     assert.ok(existsSync(dest + ".lock"), "the other run's lock is left alone");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a setup run whose mod is already published and installed stages nothing, and a changed build is staged again", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const dest = join(r.state, "mod");
+    const inode = statSync(dest).ino;
+    const before = r.claude.invocations().length;
+    const again = await r.run("setup");
+    assert.equal(again.code, 0, again.out + again.err);
+    assert.match(again.out, /the mod 2\.2\.0 is already installed/);
+    assert.equal(statSync(dest).ino, inode, "the published mod was not swapped");
+    // The mod step asked claude to validate nothing; the closing doctor's one validate is all that ran.
+    const added = r.claude.invocations().slice(before).map((i) => i.argv.slice(0, 2).join(" "));
+    assert.equal(added.filter((a) => a === "plugin validate").length, 1, added.join(" | "));
+    assert.deepEqual(readdirSync(r.state), ["mod"]);
+
+    // The same version rebuilt with different bytes is not "current": it is staged and published again.
+    writeModBuild(r.source, "2.2.0", 'fetch("/api/health"); // rebuilt');
+    assert.equal((await r.run("setup")).code, 0);
+    assert.notEqual(statSync(dest).ino, inode, "a changed build is swapped in");
+    assert.match(readFileSync(join(dest, "mission-control", "hooks", "register.js"), "utf8"), /rebuilt/);
+  } finally {
+    await r.cleanup();
   }
 });

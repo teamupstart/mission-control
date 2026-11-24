@@ -1,7 +1,8 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
-import { stageMod } from "../../server/mod-stage.ts";
+import { readModVersion, stageMod } from "../../server/mod-stage.ts";
 import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { DoctorCheck, SetupStepOptions, SetupStepResult } from "./types.ts";
@@ -22,6 +23,36 @@ const ALREADY_ADDED_LINE = /^(?:[^\w\s]\s*)?(?:(?:the\s+)?marketplace\s+(?:["'][
 function isAlreadyAdded(text: string): boolean {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.length > 0 && lines.every((l) => ALREADY_ADDED_LINE.test(l));
+}
+
+/** The files that make up a mod build, compared byte for byte to tell whether staging would change anything. */
+const BUILD_FILES = [
+  join(".claude-plugin", "marketplace.json"),
+  join(MOD_NAME, ".claude-plugin", "plugin.json"),
+  join(MOD_NAME, "hooks", "hooks.json"),
+  join(MOD_NAME, "hooks", "register.js"),
+  join(MOD_NAME, "hooks", "mod-calls.json"),
+  join(MOD_NAME, "types", "index.d.ts"),
+];
+
+/**
+ * Whether the published mod is already exactly this build. Then staging would copy, validate and swap
+ * the same bytes back in, and the swap's moment with no mod at the published path would be paid for
+ * nothing. Any difference, or any file that cannot be read, means stage as usual.
+ */
+async function publishedIsCurrent(source: string, published: string): Promise<boolean> {
+  // A file both sides lack is the same; one that only a side has, or cannot be read, is a difference.
+  const read = (path: string) => readFile(path).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : Promise.reject(error)));
+  try {
+    for (const file of BUILD_FILES) {
+      const [a, b] = await Promise.all([read(join(source, file)), read(join(published, file))]);
+      if (a === null || b === null ? a !== b : !a.equals(b)) return false;
+    }
+    // A build always has its plugin manifest; two folders lacking it are not a mod to skip over.
+    return (await read(join(source, MOD_NAME, ".claude-plugin", "plugin.json"))) !== null;
+  } catch {
+    return false;
+  }
 }
 
 const failed = (message: string): SetupStepResult => ({ id, status: "failed", message });
@@ -59,7 +90,10 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // the publish has succeeded: until then the published mod may still be the old build, or absent.
   let certified: DoctorCheck | null = null;
   try {
-    version = (
+    if (await publishedIsCurrent(deps.modSource, modDir)) {
+      // Already published and certified when it was staged: nothing to copy, validate or swap.
+      version = await readModVersion(modDir);
+    } else version = (
       await stageMod({
         source: deps.modSource,
         dest: modDir,

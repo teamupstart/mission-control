@@ -426,15 +426,15 @@ test("confirmed and abandoned SDK reservations expire only after a verified nati
   }
   db.recoverSendingPendingTurns(now);
   const later = now + DELIVERY_LAG_MS;
-  assert.equal(pruneExpiredSpokenTurns(later - 1, () => null), 0);
+  assert.equal(pruneExpiredSpokenTurns(later - 1, () => []), 0);
   db.closeDb();
   spokenLedger.forgetCaches();
   db.recoverSendingPendingTurns(later);
   for (const kind of cases) assert.equal(spokenLedger.rows("sdk-expiry-" + kind).length, 1);
   assert.equal(pruneExpiredSpokenTurns(later + 60_000, key =>
     key.startsWith("sdk-expiry-") && !key.endsWith("-previously-read") && !key.endsWith("-unavailable") ?
-      transcript.conversation(key).transcript : null), 4);
-  pruneExpiredSpokenTurns(later + 60_000, () => null, now + 1);
+      [transcript.conversation(key).transcript] : []), 4);
+  pruneExpiredSpokenTurns(later + 60_000, () => [], now + 1);
   for (const kind of cases) {
     const key = "sdk-expiry-" + kind;
     const retained = ["previously-read", "unread", "confirmed", "confirmed-unavailable", "uncertain"].includes(kind);
@@ -478,7 +478,7 @@ test("confirmed text-only payloads expire after the binding window while native 
   appendFileSync(path, unopened);
   db.closeDb();
   spokenLedger.forgetCaches();
-  const lookup = (candidate: string) => candidate === key ? conversation.transcript : null;
+  const lookup = (candidate: string) => candidate === key ? [conversation.transcript] : [];
   assert.equal(db.loadSpokenTurns(key).find(row => row.outboxTurnId === "unopened")?.messageId, null);
   assert.equal(pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS - 1, lookup), 0);
   const d = db.openDb();
@@ -512,10 +512,10 @@ test("cleanup retries an unreadable prefix before deciding whether a matching te
   const native = conversation.transcript!;
   const unavailable = { ...native, read: { ...native.read, boundary: () => null } };
   const expiry = now + 8 * DELIVERY_LAG_MS;
-  pruneExpiredSpokenTurns(expiry, k => k === key ? unavailable : null, now + 1);
+  pruneExpiredSpokenTurns(expiry, k => k === key ? [unavailable] : [], now + 1);
   assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
-  pruneExpiredSpokenTurns(expiry, k => k === key ? native : null, now + 1);
+  pruneExpiredSpokenTurns(expiry, k => k === key ? [native] : [], now + 1);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, message.id);
 });
 
@@ -589,9 +589,9 @@ test("confirmed text-only payloads in unavailable transcripts expire at the orph
       db.clearPendingTurns(key);
     }
   }
-  pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 1, () => null, now - 1);
+  pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 1, () => [], now - 1);
   assert.equal(spokenLedger.rows(terminalKey).length, 1);
-  pruneExpiredSpokenTurns(now + 7 * DELIVERY_LAG_MS + 1, () => null, now + 1);
+  pruneExpiredSpokenTurns(now + 7 * DELIVERY_LAG_MS + 1, () => [], now + 1);
   assert.deepEqual(spokenLedger.rows(terminalKey), []);
   assert.equal(spokenLedger.rows(sdkKey).length, 1);
 });
@@ -612,10 +612,10 @@ test("cleanup retains spoken payloads through missing, unreadable and incomplete
   const read = conversation.transcript!.read;
   for (const unavailable of [null, { ...read, after: () => { throw new Error("disconnected"); } },
     { ...read, after: () => ({ messages: [], start: 0, end: 0, atEnd: true }) }]) {
-    pruneExpiredSpokenTurns(now, k => k === key && unavailable ? { path: "fake", read: unavailable } : null);
+    pruneExpiredSpokenTurns(now, k => k === key && unavailable ? [{ path: "fake", read: unavailable }] : []);
     assert.equal(db.loadSpokenTurns(key)[0]?.received, words);
   }
-  pruneExpiredSpokenTurns(now, k => k === key ? conversation.transcript : null);
+  pruneExpiredSpokenTurns(now, k => k === key ? [conversation.transcript] : []);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, message.ts);
   assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, words);
 });
@@ -646,7 +646,7 @@ test("cleanup recovers an SDK receipt moved before its handoff offset by transcr
     writeFileSync(replacement, line(row.id) + typed + typed);
     assert.equal(statSync(replacement).size, statSync(path).size);
     if (when === "before") renameSync(replacement, path);
-    const lookup = (candidate: string) => candidate === key ? { path, read } : null;
+    const lookup = (candidate: string) => candidate === key ? [{ path, read }] : [];
     const after = read.after.bind(read);
     const scan = t.mock.method(read, "after", (...args: Parameters<typeof read.after>) => {
       const page = after(...args);
@@ -677,7 +677,7 @@ test("cleanup distinguishes a verified empty transcript from a failed read at by
   db.clearPendingTurns(key);
   const now = Date.now() + DELIVERY_LAG_MS + 10;
   const read = { ...claudeTranscript.messages!, snapshot: () => ({ size: 0, version: "stable" }) };
-  const lookup = (k: string) => k === key ? { path, read } : null;
+  const lookup = (k: string) => k === key ? [{ path, read }] : [];
   // The size probes report zero while the actual native reader cannot open the path.
   assert.equal(pruneExpiredSpokenTurns(now, lookup), 0);
   assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
@@ -716,6 +716,46 @@ test("cleanup finds an evicted SDK conversation by its persisted binding and ver
   assert.equal(registry.getSession("sdk:archived"), undefined);
   registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now);
+});
+
+test("cleanup checks live, persisted and handoff paths when a runtime moves its transcript", async t => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
+  const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const projects = mkdtempSync(join(tmpdir(), "spoken-relocated-"));
+  t.after(() => rmSync(projects, { recursive: true, force: true }));
+  const cwd = "/moved";
+  mkdirSync(join(projects, "-moved"));
+  t.mock.method(claudeTranscript, "locate", (s: Parameters<typeof resolveTranscriptPath>[0]) => resolveTranscriptPath(s, projects));
+  const now = Date.now();
+  for (const location of ["live", "persisted", "handoff"]) {
+    const key = "relocated-" + location;
+    const id = "sdk:" + key;
+    const old = join(projects, key + "-old.jsonl");
+    const current = location === "persisted" ? join(projects, "-moved", key + ".jsonl") : join(projects, key + "-current.jsonl");
+    writeFileSync(old, "");
+    writeFileSync(current, "");
+    const words = "inspect the moved build";
+    const row = reserveSpokenTurn({ key, session: { agent: "claude", cwd, transcriptPath: old },
+      transcript: { path: old, read: claudeTranscript.messages! } }, words, words, true, claimSpoken(key, words, words), now);
+    db.recoverSendingPendingTurns(now);
+    db.clearPendingTurns(key);
+    writeFileSync(location === "handoff" ? old : current, JSON.stringify({ type: "user", uuid: row.id,
+      timestamp: new Date(now).toISOString(), message: { role: "user", content: words } }) + "\n");
+    const registry = new Registry();
+    registry.applyDiscovery([]);
+    if (location === "persisted") {
+      upsertSdkSession({ id, agentSessionId: key, agent: "claude", cwd, taskId: null,
+        model: null, effort: null, permissionMode: null, status: "exited", turnInProgress: false });
+    } else {
+      registry.registerSdkSession({ id, agent: "claude", name: key, cwd, agentSessionId: key });
+      registry.applyDriverEvent(id, { kind: "bound", agentSessionId: key, transcriptPath: current, pid: null, modelId: null });
+    }
+    registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now, location);
+  }
 });
 
 test("cleanup reopens an evicted terminal's native transcript before expiring its unread disclosure", async t => {

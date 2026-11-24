@@ -304,8 +304,8 @@ export interface TranscriptMessages {
   snapshot?(path: string): { size: number; version: string } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
   boundary?(path: string, offset?: number): { offset: number; proof: string } | null;
-  /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
-  initial(path: string): TranscriptInitialRead;
+  /** Recent history through the captured EOF (default: current EOF). Throws if unreadable. */
+  initial(path: string, through?: number): TranscriptInitialRead;
   /**
    * The turns immediately BEFORE a byte offset - how the conversation panel scrolls back
    * through history the tail window did not reach.
@@ -337,8 +337,8 @@ export interface TranscriptMessages {
    * an I/O failure then throws, including on an empty file.
    */
   after(path: string, after: number, wantTurns?: number, requireReadable?: boolean): TranscriptForwardPage;
-  /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
-  appended(path: string, pos: number): TranscriptStreamRead;
+  /** Complete turns from `pos` to the captured EOF (default: current EOF). Throws if unreadable. */
+  appended(path: string, pos: number, through?: number): TranscriptStreamRead;
   /**
    * The current active narration, or null when there is none. Null is also the right
    * answer for a harness with no such notion. It is a

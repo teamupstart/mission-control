@@ -95,6 +95,23 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       mkdirSync(dir, { recursive: true });
       await green.first().screenshot({ path: join(dir, "rewritten.png") });
     }
+    const progressText = "Build output continues while the transcript grows";
+    let writes = 0;
+    const writer = setInterval(() => {
+      appendFileSync(path, ++writes === 2 ? line("live-progress", progressText) : "\n");
+    }, 10);
+    try {
+      const progress = dashboard.locator("article.turn-user").filter({ hasText: progressText });
+      await expect(progress).toBeVisible();
+      await expect(green.last().getByText("Spoken", { exact: true })).toBeVisible();
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        const dir = artifactsDir("voice-spoken-active-transcript");
+        mkdirSync(dir, { recursive: true });
+        await progress.screenshot({ path: join(dir, "growing.png") });
+      }
+    } finally {
+      clearInterval(writer);
+    }
   } finally {
     pane.cleanup();
   }

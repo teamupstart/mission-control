@@ -19,6 +19,7 @@ import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
 import { spokenTranscriptState } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
+import type { TranscriptStreamRead } from "./harness/types.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
@@ -152,26 +153,38 @@ export function transcriptStreamHandler(registry: Registry) {
       let spoken = spokenState();
       let cursor: string | undefined;
       let revision: string | undefined;
-      const version = () => read.snapshot?.(path)?.version;
-      const verify = async (offsets: number[], observed: string | undefined) => {
-        const proofs = await cursorProofs(path, offsets);
-        if (!observed || observed !== version()) throw new Error("Transcript changed during cursor verification");
-        return proofs;
+      // Anchor parsing and both hashes to the same EOF. If the writer is active, validate
+      // only those bytes a second time. Bytes appended beyond the anchor belong to the next frame.
+      const capture = async <T extends TranscriptStreamRead>(state: SpokenState, from: number | null,
+        readFrame: (end?: number) => T) => {
+        if (!state) return { frame: readFrame(), before: undefined, cursor: undefined, revision: undefined };
+        const snapshot = read.snapshot?.(path);
+        if (!snapshot || (from !== null && from > snapshot.size)) throw new Error("Transcript cursor is unavailable");
+        const { size, version } = snapshot;
+        const proofs = await cursorProofs(path, from === null ? [size] : [from, size]);
+        const whole = proofs[proofs.length - 1];
+        const frame = readFrame(size);
+        let completeLines = whole;
+        if (frame.pos !== size || read.snapshot?.(path)?.version !== version) {
+          const [throughLines, throughEof] = await cursorProofs(path, [frame.pos, size]);
+          if (throughEof !== whole) throw new Error("Transcript prefix changed during cursor verification");
+          completeLines = throughLines;
+        }
+        return { frame, before: from === null ? undefined : proofs[0], cursor: completeLines, revision: version };
       };
       const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
-        const observed = state ? version() : undefined;
-        const init = read.initial(path);
-        const [proof] = state ? await verify([init.pos], observed) : [];
+        const captured = await capture(state, null, end => read.initial(path, end));
+        const init = captured.frame;
         await send({
           type: "init",
           messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
           start: init.start, atStart: init.atStart, pos: init.pos,
-          ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(proof && { spokenCursor: proof }),
+          ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(captured.cursor && { spokenCursor: captured.cursor }),
           ...(refreshSpoken && { refreshSpoken: true }),
         });
         pos = init.pos;
-        cursor = proof;
-        revision = observed;
+        cursor = captured.cursor;
+        revision = captured.revision;
         spoken = state;
       };
       try {
@@ -183,15 +196,14 @@ export function transcriptStreamHandler(registry: Registry) {
           || (spoken !== null && from === null)
         );
         if (from !== null && !stale) {
-          const observed = spoken ? version() : undefined;
-          const resumed = read.appended(path, from);
-          const [before, after] = spoken ? await verify([from, resumed.pos], observed) : [];
-          if (spoken && before !== heldCursor) {
+          const captured = await capture(spoken, from, end => read.appended(path, from, end));
+          const resumed = captured.frame;
+          if (spoken && captured.before !== heldCursor) {
             await sendWindow(spoken, true);
           } else {
             pos = resumed.pos;
-            cursor = after;
-            revision = observed;
+            cursor = captured.cursor;
+            revision = captured.revision;
             await send({ type: "resume", messages: titled.transcript(attributeTranscript(id, resumed.messages, launch(), anchor, conversation())),
               pos, ...(cursor && { spokenCursor: cursor }) });
           }
@@ -220,22 +232,22 @@ export function transcriptStreamHandler(registry: Registry) {
             continue;
           }
           const size = statSync(path).size;
-          const observed = current ? version() : undefined;
+          const observed = current ? read.snapshot?.(path)?.version : undefined;
           if (current && observed && observed === revision) continue;
           if (current && size <= pos) {
             await sendWindow(current, true);
             continue;
           }
           if (size < pos) pos = 0; // truncated / rotated - re-read from the top
-          const { messages, pos: next } = read.appended(path, pos);
+          const captured = await capture(current, pos, end => read.appended(path, pos, end));
+          const { messages, pos: next } = captured.frame;
           if (current) {
-            const [before, after] = await verify([pos, next], observed);
-            if (before !== cursor) {
+            if (captured.before !== cursor) {
               await sendWindow(current, true);
               continue;
             }
-            cursor = after;
-            revision = observed;
+            cursor = captured.cursor;
+            revision = captured.revision;
           }
           const advanced = next > pos;
           pos = next;

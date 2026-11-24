@@ -9595,23 +9595,30 @@ export class Registry extends EventEmitter {
     const byKey = new Map([...this.sessions.values()].map(session => [noteKeyFor(session), session]));
     let persisted: Map<string | null, SdkSessionRow> | undefined;
     return pruneExpiredSpokenTurns(now, (key, locator) => {
-      // The file or native conversation may outlive the terminal and this daemon.
+      // A runtime can move the native file and leave a readable copy behind. Look in every
+      // known location for this exact conversation before absence can retire an unseen UUID.
+      const sources = new Map<string | null, ReturnType<typeof sessionMessages>>();
+      const add = (source: ReturnType<typeof sessionMessages>) => sources.set(source?.path ?? null, source);
+      const session = byKey.get(key);
+      const live = session?.agentSessionId === key ? sessionMessages(session) : null;
+      if (session?.agentSessionId === key) add(live);
+      persisted ??= new Map(listSdkSessions().map(row => [row.agentSessionId, row]));
+      const row = persisted.get(key);
+      if (row?.agent) {
+        const fromSdk = sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
+          agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
+        if (fromSdk || !live) add(fromSdk);
+      }
       if (locator.transcriptAgent) {
         const archived = { id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
           agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath };
-        const transcript = sessionMessages(archived);
-        if (transcript) return transcript;
+        add(sessionMessages(archived));
+        if (locator.transcriptPath) {
+          const relocated = sessionMessages({ ...archived, transcriptPath: null });
+          if (relocated) add(relocated);
+        }
       }
-      const session = byKey.get(key);
-      if (session?.agentSessionId === key) {
-        const transcript = sessionMessages(session);
-        if (transcript) return transcript;
-      }
-      // Older handoffs may predate the ledger's locator. SDK rows also remember an exact native binding.
-      persisted ??= new Map(listSdkSessions().map(row => [row.agentSessionId, row]));
-      const row = persisted.get(key);
-      return row?.agent ? sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
-        agentSessionId: key, startedAt: row.createdAt, transcriptPath: null }) : null;
+      return [...sources.values()];
     }, unavailableBefore);
   }
 

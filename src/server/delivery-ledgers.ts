@@ -188,15 +188,15 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
 }
 
 /** Final transcript pass for abandoned attempts and confirmed deliveries still awaiting a native match. */
-export function pruneExpiredSpokenTurns(now: number, transcriptFor: (key: string, locator: SpokenTranscriptLocator) => DeliveryConversation["transcript"],
+export function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: string, locator: SpokenTranscriptLocator) => DeliveryConversation["transcript"][],
   unavailableBefore?: number): number {
   const cutoff = now - DELIVERY_LAG_MS;
   let removed = 0;
   for (const group of expiredSpokenReservations(cutoff)) {
-    const transcript = transcriptFor(group.noteKey, group);
-    const scan = transcript ? reconcileSpokenTurns(group.noteKey, transcript, now) : "unavailable";
-    if (scan === "complete") removed += deleteExpiredSpokenReservations(group, cutoff, cutoff);
-    else if (scan === "unavailable" && unavailableBefore !== undefined) {
+    const scans = transcriptsFor(group.noteKey, group).map(transcript =>
+      transcript ? reconcileSpokenTurns(group.noteKey, transcript, now) : "unavailable");
+    if (scans.length && scans.every(scan => scan === "complete")) removed += deleteExpiredSpokenReservations(group, cutoff, cutoff);
+    else if (!scans.includes("retry") && unavailableBefore !== undefined) {
       // Only confirmed, unbound text expires without a readable file. Exact SDK receipts can still arrive.
       removed += deleteExpiredSpokenReservations(group, null, Math.min(cutoff, unavailableBefore));
     }

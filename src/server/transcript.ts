@@ -446,8 +446,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
    * than an exact turn count - and in the shape that overshoots most, a small file read
    * whole, the overshoot IS the rest of the conversation.
    */
-  const initial = (path: string): TranscriptInitialRead => {
-    const size = statSync(path).size;
+  const initial = (path: string, size = statSync(path).size): TranscriptInitialRead => {
     let pos = size;
     let begin = 0;
     const read = (bytes: number): TranscriptMessage[] => {
@@ -613,8 +612,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
   };
 
   /** Read whatever complete lines were appended since `pos`. */
-  const appended = (path: string, pos: number): TranscriptStreamRead => {
-    const size = statSync(path).size;
+  const appended = (path: string, pos: number, size = statSync(path).size): TranscriptStreamRead => {
     if (size <= pos) return { messages: [], pos };
     const buf = readRange(path, pos, size);
     const lastNl = buf.lastIndexOf(NL);

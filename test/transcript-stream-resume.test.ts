@@ -235,3 +235,39 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   assert.ok(truncated.type === "init" && truncated.refreshSpoken);
   assert.deepEqual(truncated.messages.map(m => m.text), ["SHORTER"]);
 });
+
+test("a fresh spoken stream and its resume advance while the native file grows during every proof", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const read = sessionMessages(session)!.read;
+  const snapshot = read.snapshot;
+  assert.ok(snapshot);
+  const key = noteKeyFor(session);
+  const now = Date.now();
+  const words = "keep watching the build";
+  const queued = db.createPendingTurn({ id: "growing-stream", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => words)!;
+  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const receipt = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, true, 0, now)!;
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+  writeFileSync(path, turn("opening", "OPENING"));
+  let sequence = 0;
+  t.mock.method(read as { snapshot: typeof snapshot }, "snapshot", (file: string) => {
+    const captured = snapshot(file);
+    appendFileSync(file, turn("active-" + ++sequence, "OUTPUT " + sequence));
+    return captured;
+  });
+  const opening = await firstFrame();
+  assert.ok(opening.type === "init" && opening.spokenCursor);
+  assert.equal(opening.messages[0]?.text, "OPENING");
+  const query = new URLSearchParams({ from: String(opening.pos), spokenCursor: opening.spokenCursor });
+  if (opening.spokenReceipt) query.set("spokenReceipt", opening.spokenReceipt);
+  const continuation = await firstFrame("?" + query);
+  assert.ok(continuation.type === "resume");
+  assert.ok(continuation.pos > opening.pos && continuation.messages.length > 0);
+  assert.ok(continuation.messages.every(message => message.text.startsWith("OUTPUT ")));
+});

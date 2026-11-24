@@ -334,7 +334,8 @@ let db: DatabaseSync | undefined;
 // 58: index retained workflow deliveries that have an active native receipt.
 // 59: seek unresolved workflow receipts by delivery state and age on cold reads.
 // 60: durable receipt replay for a blocking question filed by voice.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 60;
+// 61: remember accepted spoken outbox IDs after retirement.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 61;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2320,6 +2321,10 @@ function createSchemaObjects(d: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
       ON pending_turns(note_key) WHERE state = 'sending';
 
+    CREATE TABLE IF NOT EXISTS spoken_outbox_ids (
+      turn_id TEXT PRIMARY KEY NOT NULL
+    ) WITHOUT ROWID;
+
     CREATE TABLE IF NOT EXISTS spoken_turn_review_waits (
       review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
       turn_id TEXT NOT NULL REFERENCES pending_turns(id) ON DELETE CASCADE,
@@ -3939,6 +3944,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
+  if (databaseSchemaVersion(d) < 61) {
+    d.exec(`INSERT OR IGNORE INTO spoken_outbox_ids SELECT id FROM pending_turns WHERE spoken_words IS NOT NULL;
+      INSERT OR IGNORE INTO spoken_outbox_ids SELECT outbox_turn_id FROM session_spoken_turns WHERE outbox_turn_id IS NOT NULL;`);
+  }
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
   addColumn(d, "session_spoken_turns", "transcript_agent", "TEXT");
@@ -15568,6 +15577,10 @@ export function createPendingTurn(input: {
         }
         d.exec("COMMIT");
         return rowToPendingTurn(existing);
+      }
+      // Reserve the ID with the outbox insert. A retired turn must never link a later question.
+      if (!d.prepare("INSERT OR IGNORE INTO spoken_outbox_ids (turn_id) VALUES (?)").run(input.id).changes) {
+        throw new Error("This spoken capture was already queued and has left the outbox.");
       }
     }
     const row = d

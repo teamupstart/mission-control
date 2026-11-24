@@ -383,8 +383,9 @@ for (const kind of ["input", "plan-decisions"] as const) {
       const poll = reviews.wait(row.id, 5000, undefined, convertible);
       pending.submit(id, "Typed first");
       assert.equal(registry.getReview(row.id)?.waitMode, undefined);
-      await say("Will, inspect the build", "voice-question");
-      await act("voice-question", "send-now");
+      const captureId = `voice-question-${kind}-${convertible}`;
+      await say("Will, inspect the build", captureId);
+      await act(captureId, "send-now");
       assert.equal(cards.at(-1)?.state, convertible ? "queued" : "held");
       assert.equal((await readHeard())[0]?.outcome, convertible ? "queued" : "held");
       assert.deepEqual(queued("Will"), ["Typed first", "inspect the build"]);
@@ -432,6 +433,34 @@ test("replaying a queued utterance keeps a later question in its call", async t 
   await act("existing-voice", "send-now");
   assert.equal(cards.at(-1)?.state, "held");
   reviews.resolve(question.id, "answer", "Yes");
+  assert.equal((await wait)?.response, "Yes");
+});
+
+test("a retired capture cannot deliver twice or file a question opened after delivery", async t => {
+  const id = "sdk:Will";
+  const captureId = "retired-speech";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  await say("Will, inspect the build", captureId);
+  await act(captureId, "send-now");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(cards.at(-1)?.state, "sent");
+  registry.voiceRouter!.reset();
+  const ask = reviews.create(id, "input", "New question?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); });
+  const wait = reviews.wait(ask.id, 5000, undefined, true);
+  await say("Will, inspect the build", captureId);
+  await act(captureId, "send-now");
+  assert.equal(cards.at(-1)?.state, "failed");
+  assert.match(cards.at(-1)?.detail ?? "", /already queued/);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal(send.mock.callCount(), 1);
+  reviews.resolve(ask.id, "answer", "Yes");
   assert.equal((await wait)?.response, "Yes");
 });
 

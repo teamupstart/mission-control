@@ -223,6 +223,9 @@ process with a parent watchdog and verifies that the helper leaves no timer behi
 
 ## Spoken delivery
 
+Schema 61 reserves each accepted spoken outbox ID in the enqueue transaction. The ID survives
+retirement and recall. The upgrade seeds IDs from live spoken turns and retained delivery records.
+
 Schema 60 adds the nullable `reviews.filed_by_voice_at` timestamp. Filing a blocking ask by
 voice sets the timestamp, message wait mode and MCP detach stamp together. A compatible
 child can recover its receipt on a later poll, including after daemon restart. Existing

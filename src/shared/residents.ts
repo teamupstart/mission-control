@@ -542,6 +542,7 @@ export interface ResidentProfile {
  * its history name the id, so a shipped slug is never renamed.
  */
 export const BUILTIN_RESIDENT_PROFILE_ID_PREFIX = "builtin:";
+export const BUG_FIX_INSPECTOR_PROFILE_ID = `${BUILTIN_RESIDENT_PROFILE_ID_PREFIX}bug-fix-inspector`;
 
 export function isBuiltinResidentProfileId(id: string): boolean {
   return id.startsWith(BUILTIN_RESIDENT_PROFILE_ID_PREFIX);

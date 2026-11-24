@@ -309,14 +309,25 @@ test("the inspector asks for a fresh duplicate search when the searched reposito
     .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create")).toHaveLength(0);
 });
 
-test("a launched Bug Fix Inspector receives a GitHub issue URL only after approval of its finding", async ({ dashboard, daemon }) => {
+test("a launched Bug Fix Inspector prepares a scheduled finding and receives a GitHub issue URL only after issue-specific approval", async ({ dashboard, daemon }) => {
   await inspectorPreview(daemon, true);
   const finding = "Finished task leaves its bound workflow unsubmitted";
   writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
-  const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
-    data: { repoRoot: null, instructions: `Fixture finding: ${finding}\nFixture searched repository: acme/public-issues`, requestId: "inspector-report" },
-  });
-  expect(launch.ok(), await launch.text()).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`);
+  await dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" }).getByRole("button", { name: "Launch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toContainText("Launching this resident asks it to prepare GitHub issue drafts for confirmed defects on its first and scheduled passes. You approve each issue before publication.");
+  await capture(dialog, "17-inspector-launch-authorization");
+  await dialog.getByLabel("Instructions for this run").fill(`Fixture scheduled finding: ${finding}\nFixture searched repository: acme/public-issues`);
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden();
+
+  // Make the next scheduled wake overdue in this disposable home after the quiet launch turn.
+  const run = () => withDaemonDb(daemon, db => db.prepare("SELECT iteration, loop_state FROM resident_runs WHERE ended_at IS NULL").get());
+  await expect.poll(run, { timeout: 30_000 }).toMatchObject({ iteration: 1, loop_state: "waiting" });
+  await daemon.crash();
+  withDaemonDb(daemon, db => db.prepare("UPDATE resident_runs SET next_wake_at = ? WHERE ended_at IS NULL").run(Date.now() - 1));
+  await daemon.restart();
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = dashboard.locator(".console-detail");

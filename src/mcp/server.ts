@@ -1328,9 +1328,11 @@ server.registerTool(
   {
     title: "Report a Mission Control product issue",
     description:
-      "Prepare a public GitHub issue about Mission Control only after the user explicitly " +
-      "asked you to report it. Mission Control shows the exact public content in the dashboard " +
-      "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
+      "Prepare a public GitHub issue draft when the user explicitly requests a Mission Control report. " +
+      "For the built-in Bug Fix Inspector, the operator's launch is a standing request to prepare drafts " +
+      "for confirmed defects on the first and scheduled passes of that run. Each draft still requires separate " +
+      "human approval: Mission Control shows the exact public content in the dashboard and BLOCKS until " +
+      "the human selects Submit public issue or dismisses it. Optional screenshot " +
       "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
     inputSchema: {
       ...ProductIssueDraftSchema.shape,

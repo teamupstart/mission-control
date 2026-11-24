@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { RESIDENT_LIMITS, residentLaunchSummary, residentProfileChoiceName, type ResidentProfile } from "@shared/residents.ts";
+import { BUG_FIX_INSPECTOR_PROFILE_ID, RESIDENT_LIMITS, residentLaunchSummary, residentProfileChoiceName, type ResidentProfile } from "@shared/residents.ts";
 import type { DispatchMode } from "../lib/dispatch-mode.ts";
 import { fetchRepos } from "../lib/api.ts";
 import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
@@ -310,6 +310,9 @@ export function ResidentDispatch({
                   </button>
                 </Tooltip>
               </div>
+            )}
+            {profile?.id === BUG_FIX_INSPECTOR_PROFILE_ID && (
+              <p className="field-hint">{profile.settings.identity.description}</p>
             )}
             {profile?.settings.authority.inspectOtherSessions && (
               <p className="field-hint resident-control-note" role="note">

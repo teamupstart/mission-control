@@ -77,9 +77,10 @@ be read or parsed, saving and removing keys both fail and preserve its contents.
 
 ## Public product issue reporting
 
-Product reports are public GitHub issues, not private support messages. The agent tool is defined
-for use only after the user explicitly requests a report, shows the daemon-derived public content in an
-`input` review, and calls the mutation route only after a human selects **Submit public issue**.
+Product reports are public GitHub issues. The user can request a draft directly or launch the
+built-in Bug Fix Inspector to request drafts for confirmed defects throughout that run, including
+scheduled passes. The tool shows each daemon-derived draft in an `input` review and calls the
+mutation route only after a human selects **Submit public issue** for that draft.
 Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
 nothing.
 
@@ -111,8 +112,7 @@ claim prevent double-clicks and replays from creating duplicate issues.
 has no private utility-process channel, so preflight reports that the report must be opened in the
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
-The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+The agent path is separate and token-guarded, and requires an active session. `report_product_issue` previews through MCP and waits for a human-submitted `input`
 review before it publishes. There is no MCP path that publishes without that review. The preview
 does not mint a dashboard grant. An agent that has searched a repository for duplicates can pass
 `expectedTarget`. A mismatch with the daemon's preview stops the report before the approval request.

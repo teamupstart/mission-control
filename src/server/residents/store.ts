@@ -4,6 +4,7 @@ import {
   RESIDENT_LAUNCH_STATES,
   RESIDENT_LIMITS,
   ResidentPersonaSnapshotSchema,
+  BUG_FIX_INSPECTOR_PROFILE_ID,
   BUILTIN_RESIDENT_PROFILE_ID_PREFIX,
   ResidentProfileRevisionSchema,
   canonicalResidentJson,
@@ -165,7 +166,7 @@ export function getResidentProfile(id: string): ResidentProfile | null {
 
 /** Gate discovery and new launches while retaining revisions for existing runs and upgrades. */
 function residentProfileAvailable(id: string): boolean {
-  return id !== "builtin:bug-fix-inspector" || featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+  return id !== BUG_FIX_INSPECTOR_PROFILE_ID || featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
 }
 
 export function getAvailableResidentProfile(id: string): ResidentProfile | null {

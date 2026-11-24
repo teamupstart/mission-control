@@ -1024,10 +1024,10 @@ function appendTurn(role, content, record = {}) {
         model: turnModel,
         // Fable's fixture deliberately mirrors the screenshot regression: 184k tokens is
         // 92% only under the incorrect 200k fallback, and 18% under its real 1M window.
-        ...(turnModel === "claude-fable-5"
+        ...(turnModel === "claude-fable-5" || appendedSystemPrompt.includes("Fixture scheduled finding:")
           ? {
               usage: {
-                input_tokens: 184_000,
+                input_tokens: turnModel === "claude-fable-5" ? 184_000 : 1_000,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
                 output_tokens: 100,
@@ -2334,9 +2334,10 @@ rl.on("line", (line) => {
       return;
     }
 
-    if (prompt.includes("Begin your standing task.") && appendedSystemPrompt.includes("# Bug Fix Inspector")
-      && appendedSystemPrompt.includes("report_product_issue")) {
-      const finding = /^Fixture finding: (.+)$/m.exec(appendedSystemPrompt);
+    if (appendedSystemPrompt.includes("# Bug Fix Inspector") && appendedSystemPrompt.includes("report_product_issue")) {
+      const finding = prompt.startsWith("[mission-resident:")
+        ? /^Fixture scheduled finding: (.+)$/m.exec(appendedSystemPrompt)
+        : prompt.includes("Begin your standing task.") && /^Fixture finding: (.+)$/m.exec(appendedSystemPrompt);
       if (finding) {
         const searchedRepo = /^Fixture searched repository: (.+)$/m.exec(appendedSystemPrompt);
         beginHeldTurn(reportFixtureBug(finding[1], "Foreman recorded completion twice, but neither attempt submitted the bound workflow.", searchedRepo?.[1]));

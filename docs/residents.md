@@ -76,7 +76,7 @@ Enable **Settings → Feature flags → Bug Fix Inspector** to list and launch t
 
 The inspector checks spend before each automatic pass. For example, if a turn starts at $19.50 and costs $1, the run records $20.50 and pauses at the next wake. Resume becomes available when enough spend leaves the rolling window.
 
-The inspector uses `report_product_issue` to preview each public report. Choose **Submit public issue** to publish it to the configured GitHub tracker (default `teamupstart/mission-control`). See [public product issue reporting](security.md#public-product-issue-reporting).
+Launching the built-in inspector requests drafts for confirmed defects on its first and scheduled passes. It uses `report_product_issue` to preview each public report. Choose **Submit public issue** to publish it to the configured GitHub tracker (default `teamupstart/mission-control`). See [public product issue reporting](security.md#public-product-issue-reporting).
 
 Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
 your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and

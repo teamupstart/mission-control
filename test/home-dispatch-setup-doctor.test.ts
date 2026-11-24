@@ -609,7 +609,8 @@ test("a build that setup's own checks reject never replaces the working mod or i
   }
 });
 
-test("a failed cleanup of the staging copy does not stop the old mod being put back", async () => {
+// Removal is made to fail by a read-only folder, which root ignores; the test also proves it failed.
+test("a failed cleanup of the staging copy does not stop the old mod being put back", { skip: process.getuid?.() === 0 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-stage-cleanup-"));
   try {
     const source = join(dir, "build");
@@ -632,9 +633,10 @@ test("a failed cleanup of the staging copy does not stop the old mod being put b
     };
     await assert.rejects(stageMod({ source, dest, rename: failing, copy: blocked }), /disk full/);
     assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0", "the old mod is back");
-    for (const name of readdirSync(join(dir, "state"))) {
-      if (name.includes("staging")) chmodSync(join(dir, "state", name, "mission-control", "hooks"), 0o700);
-    }
+    // The precondition: cleanup really failed, so the staging copy is still there.
+    const leftovers = readdirSync(join(dir, "state")).filter((name) => name.includes(".staging-"));
+    assert.equal(leftovers.length, 1, "the staging copy could not be removed, so the restore ran despite a failed cleanup");
+    for (const name of leftovers) chmodSync(join(dir, "state", name, "mission-control", "hooks"), 0o700);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -875,7 +877,7 @@ test("a mod-calls record that is null, an array or a scalar is a failed check, n
   }
 });
 
-test("a backup folder that cannot be removed after a successful publish does not turn it into a failure", async () => {
+test("a backup folder that cannot be removed after a successful publish does not turn it into a failure", { skip: process.getuid?.() === 0 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-stage-backup-"));
   try {
     const source = join(dir, "build");
@@ -889,6 +891,8 @@ test("a backup folder that cannot be removed after a successful publish does not
     try {
       const staged = await stageMod({ source, dest });
       assert.equal(staged.version, "1.1.0", "the publish is reported as the success it was");
+      // The precondition: removal really failed, so the backup is still beside the published mod.
+      assert.equal(readdirSync(join(dir, "state")).filter((name) => name.startsWith("mod.old-")).length, 1, "the backup could not be removed");
       assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.1.0");
     } finally {
       for (const name of readdirSync(join(dir, "state"))) {
@@ -1138,6 +1142,10 @@ test("the built mod is found beside the bundle or in a source checkout, and MISS
     assert.equal(defaultModSource({ MISSION_MOD_SOURCE: "/somewhere/else" }, bundleUrl), "/somewhere/else");
     const bare = pathToFileURL(join(dir, "bare", "dist", "cli", "mctl.mjs")).href;
     assert.equal(defaultModSource({}, bare), join(dir, "bare", "dist", "mod"));
+
+    // An unbuilt source checkout names its dist/mod, not a folder beside the source file.
+    const unbuilt = pathToFileURL(join(dir, "unbuilt", "src", "cli", "setup-steps", "context.ts")).href;
+    assert.equal(defaultModSource({}, unbuilt), join(dir, "unbuilt", "dist", "mod"));
 
     // This repository's own source layout resolves to its dist/mod, whether or not it has been built.
     assert.ok(defaultModSource({}).endsWith(join("dist", "mod")));

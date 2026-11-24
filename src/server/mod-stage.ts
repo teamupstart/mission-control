@@ -11,7 +11,9 @@ import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
  * half-replaced mod, and the repository's rule for native addons (`scripts/native-addon-publish.mjs`)
  * applies for the same reason: a rename publishes a new inode and leaves the old one alone. When a
  * previous build is there it is renamed aside first and removed after the new one is in, and put
- * back if the swap fails, so a failed stage never leaves the path empty.
+ * back if the swap fails, so a failed publish leaves the old mod where it was. The one exception is
+ * a swap that fails and then also fails to put the old mod back: the published path is then empty,
+ * the thrown error says so and names the kept backup folder, and the person moves it back by hand.
  */
 
 

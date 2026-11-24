@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveStateDir } from "@shared/harness-runtime.mjs";
 import { realExec, type Exec } from "../claude-cli.ts";
@@ -38,7 +38,11 @@ export function defaultModSource(env: Readonly<Record<string, string | undefined
   if (env.MISSION_MOD_SOURCE) return env.MISSION_MOD_SOURCE;
   // `here` is this module's own URL: `dist/cli/mctl.mjs` when bundled, `src/cli/setup-steps/context.ts` from source.
   const candidates = [new URL("../mod", here), new URL("../../../dist/mod", here)].map((url) => fileURLToPath(url));
-  return candidates.find((path) => existsSync(join(path, ".claude-plugin", "marketplace.json"))) ?? candidates[0]!;
+  const found = candidates.find((path) => existsSync(join(path, ".claude-plugin", "marketplace.json")));
+  if (found) return found;
+  // Not built anywhere: name where the build would put it for this layout, so the error says where to look.
+  const fromSource = fileURLToPath(here).split(sep).includes("src");
+  return candidates[fromSource ? 1 : 0]!;
 }
 
 export function resolveDeps(partial: Partial<SetupDeps> = {}): SetupDeps {

@@ -17,18 +17,19 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import type { WorkflowEvidenceProbe } from "../src/server/workflows/context.ts";
 import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -39,6 +40,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { sessionMessages } = await import("../src/server/harness/index.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
+const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { boundedWorkflowTranscript, fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
@@ -163,6 +165,8 @@ interface HarnessOptions {
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
   probeEvidence?: boolean;
+  publicationCheckoutRevision?: WorkflowManagerOptions["publicationCheckoutRevision"];
+  readEvidenceProbe?: WorkflowManagerOptions["readEvidenceProbe"];
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
   /** Exercise the published fresh-evidence preflight on every evaluator-bound submission. */
@@ -175,6 +179,11 @@ interface HarnessOptions {
   parallelActions?: boolean;
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
+  clientMessageIds?: boolean;
+  terminal?: InjectDeps;
+  submitVerified?: boolean;
+  onInject?: (payload: string, clientMessageId?: string) => void | Promise<void>;
+  beforeInjectWrite?: (payload: string) => void;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
 }
 
@@ -217,10 +226,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const captureHead: { sha: string | null } = { sha: null };
   const adopted: SessionActionAdoptedPullRequest[] = [];
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
-  const manager = new WorkflowManager(registry, store, {
+  const managerOptions: WorkflowManagerOptions = {
     trackCiFailures: options.trackCiFailures,
+    publicationCheckoutRevision: options.publicationCheckoutRevision ?? (() => contentTree.oid),
     resumptionSettleMs: options.resumptionSettleMs,
-    ...(options.probeEvidence ? { readEvidenceProbe: async () => ({
+    ...(options.probeEvidence ? { readEvidenceProbe: async (_registry, binding) => ({
+      stagedImageGeneration: store.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""),
+      contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
       headSha: captureHead.sha ?? head.sha,
       workingTreeStatus: [],
       diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
@@ -229,6 +241,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         sha256: createHash("sha256").update("report").digest("hex"),
       }] : [],
     }) } : {}),
+    ...(options.readEvidenceProbe ? { readEvidenceProbe: options.readEvidenceProbe } : {}),
     readUnchangedRepository: options.readUnchangedRepository ?? (async (_root, headOid) => {
       if (options.unchangedRepositoryProblem) throw new Error(options.unchangedRepositoryProblem);
       return options.unchangedRepository
@@ -253,7 +266,19 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       _deps?: InjectDeps,
       beforeWrite?: PromptWriteGuard,
     ) => {
-      const blocked = beforeWrite?.();
+      if (options.terminal) {
+        const { injectPrompt } = await import("../src/server/actions.ts");
+        const result = await injectPrompt(_session, payload, options.terminal, beforeWrite);
+        if (result.ok) injected.push(payload);
+        return result;
+      }
+      if (options.beforeInjectWrite) {
+        const refused = beforeWrite?.("preflight");
+        if (refused) return { ok: false, error: refused, pasted: false, submitVerified: false };
+        options.beforeInjectWrite(payload);
+      }
+      const target: { clientMessageId?: string } | undefined = options.clientMessageIds ? {} : undefined;
+      const blocked = beforeWrite?.(undefined, target);
       if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
       // `pasted: false` is a POSITIVE refusal: the write was attempted and the pane rejected
       // it, so nothing landed. That is a different answer from an uncertain write, and the
@@ -261,8 +286,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       if (options.refuseInject) {
         return { ok: false, error: "pane_blocked", pasted: false, paneBlocked: true, submitVerified: false };
       }
+      await options.onInject?.(payload, target?.clientMessageId);
       injected.push(payload);
-      return { ok: true, pasted: true, submitVerified: true };
+      return { ok: true, pasted: true, submitVerified: options.submitVerified ?? true };
     }) as never,
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
@@ -275,7 +301,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         primaryGoal: { rawPrompt: "Ship it", refined: null, sourceNoteKey: binding.noteKey },
         humanDecisions: [],
         priorPersonaFeedback: [],
-        session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
+        session: { agent: "claude" as const, name: sessionId, cwd: binding.sessionCwd, branch: "feature" },
         evidence: {
           headSha: captureHead.sha ?? head.sha,
           ...(options.omitContentTree ? {} : {
@@ -343,7 +369,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         model: { id: "fake", source: "config" },
       }),
     },
-  });
+  };
+  let manager = new WorkflowManager(registry, store, managerOptions);
 
   const upstream = personas.create({
     name: `upstream-${sessionId}`,
@@ -561,7 +588,12 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   return {
     registry,
     store,
-    manager,
+    get manager() { return manager; },
+    restartWorkflowManager: async () => {
+      await manager.stop();
+      manager = new WorkflowManager(registry, new WorkflowStore(), managerOptions);
+      manager.start();
+    },
     injected,
     head,
     captureHead,
@@ -1427,6 +1459,30 @@ test("marking an uncertain packet delivered reopens the action and lets it finis
   }
 });
 
+test("receipt cleanup failure preserves refusal, prevents binding and retries after restart", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  const db = openDb();
+  const h = await harness("refused-receipt-cleanup", { refuseInject: true });
+  db.exec(`CREATE TEMP TRIGGER hold_workflow_receipt BEFORE DELETE ON workflow_delivery_turns
+    WHEN OLD.discarded_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'cleanup temporarily unavailable'); END`);
+  try {
+    const id = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(id).some(row => row.state === "refused"), "no persisted refusal");
+    const delivery = h.store.listDeliveries(id)[0]!;
+    const read = () => db.prepare("SELECT discarded_at FROM workflow_delivery_turns WHERE delivery_id = ?").get(delivery.id);
+    forgetDeliveryBindingState();
+    assert.ok(read()?.discarded_at);
+    assert.ok(!workflowDeliveryLedger.rows(delivery.noteKey).some(row => row.deliveryId === delivery.id));
+    assert.ok(read()?.discarded_at, "cleanup intent survives the failed deletion");
+    db.exec("DROP TRIGGER hold_workflow_receipt");
+    workflowDeliveryLedger.rows(delivery.noteKey);
+    assert.equal(read(), undefined);
+    assert.equal(h.store.getDelivery(delivery.id)?.state, "refused");
+  } finally { db.exec("DROP TRIGGER IF EXISTS hold_workflow_receipt"); await h.stop(); }
+});
+
 test("a refused packet blocks the action, and no restart quietly prepares another", async () => {
   // A GENUINE refusal: the write is attempted and the pane positively rejects it, so nothing
   // landed. That is the state the observer used to sit behind forever.
@@ -1568,6 +1624,634 @@ test("a child captured but interrupted before its receipt is sealed, not re-capt
 // What these prove is the WIRING: that the manager reads the repository and the ledger at the
 // right moment, that a decision reaches the continuation, that the captured commit is held to
 // the one the pull request was proven at, and that none of it sends or completes twice.
+
+/** Publish Inspector's clean observation through its ledger and Registry notification. */
+async function observeCleanInspectorReview(h: Harness, number: number, head: string, now: number) {
+  const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+  const key = `owner/repo#${number}`;
+  const url = `https://github.com/owner/repo/pull/${number}`;
+  adoptInspectorPr({
+    key, url, owner: "owner", repo: "repo", number,
+    repoRoot: "/repo", cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "open",
+    headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: now, lastError: null,
+    failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
+    mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN", observedAt: now,
+    headRefName: "feature", title: "Publish", adoptedAt: now, updatedAt: now,
+  });
+  updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
+    reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
+  h.registry.inspectionUpdated(key, head, "OPEN", now);
+}
+
+for (const next of ["unchanged", "edited tree", "tree edited during PR action", "human instruction", "changed sibling", "proof only", "author idle before End", "probe rejection", "missed handoff", "Inspector completion"] as const) {
+  test(`final idle handoff after a completed publication: ${next}`, async (t) => {
+    const inspector = next === "Inspector completion";
+    if (inspector) {
+      const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+      const { enabled } = getInspectorConfig();
+      setInspectorConfig({ enabled: true });
+      t.after(() => setInspectorConfig({ enabled }));
+    }
+    let rejectedProbes = 0;
+    const h = await harness(`publication-handoff-${next.replaceAll(" ", "-")}`, {
+      pullRequest: true, probeEvidence: true, inspector, evidenceReadinessPolicy: "criterion_mapped_v1",
+      readEvidenceProbe: next === "probe rejection" ? async () => {
+        rejectedProbes++;
+        throw new Error("checkout unavailable");
+      } : undefined,
+    });
+    try {
+      const sibling = "/second-publication-checkout";
+      if (next === "changed sibling") {
+        const base = h.full("base");
+        const task = mkTask({
+          id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+          branch: "feature", baseSha: base, provider: "git",
+          extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+            worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+        });
+        h.registry.upsertTask(task);
+        h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+        h.registry.recordWorktreeHeads(new Map([["/repo", h.full("primary")], [sibling, base]]));
+      }
+      const runId = await runToAction(h, true);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
+      h.head.sha = "published";
+      if (next === "tree edited during PR action") h.contentTree.oid = h.full("published-without-review");
+      h.runActionTurn();
+      const number = 1847;
+      h.adoptPr(inspector ? { key: `owner/repo#${number}`, url: `https://github.com/owner/repo/pull/${number}`, number } : {});
+      await h.manager.sweepSessionActions(SETTLED());
+      if (inspector) {
+        await waitFor(() => h.store.listEvents(runId).some(event => event.kind === "inspector_gate_entered"),
+          "publication must reach the Inspector gate");
+        assert.notEqual(h.store.getRun(runId)?.status, "completed");
+        // Separate the generation at End from the generation Inspector will accept.
+        h.runActionTurn();
+        await observeCleanInspectorReview(h, number, h.full(h.head.sha), Date.now());
+      }
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "publication did not complete");
+      if (inspector) {
+        const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+        assert.equal(gate.observedHeadSha, h.full(h.head.sha));
+        assert.equal(gate.waitReason, null);
+      }
+      const published = h.store.latestSubmission(runId)!;
+      const reviewed = h.store.listSubmissions(runId)[0]!;
+      const retained = h.store.listSubmissionTextArtifacts(reviewed.id);
+      assert.ok(retained.length, "the reviewed submission carries its registered proof");
+      await h.restartWorkflowManager();
+      const revision = next === "human instruction" ? 2 : 1;
+      const objective = "Publish the reviewed plan";
+      if (revision === 2) {
+        h.registry.upsertGoal(h.sessionId, {
+          prompt: "Review my follow-up", text: objective, objective, focus: "Review my follow-up",
+          relationship: "amend", rationale: "Follow-up", objectiveVersion: 1,
+          promptRevision: revision, resolvedPromptRevision: revision, pendingPrompts: [], source: "heuristic",
+        }, Date.now());
+      }
+      if (next === "changed sibling") h.registry.recordWorktreeHeads(new Map([[sibling, h.full("changed")]]));
+      if (next === "edited tree") h.contentTree.oid = h.full("edited");
+      if (next === "proof only") {
+        const { noteKey } = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+        const before = h.store.workflowEvidenceGeneration(noteKey, "/repo");
+        const output = "CI follow-through passed";
+        h.store.stageWorkflowEvidence(noteKey, [{
+          id: "follow-through-output", clientItemId: "final-ci", sourceKind: "command", evidenceKind: "text",
+          sourceRoot: "/repo", sourceLocator: "ci-summary", inlineContent: output, commandExitCode: 0,
+          displayName: "ci-summary", caption: "Final CI result", repositoryScope: "repo-01", mimeType: "text/plain",
+          bytes: Buffer.byteLength(output), sha256: createHash("sha256").update(output).digest("hex"),
+        }], Date.now());
+        assert.ok(h.store.workflowEvidenceGeneration(noteKey, "/repo") > before);
+      }
+      if (next === "missed handoff") h.runActionTurn();
+      if (next !== "author idle before End") h.runActionTurn();
+      const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      const claim = {
+        completionKind: "prompted" as const, marker: "b".repeat(64), summary: "Author finished follow-through",
+        evidenceFingerprint: "later-transcript", expectedWorkCycle: { logicalKey, generation },
+        expectedIntent: { objective, objectiveVersion: 1, promptRevision: revision, episodeKey: `intent:1:${revision}` },
+      };
+      const result = await h.manager.claimCompletion(h.sessionId, claim);
+      assert.ok(result.claimed);
+      assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
+      if (next === "unchanged" || next === "changed sibling" || next === "proof only" || next === "author idle before End" || inspector) {
+        assert.equal(result.runId, runId);
+        assert.equal(h.store.latestSubmission(runId)?.id, published.id);
+        assert.deepEqual(h.store.listSubmissionTextArtifacts(reviewed.id), retained);
+        assert.equal(result.state, "already_claimed");
+        assert.deepEqual(await h.manager.claimCompletion(h.sessionId, claim), result);
+        if (next === "proof only" || next === "author idle before End" || inspector) {
+          await h.restartWorkflowManager();
+          h.runActionTurn();
+          const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
+          assert.equal(cycle.generation, generation + 1);
+          const independent = await h.manager.claimCompletion(h.sessionId, {
+            ...claim, marker: "c".repeat(64), expectedWorkCycle: { logicalKey, generation: cycle.generation },
+          });
+          assert.ok(independent.claimed);
+          assert.notEqual(independent.runId, runId, "a subsequent independent same-intent cycle earns a fresh review");
+          assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, cycle.generation);
+          await waitFor(() => h.store.latestSubmission(independent.runId)?.status === "waiting_for_evidence_readiness",
+            "the independent cycle requires its own evidence");
+          return;
+        }
+        if (next === "changed sibling") {
+          const binding = h.store.getRun(runId)!.bindingId;
+          const noteKey = h.store.getBinding(binding)!.noteKey;
+          const runs = h.store.listRuns().filter(run => h.store.getBinding(run.bindingId)?.noteKey === noteKey);
+          assert.equal(runs.length, 2, "the same proof creates only the new sibling review");
+          const siblingRun = runs.find(run => run.id !== runId)!;
+          assert.equal(h.store.getBinding(siblingRun.bindingId)?.repoRoot, sibling);
+          await waitFor(() => h.store.latestSubmission(siblingRun.id)?.status === "waiting_for_evidence_readiness",
+            "sibling review must require its own evidence");
+          return;
+        }
+        const again = await h.manager.submit(h.store.getRun(runId)!.bindingId, { requestId: "run-again" });
+        assert.ok(again.ok);
+        assert.notEqual(again.value.run.id, runId, "explicit Run again starts a fresh review");
+        await waitFor(() => h.store.latestSubmission(again.value.run.id)?.status === "waiting_for_evidence_readiness",
+          "Run again must require fresh evidence");
+      } else {
+        if (next === "probe rejection") assert.equal(rejectedProbes, 1);
+        assert.notEqual(result.runId, runId);
+        assert.equal(h.store.latestSubmission(result.runId)?.round, 1);
+        await waitFor(() => h.store.latestSubmission(result.runId)?.status === "waiting_for_evidence_readiness",
+          "new content or intent must pass evidence readiness");
+      }
+    } finally { await h.stop(); }
+  });
+}
+
+for (const timing of ["during the sibling probe", "immediately before the claim", "during the sibling reservation", "budget expires", "slow async probe"] as const) {
+  const budgetCase = timing === "budget expires";
+  const slowProbe = timing === "slow async probe";
+  const name = slowProbe ? "a slow asynchronous probe preserves the remaining synchronous budget for unchanged publications"
+    : budgetCase ? "a shared checkout verification budget expires into fresh reviews" : `a checkout edited ${timing} earns a fresh review`;
+  test(name, async t => {
+    const sibling = "/second-probed-publication";
+    let releaseSibling!: () => void;
+    const held = new Promise<void>(resolve => { releaseSibling = resolve; });
+    const probes: string[] = [];
+    let primaryEdited = false;
+    let editDuringClaim = false;
+    let simulatedTime: number | null = null;
+    const deadlines: number[] = [];
+    const h = await harness(`two-published-checkouts-${timing.replaceAll(" ", "-")}`, {
+      publicationCheckoutRevision: (cwd, _retained, deadline) => {
+        if (simulatedTime !== null) {
+          assert.ok(deadline !== undefined && deadline > simulatedTime);
+          deadlines.push(deadline);
+          simulatedTime = Math.min(simulatedTime + (slowProbe ? 20 : 110), deadline);
+          if (simulatedTime === deadline) return null;
+        }
+        if (editDuringClaim && cwd === sibling) primaryEdited = true;
+        return cwd === "/repo" && primaryEdited ? "edited" : "published";
+      },
+      pullRequest: true, readEvidenceProbe: async (_registry, binding) => {
+        const cwd = binding.sessionCwd!;
+        probes.push(cwd);
+        if (cwd === sibling) await held;
+        return { headSha: h.head.sha, workingTreeStatus: [], diffFingerprint: `diff-${h.head.sha}`,
+          contentTreeOid: cwd === "/repo" && primaryEdited ? h.full("late-edit") : h.contentTree.oid };
+      },
+    });
+    try {
+      const base = h.full("base");
+      const task = mkTask({
+        id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+        branch: "feature", baseSha: base, provider: "git",
+        extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+          worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+      });
+      h.registry.upsertTask(task);
+      h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+      h.registry.recordWorktreeHeads(new Map([["/repo", h.full("one")], [sibling, h.full("two")]]));
+      const primaryId = await runToAction(h, true);
+      const note = h.store.getBinding(h.store.getRun(primaryId)!.bindingId)!.noteKey;
+      const siblingBinding = h.store.activeBindingForNoteRepo(note, sibling)!;
+      const siblingId = h.store.latestRunForBinding(siblingBinding.id)!.id;
+      for (const [id, root] of [[primaryId, "/repo"], [siblingId, sibling]] as const) {
+        h.repository.root = root;
+        await waitFor(() => h.store.listDeliveries(id).some(d => d.state === "delivered"), "no publication packet for " + root);
+        h.adoptPr({ repositoryRoot: root, key: root === sibling ? "owner/second#8" : "owner/repo#7",
+          number: root === sibling ? 8 : 7, url: root === sibling ? "https://github.com/owner/second/pull/8" : "https://github.com/owner/repo/pull/7" });
+        h.runActionTurn();
+        await h.manager.sweepSessionActions(SETTLED());
+        await waitFor(() => h.store.getRun(id)?.status === "completed", "publication did not complete for " + root);
+      }
+      const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      if (budgetCase || slowProbe) {
+        simulatedTime = 0;
+        t.mock.method(performance, "now", () => simulatedTime!);
+      }
+      if (timing === "immediately before the claim") {
+        const reserve = h.store.claimForemanCompletions.bind(h.store);
+        t.mock.method(h.store, "claimForemanCompletions", (inputs: Parameters<typeof reserve>[0]) => {
+          primaryEdited = true;
+          return reserve(inputs);
+        });
+      }
+      const claim = () => h.manager.claimCompletion(h.sessionId, {
+        completionKind: "prompted", marker: "b".repeat(64), summary: "Finished publication",
+        expectedWorkCycle: { logicalKey, generation }, evidenceFingerprint: "final-idle",
+        expectedIntent: { objective: "Publish the reviewed plan", objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
+      });
+      const consumedBefore = h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration;
+      const result = claim();
+      await waitFor(() => probes.includes(sibling) && probes.includes("/repo"), "both checkouts must be probed");
+      if (slowProbe) simulatedTime! += 4_000;
+      if (timing === "during the sibling probe") primaryEdited = true;
+      editDuringClaim = timing === "during the sibling reservation";
+      releaseSibling();
+      if (editDuringClaim) {
+        await assert.rejects(result, /checkout changed during shared completion claim/);
+        assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, consumedBefore);
+        assert.ok(h.store.publicationHandoffTree(primaryId, generation));
+        assert.ok(h.store.publicationHandoffTree(siblingId, generation));
+      }
+      const claimed = editDuringClaim ? await claim() : await result;
+      assert.ok(claimed.claimed);
+      if (slowProbe) {
+        assert.equal(claimed.runId, primaryId);
+        assert.equal(h.store.publicationHandoffTree(primaryId, generation), null);
+        assert.deepEqual(deadlines, [500, 500, 4500, 4500, 4500, 4500]);
+      } else assert.notEqual(claimed.runId, primaryId);
+      if (budgetCase) {
+        assert.deepEqual(deadlines, [500, 500, 500, 500, 500], "each synchronous read shares the remaining budget");
+        assert.notEqual(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+      } else {
+        assert.equal(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+        assert.equal(h.store.publicationHandoffTree(siblingId, generation), null, "the unchanged sibling pin was spent");
+      }
+      assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
+    } finally { releaseSibling(); await h.stop(); }
+  });
+}
+
+for (const change of ["session awaits CI", "repository binding becomes manual", "newer run is active", "newer run is cancelled",
+  "sibling rerun supersedes matching checkout", "sibling rerun supersedes changed checkout",
+  "unprobed binding gains its first run", "sibling worktree is reassigned"] as const) {
+  test(`pending publication probe refuses the idle handoff when the ${change}`, async () => {
+    let finishProbe: ((probe: WorkflowEvidenceProbe) => void) | undefined;
+    const h = await harness(`pending-probe-${change.replaceAll(" ", "-")}`, {
+      pullRequest: true,
+      readEvidenceProbe: () => new Promise(resolve => { finishProbe = resolve; }),
+    });
+    try {
+      const sibling = "/second-publication-checkout";
+      const unprobedRace = change === "unprobed binding gains its first run";
+      const moved = change === "sibling worktree is reassigned";
+      const siblingRace = change.startsWith("sibling rerun") || unprobedRace || moved;
+      if (siblingRace) {
+        // Publish the sibling first. A later primary edit makes the primary the lead
+        // in the pending claim, so a non-atomic fan-out would spend its generation.
+        const base = h.full("base");
+        const task = mkTask({
+          id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+          branch: "feature", baseSha: base, provider: "git",
+          extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+            worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+        });
+        h.registry.upsertTask(task);
+        h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+        h.registry.recordWorktreeHeads(new Map([["/repo", base], [sibling, h.full("changed")]]));
+        h.repository.root = sibling;
+      }
+      const runId = await runToAction(h, true);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
+      h.adoptPr({ repositoryRoot: h.repository.root });
+      h.runActionTurn();
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "publication did not complete");
+
+      const bindingId = h.store.getRun(runId)!.bindingId;
+      const published = h.store.latestSubmission(runId)!;
+      const { headSha, contentTreeOid, workingTreeStatus, diffFingerprint } =
+        WorkflowContextSnapshotSchema.parse(published.context).evidence;
+      assert.ok(contentTreeOid);
+      h.runActionTurn();
+      const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      const lead = h.store.activeBindingForNote(logicalKey)!;
+      if (siblingRace) {
+        assert.equal(h.store.getBinding(bindingId)?.repoRoot, sibling);
+        h.registry.recordWorktreeHeads(new Map([["/repo", h.full("primary-edit")]]));
+        assert.equal(h.store.latestRunForBinding(lead.id), null);
+      }
+      const consumedBefore = h.registry.getQueue(h.sessionId)!.promptedConsumedGeneration;
+      assert.ok(consumedBefore !== null && consumedBefore < generation);
+      const pending = h.manager.claimCompletion(h.sessionId, {
+        completionKind: "prompted", marker: "b".repeat(64), summary: "Author finished publication",
+        evidenceFingerprint: "final-idle", expectedWorkCycle: { logicalKey, generation },
+        expectedIntent: { objective: "Publish the reviewed plan", objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
+      });
+      await waitFor(() => Boolean(finishProbe), "claim never entered the publication probe");
+      let refusal = /Workflow publication changed during completion comparison/;
+      const expectedRunIds = [runId];
+      let verifyNewerRun: (() => void) | undefined;
+      if (change === "session awaits CI") {
+        refusal = /session is no longer idle for handoff/;
+        assert.ok(h.registry.reportAwaiting(h.sessionId, {
+          what: "Waiting for CI checks", wakeSource: "command", expectedBy: Date.now() + 60_000,
+          referenceUrl: null, details: null,
+        }).ok);
+      } else if (change === "repository binding becomes manual") {
+        refusal = /repository ownership changed during publication comparison/;
+        assert.equal(h.store.updateBinding(bindingId, { triggerMode: "manual" })?.triggerMode, "manual");
+      } else if (moved) {
+        const task = h.registry.getTask(h.sessionId)!;
+        h.registry.upsertTask({ ...task, extraRepos: task.extraRepos.map(repo => ({ ...repo, worktreePath: sibling + "-new" })) });
+        refusal = /repository ownership changed.*rebind the workflow/;
+      } else if (unprobedRace) {
+        const { FIXTURE_RUN_INTENT } = await import("./helpers/workflow-run-intent.ts");
+        const manual = { triggerSource: "manual" as const, triggerKey: "unprobed-rerun", now: Date.now() };
+        h.store.createInitialSubmission(
+          { ...manual, id: "newer-unprobed-run", binding: lead, intent: FIXTURE_RUN_INTENT },
+          { ...manual, id: "newer-unprobed-submission", context: {}, evidence: {} },
+        );
+      } else {
+        const newer = await h.manager.submit(bindingId, { requestId: "run-again-during-probe" });
+        assert.ok(newer.ok);
+        const newerId = newer.value.run.id;
+        assert.notEqual(newerId, runId);
+        await waitFor(() => h.store.listDeliveries(newerId).some(d => d.state === "delivered"), "no newer PR action");
+        if (change === "newer run is cancelled") assert.ok(h.manager.cancel(newerId, "cancel-rerun").ok);
+        await h.settle();
+        assert.equal(h.store.latestRunForBinding(bindingId)?.id, newerId);
+        expectedRunIds.push(newerId);
+        const snapshot = () => ({
+          run: h.store.getRun(newerId), submissions: h.store.listSubmissions(newerId), events: h.store.listEvents(newerId),
+        });
+        const before = snapshot();
+        verifyNewerRun = () => assert.deepEqual(snapshot(), before);
+      }
+      const persisted = () => [lead.id, bindingId].map(id => ({
+        binding: h.store.getBinding(id),
+        runs: h.store.listRuns().filter(run => run.bindingId === id).map(run => ({
+          run, submissions: h.store.listSubmissions(run.id), deliveries: h.store.listDeliveries(run.id), events: h.store.listEvents(run.id),
+        })),
+      }));
+      const beforeRefusal = persisted();
+      finishProbe!({
+        headSha, workingTreeStatus, diffFingerprint,
+        contentTreeOid: change === "sibling rerun supersedes changed checkout" ? h.full("other-tree") : contentTreeOid,
+      });
+      await assert.rejects(pending, refusal);
+      assert.deepEqual(persisted(), beforeRefusal);
+      if (unprobedRace) assert.equal(h.store.latestRunForBinding(lead.id)?.id, "newer-unprobed-run");
+      else if (siblingRace) assert.equal(h.store.latestRunForBinding(lead.id), null, "lead reservation rolled back");
+      assert.equal(h.registry.getQueue(h.sessionId)!.promptedConsumedGeneration, consumedBefore);
+      assert.ok(h.store.publicationHandoffTree(runId, generation), "the refused claim must leave the handoff available");
+      const actualRunIds = h.store.listRuns().filter(run => run.bindingId === bindingId).map(run => run.id);
+      assert.deepEqual(actualRunIds.sort(), expectedRunIds.sort());
+      verifyNewerRun?.();
+      assert.equal(h.store.latestSubmission(runId)?.id, published.id);
+    } finally { await h.stop(); }
+  });
+}
+
+test("a native receipt in a newly created transcript survives restart and preserves human copies in another file", async () => {
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const { forgetInjections } = await import("../src/server/injections.ts");
+  const path = join(home, "transcript-created-during-publication.jsonl");
+  const turn = (uuid: string, content: string) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content },
+  }) + "\n";
+  const h = await harness("publication-transcript-first-seen", {
+    pullRequest: true,
+    clientMessageIds: true,
+    onInject: (payload, id) => {
+      assert.ok(id);
+      writeFileSync(path, turn("original-ask", "Publish this change") + turn(id, payload));
+      h.reportIdle(path);
+    },
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR packet");
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const packet = h.store.listDeliveries(runId)[0]!.payload;
+    const throughDelivery = readFileSync(path, "utf8");
+    await h.restartWorkflowManager();
+    const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+    const receiptId = anchors[0]?.clientMessageId;
+    assert.ok(receiptId);
+    forgetInjections(h.sessionId);
+    writeFileSync(path, throughDelivery + turn("human-repeat", packet));
+    for (const deliveries of [anchors, anchors.map(anchor => ({ ...anchor, receiptId: "unusable-prior-receipt" }))]) {
+      const intent = readWorkflowIntentSnapshot(h.registry, binding, deliveries)!;
+      assert.deepEqual(intent.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id),
+        ["original-ask", "human-repeat"]);
+    }
+    const otherPath = join(home, "replacement-publication-transcript.jsonl");
+    const other = turn("original-ask", "Publish this change") + turn(receiptId, packet);
+    assert.equal(Buffer.byteLength(other), Buffer.byteLength(throughDelivery));
+    writeFileSync(otherPath, other);
+    h.reportIdle(otherPath);
+    assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["original-ask", receiptId]);
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery), transcriptPath: path,
+      clientMessageId: receiptId }]);
+  } finally { await h.stop(); }
+});
+
+for (const original of ["known", "unknown", "delivered"] as const) {
+  test(`a pre-existing replacement transcript keeps a human copy when the original transcript is ${original}`, async () => {
+    const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { forgetInjections } = await import("../src/server/injections.ts");
+    const replacement = join(home, `pre-existing-replacement-${original}.jsonl`);
+    const path = join(home, `prior-workflow-transcript-${original}.jsonl`);
+    const turn = (uuid: string, content: string) => JSON.stringify({
+      type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content },
+    }) + "\n";
+    writeFileSync(replacement, "");
+    const h = await harness(`replace-${original}-transcript`, {
+      pullRequest: true,
+      clientMessageIds: true,
+      beforeInjectWrite: packet => writeFileSync(replacement, turn("matching-human", packet)),
+      onInject: (packet, id) => {
+        assert.ok(id);
+        if (original === "delivered") writeFileSync(path, turn(id, packet));
+        h.reportIdle(replacement);
+      },
+    });
+    try {
+      if (original !== "unknown") {
+        writeFileSync(path, "");
+        h.reportIdle(path);
+      }
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR packet");
+      const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+      await h.restartWorkflowManager();
+      const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+      forgetDeliveryBindingState();
+      const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+      assert.ok(anchors[0]?.clientMessageId);
+      assert.equal(anchors[0].transcriptPath, original === "unknown" ? replacement : path);
+      forgetInjections(h.sessionId);
+      assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+        .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["matching-human"]);
+      if (original === "delivered") {
+        writeFileSync(path, readFileSync(path, "utf8") + turn("later-human", anchors[0]!.payload));
+        h.reportIdle(path);
+        assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+          .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["later-human"]);
+      }
+    } finally { await h.stop(); }
+  });
+}
+
+test("a delivered PR packet binds across an intervening human turn and preserves a later human repeat after restart", async () => {
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const path = join(home, "delayed-publication-packet.jsonl");
+  const turn = (uuid: string, content: string, ts: number) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date(ts).toISOString(), message: { role: "user", content },
+  }) + "\n";
+  const start = Date.now();
+  const original = turn("initial-ask", "Publish my work", start);
+  const h = await harness("publication-packet-attribution", {
+    pullRequest: true,
+    clientMessageIds: true,
+    beforeInjectWrite: packet => writeFileSync(path, original + turn("human-before-write", packet, start)),
+  });
+  try {
+    writeFileSync(path, original);
+    h.reportIdle(path);
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR packet");
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+    const packet = h.store.listDeliveries(runId)[0]!.payload;
+    const receiptId = anchors[0]?.clientMessageId;
+    assert.ok(receiptId);
+    const beforeWrite = readFileSync(path, "utf8");
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(beforeWrite), beforeSend: true, transcriptPath: path, clientMessageId: receiptId }]);
+    const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+    const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
+    const { forgetInjections } = await import("../src/server/injections.ts");
+    forgetInjections(h.sessionId);
+    forgetDeliveryBindingState();
+    const decisions = () => readWorkflowIntentSnapshot(h.registry, binding,
+      new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey))!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id);
+    const beforeEcho = beforeWrite + turn("intervening-human", packet, start + 1);
+    writeFileSync(path, beforeEcho);
+    assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human"]);
+    writeFileSync(path, beforeEcho + turn(receiptId, packet, start + 2) + turn("human-repeat", packet, start + 3));
+    const otherPath = join(home, "other-publication-transcript.jsonl");
+    writeFileSync(otherPath, original + turn("other-human", packet, start + 1));
+    h.reportIdle(otherPath);
+    const { reserveDelegatedTurn, releaseDelegatedTurn } = await import("../src/server/delegated-turns.ts");
+    const { delegatedLedger } = await import("../src/server/delivery-ledgers.ts");
+    const other = { key: binding.noteKey, transcript: sessionMessages(h.registry.getSession(h.sessionId)!)! };
+    const delegated = reserveDelegatedTurn(other, packet, { id: "controller", name: "Controller" });
+    assert.equal(delegatedLedger.rows(binding.noteKey).find(row => row.id === delegated)?.contested, false);
+    assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.contested, false);
+    assert.deepEqual(decisions(), ["initial-ask", "other-human"], "the receipt belongs to the sampled transcript");
+    releaseDelegatedTurn(binding.noteKey, delegated);
+    h.reportIdle(path);
+    assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human", "human-repeat"]);
+    forgetDeliveryBindingState();
+    assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.messageId, receiptId);
+    assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human", "human-repeat"]);
+    writeFileSync(otherPath, original + turn(receiptId, packet, start + 2));
+    h.reportIdle(otherPath);
+    assert.deepEqual(decisions(), ["initial-ask", receiptId], "even the same native ID is scoped to the receipt's file");
+  } finally { await h.stop(); }
+});
+
+for (const submitVerified of [false, true]) test(`a paste without a native receipt keeps a human copy before the echo, verified=${submitVerified}`, async () => {
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const path = join(home, `publication-without-native-id-${submitVerified}.jsonl`);
+  const turn = (uuid: string, text: string) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content: text },
+  }) + "\n";
+  const h = await harness(`no-native-id-${submitVerified}`, {
+    pullRequest: true, submitVerified,
+    onInject: packet => writeFileSync(path, turn("intervening-human", packet)),
+  });
+  try {
+    writeFileSync(path, "");
+    h.reportIdle(path);
+    const run = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(run).some(d => d.state === "delivered"), "no PR packet");
+    await h.restartWorkflowManager();
+    const binding = h.store.getBinding(h.store.getRun(run)!.bindingId)!;
+    const anchors = h.store.listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+    assert.deepEqual(anchors, []);
+    assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["intervening-human"]);
+  } finally { await h.stop(); }
+});
+
+for (const mode of ["packet echo", "hook before append", "human copy", "competing human send", "two matching turns"] as const) {
+  test(`verified terminal submission freezes only a corroborated native turn after restart: ${mode}`, async () => {
+    const { bindSession } = await import("../src/server/terminal/registry.ts");
+    const { stubRun } = await import("../src/server/util/exec.ts");
+    const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { forgetInjections } = await import("../src/server/injections.ts");
+    const { noteOtherSend } = await import("../src/server/delivery-ledgers.ts");
+    const sessionId = "terminal-submit-" + mode.replaceAll(" ", "-");
+    const path = join(home, sessionId + ".jsonl");
+    const append = (uuid: string, text: string) => appendFileSync(path, JSON.stringify({
+      type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content: text },
+    }) + "\n");
+    let packet = "";
+    let entered = false;
+    const h = await harness(sessionId, {
+      pullRequest: true,
+      terminal: {
+        pane: session => bindSession(session, async (_bin, args, opts) => {
+          if (args.includes("load-buffer") && opts?.input) packet = opts.input;
+          if (args.includes("send-keys") && args.at(-1) === "Enter") {
+            entered = true;
+            if (mode === "competing human send") {
+              const live = h.registry.getSession(sessionId)!;
+              noteOtherSend({ key: live.agentSessionId!, transcript: sessionMessages(live) }, packet);
+            }
+            if (mode !== "hook before append") append(mode === "human copy" || mode === "competing human send" ? "human" : "packet", packet);
+            if (mode !== "human copy") {
+              h.registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `agent-${sessionId}`,
+                cwd: "/repo", transcriptPath: path, env: { tmuxPane: `%${sessionId.length}` }, prompt: packet, ts: Date.now() });
+            }
+            if (mode === "hook before append") append("packet", packet);
+            if (mode === "two matching turns") append("other-copy", packet);
+          }
+          return stubRun({ stdout: "", stderr: "", code: 0 });
+        }),
+        capture: async () => entered ? "❯\n⏵⏵ auto mode on" : "❯ [Pasted text #1 +3 lines]",
+        sleep: async () => { append("human-before-enter", packet); },
+      },
+    });
+    try {
+      writeFileSync(path, "");
+      h.reportIdle(path);
+      const run = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(run).some(d => d.state === "delivered"), "terminal action was not delivered");
+      assert.equal(packet, h.store.listDeliveries(run)[0]!.payload);
+      const event = h.store.listEvents(run).find(e => e.kind === "delivery_delivered")!;
+      assert.equal((event.payload as { submitVerified: boolean }).submitVerified, true);
+      append("later-human-repeat", packet);
+      await h.restartWorkflowManager();
+      forgetInjections(h.sessionId);
+      const binding = h.store.getBinding(h.store.getRun(run)!.bindingId)!;
+      const anchors = h.store.listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+      const observed = mode === "packet echo" || mode === "hook before append";
+      assert.equal(anchors[0]?.turn?.id, observed ? "packet" : undefined);
+      const ids = readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+        .filter(d => d.source.kind === "transcript").map(d => d.source.id);
+      const duringSubmit = observed ? [] : mode === "two matching turns" ? ["packet", "other-copy"] : ["human"];
+      assert.deepEqual(ids, ["human-before-enter", ...duringSubmit, "later-human-repeat"]);
+      if (observed) {
+        renameSync(path, path + ".original");
+        writeFileSync(path, readFileSync(path + ".original"));
+        const replacement = readWorkflowIntentSnapshot(h.registry, binding, anchors)!;
+        assert.ok(replacement.decisions.some(d => d.source.id === "packet"), "a replacement file cannot spend the old receipt");
+      }
+    } finally { await h.stop(); }
+  });
+}
 
 test("a Code Quality Judge repair must pass before the verified pull request action can complete locally", async () => {
   const h = await harness("quality-judge-repair", { pullRequest: true, verdict: () => "fail" });
@@ -2052,7 +2736,7 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
   { parentProof: "publication", childProof: "publication", changed: true, number: 83, autoResumption: true },
 ]) {
   test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}, findings=${findingsPolicy}, auto=${autoResumption}`, async (t) => {
-    const { adoptInspectorPr, updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
+    const { updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
     const options: HarnessOptions = {
@@ -2087,17 +2771,7 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
       assert.equal(childEvidence.contentTreeOid != null, childProof !== "missing");
       const now = Date.now();
       const head = h.full(h.head.sha);
-      adoptInspectorPr({
-        key, url, owner: "owner", repo: "repo", number,
-        repoRoot: "/repo", cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "open",
-        headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: now, lastError: null,
-        failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
-        mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN", observedAt: now,
-        headRefName: "feature", title: "Publish", adoptedAt: now, updatedAt: now,
-      });
-      updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
-        reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
-      h.registry.inspectionUpdated(key, head, "OPEN", now);
+      await observeCleanInspectorReview(h, number, head, now);
       const mustWait = changed || parentProof === "missing" || childProof === "missing";
       await waitFor(() => ["waiting_for_session", "completed"].includes(h.store.getRun(runId)?.status ?? ""),
         "the Inspector gate never decided the publication proof");
@@ -2366,7 +3040,6 @@ for (const changed of [false, true]) {
 }
 
 for (const repeatPacket of [false, true]) test(`workflow delivery owns only its consumed prompt, human repeats packet=${repeatPacket}`, async () => {
-  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
   const { forgetInjections } = await import("../src/server/injections.ts");
   const h = await harness(`prompt-receipt-${repeatPacket}`, { pullRequest: true });
   try {

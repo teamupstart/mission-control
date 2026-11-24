@@ -381,6 +381,8 @@ export class ReviewManager {
        * build, which never says `asyncCapable` and cannot read a receipt.
        */
       callerPolls?: boolean;
+      /** The caller can recover a receipt committed by spoken conversion. */
+      convertible?: boolean;
       /**
        * The review id of the filed plan form this one revises (`request_plan_decisions`). Checked
        * by `revisionFor`, which refuses with `RevisionRefusal` and writes nothing; an open target
@@ -403,6 +405,10 @@ export class ReviewManager {
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions)
         && (options.revises === undefined || r.revision?.previousId === options.revises));
     if (existing) {
+      if (existing.filedByVoiceAt != null) {
+        if (options.convertible !== true) throw new VoiceFiledCallRefusal(existing.id);
+        return existing;
+      }
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
       // poll arrives is that poll's result and is never also queued as a message.

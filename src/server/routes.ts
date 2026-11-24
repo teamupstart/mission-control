@@ -5329,6 +5329,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const waitOptions = {
       ...(wait === "message" ? { waitMode: "message" as const } : {}),
       callerPolls: parsed.data.asyncCapable !== true,
+      convertible: parsed.data.convertible === true,
       ...(revises !== undefined ? { revises } : {}),
     };
     // An exact duplicate re-attaches to the open row, whichever way that row waits, so the

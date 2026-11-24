@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { asyncInputReceipt, filedPlanReceipt } from "../src/shared/async-input.ts";
-import { act, cards, home, pending, post, reviews, registry, say, token } from "./helpers/voice-http.ts";
+import { act, applyFeatureFlagIntent, cards, home, pending, post, reviews, registry, say, token } from "./helpers/voice-http.ts";
 import { loadReview, MESSAGE_ANSWER_TURN_PREFIX } from "../src/server/db.ts";
 
 const sessionId = "sdk:Will";
@@ -23,6 +23,25 @@ for (const kind of ["input", "plan-decisions"] as const) {
     assert.equal((await withdrawn.json()).status, "withdrawn");
   });
 }
+
+test("a duplicate create recovers an open voice filing by capability even with async-input off", async () => {
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false });
+  const request = { env: {}, sessionId, cwd: home, kind: "input", title: "Which release?", body: "Choose", snoozable: true };
+  const create = (caps: { asyncCapable?: boolean; convertible?: boolean }) => post("/mcp/reviews", { ...request, ...caps }, token);
+  const original = await (await create({ asyncCapable: true, convertible: true })).json();
+  assert.equal(original.wait, "call");
+  const wait = reviews.wait(original.id, 5000, undefined, true);
+  assert.ok(reviews.convertToFiled(original.id));
+  const receipt = (await wait)?.converted?.receipt;
+  assert.ok(receipt);
+  for (const asyncCapable of [true, false]) {
+    assert.equal((await create({ asyncCapable })).status, 409);
+    const retry = await create({ asyncCapable, convertible: true });
+    assert.equal(retry.status, 200);
+    assert.deepEqual(await retry.json(), { id: original.id, sessionId, wait: "message", receipt });
+  }
+  reviews.resolve(original.id, "dismiss", null);
+});
 
 test("conversion needs unanimous live poll capability and loses to an answer", async () => {
   const row = reviews.create(sessionId, "input", "Ship?", "Ship?", null, { snoozable: true });

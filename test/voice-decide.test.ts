@@ -893,6 +893,28 @@ test("the split limit counts spoken positions across a duplicate name before ask
   }
 });
 
+test("a bare later call sign cannot supply the payload for its shorter roster name", async (t) => {
+  const roster = ["Steve", "Release", "Release Captain", "Captain", "Alice"].map(n => name(n));
+  const { router, say, delivered, asked, cards } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  for (const [index, ending] of ["Release Captain", "Release Captain, ,,,", "“Release Captain”."].entries()) {
+    const id = `bare-${index}`;
+    const body = `check the build, and ${ending}`;
+    await say(`Steve, ${body}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(cards.at(-1)?.candidates.length, 0);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", body, id]);
+  }
+  await say("Steve, check the build, and Alice, ask Release Captain", "earlier");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice"]);
+  assert.ok(await router.sendNow("earlier"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", "earlier"], ["Alice", "ask Release Captain", "earlier#2"]]);
+  await say("Steve, check the build, and Release, Captain", "explicit");
+  assert.ok(await router.sendNow("explicit"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", "explicit"], ["Release", "Captain", "explicit#2"]]);
+});
+
 test("manual split choices preserve overlapping one- and two-word names", async (t) => {
   for (const [second, firstText, secondText] of [
     ["Captain", "check the release", "review the PR"],

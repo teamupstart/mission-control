@@ -336,13 +336,14 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
       const tail = second.body.trim();
       const content = /[\p{L}\p{N}\p{S}]|\p{Emoji}\uFE0F|[#*]\u20E3/u;
-      if (content.test(head) && content.test(tail)) {
-        const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
-        const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
-        for (const other of matches) {
-          splits.push({ target: other.target, at: nameOffset, head, tail, ...(commands.some(Boolean) && { commands }) });
-          splitCandidates.add(other.target);
-        }
+      // Names are checked longest first. With no message after "Release Captain",
+      // the second word of that call sign cannot become a message for "Release".
+      if (!content.test(head) || !content.test(tail)) break;
+      const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
+      const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
+      for (const other of matches) {
+        splits.push({ target: other.target, at: nameOffset, head, tail, ...(commands.some(Boolean) && { commands }) });
+        splitCandidates.add(other.target);
       }
     }
     // For example, both Release and Release Captain may start at this word.

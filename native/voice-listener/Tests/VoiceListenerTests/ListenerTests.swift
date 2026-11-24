@@ -130,6 +130,21 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(words.map(\.endMs), decoded.map(\.endMs))
     }
 
+    func testMessageCommaPreservesFirstWordAddressCorrection() {
+        for original in ["Wyl check the build, please", "Wyl stop, please"] {
+            var text = original
+            let decoded = original.split(separator: " ").enumerated().map {
+                TimedWord(text: String($0.element), startMs: Double($0.offset * 100), endMs: Double($0.offset * 100 + 80))
+            }
+            var words = decoded
+            Recognizer.applyAddressCorrection("Will", in: 0..<1, roster: ["Will"], text: &text, words: &words)
+            XCTAssertEqual(text, "Will" + original.dropFirst(3))
+            XCTAssertEqual(words.map(\.text), ["Will"] + decoded.dropFirst().map(\.text))
+            XCTAssertEqual(words.map(\.startMs), decoded.map(\.startMs))
+            XCTAssertEqual(words.map(\.endMs), decoded.map(\.endMs))
+        }
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
         let speech = Array(repeating: Float(0.1), count: 320)

@@ -54,28 +54,25 @@ struct Recognizer {
         guard address.allSatisfy({ $0.isLetter || $0.isNumber || $0.isWhitespace || "'’-".contains($0) }) else { return }
         let source = words[range].map { $0.text.trimmingCharacters(in: .punctuationCharacters).lowercased() }
         guard address.split(whereSeparator: { $0.isWhitespace }).map({ $0.lowercased() }) == source else { return }
-        // The decoder may already identify the recipient, even if CTC proposes
-        // replacing only the first word of a longer exact address.
+        var spelling = name.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !spelling.isEmpty else { return }
         let remainder = text[start...]
         let comma = remainder.firstIndex(of: ",")
-        if let comma {
-            // A partial match would leave the unmatched end of the address in the message.
-            guard text[text.index(after: end)..<comma].allSatisfy({ $0.isWhitespace }) else { return }
-        } else if range.count > 1 {
-            // Multiple decoded words need an explicit end to distinguish the address from the message.
-            return
-        }
         let leading = remainder[..<(comma ?? remainder.endIndex)].split(whereSeparator: { $0.isWhitespace })
+        let endsAtComma = comma.map { text[text.index(after: end)..<$0].allSatisfy({ $0.isWhitespace }) } ?? false
+        // A comma beyond the proposed name can punctuate the message. A comma within
+        // its word count can delimit an address for which CTC matched only a prefix.
+        if !endsAtComma && (range.count > 1 || (comma != nil && leading.count <= spelling.count)) { return }
+        // The decoder may already identify the recipient, even if CTC proposes
+        // replacing only the first word of a longer exact address.
         let hasExactAddress = roster.contains { term in
             let parts = term.split(whereSeparator: { $0.isWhitespace })
-            guard !parts.isEmpty, comma != nil ? leading.count == parts.count : leading.count >= parts.count else { return false }
+            guard !parts.isEmpty, endsAtComma ? leading.count == parts.count : leading.count >= parts.count else { return false }
             let decoded = leading.prefix(parts.count).joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
             return decoded.lowercased() == parts.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters).lowercased()
         }
         guard !hasExactAddress else { return }
 
-        var spelling = name.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        guard !spelling.isEmpty else { return }
         spelling[0] = String(first[..<start]) + spelling[0]
         spelling[spelling.count - 1] += last[last.index(after: end)...]
         text.replaceSubrange(start...end, with: name)

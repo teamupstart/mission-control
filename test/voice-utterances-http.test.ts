@@ -555,6 +555,31 @@ test("a reconnect sees an in-flight interrupt until its final event and cannot a
   assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
+test("acknowledging an immediate interrupt lets the listener send another message and cancel while delivery runs", async (t) => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  let finish!: () => void;
+  const delayed = new Promise<void>((resolve) => { finish = resolve; });
+  t.mock.method(sdk, "interrupt", async () => { await delayed; return "idle"; });
+  await say("Steven ask Will", "choice");
+  const captures = (async () => {
+    for (const [text, id] of [["Will, stop", "slow-stop"], ["Bill keep going", "other"], ["cancel", "dismiss"]] as const) {
+      assert.deepEqual(await (await say(text, id)).json(), { accepted: true });
+    }
+  })();
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(queued("Bill").includes("keep going"));
+    assert.equal(cards.findLast((card) => card.id === "choice")?.state, "cancelled");
+    assert.deepEqual(registry.snapshot().voiceCards?.map(({ id, reason }) => [id, reason]), [["slow-stop", "delivering"]]);
+  } finally {
+    finish();
+    await captures;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(cards.findLast((card) => card.id === "slow-stop")?.state, "sent");
+});
+
 test("a selected session missing from the registry is reported as unavailable", async (t) => {
   const will = { ...name("Will"), sessionId: "sdk:gone" };
   voiceStateStore.useRoster(() => [will]);

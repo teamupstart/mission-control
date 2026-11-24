@@ -343,6 +343,7 @@ export function registerVoiceRoutes(
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
     }
+    if (next.capture && !c.req.raw.signal.aborted) store.captureServed(next.revision);
     return c.json(next);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {

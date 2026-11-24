@@ -82,8 +82,8 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { issuedAt: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
-  private releases = new Map<string, { issuedAt: number; pressedAtUs: number; at: number }>();
+  private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
@@ -153,9 +153,7 @@ export class VoiceStateStore {
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    const issuedAt = (this.deps.wallNow ?? Date.now)();
-    if (capture) this.manager?.captureGranted(issuedAt);
-    this.lastDirective = { issuedAt, holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
+    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
     return directive;
   }
 
@@ -167,6 +165,13 @@ export class VoiceStateStore {
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
+
+  captureServed(revision: string) {
+    const last = this.lastDirective;
+    if (!last?.directive.capture || last.directive.revision !== revision || last.issuedAt !== undefined) return;
+    last.issuedAt = (this.deps.wallNow ?? Date.now)();
+    this.manager?.captureGranted(last.issuedAt);
+  }
 
   captureGrantTime(revision: string | undefined): number | undefined {
     if (!revision) return;

@@ -310,6 +310,34 @@ test("restart rejects buffered playback frames under a missing, old, or freshly 
   assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh speech"))).json(), { accepted: true });
 });
 
+test("after recovered silence the first authorized capture response sets the restart cutoff at its delayed poll", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player(), other = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  store.reset(); await holder.hello();
+  assert.deepEqual((await holder.poll()).speak, { id, stop: true });
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  const computed = store.directive();
+  assert.equal(computed.capture, true);
+  t.mock.timers.tick(50);
+  const buffered = capture("Steve buffered before the poll");
+  const path = utterancePath(computed.revision);
+  assert.deepEqual(await (await holder.request(path, buffered)).json(), { accepted: false });
+  assert.equal((await other.request("/voice/listener/directive")).status, 409);
+  assert.equal(store.captureGrantTime(computed.revision), undefined);
+  t.mock.timers.tick(50);
+  const fresh = await holder.poll();
+  assert.equal(fresh.revision, computed.revision);
+  assert.equal(store.captureGrantTime(fresh.revision), Date.now());
+  assert.deepEqual(await (await holder.request(path, buffered)).json(), { accepted: false });
+  const firstFrame = capture("Steve fresh after the poll");
+  t.mock.timers.tick(50);
+  assert.equal((await holder.poll()).revision, fresh.revision);
+  assert.deepEqual(await (await holder.request(path, firstFrame)).json(), { accepted: true });
+});
+
 test("a start that cannot be recorded grants no speech authority", async () => {
   writeFileSync(supervised, "not a directory");
   const p = player();

@@ -126,7 +126,7 @@ export class VoiceSpeechManager {
     // At millisecond precision the first captured frame and the playback confirmation
     // can share a timestamp. Only a valid capture grant issued at that boundary counts.
     if (this.history.some(h => time >= h.from && (time < h.until || (time === h.until && grantTime !== time)))) return "while-speaking";
-    return time <= this.discardedThrough ? "stale" : null;
+    return this.awaitingRestartGrant || time <= this.discardedThrough ? "stale" : null;
   }
   private holds() { return this.items().flatMap(item => item.hold ? [item.hold] : []); }
   private save() { return this.ledger.save(this.holds()); }

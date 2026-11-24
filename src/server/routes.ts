@@ -343,6 +343,7 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorInspection,
   InspectorStatus,
+  KeepAwakeStatus,
   LlmStatus,
   ReviewActor,
   ReviewItem,
@@ -368,7 +369,7 @@ import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import { openEndedRequests } from "./http-shutdown.ts";
-import type { KeepAwakeManager } from "./keep-awake.ts";
+import { KeepAwakeSaveError, type KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { grillFirstDispatchBlock } from "./grill-first.ts";
@@ -1391,7 +1392,7 @@ export interface RouteDeps {
    */
   paneDeps?: PaneDeps;
   /**
-   * The transient Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
+   * The Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
    * than constructing a second owner here - the manager owns exactly one OS child, and a
    * route-built twin would be a second claimant on host power state.
    */
@@ -2341,7 +2342,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }),
   );
 
-  // --- Keep Awake: the transient idle-sleep inhibitor ---
+  // --- Keep Awake: the idle-sleep inhibitor ---
   //
   // Reads and writes go to the injected manager; convergence goes over SSE. The route
   // answers the CALLER with the settled transition, and the Registry event answers every
@@ -2373,7 +2374,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Waits for the manager's CONFIRMED transition - the response describes observed
     // state, never the request. A failed OS transition reports 502 with the observed
     // error status so the caller can render it without waiting for SSE.
-    const status = await keepAwake.setEnabled(parsed.data.enabled);
+    let status: KeepAwakeStatus;
+    try {
+      status = await keepAwake.setEnabled(parsed.data.enabled);
+    } catch (err) {
+      if (!(err instanceof KeepAwakeSaveError)) throw err;
+      // The daemon's own storage refused the choice, which makes this a 500 and not a 502: the
+      // OS did nothing wrong. The manager has already undone the request, so `err.status` is
+      // the state a restart will agree with - the caller draws it beside the error.
+      return c.json({ error: err.message, code: "keep_awake_not_saved", status: err.status }, 500);
+    }
     const settled = parsed.data.enabled ? status.state === "on" : status.state === "off";
     if (!settled) {
       return c.json(

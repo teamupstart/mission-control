@@ -1160,6 +1160,7 @@ for (const change of ["not-running", "unavailable"] as const) {
     assert.ok(await router.sendNow("part"));
     assert.deepEqual(calls, ["Steve"]);
     assert.equal(router.heard.list()[0]?.outcome, "not-running");
+    assert.match(router.heard.list()[0]!.detail, /Part 1 \(Steve\) queued\. Part 2 \(Alice\) unavailable\./);
   });
 }
 

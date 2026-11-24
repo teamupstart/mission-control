@@ -457,6 +457,18 @@ test("split delivery interrupts on each bare stop and queues quoted stop verbati
   }
 });
 
+test("Recently heard names both deliveries when the second part of a split fails", async (t) => {
+  decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  t.mock.method(sdk, "interrupt", async () => null);
+  await say("Steve, check the queue, and Will, stop", "partial");
+  await resolved("partial");
+  assert.equal((await act("partial", "send-now")).status, 200);
+  assert.equal(queued("Steve").at(-1), "check the queue");
+  const entry = (await readHeard())[0]!;
+  assert.equal(entry.outcome, "failed");
+  assert.match(entry.detail, /Part 1 \(Steve\) queued\. Part 2 \(Will\) failed\. this session has no live embedded driver/);
+});
+
 test("an unclosed address wrapper keeps stop as text for model and picked splits", async () => {
   for (const manual of [false, true]) {
     decide = () => ({ rung: "job", answers: [{ choice: manual ? null : "split", confidence: manual ? 0 : 1 }], detail: "scripted" });

@@ -466,6 +466,7 @@ export class VoiceRouter {
     this.publish(inFlight);
     // A split delivers each part in the order it was said; the card shows the worse outcome.
     let outcome: VoiceDeliveryOutcome | null = null;
+    const partDetails: string[] = [];
     for (const [index, part] of item.card.parts.entries()) {
       const state = this.state();
       if (this.delivering.get(id) !== inFlight || state.mode === "off") return true;
@@ -480,11 +481,16 @@ export class VoiceRouter {
         result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
       }
       const delivered = typeof result === "string" ? result : result.outcome;
-      if (typeof result !== "string") item.entry.detail = result.detail;
+      if (item.card.parts.length > 1) {
+        const status = delivered === "not-running" ? "unavailable" : delivered;
+        partDetails.push(`Part ${index + 1} (${part.target!.name}) ${status}.`);
+        if (typeof result !== "string" && result.detail) partDetails.push(result.detail);
+      } else if (typeof result !== "string") item.entry.detail = result.detail;
       outcome = outcome === null ? delivered : worse(outcome, delivered);
     }
     outcome ??= "not-running";
-    if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
+    if (partDetails.length) item.entry.detail = [item.entry.detail, partDetails.join(" ")].filter(Boolean).join("\n");
+    else if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
     if (this.delivering.get(id) !== inFlight) return true;
     this.delivering.delete(id);

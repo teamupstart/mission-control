@@ -544,6 +544,38 @@ test("a held card identifies the blocking question and recalls the queued words"
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).find(s => s.id === session.id)?.pendingTurns.length).toBe(0);
 });
 
+test("Open question opens and answers the exact blocker named by the Held card", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const headers = { "x-harness-token": voiceToken(daemon) };
+  const filedTitle = "Which branch should we document later?";
+  const blockingTitle = "Which build is blocked?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", { headers, data: {
+    env: {}, cwd: steve.cwd, kind: "input", title: filedTitle, body: filedTitle, asyncCapable: true, snoozable: true,
+  } });
+  expect((await filed.json()).wait).toBe("message");
+  const created = await page.request.post(daemon.baseURL + "/mcp/reviews", { headers, data: {
+    env: {}, cwd: steve.cwd, kind: "input", title: blockingTitle, body: blockingTitle,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  await say(daemon, "Steve, inspect the next release");
+  await page.getByRole("button", { name: "Send now" }).click();
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  await expect(held).toContainText(blockingTitle);
+  await held.getByRole("button", { name: "Open question" }).click();
+  const dialog = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(dialog);
+  await expect(dialog).toContainText(blockingTitle);
+  await expect(dialog).not.toContainText(filedTitle, { timeout: 2000 });
+  await dialog.getByPlaceholder("Your answer…").fill("The release build");
+  await captureCard(dialog, "held-open-exact-blocker");
+  await dialog.getByRole("button", { name: "Send answer" }).click();
+  await expect(dialog).toHaveCount(0);
+  const reviews = await (await page.request.get(daemon.baseURL + "/api/reviews")).json() as { title: string; status: string }[];
+  expect(reviews).toContainEqual(expect.objectContaining({ title: filedTitle, status: "pending" }));
+  await expect(held).toHaveCount(0);
+});
+
 test("a held turn restores its question and recall after its call sign is removed", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");

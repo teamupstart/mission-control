@@ -14,7 +14,7 @@ export interface VoiceCardActions {
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
   setVoiceCardRetention(id: string, retention: VoiceCardRetention): void;
-  openQuestion(sessionId: string): void;
+  openQuestion(sessionId: string, questionId: string): void;
   followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
 }
@@ -146,7 +146,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, answer: ...</q> to answer it.</SpokenHint>}
-          <div className="vc-right">{button("Open question", "Open the question holding this message", () => session && actions.openQuestion(session.id), "", !question)}</div></>;
+          <div className="vc-right">{button("Open question", "Open the question holding this message", () => question && actions.openQuestion(question.sessionId, question.id), "", !question)}</div></>;
       }
       case "not-running": {
         if (!target || part.detail === "The selected session is unavailable.") {

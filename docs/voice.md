@@ -44,7 +44,7 @@ When a queued message changes to Sent, its reading interval starts again before 
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
 If you remove the task’s call sign, its held turn remains recallable after a daemon restart.
-The restored card uses the session’s display name and **Open question** takes you to the blocking question.
+The restored card uses the session’s display name. **Open question** opens the question named on the card, even when the session has several pending requests.
 Each Held card shows the spoken words its **Cancel message** button recalls and names
 a question that still blocks delivery. A plan already filed for a later answer
 can remain open while the agent receives the message.

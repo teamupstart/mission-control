@@ -7,7 +7,7 @@
 // field means or which mode a set of facts produces. A phase that needs a new capability id adds it to
 // `VOICE_CAPABILITY_IDS` below.
 
-import { SpeechVoiceSchema, SpeechHelloSchema, type VoiceSpeechState, type SpeakDirective } from "./voice-speech.ts";
+import { SpeechVoiceSchema, SpeechHelloSchema, SpeakDirectiveSchema, type VoiceSpeechState } from "./voice-speech.ts";
 import { z } from "zod";
 import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
@@ -200,14 +200,15 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
-export interface VoiceListenerDirective {
-  speak: SpeakDirective | null;
-  capture: boolean;
-  roster: string[];
-  inputDevice: string;
-  pauseMs?: number | null;
-  revision: string;
-}
+export const VoiceListenerDirectiveSchema = z.object({
+  speak: SpeakDirectiveSchema.nullable().default(null),
+  capture: z.boolean(),
+  roster: z.array(z.string()),
+  inputDevice: z.string(),
+  pauseMs: z.number().nullable().optional(),
+  revision: z.string().min(1),
+});
+export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
 
 /**
  * Why voice is unavailable, in the order they are reported.

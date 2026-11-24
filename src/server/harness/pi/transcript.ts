@@ -198,6 +198,7 @@ export const piMessages = jsonlMessages({
 export const piTranscript: TranscriptSpec = {
   metaSource: "transcript",
   locate: locatePiTranscript,
+  locateByConversation: (session) => piSessionFileForIdentity(session.cwd, session.agentSessionId),
   passiveRead: piPassiveRead,
   // pi has no TodoWrite-style progress tool, so there is no "what's happening now" one-liner
   // to surface - null degrades to showing nothing, which is the right answer for a harness

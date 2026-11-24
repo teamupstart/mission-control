@@ -84,7 +84,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
     if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
-  }, [card, focused, hidden]);
+  }, [card, focused, busy, feedback, hidden]);
   const retention = busy || (focused && !hidden) ? "in-use" : hidden && feedback ? "hidden-feedback" : "reading";
   useLayoutEffect(() => {
     if (!settled) return;
@@ -138,7 +138,9 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && !agentKeepsWorking(r));
         const turn = session?.pendingTurns.find(t => t.id === part.turnId);
         return <><div className="vc-row"><Icon name="clock" /><b className="vc-grow">Held for {named(target)}</b>
-          {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(() => api.recallPendingTurn(session.id, turn.id, turn.revision)), "btn-ghost", !turn)}</div>
+          {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
+            () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
+            "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn)}</div>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked · older session" />
           <div className="vc-meta">{name}'s session started before this was possible, so the question cannot be set aside. Your message is delivered once it is answered.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>

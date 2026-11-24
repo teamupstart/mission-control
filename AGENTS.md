@@ -109,7 +109,7 @@ On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=se
 requests. Its Linux jobs use ephemeral GitHub-hosted runners. Each job that consumes a
 `node_modules` cache depends on the producer for its Node.js version. The workflow
 defines the unit and E2E shard matrices. The [shared unit steps](.github/actions/run-unit-shard/action.yml)
-run the tests, build, and smoke-check the bundles. Typecheck and lint run in the gates job.
+run the tests, build, and smoke-check the bundles. One dedicated Linux voice-recognizer check restores its pinned model cache. Typecheck and lint run in the gates job.
 See the [contributor lint guidance](CONTRIBUTING.md#commands) for what lint enforces.
 
 The [pull request title workflow](.github/workflows/pull-request-title.yml) checks titles

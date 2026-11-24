@@ -1,3 +1,4 @@
+import { release } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
@@ -111,6 +112,7 @@ export class VoiceModelManager {
    * deletes files a later download wrote.
    */
   private readonly removing = new Map<string, Promise<void>>();
+  private readonly launchChecks = new Map<string, { controller: AbortController; done: Promise<boolean>; callers: number }>();
   /** The backend and revision the model state describes, or null before the first check. */
   private target: { backend: VoiceBackend; revision: string | null } | null = null;
   private readonly listeners = new Set<(model: VoiceModelState) => void>();
@@ -123,6 +125,50 @@ export class VoiceModelManager {
 
   state(): VoiceModelState {
     return { ...this.model };
+  }
+
+  /** Standalone launchers use the same selection, files and verified directory as Setup. */
+  async listenerModel(override: VoiceBackend | undefined, signal: AbortSignal) {
+    const selected = this.deps.backend();
+    const backend = override ?? selected;
+    const manifest = this.manifest(backend);
+    if (!manifest) return null;
+    if (backend === selected) {
+      this.sync();
+      const { status, revision, directory } = this.model;
+      return status === "ready" && revision === manifest.revision && directory
+        ? { backend, manifest, directory } : null;
+    }
+    // A CLI override can use a previously installed backend without changing the operator's selection.
+    const directory = this.revisionDir(backend, manifest.revision);
+    signal.throwIfAborted();
+    let check = this.launchChecks.get(directory);
+    if (!check) {
+      const controller = new AbortController();
+      check = { controller, done: this.verifyInstall(directory, manifest, controller.signal), callers: 0 };
+      this.launchChecks.set(directory, check);
+    }
+    check.callers++;
+    let rejectDisconnected!: (reason: unknown) => void;
+    const disconnected = new Promise<never>((_, reject) => { rejectDisconnected = reject; });
+    const onAbort = () => rejectDisconnected(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await Promise.race([check.done, disconnected]) ? { backend, manifest, directory } : null;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      if (--check.callers === 0) {
+        this.launchChecks.delete(directory);
+        check.controller.abort();
+      }
+    }
+  }
+
+  private async verifyInstall(directory: string, manifest: VoiceModelManifest, signal: AbortSignal): Promise<boolean> {
+    for (const file of manifest.files) {
+      if (!await this.alreadyVerified(join(directory, file.path), file, signal)) return false;
+    }
+    return true;
   }
 
   onChange(listener: (model: VoiceModelState) => void): () => void {
@@ -624,7 +670,7 @@ let baseUrl: string | null | undefined;
 export const voiceModelManager = new VoiceModelManager({
   root: () => join(stateDir(), "voice", "models"),
   active: () => featureEnabled(VOICE_FLAG),
-  backend: () => resolveVoiceBackend(getVoiceConfig().backend, process.platform, process.arch),
+  backend: () => resolveVoiceBackend(getVoiceConfig().backend, process.platform, process.arch, release()),
   manifests: () => (manifests ??= voiceModelManifestsFromEnv()),
   baseUrl: () => (baseUrl === undefined ? (baseUrl = voiceModelBaseUrlFromEnv()) : baseUrl),
 });

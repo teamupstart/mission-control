@@ -28,8 +28,12 @@ export interface VoiceSpeechState {
   job: Pick<VoiceSpeechJob, "id" | "purpose" | "state" | "cardId"> | null;
   lastAudition: { id: string; state: "finished" | "stopped" | "failed" | "timed-out" } | null;
 }
-export type SpeakDirective = { id: string; stop: true } | { id: string; kind: "audio"; durationMs: number } |
-  { id: string; kind: "system"; voiceId: string; text: string };
+export const SpeakDirectiveSchema = z.union([
+  z.object({ id: z.string(), stop: z.literal(true) }),
+  z.object({ id: z.string(), kind: z.literal("audio"), durationMs: z.number().nonnegative() }),
+  z.object({ id: z.string(), kind: z.literal("system"), voiceId: z.string(), text: z.string() }),
+]);
+export type SpeakDirective = z.infer<typeof SpeakDirectiveSchema>;
 
 export function resolveSpeechVoice(config: VoiceConfig, catalog: VoiceSpeechCatalog,
   defaults = { neural: VOICE_SPEECH_DEFAULT_NEURAL }): Pick<VoiceSpeechState, "voice" | "reason"> {

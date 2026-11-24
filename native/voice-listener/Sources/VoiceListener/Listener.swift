@@ -27,12 +27,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let pinnedCertificate: Data?
     let token: String
     let directory: URL
-    private let listenerID = UUID().uuidString
+    private let listenerID: String
     private lazy var session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
 
     override init() {
         let env = ProcessInfo.processInfo.environment
         let pin = env["MISSION_VOICE_DAEMON_CERT"]
+        let owner = pin == nil ? nil : env["MISSION_VOICE_SUPERVISOR_ID"].flatMap(UUID.init(uuidString:))
+        listenerID = (owner ?? UUID()).uuidString
         pinnedCertificate = pin.flatMap { Data(base64Encoded: $0) }
         guard let base = env["MISSION_VOICE_DAEMON_URL"].flatMap(URL.init(string:)),
               (pin == nil && base.scheme == "http") || (pinnedCertificate?.isEmpty == false && base.scheme == "https"),

@@ -185,13 +185,44 @@ const FLUIDAUDIO_PARAKEET_V2: VoiceModelManifest = {
   ],
 };
 
-/**
- * The model each backend downloads. `sherpa-onnx` is Phase 16's to fill; until then a machine whose
- * backend resolves to it has no model to download, and its Setup row says so.
- */
+const detector = { repository: "onnx-community/silero-vad", commit: "e71cae966052b992a7eca6b17738916ce0eca4ec", license: "MIT", basedOn: "snakers4/silero-vad" };
+const detectorFile = pinned(detector.repository, detector.commit, "onnx/model.onnx", 2243022,
+  "a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808");
+
+const production = { repository: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+  commit: "84b478d541cdbf0c296a7ab5f1e20a6f8f998114", license: "CC-BY-4.0", basedOn: "nvidia/parakeet-tdt-0.6b-v2" };
+const SHERPA_PARAKEET: VoiceModelManifest = {
+  revision: "parakeet-84b478d5-silero-e71cae96",
+  label: "NVIDIA Parakeet tdt-0.6b-v2 (ONNX)",
+  sources: [production, detector],
+  files: [
+    detectorFile,
+    pinned(production.repository, production.commit, "decoder.int8.onnx", 7257753, "4d097bae3bac5c96018d5293ba39f1b657296102b142affda40378f38b020f41"),
+    pinned(production.repository, production.commit, "encoder.int8.onnx", 652282309, "92a10bd9c23936ea0566c29f963bc57c2a5df4261b6a8921c39abea66557ca8b"),
+    pinned(production.repository, production.commit, "joiner.int8.onnx", 1739080, "77a29f3e5ac7d37074e0af465391b80f314015d5b97f0f90c6c7767f1d56f428"),
+    pinned(production.repository, production.commit, "tokens.txt", 9384, "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
+  ],
+};
+
+const fixture = { repository: "csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000",
+  commit: "e9bea5a06247dc3f55319ff23d34b0328f2f5ddf", license: "Not declared by the fixture repository", basedOn: "NeMo Parakeet TDT Transducer 110M English (36000)" };
+export const VOICE_TEST_MODEL: VoiceModelManifest = {
+  revision: "parakeet-e9bea5a0-silero-e71cae96",
+  label: "NVIDIA Parakeet tdt_ctc-110m (ONNX)",
+  sources: [fixture, detector],
+  files: [
+    detectorFile,
+    pinned(fixture.repository, fixture.commit, "decoder.onnx", 15753086, "3da156bde41a04c94ef783e0bd92928e9974e08645b976a22d0c3e1063510249"),
+    pinned(fixture.repository, fixture.commit, "encoder.onnx", 456050698, "db260f1073c654c37dd65006885d1ee98ff16c22463b1ef992bbcabc29780a3f"),
+    pinned(fixture.repository, fixture.commit, "joiner.onnx", 5596854, "b603765c0724a0768c378a23326dabbeb9cfea932d260e4fcc14384fa5fd5aff"),
+    pinned(fixture.repository, fixture.commit, "test_wavs/0.wav", 237964, "5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150"),
+    pinned(fixture.repository, fixture.commit, "tokens.txt", 9953, "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10"),
+  ],
+};
+
 export const VOICE_MODELS: VoiceModelManifests = Object.freeze({
   fluidaudio: FLUIDAUDIO_PARAKEET_V2,
-  "sherpa-onnx": null,
+  "sherpa-onnx": SHERPA_PARAKEET,
 });
 
 export function voiceModelBytes(manifest: Pick<VoiceModelManifest, "files">): number {
@@ -212,12 +243,11 @@ export function voiceModelFileUrl(file: Pick<VoiceModelFile, "url">, baseUrl: st
 }
 
 /**
- * The backend a choice runs on this platform. `auto` is FluidAudio on Apple silicon, where the
- * spike measured it, and sherpa-onnx everywhere else.
+ * Darwin kernel 23 is macOS 14, the minimum OS of the FluidAudio helper.
  */
-export function resolveVoiceBackend(choice: VoiceBackendChoice, platform: string, arch: string): VoiceBackend {
+export function resolveVoiceBackend(choice: VoiceBackendChoice, platform: string, arch: string, kernelRelease: string): VoiceBackend {
   if (choice !== "auto") return choice;
-  return platform === "darwin" && arch === "arm64" ? "fluidaudio" : "sherpa-onnx";
+  return platform === "darwin" && arch === "arm64" && Number(kernelRelease.split(".")[0]) >= 23 ? "fluidaudio" : "sherpa-onnx";
 }
 
 // ---- Setup readings, shared by the daemon's probes and the panel's live rows ----

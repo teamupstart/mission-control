@@ -12,7 +12,7 @@ import {
   followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff,
   SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
 } from "./delivery-ledgers.ts";
-import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
+import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText, voiceHeldByReview } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
@@ -730,7 +730,7 @@ export class PendingTurnManager {
     if (event.type === "voice_roster") {
       for (const target of event.roster) {
         const session = target.sessionId && this.registry.getSession(target.sessionId);
-        if (session) this.registry.voiceRouter?.restoreHeldTurns(session);
+        if (session) this.registry.voiceRouter?.syncQueuedTurns(session);
       }
     }
     if (event.type === "feature_flags") {
@@ -741,7 +741,7 @@ export class PendingTurnManager {
   }
 
   private observeSession(session: Session): void {
-    this.registry.voiceRouter?.restoreHeldTurns(session);
+    this.registry.voiceRouter?.syncQueuedTurns(session);
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
@@ -945,7 +945,7 @@ export class PendingTurnManager {
   }
 
   private spokenBlocked(session: Session, turn: PendingTurn): boolean {
-    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || voiceHeldByReview(session));
   }
 
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {

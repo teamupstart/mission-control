@@ -1,6 +1,12 @@
 import { POST_REPORT_LINE } from "./reports.ts";
+import type { Session } from "./types.ts";
 
 export const VOICE_TURN_PREFIX = "voice:";
+
+/** The registry counts questions the agent can work past separately in openQuestions. */
+export function voiceHeldByReview(session: Pick<Session, "pendingReviews">): boolean {
+  return session.pendingReviews > 0;
+}
 
 export function openQuestionsNote(asks: readonly { id: string; title: string }[]): string | null {
   if (!asks.length) return null;

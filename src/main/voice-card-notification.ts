@@ -56,9 +56,10 @@ export function registerVoiceCardNotifications(
     if (!ownsMainFrame(event, owner) || !NativeNotification.isSupported()) return null;
     const parsed = VoiceCardNoticeSchema.safeParse(input);
     if (!parsed.success) return null;
-    const { id, title, body, deadline, scope } = parsed.data;
-    const ms = Math.min(VOICE_CANCEL_WINDOW_SECONDS.max * 1000, deadline - Date.now());
-    if (ms <= 0 || dismiss.has(id)) return null;
+    const { id, title, body, remainingMs, scope } = parsed.data;
+    const ms = Math.min(VOICE_CANCEL_WINDOW_SECONDS.max * 1000, remainingMs);
+    const deadline = performance.now() + ms;
+    if (dismiss.has(id)) return null;
     if (owner.isFocused()) return "window-focused";
     return new Promise<"cancel" | "send-now" | null>(resolve => {
       const notice = new NativeNotification({ title, subtitle: "Say “cancel” to stop.", body, silent: true,
@@ -68,7 +69,7 @@ export function registerVoiceCardNotifications(
         dismiss.delete(id);
         clearTimeout(timer);
         notice.close();
-        resolve(Date.now() < deadline ? action : null);
+        resolve(performance.now() < deadline ? action : null);
       };
       const timer = setTimeout(() => finish(null), ms);
       const pending = { contents: owner.webContents, close: () => finish(null) };

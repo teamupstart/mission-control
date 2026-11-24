@@ -399,6 +399,8 @@ export interface TranscriptSpec {
    * for an answer nobody uses.
    */
   locate(session: TranscriptSession): string | null;
+  /** Locate a native conversation independently of the mutable runtime path hint and its cache. */
+  locateByConversation?(session: TranscriptSession & { agentSessionId: string; cwd: string }): string | null;
   /** One bounded read of that file for the passive poller. Cheap enough for a hot loop. */
   passiveRead(path: string): TranscriptPassiveRead;
   /** Conversation reading, or null when the file carries metadata but no messages. */

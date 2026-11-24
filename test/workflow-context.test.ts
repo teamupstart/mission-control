@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { gitIn, seedGitRepo } from "./helpers/git-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 ensureNativeStateLockAddon();
@@ -43,6 +43,55 @@ const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-work
 const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { evaluateWorkflowEvidenceReadiness, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+
+test("a publication checkout revision detects content, inventory, index and HEAD changes", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "publication-revision");
+  seedGitRepo(dir);
+  const stamp = () => publicationCheckoutRevision(dir, []);
+  const clean = stamp();
+  assert.ok(clean);
+  assert.equal(stamp(), clean);
+  writeFileSync(join(dir, "keep.txt"), "edit\n");
+  const edited = stamp();
+  assert.ok(edited && edited !== clean);
+  writeFileSync(join(dir, "keep.txt"), "next\n");
+  assert.notEqual(stamp(), edited, "same-size tracked edit");
+  const unstaged = stamp();
+  execFileSync("git", ["-C", dir, "add", "keep.txt"]);
+  assert.notEqual(stamp(), unstaged, "staging changes the index identity");
+  const staged = stamp();
+  writeFileSync(join(dir, "untracked"), "one");
+  const added = stamp();
+  assert.ok(added && added !== staged);
+  writeFileSync(join(dir, "untracked"), "two");
+  assert.notEqual(stamp(), added, "same-size untracked edit");
+  const beforeCommit = stamp();
+  execFileSync("git", ["-C", dir, "commit", "-qm", "edit"]);
+  assert.notEqual(stamp(), beforeCommit);
+  assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
+});
+
+test("a clean submodule publication revision refuses tracked or untracked nested edits", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const parent = join(home, "submodule-parent");
+  const source = join(home, "submodule-source");
+  const nested = join(parent, "nested");
+  seedGitRepo(parent);
+  seedGitRepo(source);
+  gitIn(parent, "-c", "protocol.file.allow=always", "submodule", "add", source, "nested");
+  gitIn(parent, "commit", "-qm", "add nested checkout");
+  const revision = () => publicationCheckoutRevision(parent, []);
+  assert.ok(revision());
+  const head = gitIn(nested, "rev-parse", "HEAD");
+  writeFileSync(join(nested, "keep.txt"), "edit\n");
+  assert.equal(gitIn(nested, "rev-parse", "HEAD"), head);
+  assert.equal(revision(), null);
+  gitIn(nested, "restore", "keep.txt");
+  assert.ok(revision());
+  writeFileSync(join(nested, "untracked"), "new");
+  assert.equal(revision(), null);
+});
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -109,7 +158,7 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
   assert.deepEqual(context.acceptanceCriteria, []);
 });
 
-test("workflow context excludes a delivered workflow packet after live attribution is lost", async () => {
+for (const beforeSend of [false, true]) test(`workflow context excludes the delivered packet and keeps a human repeat, pre-send anchor=${beforeSend}`, async () => {
   const transcriptPath = join(home, "workflow-attribution.jsonl");
   const humanDecision = "Keep the public API stable";
   const workflowPacket = "# Evidence preflight needs repair\n\nCapture the rendered result.";
@@ -163,7 +212,9 @@ test("workflow context excludes a delivered workflow packet after live attributi
   forgetInjections(session.id);
   const captured = await readWorkflowContextRaw(registry, binding, [], [{
     payload: workflowPacket,
-    transcriptAnchor: deliveryAnchor,
+    transcriptPath,
+    transcriptAnchor: beforeSend ? Buffer.byteLength(records[0]!) : deliveryAnchor,
+    ...(beforeSend ? { beforeSend: true as const } : {}),
   }]);
 
   assert.deepEqual(captured.raw.humanDecisions, [
@@ -182,6 +233,13 @@ test("workflow context excludes a delivered workflow packet after live attributi
     captured.raw.evidence.transcript.map((message) => message.content),
     [humanDecision, workflowPacket],
   );
+  if (!beforeSend) {
+    const ambiguous = await readWorkflowContextRaw(registry, binding, [], [{
+      payload: workflowPacket, transcriptPath, transcriptAnchor: Buffer.byteLength(records.join("")),
+    }]);
+    assert.deepEqual(ambiguous.raw.humanDecisions.map(d => d.source.id),
+      ["human-decision", "workflow-repair", "human-repetition"], "an ambiguous legacy end offset cannot remove the human copy");
+  }
 });
 
 test("bounded feedback keeps recent entries in chronological order and marks the oldest boundary", async () => {

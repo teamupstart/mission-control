@@ -204,13 +204,25 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   await expect(rowC).toHaveCount(0, { timeout: 30_000 });
   await expect(toAnswer(page)).toHaveText("1", { timeout: 15_000 });
 
-  // Mark done completes the task, and the row leaves.
   reopened = page.getByRole("dialog", { name: "Attention inbox" });
   if (!(await reopened.isVisible())) reopened = await openInbox(page);
+  const taskStatus = async () => (await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === a.task.id)?.status;
+  const complete = page.getByRole("dialog", { name: "Complete task and close session" });
   await stuckRow(reopened, a.task.title).getByRole("button", { name: "Mark done", exact: true }).click();
-  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === a.task.id)?.status,
-    { timeout: 15_000 }).toBe("done");
-  await expect(stuckRow(reopened, a.task.title)).toHaveCount(0, { timeout: 30_000 });
+  await expect(complete).toBeVisible();
+  await expect(complete).toContainText(a.task.title);
+  await expect(reopened).toBeHidden();
+  await complete.getByRole("button", { name: "Cancel" }).click();
+  await expect(complete).toBeHidden();
+  expect(await taskStatus()).not.toBe("done");
+
+  reopened = await openInbox(page);
+  await stuckRow(reopened, a.task.title).getByRole("button", { name: "Mark done", exact: true }).click();
+  await complete.getByRole("button", { name: "Complete & close" }).click();
+  await expect.poll(taskStatus, { timeout: 15_000 }).toBe("done");
+  await expect(complete).toBeHidden();
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).some((s) => s.id === a.session.id),
+    { timeout: 30_000 }).toBe(false);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0, { timeout: 15_000 });
 });
 

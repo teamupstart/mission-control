@@ -15,7 +15,8 @@ import { AgentDot } from "./session-bits.tsx";
  * fired, why, and the fix in place.
  *
  * Every control is drawn from its `INBOX_ACTIONS` entry through `InboxActionButton`, and only
- * when its target exists: Mark done only with an open task, Resubmit only on a run that a
+ * when its target exists: Mark done only with an open task (it opens the Complete dialog, so the
+ * session completes like any other), Resubmit only on a run that a
  * resubmission can move, Tell it to push only with commits the remote has not seen, Continue on
  * a parked run only when neither of those applies and the session's next turn is the step,
  * Interrupt
@@ -25,8 +26,6 @@ import { AgentDot } from "./session-bits.tsx";
  * Nothing here removes the row. It leaves when the daemon stops reporting the stall, which is
  * when the session has moved, or when the operator dismisses it.
  */
-
-const MARK_DONE_OUTCOME = "Marked done from the inbox";
 
 /**
  * What a completed Interrupt reports, in the words the session's own Interrupt uses
@@ -44,6 +43,7 @@ export function StuckCard({
   subject,
   onOpenSession,
   onOpenRun,
+  onComplete,
   onDismiss,
   onReplyBox,
 }: {
@@ -54,6 +54,8 @@ export function StuckCard({
   subject: AgentNameView;
   onOpenSession: (sessionId: string) => void;
   onOpenRun: (runId: string) => void;
+  /** Open the session's Complete dialog. Absent where nothing can host it, and Mark done is not drawn. */
+  onComplete?: (sessionId: string) => void;
   onDismiss: () => void;
   /**
    * Whether this row is drawing its message box (the escalation's reply box included), reported
@@ -139,13 +141,13 @@ export function StuckCard({
             onClick={fixed("continue")}
           />
         )}
-        {facts?.kind === "unfinished-work" && facts.task && (
+        {facts?.kind === "unfinished-work" && facts.task && onComplete && (
           <InboxActionButton
             action="mark-done"
             name={name}
-            tooltip="Complete this session's task: the work is finished and nothing more is owed"
+            tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
             disabled={disabled}
-            onClick={run("mark-done", () => api.completeTask(facts.task!.id, MARK_DONE_OUTCOME))}
+            onClick={() => onComplete(session.id)}
           />
         )}
         {facts?.kind === "workflow-parked" && facts.resubmittable && (

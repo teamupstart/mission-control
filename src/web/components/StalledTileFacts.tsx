@@ -29,8 +29,8 @@ type StalledFactsProps = {
  * so this adds only what the stall rule observed and the session's own last words on it.
  *
  * The fixes are the Stuck row's, from the same `INBOX_ACTIONS` entries and the same
- * `useStallActions`, so a fix cannot come to mean two things. The exception is Mark done, which
- * goes through `onComplete` so a stalled session completes like any other. Only the two idle kinds
+ * `useStallActions`, so a fix cannot come to mean two things. Mark done goes through `onComplete`
+ * here and on the Stuck row, so a stalled session completes like any other. Only the two idle kinds
  * reach here.
  * Clicks stop at this panel: the tile's own click opens the session, and a fix pressed on a card
  * must not also drill into it.

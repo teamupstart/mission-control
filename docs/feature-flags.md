@@ -205,7 +205,7 @@ reaches the inbox and the to read figure, opening it changes no figure, Mark rea
 replacement shows once with its note, the session never turns amber, and nothing shows with the
 flag off.
 `e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
-**to answer**, Continue reaching the agent, Mark done, the row leaving when the session works,
+**to answer**, Continue reaching the agent, Mark done opening the Complete dialog, the row leaving when the session works,
 Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.

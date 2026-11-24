@@ -1065,6 +1065,58 @@ test("an older poll cannot restore a provider removed in another window", async 
   await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "10-cross-window-removal");
 });
 
+for (const firstResponse of ["removed", "saved"] as const) {
+  test(`key snapshots read in reverse request order keep a removal when the ${firstResponse} response arrives first`, async ({ dashboard: page, context, daemon }) => {
+    await turnVoiceOn(daemon);
+    const writer = await context.newPage();
+    await openVoiceSettings(writer, daemon);
+    await saveKey(writer, "OpenAI Decisions", SAVED_OPENAI);
+    await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+
+    const held = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    const removed = Promise.withResolvers<void>();
+    let requests = 0;
+    await page.route("**/api/voice/decision-key", async route => {
+      const index = requests++;
+      if (index > 1) return route.continue();
+      if (index === 0) {
+        held[0].resolve();
+        await removed.promise;
+      }
+      const response = await route.fetch();
+      if (index === 1) held[1].resolve();
+      await release[index]!.promise;
+      await route.fulfill({ response, headers: { ...response.headers(), "x-e2e-key-state": index === 0 ? "removed" : "saved" } });
+    });
+    try {
+      for (const gate of held) {
+        await page.clock.fastForward(5_000);
+        await gate.promise;
+      }
+      await row(writer, "OpenAI Decisions").getByRole("button", { name: "Remove" }).click();
+      await expect(line(writer)).toHaveText(NOT_SET);
+      removed.resolve();
+      for (const state of [firstResponse, firstResponse === "removed" ? "saved" : "removed"]) {
+        const arrived = page.waitForResponse(r => r.headers()["x-e2e-key-state"] === state);
+        release[state === "removed" ? 0 : 1].resolve();
+        expect((await (await arrived).json()).keys.openai.source).toBe(state === "removed" ? null : "settings");
+        await page.clock.runFor(50);
+        if (state === "removed") await expect(line(page)).toHaveText(NOT_SET);
+      }
+      await expect(line(page)).toHaveText(NOT_SET);
+      await expect(row(page, "OpenAI Decisions").getByRole("button", { name: "Remove" })).toHaveCount(0);
+      if (firstResponse === "removed") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "39-reverse-key-snapshots");
+    } finally {
+      removed.resolve();
+      release.forEach(gate => gate.resolve());
+    }
+  });
+}
+
 test("a delayed local save cannot restore a key removed by another window", async ({ dashboard: page, context, daemon }) => {
   await turnVoiceOn(daemon);
   await page.clock.install();

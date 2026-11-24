@@ -114,6 +114,7 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
+  let keySnapshotOrder = 0;
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
@@ -125,6 +126,7 @@ export function registerVoiceRoutes(
       ...(saved === null && { savedKeysUnavailable: true }),
       ...(c.req.header("x-voice-provider-revision") === "read" && {
         selection: config.decisionProvider, providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(),
+        snapshotOrder: ++keySnapshotOrder,
       }),
     });
   });

@@ -305,18 +305,27 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
     let alive = true;
     let nextRead = 0;
     let appliedRead = 0;
+    let failedRead = 0;
+    let snapshot: { providerRevision: string; snapshotOrder: number } | undefined;
     const tick = async (): Promise<void> => {
       const id = ++nextRead;
       const at = writes.current;
       const read = await fetchVoiceDecisionKey();
-      if (alive && writes.current === at && id > appliedRead) {
-        appliedRead = id;
-        if (read) {
-          if (!observeProvider(read.providerRevision, read.selection)) return;
-          rememberIntentReceipt(read.intentReceipt);
-        }
-        setStatus({ revision: read?.providerRevision ?? providerRevision, report: read });
+      if (!alive || writes.current !== at) return;
+      if (read) {
+        // Requests may reach the daemon out of order even when they share a provider revision.
+        if (id < failedRead || (snapshot?.providerRevision === read.providerRevision &&
+          read.snapshotOrder <= snapshot.snapshotOrder)) return;
+        if (!observeProvider(read.providerRevision, read.selection)) return;
+        snapshot = read;
+        rememberIntentReceipt(read.intentReceipt);
+      } else {
+        // A transport failure has no daemon snapshot to order it by.
+        if (id < appliedRead) return;
+        failedRead = id;
       }
+      appliedRead = Math.max(id, appliedRead);
+      setStatus({ revision: read?.providerRevision ?? providerRevision, report: read });
     };
     refresh.current = tick;
     void tick();

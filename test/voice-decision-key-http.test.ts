@@ -75,6 +75,22 @@ test("the dashboard reads the saved selection and active provider at the same re
   }
 });
 
+test("dashboard key snapshots advance across a save and removal without changing the selection revision", async () => {
+  const snapshot = async () => {
+    const response = await app.request("/api/voice/decision-key", { headers: { ...headers, "x-voice-provider-revision": "read" } });
+    return await response.json() as Report & { providerRevision: string; snapshotOrder: number };
+  };
+  const before = await snapshot();
+  await report("/api/voice/decision-key", "PUT", { provider: "openai", key: OPENAI_KEY });
+  const saved = await snapshot();
+  await report("/api/voice/decision-key?provider=openai", "DELETE");
+  const removed = await snapshot();
+  assert.deepEqual([before.provider, saved.provider, removed.provider], [null, "openai", null]);
+  assert.equal(saved.providerRevision, before.providerRevision);
+  assert.equal(removed.providerRevision, saved.providerRevision);
+  assert.ok(before.snapshotOrder < saved.snapshotOrder && saved.snapshotOrder < removed.snapshotOrder);
+});
+
 test("disabling Voice while a key PUT reads its body prevents saving the credential", async () => {
   const payload = new TextEncoder().encode(JSON.stringify({ provider: "jev", key: JEV_KEY }));
   const body = new ReadableStream<Uint8Array>({

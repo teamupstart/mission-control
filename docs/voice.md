@@ -349,6 +349,8 @@ each provider, since a key belongs to a provider.
 `GET /api/voice/decision-key` returns `{ provider, keys: { openai: { source }, jev: { source } } }`
 with `source` one of `settings`, `environment` or null. An unreadable store adds
 `savedKeysUnavailable: true` and the report identifies the usable environment keys.
+Dashboard reads also carry the provider selection revision and the order in which the daemon
+read the key status. This keeps a delayed poll from showing an already removed key as saved.
 `PUT /api/voice/decision-key` accepts
 `{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
 Decisions key. Both operations return the updated report.

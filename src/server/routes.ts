@@ -9371,7 +9371,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       const turn = result.pendingTurn;
       if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = registry.hasPendingReviewCall(session.id) || session.state === "awaiting_review";
+      const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card));

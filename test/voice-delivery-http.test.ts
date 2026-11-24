@@ -470,3 +470,23 @@ test("recalling held speech removes the reason to file an ask on its next poll",
   reviews.resolve(ask.id, "answer", "nightly");
   assert.equal((await call)?.response, "nightly");
 });
+
+test("Send now reports queued when conversion releases the session from awaiting review", async t => {
+  const id = "sdk:Will";
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  const ask = reviews.create(id, "input", "Which release?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); });
+  const call = reviews.wait(ask.id, 5000, undefined, true);
+  const getSession = registry.getSession.bind(registry);
+  t.mock.method(registry, "getSession", (key: string) => {
+    const session = getSession(key);
+    return key === id && session?.pendingReviews ? { ...session, state: "awaiting_review" as const } : session;
+  });
+  await say("Will, inspect the build", "release-awaiting-review");
+  assert.equal(registry.getSession(id)?.state, "awaiting_review");
+  await act("release-awaiting-review", "send-now");
+  assert.ok((await call)?.converted);
+  assert.equal(registry.getSession(id)?.state, "idle");
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+});

@@ -249,7 +249,7 @@ async function changeSomething(host: FlowHost, session: FlowSession, summary: Ho
   host.notice(`Current kind: ${summary.kindLabel}.`);
   const kinds = await fetchOptions(host, session, { entry: "command", brief: summary.words });
   if (!kinds.ok) return fail(host, kinds);
-  const kind = await askPages(host, pagesOf(kinds.value.questions, "kind"));
+  const kind = await askPages(host, pagesOf(kinds.value.questions, "kind"), session);
   if (kind.kind !== "pick") return cancel(host, session, summary.draftId);
   let updated = await updateDraft(host, session, summary.draftId, { kind: kind.value as TaskKind });
   if (!updated.ok) return fail(host, updated);
@@ -257,7 +257,7 @@ async function changeSomething(host: FlowHost, session: FlowSession, summary: Ho
   if (!after.ok) return fail(host, after);
   const afterPages = pagesOf(after.value.questions, "after-work");
   if (afterPages.length > 0) {
-    const pick = await askPages(host, afterPages);
+    const pick = await askPages(host, afterPages, session);
     if (pick.kind !== "pick") return cancel(host, session, summary.draftId);
     updated = await updateDraft(host, session, summary.draftId, { workflowId: pick.value });
     if (!updated.ok) return fail(host, updated);
@@ -292,7 +292,7 @@ type RepoAnswer = { kind: "none" } | { kind: "cancelled" } | { kind: "repo"; val
 /** Asks the Repo page, or the free-text question when the page's own Other is picked. */
 async function askRepo(host: FlowHost, session: FlowSession, pages: ReturnType<typeof pagesOf>): Promise<RepoAnswer> {
   if (pages.length === 0) return { kind: "none" };
-  const pick = await askPages(host, pages);
+  const pick = await askPages(host, pages, session);
   if (pick.kind === "dismissed") return { kind: "cancelled" };
   if (pick.kind === "other") return { kind: "repo", value: pick.text };
   if (pick.value !== "other") return { kind: "repo", value: pick.value };
@@ -348,7 +348,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
 
   const start = pagesOf(first.value.questions, "start");
   if (start.length > 0) {
-    const pick = await askPages(host, start);
+    const pick = await askPages(host, start, session);
     if (pick.kind !== "pick") return stop(host, session);
     if (pick.value === "check-in") {
       if (session.live && !session.live()) return ended();
@@ -367,7 +367,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
 
   let kind = input.kind;
   if (!kind) {
-    const pick = await askPages(host, pagesOf(first.value.questions, "kind"));
+    const pick = await askPages(host, pagesOf(first.value.questions, "kind"), session);
     if (pick.kind !== "pick") return stop(host, session);
     kind = pick.value as TaskKind;
   }
@@ -380,7 +380,7 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   let workflowId: string | undefined;
   const afterPages = pagesOf(next.value.questions, "after-work");
   if (afterPages.length > 0) {
-    const pick = await askPages(host, afterPages);
+    const pick = await askPages(host, afterPages, session);
     if (pick.kind !== "pick") return stop(host, session);
     workflowId = pick.value;
     // Likewise before the Repo dialog.

@@ -1138,3 +1138,30 @@ test("a confirm refusal that arrives after the session ended is returned but not
   await runDispatchCommand(live.fake.host, { ...SESSION, live: () => true }, "ship add retries");
   assert.equal(live.fake.notices.at(-1), "the repository has a launch hold");
 });
+
+test("a More... answered after the session ended opens no further page", async () => {
+  let ended = false;
+  const { fake, daemon } = world({
+    host: {
+      answers: (q) => {
+        if (q.header === "Kind" && q.options.some((o) => o.label === "More...")) {
+          // The session ends while the first Kind page is open; the person then selects More...
+          ended = true;
+          return { kind: "pick", label: "More..." };
+        }
+        return { kind: "pick", label: q.options[0]!.label };
+      },
+    },
+  });
+  const result = await runDispatchCommand(fake.host, { ...SESSION, live: () => !ended }, "hello there");
+  assert.equal(result.outcome, "cancelled");
+  // Only the first page was ever shown, nothing was said, and no draft was made.
+  assert.equal(fake.dialogs.filter((d) => d.header === "Kind").length, 1);
+  assert.deepEqual(fake.notices, []);
+  assert.equal(createdDrafts(daemon).length, 0);
+
+  // With the session still there, More... shows the next page as before.
+  const live = world({ host: { answers: (q) => ({ kind: "pick", label: q.options.find((o) => o.label === "More...")?.label ?? q.options.at(-1)!.label }) } });
+  await runDispatchCommand(live.fake.host, { ...SESSION, live: () => true }, "hello there");
+  assert.equal(live.fake.dialogs.filter((d) => d.header === "Kind").length, 2);
+});

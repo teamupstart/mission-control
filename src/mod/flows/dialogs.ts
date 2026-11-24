@@ -22,7 +22,7 @@ export function pagesOf(questions: readonly Question[], id: Question["id"]): Que
  * `More...` moves to the next page and anything else ends the question. The mod never reorders
  * or rewords an option.
  */
-export async function askPages(host: Asker, pages: readonly Question[]): Promise<Picked> {
+export async function askPages(host: Asker, pages: readonly Question[], session?: { live?: () => boolean }): Promise<Picked> {
   for (const page of pages) {
     const answer = await host.ask({
       header: page.header,
@@ -36,7 +36,11 @@ export async function askPages(host: Asker, pages: readonly Question[]): Promise
     if (answer.kind === "other") return { kind: "other", text: answer.text };
     const chosen = page.options.find((option) => option.label === answer.label);
     if (!chosen) return { kind: "dismissed" };
-    if (chosen.value === "more") continue;
+    // `More...` may be answered after the session ended: no further page is opened for a session that is gone.
+    if (chosen.value === "more") {
+      if (session?.live && !session.live()) return { kind: "dismissed" };
+      continue;
+    }
     return { kind: "pick", value: chosen.value, label: chosen.label };
   }
   return { kind: "dismissed" };

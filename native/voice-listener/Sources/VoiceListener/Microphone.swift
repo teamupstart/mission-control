@@ -125,7 +125,7 @@ final class InputSegmenter {
 }
 
 final class Microphone {
-    private let engine = AVAudioEngine()
+    private let engine: AVAudioEngine
     var isRunning: Bool { engine.isRunning }
     private var configurationObserver: NSObjectProtocol?
     private let continuation: AsyncStream<Segment>.Continuation
@@ -141,8 +141,9 @@ final class Microphone {
         }
     }
 
-    init(selection: String, devices: [Device] = Device.inputs(),
+    init(selection: String, devices: [Device] = Device.inputs(), engine: AVAudioEngine = AVAudioEngine(),
          onStopped: @escaping @MainActor (Microphone) -> Void = { _ in }) throws {
+        self.engine = engine
         (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(2))
         try Self.selectInput(selection, from: devices) { device in
             var object = device
@@ -159,14 +160,14 @@ final class Microphone {
                 continuation.yield(segment)
             }
         }
-        do { try engine.start() }
-        catch { stop(); throw error }
         configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                                       object: engine, queue: nil) { [weak self] _ in
             Task { @MainActor in
                 if let self, !self.isRunning { onStopped(self) }
             }
         }
+        do { try engine.start() }
+        catch { stop(); throw error }
     }
 
     func stop() {

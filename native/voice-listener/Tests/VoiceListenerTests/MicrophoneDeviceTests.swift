@@ -1,10 +1,31 @@
+import AVFoundation
 import CoreAudio
 import XCTest
 @testable import VoiceListener
 
+private final class InterruptedEngine: AVAudioEngine, @unchecked Sendable {
+    override func start() throws {
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: self)
+    }
+}
+
 final class MicrophoneDeviceTests: XCTestCase {
     private let internalMic = Device(object: 11, id: "internal-uid", name: "Microphone", builtIn: true, bluetooth: false)
     private let usbMic = Device(object: 22, id: "usb-uid", name: "Microphone", builtIn: false, bluetooth: false)
+
+    @MainActor func testConfigurationStopDuringStartReachesTheListener() async throws {
+        let engine = InterruptedEngine()
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        let stopped = expectation(description: "configuration change posted inside engine.start()")
+        let input = try Microphone(selection: "system-default", devices: [], engine: engine) { mic in
+            XCTAssertFalse(mic.isRunning)
+            stopped.fulfill()
+        }
+        defer { input.stop() }
+        await fulfillment(of: [stopped], timeout: 2)
+    }
 
     func testHelloDeviceMetadataFitsUTF16LimitsAndPreservesUID() throws {
         let uid = "USB-" + String(repeating: "🎙", count: 126)

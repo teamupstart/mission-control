@@ -55,7 +55,7 @@ export type VoiceHelloResult =
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
-  private hello: { at: number; id: string; hello: VoiceListenerHello } | null = null;
+  private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; report: VoiceShellReport } | null = null;
@@ -78,7 +78,7 @@ export class VoiceStateStore {
   }
 
   ownsCapture(id: string | undefined): boolean {
-    return id !== undefined && this.liveHello()?.id === id;
+    return id !== undefined && this.liveHello()?.ownerId === id;
   }
 
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
@@ -182,12 +182,12 @@ export class VoiceStateStore {
    */
   acceptHello(id: string | undefined, hello: VoiceListenerHello): VoiceHelloResult {
     const at = this.deps.now();
-    const owner = this.liveHello();
+    const ownerId = this.liveHello()?.ownerId;
     const protocol = VOICE_LISTENER_PROTOCOL_VERSION;
     const major = voiceProtocolMajor(hello.version);
     if (major !== VOICE_LISTENER_PROTOCOL_MAJOR) {
       const reason = `The listener speaks protocol ${hello.version}, and this Mission Control speaks ${VOICE_LISTENER_PROTOCOL_VERSION}. Update whichever is older.`;
-      if (!owner || owner.id === id) {
+      if (!ownerId || ownerId === id) {
         this.hello = null;
         this.refused = { at, reason };
         this.publish();
@@ -197,12 +197,13 @@ export class VoiceStateStore {
     if (!id || !VoiceListenerIdSchema.safeParse(id).success) {
       return { ok: false, error: "invalid_listener_id", reason: "Send a UUID for this listener process.", protocol };
     }
-    if (owner && owner.id !== id) {
+    if (ownerId && ownerId !== id) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
     }
-    // Even if the lapse timer has not fired, a new lease invalidates all previously captured speech.
-    if (!owner) this.lastDirective = undefined;
-    this.hello = { at, id, hello };
+    // A denied helper exits immediately. Keep its permission reading but release its capture.
+    const nextOwnerId = hello.microphone === "denied" ? null : id;
+    if (!ownerId || !nextOwnerId) this.lastDirective = undefined;
+    this.hello = { at, ownerId: nextOwnerId, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
     this.publish();

@@ -3,7 +3,7 @@ import test, { after } from "node:test";
 import { Hono } from "hono";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "../src/server/voice/routes.ts";
-import { wireVoiceStateEvents } from "../src/server/voice/state.ts";
+import { voiceStateStore, wireVoiceStateEvents } from "../src/server/voice/state.ts";
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { ensureToken } from "../src/server/auth.ts";
 import { tokenPath } from "../src/shared/harness-runtime.mjs";
@@ -63,4 +63,28 @@ test("poll holds through identical hellos then returns unchanged at 25 seconds",
   assert.equal(answered, false);
   t.mock.timers.tick(1);
   assert.deepEqual(await response, initial);
+});
+
+test("a terminal denial releases capture immediately while Setup retains the denial", async () => {
+  voiceStateStore.reset();
+  const replacement = new FakeVoiceListener("http://localhost", tokenPath(), async (url, init) => app.request(url, init));
+  assert.ok((await listener.hello({ microphone: "denied" })).ok);
+  assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "denied", source: "listener" });
+  await assert.rejects(listener.poll(), /409/);
+  assert.ok((await replacement.hello()).ok, "first hello reported denial, so a retry can start immediately");
+  setVoiceConfig({ muted: true });
+  const initial = await replacement.poll();
+  assert.equal(initial.capture, false);
+  const pending = assert.rejects(replacement.poll(initial.revision), /409/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok((await replacement.hello({ microphone: "denied" })).ok);
+  await pending;
+  assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "denied", source: "listener" });
+  assert.ok((await listener.hello()).ok, "an existing owner also releases its lease on denial");
+  setVoiceConfig({ muted: false });
+  const current = await listener.poll();
+  assert.equal(current.capture, true);
+  assert.notEqual(current.revision, initial.revision);
+  assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "granted", source: "listener" });
+  assert.deepEqual(await (await replacement.utterance("hello", [], current.revision)).json(), { accepted: false });
 });

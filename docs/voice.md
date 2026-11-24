@@ -43,6 +43,9 @@ claims capture. A second process receives HTTP 409 `listener_in_use` and exits b
 opening the microphone. A new process can claim capture 30 seconds after the owner's last
 hello. It receives a fresh revision even when settings are identical. The daemon checks
 ownership again when a held poll completes and before routing each utterance.
+A helper reporting an explicit microphone denial releases capture immediately and exits
+with status 2. Setup retains the permission reading, and a newly authorized helper can
+start immediately.
 
 Every utterance POST also requires the capture directive's revision. Older protocol majors
 receive HTTP 409 `unsupported_protocol` at hello. The helper sends one hello

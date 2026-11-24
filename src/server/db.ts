@@ -332,7 +332,8 @@ let db: DatabaseSync | undefined;
 // 56: unique identities for spoken outbox claims before runtime handoff.
 // 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
 // 58: index retained workflow deliveries that have an active native receipt.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 58;
+// 59: seek unresolved workflow receipts by delivery state and age on cold reads.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 59;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4065,6 +4066,9 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_workflow_receipt_window
       ON workflow_deliveries(note_key, session_id, delivered_at DESC, id DESC)
       WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_unresolved
+      ON workflow_deliveries(note_key, session_id, state, updated_at)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL AND delivered_at IS NULL;
     CREATE TRIGGER IF NOT EXISTS workflow_receipt_inserted AFTER INSERT ON workflow_delivery_turns
       WHEN NEW.discarded_at IS NULL BEGIN
         UPDATE workflow_deliveries SET has_transcript_receipt = 1 WHERE id = NEW.delivery_id;

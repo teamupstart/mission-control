@@ -92,15 +92,17 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
     const window = db.prepare(`
       WITH recent AS (SELECT id FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NOT NULL
                       ORDER BY delivered_at DESC, id DESC LIMIT ?),
-      eligible AS (
-        SELECT id FROM recent
-        UNION SELECT id FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NULL
-        UNION SELECT id FROM workflow_deliveries WHERE ${forSession} AND delivered_at >= ?
+      eligible(id, oldest_receipt) AS (
+        SELECT id, NULL FROM recent
+        UNION SELECT id, NULL FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NULL AND state = 'sending'
+        UNION SELECT id, ? FROM workflow_deliveries WHERE ${forSession} AND delivered_at IS NULL AND state = 'uncertain' AND updated_at >= ?
+        UNION SELECT id, NULL FROM workflow_deliveries WHERE ${forSession} AND delivered_at >= ?
       )
-      SELECT rowid AS ordinal, id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey,
+      SELECT turns.rowid AS ordinal, turns.id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey,
              fingerprint, delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
              message_id AS messageId, message_ts AS messageTs
-        FROM workflow_delivery_turns WHERE delivery_id IN (SELECT id FROM eligible) AND discarded_at IS NULL`);
+        FROM eligible JOIN workflow_delivery_turns turns ON turns.delivery_id = eligible.id
+       WHERE discarded_at IS NULL AND (oldest_receipt IS NULL OR delivered_at >= oldest_receipt)`);
     type StoredTurn = Omit<WorkflowDeliveryTurn, "contested"> & { ordinal: number; contested: number };
     const rows: StoredTurn[] = [];
     const cutoff = Date.now() - DELIVERY_LAG_MS;
@@ -109,7 +111,8 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
       const origin = nextSession.get(key, after) as { session_id: string } | undefined;
       if (!origin) break;
       after = origin.session_id;
-      for (const row of window.iterate(key, after, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT, key, after, key, after, cutoff)) {
+      for (const row of window.iterate(key, after, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT, key, after,
+        cutoff, key, after, cutoff, key, after, cutoff)) {
         rows.push(row as unknown as StoredTurn);
       }
     }
@@ -118,9 +121,9 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
   insert: row => {
     openDb().prepare(
       `INSERT INTO workflow_delivery_turns
-         (id, delivery_id, transcript_path, note_key, fingerprint, delivered_at, transcript_offset, contested)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, row.deliveryId, row.transcriptPath, row.noteKey, row.fingerprint, row.deliveredAt, row.transcriptOffset, Number(row.contested));
+         (id, delivery_id, transcript_path, note_key, fingerprint, delivered_at, transcript_offset, contested, message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.deliveryId, row.transcriptPath, row.noteKey, row.fingerprint, row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId);
   },
   remove: id => { openDb().prepare("DELETE FROM workflow_delivery_turns WHERE id = ?").run(id); },
   contest: (id, contested) => {
@@ -134,21 +137,6 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
 });
 
 let checkDiscardedWorkflowReceipts = true;
-
-/** Confirmation can outlive the session's transcript locator. Verify against the sampled file. */
-export function workflowReceiptLanded(conversation: DeliveryConversation, receipt: WorkflowDeliveryTurn): boolean {
-  const transcript = conversation.transcript;
-  if (!transcript || receipt.transcriptOffset === null || receipt.transcriptPath !== transcript.path) return false;
-  try {
-    const page = transcript.read.after(transcript.path, receipt.transcriptOffset, 12);
-    if (!page.atEnd || page.skippedRecord || page.finishOversizedRecord) return false;
-    const matches = page.messages.filter(m => m.role === "user" && injectionFingerprint(m.text) === receipt.fingerprint);
-    if (matches.length !== 1) return false;
-    return workflowDeliveryLedger.bound(conversation, matches).rows.get(matches[0]!.id)?.id === receipt.id;
-  } catch {
-    return false;
-  }
-}
 
 /** The delivery transition already made this receipt ineligible, even if deleting it fails. */
 export function noteDiscardedWorkflowReceipt(noteKey: string): void {

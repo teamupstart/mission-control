@@ -246,8 +246,9 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   insertRun("failed", "failed", 1);
   for (const id of ["delivery", "uncertain-delivery"]) {
     db.prepare(`INSERT INTO workflow_delivery_turns(id, delivery_id, note_key, fingerprint, delivered_at, contested)
-                VALUES (?, ?, 'note', ?, 1, 0)`).run(id, id, id);
+                VALUES (?, ?, 'note', ?, ?, 0)`).run(id, id, id, Date.now());
   }
+  db.prepare("UPDATE workflow_deliveries SET updated_at = ? WHERE id = 'uncertain-delivery'").run(Date.now());
   workflowDeliveryLedger.forgetConversation("note");
   assert.deepEqual(workflowDeliveryLedger.rows("note").map(r => r.id), ["delivery", "uncertain-delivery"]);
   insertRun("blocked", "blocked", null);
@@ -330,7 +331,7 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   );
 });
 
-test("long conversations seek the indexed capture window and pending receipts on a cold ledger read", async t => {
+test("a cold receipt lookup keeps active sends and recent uncertainty while excluding expired unresolved history", async t => {
   const key = "long-receipt-history";
   const delivery = db.prepare(`INSERT INTO workflow_deliveries
     (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at, delivered_at)
@@ -344,6 +345,15 @@ test("long conversations seek the indexed capture window and pending receipts on
   }
   delivery.run("pending", key, "pending", "sending", null);
   receipt.run("pending", "pending", key);
+  const now = Date.now();
+  for (const id of ["recent-uncertain", "old-uncertain", "old-recovered-today", "already-refused"]) {
+    delivery.run(id, key, id, id === "already-refused" ? "refused" : "uncertain", null);
+    receipt.run(id, id, key);
+    if (id !== "old-uncertain") db.prepare("UPDATE workflow_deliveries SET updated_at = ? WHERE id = ?").run(now, id);
+    if (id === "recent-uncertain" || id === "already-refused") {
+      db.prepare("UPDATE workflow_delivery_turns SET delivered_at = ? WHERE id = ?").run(now, id);
+    }
+  }
   // Existing delivery rows predate the receipt index. The upgrade restores their membership.
   db.exec("UPDATE workflow_deliveries SET has_transcript_receipt = 0; PRAGMA user_version = 57");
   const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
@@ -358,9 +368,10 @@ test("long conversations seek the indexed capture window and pending receipts on
     return prepare(sql);
   });
   const ids = workflowDeliveryLedger.rows(key).map(r => r.id);
-  assert.equal(ids.length, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 1);
+  assert.equal(ids.length, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 2);
   assert.deepEqual(ids.slice(0, 2), ["2", "3"]);
-  assert.equal(ids.at(-1), "pending");
+  assert.deepEqual(ids.slice(-2), ["pending", "recent-uncertain"]);
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_unresolved") && p.includes("updated_at")), plans.join("\n"));
   assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("session_id>?")), plans.join("\n"));
   assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("delivered_at")), plans.join("\n"));
   assert.ok(!plans.some(p => /SCAN workflow_(deliveries|delivery_turns)/.test(p)), plans.join("\n"));

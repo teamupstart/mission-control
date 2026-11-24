@@ -133,14 +133,14 @@ import {
 import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
-import { injectPrompt, type InjectResult } from "../actions.ts";
+import { injectPrompt, type InjectResult, type PromptWriteGuard } from "../actions.ts";
 import {
   confirmReservedInjection,
   recordInjection,
   releaseInjection,
   reserveInjection,
 } from "../injections.ts";
-import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger, workflowReceiptLanded } from "../delivery-ledgers.ts";
+import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -169,7 +169,6 @@ import {
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
   probeMatchesRepositoryContent,
-  observedNewWorkflowTurn,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -7039,7 +7038,8 @@ export class WorkflowManager {
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
     let attributionRefused: string | null = null;
     let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
-    const reserveAtWrite = (phase?: "preflight"): string | null => {
+    let clientMessageId: string | undefined;
+    const reserveAtWrite: PromptWriteGuard = (phase, receiptTarget) => {
       const block = this.deliveryBlock(sending, expectedPane)
         ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
           ? "inspector_feedback_superseded" : null);
@@ -7050,7 +7050,12 @@ export class WorkflowManager {
         conversation.transcript = sessionMessages(this.registry.getSession(session.id)!);
         receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
           ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
+          messageId: receiptTarget ? row.id : null,
         }));
+        if (receiptTarget) {
+          clientMessageId = receipt.id;
+          receiptTarget.clientMessageId = clientMessageId;
+        }
         reserveInjection(session.id, sending.payload, "workflow", () => {
           // The Registry consumes this receipt after recording the prompt's work episode.
           // A later human retype has no receipt, even when its text equals this packet.
@@ -7127,20 +7132,17 @@ export class WorkflowManager {
     const live = this.registry.getSession(sending.sessionId);
     const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
-    // Switching to another file cannot move an offset or prove which turn was written.
-    const usableReceipt = receipt && receipt.transcriptOffset !== null &&
-      (receipt.transcriptPath === transcript?.path || (result.submitVerified && workflowReceiptLanded(conversation, receipt)))
-      ? receipt : null;
-    const postSendTurn = receipt && !receipt.contested && receipt.transcriptOffset === null && transcript && transcriptAnchor !== null && result.submitVerified
-      && (receipt.transcriptPath === null || receipt.transcriptPath === transcript.path)
-      ? observedNewWorkflowTurn(transcript, transcriptAnchor, receipt.deliveredAt, receipt.fingerprint) : null;
+    // A paste acknowledgment cannot distinguish a human's identical intervening turn.
+    // Only the id passed to the accepting transport can identify a delayed workflow echo.
+    const usableReceipt = clientMessageId && result.submitVerified ? receipt : undefined;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
       result.submitVerified,
       Date.now(),
       usableReceipt?.transcriptOffset ?? null,
-      usableReceipt ? { receiptId: usableReceipt.id } : { unusableReceiptId: receipt?.id, postSendTurn },
+      usableReceipt ? { clientMessageId: usableReceipt.id, transcriptPath: usableReceipt.transcriptPath ?? transcript?.path }
+        : { unusableReceiptId: receipt?.id },
     );
     if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;

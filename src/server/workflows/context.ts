@@ -44,7 +44,6 @@ import {
 export { workflowIntentFingerprint };
 import { computeSessionDiff, computeStackedDiff } from "../diff.ts";
 import { resolveStackDiffBase, type StackDiffBase } from "../stacking/diff-base.ts";
-import { workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
@@ -441,30 +440,13 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
 
 export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
-  transcriptAnchor: number;
+  transcriptAnchor: number | null;
+  clientMessageId?: string;
   transcriptPath?: string;
   legacySend?: { start: number; end: number };
   turn?: { id: string; ts: number };
   beforeSend?: true;
   receiptId?: string;
-}
-
-/** Only a newly created transcript can supply a missing pre-write boundary. */
-export function observedNewWorkflowTurn(
-  transcript: NonNullable<ReturnType<typeof sessionMessages>>, end: number, started: number, fingerprint: string,
-): { path: string; id: string; ts: number } | null {
-  try {
-    const born = statSync(transcript.path).birthtimeMs;
-    if (!born || Math.floor(born) < started) return null;
-    const page = transcript.read.before(transcript.path, end, 12);
-    if (!page.atStart) return null;
-    const matches = page.messages.filter(m => m.role === "user" && injectionFingerprint(m.text) === fingerprint);
-    const turn = matches[0];
-    return matches.length === 1 && turn && turn.ts >= started && turn.ts <= Date.now()
-      ? { path: transcript.path, id: turn.id, ts: turn.ts } : null;
-  } catch {
-    return null;
-  }
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -544,7 +526,7 @@ function deliveredWorkflowTurnIdentities(
   let legacyFileBirth: number | null | undefined;
   for (const delivery of deliveries) {
     if (delivery.transcriptPath !== undefined && delivery.transcriptPath !== located.path) continue;
-    if ((delivery.receiptId && delivery.beforeSend) || !delivery.payload.trim()) continue;
+    if (delivery.clientMessageId || (delivery.receiptId && !delivery.turn) || !delivery.payload.trim()) continue;
     if (delivery.transcriptPath === undefined) {
       if (!delivery.legacySend || delivery.turn) continue;
       if (legacyFileBirth === undefined) {
@@ -557,6 +539,7 @@ function deliveredWorkflowTurnIdentities(
       identities.push({ ...delivery.turn, payloadFingerprint });
       continue;
     }
+    if (delivery.transcriptAnchor === null) continue;
     // Before native turn receipts, verified writes recorded a starting or ending byte offset.
     const page = delivery.beforeSend
       ? located.read.after(located.path, delivery.transcriptAnchor, 12)
@@ -1290,15 +1273,18 @@ function contextTranscriptFor(
     transcriptMessages,
     located ? deliveredWorkflowTurnIdentities(session, located, deliveredWorkflowAnchors) : [],
   );
-  const receipts = new Set(deliveredWorkflowAnchors.flatMap(delivery => delivery.receiptId ?? []));
-  const workflowTurns = new Set<string>();
-  if (receipts.size && located) {
-    const bound = workflowDeliveryLedger.bound({ key: noteKeyFor(session), transcript: located }, transcriptMessages);
-    for (const [messageId, receipt] of bound.rows) {
-      if (receipts.has(receipt.id)) workflowTurns.add(messageId);
+  const nativeReceipts = new Map<string, string>();
+  for (const delivery of deliveredWorkflowAnchors) {
+    if (delivery.clientMessageId && (!delivery.transcriptPath || delivery.transcriptPath === located?.path)) {
+      nativeReceipts.set(delivery.clientMessageId, injectionFingerprint(delivery.payload));
     }
   }
-  return attributed.filter(message => message.origin !== "workflow" && !workflowTurns.has(message.id));
+  return attributed.filter(message => {
+    if (message.origin === "workflow") return false;
+    if (message.role !== "user" || !nativeReceipts.size) return true;
+    const fingerprint = nativeReceipts.get(message.clientMessageId ?? message.id);
+    return fingerprint === undefined || fingerprint !== injectionFingerprint(message.text);
+  });
 }
 
 /**

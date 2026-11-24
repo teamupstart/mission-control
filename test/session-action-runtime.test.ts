@@ -179,7 +179,9 @@ interface HarnessOptions {
   parallelActions?: boolean;
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
-  onInject?: (payload: string) => void | Promise<void>;
+  clientMessageIds?: boolean;
+  submitVerified?: boolean;
+  onInject?: (payload: string, clientMessageId?: string) => void | Promise<void>;
   beforeInjectWrite?: (payload: string) => void;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
 }
@@ -268,7 +270,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         if (refused) return { ok: false, error: refused, pasted: false, submitVerified: false };
         options.beforeInjectWrite(payload);
       }
-      const blocked = beforeWrite?.();
+      const target: { clientMessageId?: string } | undefined = options.clientMessageIds ? {} : undefined;
+      const blocked = beforeWrite?.(undefined, target);
       if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
       // `pasted: false` is a POSITIVE refusal: the write was attempted and the pane rejected
       // it, so nothing landed. That is a different answer from an uncertain write, and the
@@ -276,9 +279,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       if (options.refuseInject) {
         return { ok: false, error: "pane_blocked", pasted: false, paneBlocked: true, submitVerified: false };
       }
-      await options.onInject?.(payload);
+      await options.onInject?.(payload, target?.clientMessageId);
       injected.push(payload);
-      return { ok: true, pasted: true, submitVerified: true };
+      return { ok: true, pasted: true, submitVerified: options.submitVerified ?? true };
     }) as never,
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
@@ -2000,7 +2003,7 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
   });
 }
 
-test("a post-send anchor survives restart and preserves matching human turns in a different transcript", async () => {
+test("a native receipt in a newly created transcript survives restart and preserves human copies in another file", async () => {
   const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
   const { forgetInjections } = await import("../src/server/injections.ts");
   const path = join(home, "transcript-created-during-publication.jsonl");
@@ -2009,9 +2012,10 @@ test("a post-send anchor survives restart and preserves matching human turns in 
   }) + "\n";
   const h = await harness("publication-transcript-first-seen", {
     pullRequest: true,
-    onInject: async payload => {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      writeFileSync(path, turn("original-ask", "Publish this change") + turn("delivered", payload));
+    clientMessageIds: true,
+    onInject: (payload, id) => {
+      assert.ok(id);
+      writeFileSync(path, turn("original-ask", "Publish this change") + turn(id, payload));
       h.reportIdle(path);
     },
   });
@@ -2023,8 +2027,8 @@ test("a post-send anchor survives restart and preserves matching human turns in 
     const throughDelivery = readFileSync(path, "utf8");
     await h.restartWorkflowManager();
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
-    const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
-    assert.ok(!workflowDeliveryLedger.rows(binding.noteKey).some(row => row.deliveryId === h.store.listDeliveries(runId)[0]!.id));
+    const receiptId = anchors[0]?.clientMessageId;
+    assert.ok(receiptId);
     forgetInjections(h.sessionId);
     writeFileSync(path, throughDelivery + turn("human-repeat", packet));
     for (const deliveries of [anchors, anchors.map(anchor => ({ ...anchor, receiptId: "unusable-prior-receipt" }))]) {
@@ -2033,14 +2037,14 @@ test("a post-send anchor survives restart and preserves matching human turns in 
         ["original-ask", "human-repeat"]);
     }
     const otherPath = join(home, "replacement-publication-transcript.jsonl");
-    const other = turn("original-ask", "Publish this change") + turn("human-dup", packet);
+    const other = turn("original-ask", "Publish this change") + turn(receiptId, packet);
     assert.equal(Buffer.byteLength(other), Buffer.byteLength(throughDelivery));
     writeFileSync(otherPath, other);
     h.reportIdle(otherPath);
     assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
-      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["original-ask", "human-dup"]);
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["original-ask", receiptId]);
     assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery), transcriptPath: path,
-      turn: { id: "delivered", ts: Date.parse(JSON.parse(throughDelivery.trim().split("\n").at(-1)!).timestamp) } }]);
+      clientMessageId: receiptId }]);
   } finally { await h.stop(); }
 });
 
@@ -2056,9 +2060,11 @@ for (const original of ["known", "unknown", "delivered"] as const) {
     writeFileSync(replacement, "");
     const h = await harness(`replace-${original}-transcript`, {
       pullRequest: true,
+      clientMessageIds: true,
       beforeInjectWrite: packet => writeFileSync(replacement, turn("matching-human", packet)),
-      onInject: packet => {
-        if (original === "delivered") writeFileSync(path, turn("delivered-packet", packet));
+      onInject: (packet, id) => {
+        assert.ok(id);
+        if (original === "delivered") writeFileSync(path, turn(id, packet));
         h.reportIdle(replacement);
       },
     });
@@ -2074,8 +2080,8 @@ for (const original of ["known", "unknown", "delivered"] as const) {
       const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
       forgetDeliveryBindingState();
       const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
-      if (original === "delivered") assert.ok(anchors[0]?.receiptId);
-      else assert.deepEqual(anchors, []);
+      assert.ok(anchors[0]?.clientMessageId);
+      assert.equal(anchors[0].transcriptPath, original === "unknown" ? replacement : path);
       forgetInjections(h.sessionId);
       assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
         .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["matching-human"]);
@@ -2099,6 +2105,7 @@ test("a delivered PR packet binds across an intervening human turn and preserves
   const original = turn("initial-ask", "Publish my work", start);
   const h = await harness("publication-packet-attribution", {
     pullRequest: true,
+    clientMessageIds: true,
     beforeInjectWrite: packet => writeFileSync(path, original + turn("human-before-write", packet, start)),
   });
   try {
@@ -2109,20 +2116,22 @@ test("a delivered PR packet binds across an intervening human turn and preserves
     const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
     const packet = h.store.listDeliveries(runId)[0]!.payload;
-    const receiptId = anchors[0]?.receiptId;
+    const receiptId = anchors[0]?.clientMessageId;
     assert.ok(receiptId);
     const beforeWrite = readFileSync(path, "utf8");
-    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(beforeWrite), beforeSend: true, receiptId }]);
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(beforeWrite), beforeSend: true, transcriptPath: path, clientMessageId: receiptId }]);
     const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
     const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
     const { forgetInjections } = await import("../src/server/injections.ts");
     forgetInjections(h.sessionId);
     forgetDeliveryBindingState();
-    writeFileSync(path, beforeWrite + turn("intervening-human", "Keep the fix scoped", start + 1)
-      + turn("workflow-packet", packet, start + 2) + turn("human-repeat", packet, start + 3));
     const decisions = () => readWorkflowIntentSnapshot(h.registry, binding,
       new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey))!.decisions
       .filter(d => d.source.kind === "transcript").map(d => d.source.id);
+    const beforeEcho = beforeWrite + turn("intervening-human", packet, start + 1);
+    writeFileSync(path, beforeEcho);
+    assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human"]);
+    writeFileSync(path, beforeEcho + turn(receiptId, packet, start + 2) + turn("human-repeat", packet, start + 3));
     const otherPath = join(home, "other-publication-transcript.jsonl");
     writeFileSync(otherPath, original + turn("other-human", packet, start + 1));
     h.reportIdle(otherPath);
@@ -2137,11 +2146,35 @@ test("a delivered PR packet binds across an intervening human turn and preserves
     h.reportIdle(path);
     assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human", "human-repeat"]);
     forgetDeliveryBindingState();
-    assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.messageId, "workflow-packet");
+    assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.messageId, receiptId);
     assert.deepEqual(decisions(), ["initial-ask", "human-before-write", "intervening-human", "human-repeat"]);
-    writeFileSync(otherPath, original + turn("workflow-packet", packet, start + 2));
+    writeFileSync(otherPath, original + turn(receiptId, packet, start + 2));
     h.reportIdle(otherPath);
-    assert.deepEqual(decisions(), ["initial-ask", "workflow-packet"], "even the same native ID is scoped to the receipt's file");
+    assert.deepEqual(decisions(), ["initial-ask", receiptId], "even the same native ID is scoped to the receipt's file");
+  } finally { await h.stop(); }
+});
+
+for (const submitVerified of [false, true]) test(`a paste without a native receipt keeps a human copy before the echo, verified=${submitVerified}`, async () => {
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const path = join(home, `publication-without-native-id-${submitVerified}.jsonl`);
+  const turn = (uuid: string, text: string) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content: text },
+  }) + "\n";
+  const h = await harness(`no-native-id-${submitVerified}`, {
+    pullRequest: true, submitVerified,
+    onInject: packet => writeFileSync(path, turn("intervening-human", packet)),
+  });
+  try {
+    writeFileSync(path, "");
+    h.reportIdle(path);
+    const run = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(run).some(d => d.state === "delivered"), "no PR packet");
+    await h.restartWorkflowManager();
+    const binding = h.store.getBinding(h.store.getRun(run)!.bindingId)!;
+    const anchors = h.store.listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+    assert.deepEqual(anchors, []);
+    assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["intervening-human"]);
   } finally { await h.stop(); }
 });
 

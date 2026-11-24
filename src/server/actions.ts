@@ -8,7 +8,7 @@ import { capturePaneText } from "./discovery/pane-capture.ts";
 import { parsePaneModeLine, readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
-import type { ControlSpec } from "./harness/types.ts";
+import type { ControlSpec, SdkTurn } from "./harness/types.ts";
 import {
   describeOptionRowMiss,
   hasUnansweredWarning,
@@ -376,7 +376,7 @@ async function writeText(
 }
 
 /** The SDK can reject a queued send before it reaches its serialized write boundary. */
-export type PromptWriteGuard = (phase?: "preflight") => string | null;
+export type PromptWriteGuard = (phase?: "preflight", receiptTarget?: Pick<SdkTurn, "clientMessageId">) => string | null;
 
 async function sendKeys(
   pane: BoundPane,

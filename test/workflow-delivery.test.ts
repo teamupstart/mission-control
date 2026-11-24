@@ -492,10 +492,11 @@ test("workflow Live delivery sends an SDK session through its driver", async () 
     pid: null,
   });
 
-  const sent: { id: string; text: string }[] = [];
+  const sent: { id: string; text: string; clientMessageId?: string }[] = [];
   const supervisor = {
-    async send(id: string, turn: { text: string }) {
-      sent.push({ id, text: turn.text });
+    async send(id: string, turn: { text: string; clientMessageId?: string }, beforeSend?: () => string | null) {
+      assert.equal(beforeSend?.(), null);
+      sent.push({ id, ...turn });
       return "started" as const;
     },
   } as unknown as SdkSupervisor;
@@ -514,7 +515,10 @@ test("workflow Live delivery sends an SDK session through its driver", async () 
   }, 5);
 
   assert.equal(result.ok && result.value.state, "delivered");
-  assert.deepEqual(sent, [{ id: sessionId, text: "apply the requested review changes" }]);
+  const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(sessionId, noteKey);
+  assert.ok(anchors[0]?.clientMessageId);
+  assert.equal(anchors[0].transcriptAnchor, null);
+  assert.deepEqual(sent, [{ id: sessionId, text: "apply the requested review changes", clientMessageId: anchors[0].clientMessageId }]);
   assert.deepEqual(attributed, [
     `${sessionId}:workflow:apply the requested review changes`,
   ]);

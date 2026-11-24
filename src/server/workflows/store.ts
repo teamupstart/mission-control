@@ -9235,9 +9235,11 @@ export class WorkflowStore {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
       `SELECT d.payload, d.delivered_at, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
+              json_extract(e.payload_json, '$.clientMessageId') AS client_message_id,
               json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
               CASE WHEN json_extract(e.payload_json, '$.submitVerified') = 1
                     AND json_type(e.payload_json, '$.receiptId') IS NULL
+                    AND json_type(e.payload_json, '$.clientMessageId') IS NULL
                     AND json_type(e.payload_json, '$.transcriptPath') IS NULL
                    THEN COALESCE((
                      SELECT sending.ts FROM workflow_events sending
@@ -9260,18 +9262,20 @@ export class WorkflowStore {
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
           AND (json_type(e.payload_json, '$.transcriptStart') = 'integer'
-            OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer')
+            OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+            OR json_type(e.payload_json, '$.clientMessageId') = 'text')
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
       receipt_id: string | null;
+      client_message_id: string | null;
       delivered_at: number;
       legacy_start: number | null;
       transcript_path: string | null;
       turn_id: string | null;
       turn_ts: number | null;
       payload: string;
-      transcript_anchor: number;
+      transcript_anchor: number | null;
       before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
@@ -9280,6 +9284,7 @@ export class WorkflowStore {
       ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
       ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts } } : {}),
       ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
+      ...(row.client_message_id ? { clientMessageId: row.client_message_id } : {}),
       ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
   }
@@ -9524,10 +9529,10 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
     transcriptStart: number | null = null,
-    attribution: { receiptId?: string; unusableReceiptId?: string; postSendTurn?: { path: string; id: string; ts: number } | null } = {},
+    attribution?: { clientMessageId?: string; transcriptPath?: string; unusableReceiptId?: string },
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
-      if (attribution.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
+      if (attribution?.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);
@@ -9594,11 +9599,9 @@ export class WorkflowStore {
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
-        transcriptAnchor: attribution.postSendTurn === null ? null : transcriptAnchor,
+        transcriptAnchor: attribution && !attribution.clientMessageId ? null : transcriptAnchor,
         transcriptStart,
-        ...(attribution.receiptId ? { receiptId: attribution.receiptId } : {}),
-        ...(attribution.postSendTurn ? { transcriptPath: attribution.postSendTurn.path,
-          transcriptTurn: { id: attribution.postSendTurn.id, ts: attribution.postSendTurn.ts } } : {}),
+        ...(attribution?.clientMessageId ? { clientMessageId: attribution.clientMessageId, transcriptPath: attribution.transcriptPath } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);

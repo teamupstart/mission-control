@@ -64,12 +64,15 @@ test("a closed stream loses its open cards after the disconnect grace period", a
 test("a reload after a backward clock adjustment restores focus and rejects older reports", async t => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  let monotonicMs = now - performance.timeOrigin;
+  t.mock.method(performance, "now", () => monotonicMs);
   const windows = registry.voiceRouter!.openCards;
   const close = windows.connect("previous");
   const closeOlder = windows.connect("delayed");
   const report = (windowId: string, stamp: number) => windows.report({ windowId, focused: true, cards: [] }, stamp);
   assert.ok(report("previous", now * 1000));
   close();
+  monotonicMs += 10_001;
   t.mock.timers.tick(10_001);
   t.mock.timers.setTime(now - 60_000);
   t.after(windows.connect("reloaded"));
@@ -77,7 +80,8 @@ test("a reload after a backward clock adjustment restores focus and rejects olde
   assert.ok(report("reloaded", Date.now() * 1000 + 30));
   assert.ok(report("other-reload", Date.now() * 1000 + 10));
   assert.equal(windows.dashboard, "reloaded");
-  assert.ok(report("delayed", (now - 1) * 1000));
+  // This observation was newer than the original focus, but predates both reloads.
+  assert.ok(report("delayed", (now + 1) * 1000));
   assert.equal(windows.dashboard, "reloaded");
   closeOlder();
 });

@@ -46,6 +46,8 @@ Also exercise expiry from an open microphone. With auto-mute on, establish a ver
 
 With a live microphone and auto-mute enabled, renew a healthy idle grant, leave the next directive poll pending and start another physical recorder immediately afterward. On a healthy connection, observe the active reading wake the poll with revocation and the listener input close before the old idle grant expires. Replay a delayed renewal for that generation and verify the input stays closed. Stop the recorder and verify reopening only under a fresh authorized idle baseline.
 
+Repeat Phase 1’s healthy-renewal and expiry trial on the same real microphone with auto-mute enabled and the production PipeWire or PulseAudio observer for each supported path. Use a grant shorter than the ordinary long poll. Verify real idle observation refreshes wake the poll before expiry and one spoken phrase crosses multiple renewals on one continuous input stream with exactly one delivery. Stall the observer while other heartbeats continue and independently observe input close at the last observation’s deadline.
+
 ## Downstream handoff and cross-phase audit
 
 Linux 5 consumes capability availability/reason, current chord, call and hold state through B. No new persisted field. This phase owns no playback code and consumes no Linux 4 changes. An unsupported observation never masquerades as a confirmed negative reading.

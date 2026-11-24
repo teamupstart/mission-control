@@ -1068,6 +1068,27 @@ for (const closedAt of [200, 300]) {
   });
 }
 
+for (const closingSpeech of ["Steve", "cancel"]) {
+  test(`a later-spoken ${closingSpeech} keeps an earlier pick ambiguous across listener clock skew`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const { router, say } = routerRig(() => answered(null));
+    t.after(() => router.reset());
+    await say("Will, ask Alice to check the build", "older");
+    t.mock.timers.setTime(150);
+    await say(SPLIT.text, "newer");
+    t.mock.timers.setTime(200);
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(
+      VoiceUtteranceSchema.parse({ id, text, capturedAt, backend: "fluidaudio" }));
+    await capture("close", closingSpeech, 400);
+    assert.equal(router.activeCards().find(c => c.id === "newer")?.state, closingSpeech === "cancel" ? undefined : "pending");
+    await capture("late", "Alice", 300);
+    assert.equal(router.heard.list().find(e => e.id === "late")?.rule, "ambiguous-pick");
+    assert.equal(await router.sendNow("older"), false);
+    await capture("fresh", "Alice", 401);
+    assert.equal(router.activeCards().find(c => c.id === "older")?.state, "pending");
+  });
+}
+
 test("a comma-free split preserves the literal word before the next name", async (t) => {
   const { router, say, delivered } = routerRig(() => answered(null));
   t.after(() => router.reset());

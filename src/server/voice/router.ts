@@ -188,7 +188,7 @@ export class VoiceRouter {
       .reverse().sort((a, b) => b.openedAt - a.openedAt);
     for (const action of eligible) {
       if (action.kind === "card" && this.open.has(action.id)) {
-        if (!this.cancel(action.id)) continue;
+        if (!this.cancel(action.id, undefined, capturedAt)) continue;
       } else {
         action.cancel();
       }
@@ -199,7 +199,7 @@ export class VoiceRouter {
   private closeChoices(item: OpenCard, at = Date.now()): void {
     if (item.card.state !== "resolving" && item.card.state !== "unsure") return;
     const from = item.choicesOfferedAt ?? item.entry.time;
-    const until = Math.max(from, at);
+    const until = Math.max(from, at, Date.now());
     item.choicesOfferedAt = until;
     const { id: cardId, reason, candidates } = item.card;
     this.priorChoices.push({ cardId, from, until, reason, choices: candidates.map(({ id, title }) => ({ id, title })) });
@@ -388,19 +388,19 @@ export class VoiceRouter {
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
-  private take(item: OpenCard): void {
-    this.closeChoices(item);
+  private take(item: OpenCard, at?: number): void {
+    this.closeChoices(item, at);
     clearTimeout(item.timer);
     this.open.delete(item.card.id);
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
   }
 
-  cancel(id: string, detail?: string): boolean {
+  cancel(id: string, detail?: string, capturedAt?: number): boolean {
     const item = this.open.get(id);
     if (!item) return false;
     if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
-    this.take(item);
+    this.take(item, capturedAt);
     item.modelStep?.abort();
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
@@ -425,7 +425,7 @@ export class VoiceRouter {
     if (parts.some(part => !selectedSession(roster, part.target))) return false;
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
-      this.closeChoices(item, Math.max(Date.now(), pickedAt));
+      this.closeChoices(item, pickedAt);
       setSplitPicks(item, card, target, item.remainingSplits, "boundary:");
       delete item.remainingSplits;
       item.card = card;
@@ -434,7 +434,7 @@ export class VoiceRouter {
       this.publish(card);
       return true;
     }
-    this.take(item);
+    this.take(item, pickedAt);
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
     this.openCard({ ...item, commands: split ? split.commands : item.commands, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",

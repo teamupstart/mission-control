@@ -211,6 +211,13 @@ for (const beforeSend of [false, true]) test(`workflow context excludes the deli
     captured.raw.evidence.transcript.map((message) => message.content),
     [humanDecision, workflowPacket],
   );
+  if (!beforeSend) {
+    const ambiguous = await readWorkflowContextRaw(registry, binding, [], [{
+      payload: workflowPacket, transcriptAnchor: Buffer.byteLength(records.join("")),
+    }]);
+    assert.deepEqual(ambiguous.raw.humanDecisions.map(d => d.source.id),
+      ["human-decision", "workflow-repair", "human-repetition"], "an ambiguous legacy end offset cannot remove the human copy");
+  }
 });
 
 test("bounded feedback keeps recent entries in chronological order and marks the oldest boundary", async () => {

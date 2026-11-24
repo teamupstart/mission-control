@@ -330,7 +330,7 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   );
 });
 
-test("long conversations retain the capture window and pending receipts on a cold ledger read", () => {
+test("long conversations seek the indexed capture window and pending receipts on a cold ledger read", async t => {
   const key = "long-receipt-history";
   const delivery = db.prepare(`INSERT INTO workflow_deliveries
     (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at, delivered_at)
@@ -344,10 +344,26 @@ test("long conversations retain the capture window and pending receipts on a col
   }
   delivery.run("pending", key, "pending", "sending", null);
   receipt.run("pending", "pending", key);
+  // Existing delivery rows predate the receipt index. The upgrade restores their membership.
+  db.exec("UPDATE workflow_deliveries SET has_transcript_receipt = 0; PRAGMA user_version = 57");
+  const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+  upgradeDatabaseToCurrentSchema(db);
+  const prepare = db.prepare.bind(db);
+  const plans: string[] = [];
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (sql.includes("has_transcript_receipt") && sql.includes("SELECT")) {
+      const parameters = Array.from(sql.matchAll(/\?/g), () => null);
+      plans.push(...prepare("EXPLAIN QUERY PLAN " + sql).all(...parameters).map(row => String(row.detail)));
+    }
+    return prepare(sql);
+  });
   const ids = workflowDeliveryLedger.rows(key).map(r => r.id);
   assert.equal(ids.length, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 1);
   assert.deepEqual(ids.slice(0, 2), ["2", "3"]);
   assert.equal(ids.at(-1), "pending");
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("session_id>?")), plans.join("\n"));
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("delivered_at")), plans.join("\n"));
+  assert.ok(!plans.some(p => /SCAN workflow_(deliveries|delivery_turns)/.test(p)), plans.join("\n"));
 });
 
 test("stage one skips non-evidence contexts and isolates malformed rows by run", () => {

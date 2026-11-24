@@ -1773,16 +1773,25 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
   });
 }
 
-for (const timing of ["during the sibling probe", "immediately before the claim", "during the sibling reservation"] as const) {
-  test(`a checkout edited ${timing} earns a fresh review`, async t => {
+for (const timing of ["during the sibling probe", "immediately before the claim", "during the sibling reservation", "budget expires"] as const) {
+  const budgetCase = timing === "budget expires";
+  test(budgetCase ? "a shared checkout verification budget expires into fresh reviews" : `a checkout edited ${timing} earns a fresh review`, async t => {
     const sibling = "/second-probed-publication";
     let releaseSibling!: () => void;
     const held = new Promise<void>(resolve => { releaseSibling = resolve; });
     const probes: string[] = [];
     let primaryEdited = false;
     let editDuringClaim = false;
+    let simulatedTime: number | null = null;
+    const deadlines: number[] = [];
     const h = await harness(`two-published-checkouts-${timing.replaceAll(" ", "-")}`, {
-      publicationCheckoutRevision: cwd => {
+      publicationCheckoutRevision: (cwd, _retained, deadline) => {
+        if (simulatedTime !== null) {
+          assert.ok(deadline !== undefined && deadline > simulatedTime);
+          deadlines.push(deadline);
+          simulatedTime = Math.min(simulatedTime + 110, deadline);
+          if (simulatedTime === deadline) return null;
+        }
         if (editDuringClaim && cwd === sibling) primaryEdited = true;
         return cwd === "/repo" && primaryEdited ? "edited" : "published";
       },
@@ -1819,6 +1828,10 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
         await waitFor(() => h.store.getRun(id)?.status === "completed", "publication did not complete for " + root);
       }
       const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      if (budgetCase) {
+        simulatedTime = 0;
+        t.mock.method(performance, "now", () => simulatedTime!);
+      }
       if (timing === "immediately before the claim") {
         const reserve = h.store.claimForemanCompletions.bind(h.store);
         t.mock.method(h.store, "claimForemanCompletions", (inputs: Parameters<typeof reserve>[0]) => {
@@ -1846,7 +1859,13 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
       const claimed = editDuringClaim ? await claim() : await result;
       assert.ok(claimed.claimed);
       assert.notEqual(claimed.runId, primaryId);
-      assert.equal(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+      if (budgetCase) {
+        assert.deepEqual(deadlines, [500, 500, 500, 500, 500], "each synchronous read shares the remaining budget");
+        assert.notEqual(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+      } else {
+        assert.equal(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+        assert.equal(h.store.publicationHandoffTree(siblingId, generation), null, "the unchanged sibling pin was spent");
+      }
       assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
     } finally { releaseSibling(); await h.stop(); }
   });
@@ -1989,6 +2008,7 @@ test("a post-send anchor survives restart and preserves matching human turns in 
     const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
     const packet = h.store.listDeliveries(runId)[0]!.payload;
     const throughDelivery = readFileSync(path, "utf8");
+    await h.restartWorkflowManager();
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
     const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
     assert.ok(!workflowDeliveryLedger.rows(binding.noteKey).some(row => row.deliveryId === h.store.listDeliveries(runId)[0]!.id));
@@ -2011,33 +2031,47 @@ test("a post-send anchor survives restart and preserves matching human turns in 
   } finally { await h.stop(); }
 });
 
-for (const original of ["known", "unknown"] as const) {
+for (const original of ["known", "unknown", "delivered"] as const) {
   test(`a pre-existing replacement transcript keeps a human copy when the original transcript is ${original}`, async () => {
     const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
     const { forgetInjections } = await import("../src/server/injections.ts");
     const replacement = join(home, `pre-existing-replacement-${original}.jsonl`);
+    const path = join(home, `prior-workflow-transcript-${original}.jsonl`);
+    const turn = (uuid: string, content: string) => JSON.stringify({
+      type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content },
+    }) + "\n";
     writeFileSync(replacement, "");
     const h = await harness(`replace-${original}-transcript`, {
       pullRequest: true,
-      beforeInjectWrite: packet => writeFileSync(replacement, JSON.stringify({
-        type: "user", uuid: "matching-human", timestamp: new Date().toISOString(), message: { role: "user", content: packet },
-      }) + "\n"),
-      onInject: () => { h.reportIdle(replacement); },
+      beforeInjectWrite: packet => writeFileSync(replacement, turn("matching-human", packet)),
+      onInject: packet => {
+        if (original === "delivered") writeFileSync(path, turn("delivered-packet", packet));
+        h.reportIdle(replacement);
+      },
     });
     try {
-      if (original === "known") {
-        const path = join(home, "prior-workflow-transcript.jsonl");
+      if (original !== "unknown") {
         writeFileSync(path, "");
         h.reportIdle(path);
       }
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR packet");
       const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+      await h.restartWorkflowManager();
+      const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+      forgetDeliveryBindingState();
       const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
-      assert.deepEqual(anchors, []);
+      if (original === "delivered") assert.ok(anchors[0]?.receiptId);
+      else assert.deepEqual(anchors, []);
       forgetInjections(h.sessionId);
       assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
         .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["matching-human"]);
+      if (original === "delivered") {
+        writeFileSync(path, readFileSync(path, "utf8") + turn("later-human", anchors[0]!.payload));
+        h.reportIdle(path);
+        assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+          .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["later-human"]);
+      }
     } finally { await h.stop(); }
   });
 }

@@ -10,6 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { noteDiscardedWorkflowReceipt, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } from "../delivery-ledgers.ts";
 import type { DeliveredWorkflowTranscriptAnchor } from "./context.ts";
+import { PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -2884,7 +2885,7 @@ export interface ForemanCompletionStoreInput {
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
-  publicationComparison?: { runId: string; stillMatches: () => boolean };
+  publicationComparison?: { runId: string; stillMatches: (deadline: number) => boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -2955,7 +2956,6 @@ export type ForemanCompletionStoreResult =
       run: WorkflowRun;
       submission: WorkflowSubmission | null;
       created: boolean;
-      verifyReusedPublication?: () => boolean;
       previousFingerprint: string | undefined;
     };
 
@@ -7226,31 +7226,35 @@ export class WorkflowStore {
   }
 
   /** Validate every probed publication under the same write lock that spends the shared cycle. */
-  claimForemanCompletions(inputs: ForemanCompletionStoreInput[]): ForemanCompletionStoreResult[] {
+  claimForemanCompletions(inputs: ForemanCompletionStoreInput[], remainingMs = PUBLICATION_REVISION_BUDGET_MS): ForemanCompletionStoreResult[] {
     return transaction(this.db, () => {
       const reservations: ForemanCompletionStoreResult[] = [];
+      const deadline = performance.now() + remainingMs;
+      const matches = (input: ForemanCompletionStoreInput) => performance.now() < deadline
+        && input.publicationComparison?.stillMatches(deadline) === true && performance.now() < deadline;
       for (const input of inputs) {
         if (input.expectedLatestRunId !== undefined
           && (this.latestRunForBinding(input.binding.id)?.id ?? null) !== input.expectedLatestRunId) {
           throw new Error("Workflow publication changed during completion comparison");
         }
       }
+      // Collect a common snapshot before spending any pin. Both passes share what remains
+      // of the original budget. A slow checkout cannot start another full-budget Git read.
+      const eligible = new Set(inputs.filter(matches));
+      if (inputs.length > 1) {
+        for (const input of [...eligible].reverse()) {
+          if (matches(input)) continue;
+          if (performance.now() < deadline) throw new Error("Workflow checkout changed during shared completion claim");
+          eligible.delete(input);
+        }
+      }
       for (const input of inputs) {
-        const stored = this.claimForemanCompletion(input);
+        const stored = this.claimForemanCompletion(input, eligible.has(input));
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
         }
         reservations.push(stored);
-      }
-      // Bracket the entire set of tentative reservations. Matching revisions on both
-      // sides establish a common checkout snapshot for the shared decision.
-      if (inputs.length > 1) {
-        for (const stored of reservations.toReversed()) {
-          if (stored.run && stored.verifyReusedPublication && !stored.verifyReusedPublication()) {
-            throw new Error("Workflow checkout changed during shared completion claim");
-          }
-        }
       }
       return reservations;
     });
@@ -7261,7 +7265,7 @@ export class WorkflowStore {
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
+  claimForemanCompletion(input: ForemanCompletionStoreInput, reusePublication?: boolean): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7356,7 +7360,7 @@ export class WorkflowStore {
           throw new Error("Workflow publication changed during completion comparison");
         }
       }
-      if (comparison?.stillMatches()) {
+      if (comparison && (reusePublication ?? comparison.stillMatches(performance.now() + PUBLICATION_REVISION_BUDGET_MS))) {
         // One follow-through per repository. Clearing the pin and consuming the shared
         // generation commit together. An identical retry is answered by duplicateEvent.
         const spent = this.db.prepare(
@@ -7480,7 +7484,6 @@ export class WorkflowStore {
         run,
         submission,
         created,
-        ...(comparison && run.id === comparison.runId ? { verifyReusedPublication: comparison.stillMatches } : {}),
         previousFingerprint,
       };
     });

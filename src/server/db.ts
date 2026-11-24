@@ -331,7 +331,8 @@ let db: DatabaseSync | undefined;
 // 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
 // 56: unique identities for spoken outbox claims before runtime handoff.
 // 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 57;
+// 58: index retained workflow deliveries that have an active native receipt.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 58;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4055,7 +4056,31 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  addColumn(d, "workflow_deliveries", "has_transcript_receipt", "INTEGER NOT NULL DEFAULT 0");
+  if (databaseSchemaVersion(d) < 58) {
+    d.exec(`UPDATE workflow_deliveries SET has_transcript_receipt = 1
+      WHERE id IN (SELECT delivery_id FROM workflow_delivery_turns WHERE discarded_at IS NULL)`);
+  }
   d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_window
+      ON workflow_deliveries(note_key, session_id, delivered_at DESC, id DESC)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_inserted AFTER INSERT ON workflow_delivery_turns
+      WHEN NEW.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = 1 WHERE id = NEW.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_removed AFTER DELETE ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_discarded AFTER UPDATE OF discarded_at ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL AND NEW.discarded_at IS NOT NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution
       ON workflow_deliveries(session_id, note_key, delivered_at DESC)
       WHERE delivered_at IS NOT NULL AND payload_pruned_at IS NULL;

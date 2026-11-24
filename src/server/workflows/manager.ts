@@ -1,4 +1,4 @@
-import { publicationCheckoutRevision } from "./publication-revision.ts";
+import { publicationCheckoutRevision, PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
 import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -139,7 +139,7 @@ import {
   releaseInjection,
   reserveInjection,
 } from "../injections.ts";
-import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
+import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger, workflowReceiptLanded } from "../delivery-ledgers.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -3934,7 +3934,9 @@ export class WorkflowManager {
     // independently, then revalidate ownership before spending the shared generation.
     const primaryCheckout = workflowCheckoutPath(anchor, session);
     const latestRuns = claim.completionKind === "prompted" ? targets.map(target => this.store.latestRunForBinding(target.id)) : [];
-    const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim) ?? []);
+    const deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS;
+    const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim, deadline) ?? []);
+    const remainingVerificationMs = Math.max(0, deadline - performance.now());
     const comparisons = probes.length ? await Promise.all(probes) : [];
     if (probes.length) {
       session = this.currentCompletionSession(sessionId, claim);
@@ -3972,7 +3974,7 @@ export class WorkflowManager {
       intent,
       now,
     }));
-    const reservations = this.store.claimForemanCompletions(inputs);
+    const reservations = this.store.claimForemanCompletions(inputs, remainingVerificationMs);
     const answer = reservations[0]?.result;
     if (!answer) throw new Error("Claimed Foreman completion produced no run");
     if (!answer.claimed) return answer;
@@ -4045,7 +4047,8 @@ export class WorkflowManager {
     run: WorkflowRun | null,
     session: Session,
     claim: WorkflowCompletionClaim,
-  ): Promise<{ bindingId: string; runId: string; stillMatches: () => boolean }> | null {
+    deadline: number,
+  ): Promise<{ bindingId: string; runId: string; stillMatches: (deadline: number) => boolean }> | null {
     if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
     const source = run?.intent?.intentSource;
     if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
@@ -4071,12 +4074,12 @@ export class WorkflowManager {
     if (!checkout) return null;
     const retained = publication?.localArtifacts ?? [];
     const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
-    const before = revision(checkout, retained);
+    const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
     const owner = { bindingId: binding.id, runId: run.id };
     return this.probeRepository(binding, submission).then(
       probe => {
         const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
-        return { ...owner, stillMatches: () => matches && revision(checkout, retained) === before };
+        return { ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before };
       },
       () => ({ ...owner, stillMatches: () => false }),
     );
@@ -7023,6 +7026,7 @@ export class WorkflowManager {
       return;
     }
     const expectedPane = paneToken(session);
+    const conversation = { key: sending.noteKey, transcript: null as ReturnType<typeof sessionMessages> };
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
     let attributionRefused: string | null = null;
     let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
@@ -7034,7 +7038,7 @@ export class WorkflowManager {
       // Sample after the pane mode check or SDK send queue, immediately before writing.
       // A human copy already in the transcript must stay on the earlier side of the offset.
       try {
-        const conversation = { key: sending.noteKey, transcript: sessionMessages(this.registry.getSession(session.id)!) };
+        conversation.transcript = sessionMessages(this.registry.getSession(session.id)!);
         receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
           ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
         }));
@@ -7115,7 +7119,8 @@ export class WorkflowManager {
     const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
     // Switching to another file cannot move an offset or prove which turn was written.
-    const usableReceipt = receipt && transcript && receipt.transcriptOffset !== null && receipt.transcriptPath === transcript.path
+    const usableReceipt = receipt && receipt.transcriptOffset !== null &&
+      (receipt.transcriptPath === transcript?.path || (result.submitVerified && workflowReceiptLanded(conversation, receipt)))
       ? receipt : null;
     const postSendTurn = receipt && !receipt.contested && receipt.transcriptOffset === null && transcript && transcriptAnchor !== null && result.submitVerified
       && (receipt.transcriptPath === null || receipt.transcriptPath === transcript.path)

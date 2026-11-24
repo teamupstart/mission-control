@@ -4,7 +4,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { locateExecutableSync } from "../executables/locator.ts";
 import { isolatedGitEnvironment } from "../git/worktree-tree.ts";
-import { gitInfo } from "../util/git.ts";
+export const PUBLICATION_REVISION_BUDGET_MS = 500;
 
 /**
  * A short-lived revision for a publication probe. The full asynchronous evidence probe
@@ -12,11 +12,10 @@ import { gitInfo } from "../util/git.ts";
  * Git's actual index and file inventory plus nanosecond file identities. An unreadable or
  * expensive checkout earns a fresh review. No checkout files or Git objects are written.
  */
-export function publicationCheckoutRevision(checkout: string, retained: readonly { path: string }[]): string | null {
+export function publicationCheckoutRevision(checkout: string, retained: readonly { path: string }[],
+  deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS): string | null {
   try {
-    const root = gitInfo(checkout).root;
-    if (!root) return null;
-    const deadline = performance.now() + 500;
+    if (performance.now() >= deadline) return null;
     const executable = locateExecutableSync("git");
     if (!executable) return null;
     const env = isolatedGitEnvironment({ PATH: executable.env.PATH, GIT_OPTIONAL_LOCKS: "0" });
@@ -27,6 +26,7 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
         env, stdio: ["ignore", "pipe", "pipe"], timeout, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
       });
     };
+    const root = git(checkout, ["rev-parse", "--show-toplevel"]).toString("utf8").replace(/\r?\n$/, "");
     const digest = createHash("sha256").update(root).update("\0").update(git(root, ["rev-parse", "HEAD"]));
     const inventory = git(root, ["ls-files", "-t", "--stage", "--others", "--exclude-standard", "-z"]);
     digest.update(inventory);
@@ -46,7 +46,7 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
       // Git represents an embedded repository or submodule by its checked-out commit.
       if (stat?.isDirectory()) digest.update(git(file, ["rev-parse", "HEAD"]));
     }
-    return digest.digest("hex");
+    return performance.now() < deadline ? digest.digest("hex") : null;
   } catch {
     return null;
   }

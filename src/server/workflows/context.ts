@@ -535,11 +535,13 @@ function deliveredWorkflowTurnIdentities(
       continue;
     }
     // Before native turn receipts, verified writes recorded a starting or ending byte offset.
-    const match = delivery.beforeSend
-      ? located.read.after(located.path, delivery.transcriptAnchor, 12).messages.find(message =>
-        message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint)
-      : located.read.before(located.path, delivery.transcriptAnchor, 12).messages.findLast(message =>
-        message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
+    const page = delivery.beforeSend
+      ? located.read.after(located.path, delivery.transcriptAnchor, 12)
+      : located.read.before(located.path, delivery.transcriptAnchor, 12);
+    const matches = page.messages.filter(message =>
+      message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
+    // An old end offset alone cannot tell a packet from a verbatim human repeat before it.
+    const match = delivery.beforeSend || matches.length === 1 ? matches[0] : undefined;
     if (match && injectionFingerprint(match.text) === payloadFingerprint) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
   }
   return identities;

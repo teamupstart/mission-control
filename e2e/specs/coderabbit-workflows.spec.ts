@@ -66,13 +66,15 @@ test("Library typed tuning saves, reloads and removes without changing YAML enab
  await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("unless the YAML turns it off");
  const defaultCommand = dashboard.getByLabel("Default CodeRabbit command");
  await expect(defaultCommand).toHaveAttribute("placeholder", "coderabbit review --deep");
- await expect(dashboard.getByRole("main")).toContainText("Reported infrastructure failures return their slot.");
- await expect(dashboard.getByRole("main")).toContainText("completed review. Granting");
+ const allowanceHelp = dashboard.locator(".wf-command-budget")
+  .filter({ hasText: "Reported infrastructure failures return their slot." });
+ await expect(allowanceHelp).toContainText("CodeRabbit skips with a warning unless a review is still incomplete.");
+ await expect(allowanceHelp).toContainText("An incomplete review blocks the run. Raise the allowance and submit a new round to continue.");
+ await expect(allowanceHelp).toContainText("Retrying the same submission uses its original allowance.");
  if (process.env.MC_E2E_EVIDENCE) {
   const dir = artifactsDir("coderabbit-workflows");
   mkdirSync(dir, { recursive: true });
-  await dashboard.locator(".wf-command-budget").filter({ hasText: "Reported infrastructure failures return their slot." })
-   .screenshot({ path: `${dir}library-allowance.png` });
+  await allowanceHelp.screenshot({ path: `${dir}library-allowance.png` });
  }
  await defaultCommand.fill("coderabbit review --fresh");
  await dashboard.getByLabel("Repository root for CodeRabbit tuning").fill(daemon.repo);await dashboard.keyboard.press("Escape");

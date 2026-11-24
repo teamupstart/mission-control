@@ -968,7 +968,7 @@ export class WorkflowEngine {
         const target = resolved?.node;
         // A CodeRabbit reservation can be returned. Let it settle before a sibling in
         // this run decides the allowance is exhausted, without holding a check slot to wait.
-        const codeRabbitRunId = target?.kind === "check" && target.slot === "coderabbit"
+        const codeRabbitRunId = resolved && target?.kind === "check" && target.slot === "coderabbit"
           ? resolved.run.id : null;
         if (codeRabbitRunId && this.scheduledCodeRabbitRuns.has(codeRabbitRunId)) continue;
         if (codeRabbitRunId) this.scheduledCodeRabbitRuns.add(codeRabbitRunId);

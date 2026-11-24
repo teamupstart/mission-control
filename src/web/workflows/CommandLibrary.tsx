@@ -885,7 +885,9 @@ export function CommandLibrary({
               {workflowCommandRunsFact(draft.maxRuns)}, {isCodeRabbit
                 ? "shared by every gate that runs CodeRabbit. Reported infrastructure failures return their slot. "
                 : "counting only the times it actually executes and shared by every gate that runs this Command. "}
-              Once a workflow run has spent this budget, {isCodeRabbit ? "later reviews skip with a warning and do not claim a completed review. " : "later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
+              {isCodeRabbit
+                ? "At the limit, CodeRabbit skips with a warning unless a review is still incomplete. An incomplete review blocks the run. Raise the allowance and submit a new round to continue. Retrying the same submission uses its original allowance. "
+                : "Once a workflow run has spent this budget, later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
               Granting a run more repair rounds starts the count over.
             </p>
           </div>

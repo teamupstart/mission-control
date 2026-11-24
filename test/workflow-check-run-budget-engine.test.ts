@@ -595,7 +595,8 @@ test("a sibling CodeRabbit gate waits for the final reservation to settle", asyn
     interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
     baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
   });
-  const release = Promise.withResolvers<void>();
+  let release!: () => void;
+  const reservationHeld = new Promise<void>((resolve) => { release = resolve; });
   const executions: string[] = [];
   const engine = new WorkflowEngine(store, () => {}, {
     checkConcurrency: 2,
@@ -608,7 +609,7 @@ test("a sibling CodeRabbit gate waits for the final reservation to settle", asyn
       execute: async () => {
         executions.push(nodeId);
         const disconnect = executions.length === 1;
-        if (disconnect) await release.promise;
+        if (disconnect) await reservationHeld;
         return {
           kind: "exited", exitCode: disconnect ? 1 : 0, output: "", truncatedBytes: 0,
           review: {
@@ -627,13 +628,13 @@ test("a sibling CodeRabbit gate waits for the final reservation to settle", asyn
     await waitFor(() => executions.length === 1);
     const sibling = executions[0] === "gate" ? "gate2" : "gate";
     assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
-    release.resolve();
+    release();
     await waitFor(() => store.latestAttemptForNode(submissionId, sibling)?.state === "completed");
     assert.equal(gateOutcome(store, submissionId, sibling).status, "passed");
     assert.deepEqual(executions.slice(1), [sibling]);
     assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
   } finally {
-    release.resolve();
+    release();
     await engine.stop();
   }
 });

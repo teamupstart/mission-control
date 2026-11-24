@@ -895,10 +895,14 @@ export class ReviewManager {
     this.registry.recordRetroHumanReview(review.sessionId);
   }
 
-  /** Enqueue and every compatible long-poll recheck the durable association. A transient
+  /** Enqueue, compatible polls and the end of blocking calls recheck the durable association. A transient
    * filing failure leaves the accepted speech in its outbox and the call available to retry. */
-  tryFileForQueuedSpeech(sessionId: string, noteKey: string): void {
+  tryFileForQueuedSpeech(sessionId: string): void {
     try {
+      if (!this.waiters.size || !featureEnabled("voice")) return;
+      const session = this.registry.getSession(sessionId);
+      if (!session) return;
+      const noteKey = noteKeyFor(session);
       const blockers = this.registry.pendingReviews(sessionId).filter(review => review.waitMode !== "message");
       if (blockers.length && blockers.every(review => hasQueuedSpeechForReview(review.id, noteKey))) {
         this.convertToFiled(...blockers.map(review => review.id));
@@ -980,9 +984,8 @@ export class ReviewManager {
         // closure that event triggers must be able to release this very call.
         if (current.waitMode === "message") {
           this.attachCall(current);
-        } else if (convertible && featureEnabled("voice")) {
-          const session = this.registry.getSession(current.sessionId);
-          if (session) this.tryFileForQueuedSpeech(session.id, noteKeyFor(session));
+        } else if (convertible) {
+          this.tryFileForQueuedSpeech(current.sessionId);
         }
       } catch (error) {
         cleanup();
@@ -1207,6 +1210,10 @@ export class ReviewManager {
     if (set) {
       for (const w of Array.from(set)) w.finish(review);
       this.waiters.delete(review.id);
+    }
+    if (review.status !== "pending" && review.waitMode !== "message" && this.waiters.size) {
+      // A settle can publish a whole batch. Reconsider the remaining calls after all its rows are visible.
+      queueMicrotask(() => this.tryFileForQueuedSpeech(review.sessionId));
     }
   }
 }

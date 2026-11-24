@@ -418,6 +418,31 @@ test("recalling speech held by a legacy call leaves every compatible call attach
   }
 });
 
+test("settling the last legacy call releases held speech through the existing compatible poll", async t => {
+  const sessionId = "sdk:Will";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  const send = t.mock.method(sdk, "sendWhenIdle", async () => "started" as const);
+  const ask = reviews.create(sessionId, "input", "Which tag?", "Choose", null, { snoozable: true });
+  const legacy = reviews.create(sessionId, "input", "Which target?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); reviews.resolve(legacy.id, "dismiss", null); });
+  const capableCall = reviews.wait(ask.id, 5000, undefined, true);
+  const legacyCall = reviews.wait(legacy.id, 5000);
+  await say("Will, inspect the target", "settled-last-legacy");
+  await act("settled-last-legacy", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+
+  reviews.resolve(legacy.id, "answer", "stable");
+  assert.equal((await legacyCall)?.response, "stable");
+  assert.equal(registry.getReview(ask.id)?.waitMode, "message");
+  assert.ok((await capableCall)?.converted?.receipt.includes(ask.id));
+  assert.equal(cards.at(-1)?.state, "queued");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
 test("the SDK receives the spoken words with both converted asks in its open-questions note", async t => {
   const sessionId = "sdk:Will";
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });

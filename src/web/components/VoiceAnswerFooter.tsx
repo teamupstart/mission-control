@@ -1,6 +1,7 @@
 import { optionLetter, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { PlanDecisionOption } from "@shared/types.ts";
 import { useNow } from "../useNow.ts";
+import { Tooltip } from "./Tooltip.tsx";
 import { VoiceIcon } from "./VoiceCardView.tsx";
 
 export function CardVoiceFoot({ children }: { children: React.ReactNode }) {
@@ -30,8 +31,12 @@ export function VoiceAnswerFooter({ answer, options, act, cancelStatus }: {
       <b>{cancelStatus && !selected ? answer.text : answer.label}</b><span className="av-foot-sub">
         {cancelStatus && remaining === 0 ? "waiting for confirmation" : <>submits in <b>{Math.ceil(remaining / 1000)}s</b></>}
       </span></span>
-      <button className="btn btn-ghost" onClick={() => void act("cancel")}>{cancelStatus ? "Retry cancel" : "Cancel"}</button>
-      <button className="btn btn-approve" disabled={!!cancelStatus} onClick={() => void act("send-now")}>Submit now</button></div>
+      <Tooltip label={cancelStatus ? "Request cancellation again" : "Cancel this pending voice answer"}>
+        <button className="btn btn-ghost" onClick={() => void act("cancel")}>{cancelStatus ? "Retry cancel" : "Cancel"}</button>
+      </Tooltip>
+      <Tooltip label={cancelStatus ? "Cancellation is awaiting confirmation" : "Submit this voice answer before the countdown ends"}>
+        <button className="btn btn-approve" disabled={!!cancelStatus} onClick={() => void act("send-now")}>Submit now</button>
+      </Tooltip></div>
     <span className="av-hint">{cancelStatus
       ? (cancelStatus === "failed" ? "Could not cancel the voice answer." : "Cancellation requested.")
       : <>Say <q>cancel</q> to stop{alternate != null && alternate >= 0 && <>, or <q>no, {optionLetter(alternate)}</q> to switch</>}.</>}</span>

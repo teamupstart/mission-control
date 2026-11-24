@@ -152,8 +152,10 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
       body = <><div className="vc-row"><VoiceIcon name="unsure" /><b>{card.candidates[0]?.kind === "question" ? "Which question?" : "Who is this for?"}</b></div>
         <div className="vc-heard"><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</div>
         {card.candidates.map(c => {
-          if (c.kind === "question") return <button key={c.id} type="button" className="vc-roster" disabled={busy}
-            onClick={() => void run(() => api.voiceCardAction(card.id, "pick", c.id))}><span>{c.title}</span><span className="vc-meta">{c.detail}</span></button>;
+          if (c.kind === "question") return <Tooltip key={c.id} label="Choose this question for your voice reply">
+            <button type="button" className="vc-roster" disabled={busy}
+              onClick={() => void run(() => api.voiceCardAction(card.id, "pick", c.id))}><span>{c.title}</span><span className="vc-meta">{c.detail}</span></button>
+          </Tooltip>;
           const target = actions.roster.find(t => t.key === (c.target?.key ?? c.id)) ?? c.target;
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", c.id))} disabled={busy} />;

@@ -73,9 +73,14 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await expect(b).toBeChecked();
   const footer = card.getByRole("status").filter({ hasText: "Submit now" });
   await expect(footer).toContainText("B · Postgres");
+  await expect(footer.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription("Cancel this pending voice answer");
+  await expect(footer.getByRole("button", { name: "Submit now" })).toHaveAccessibleDescription("Submit this voice answer before the countdown ends");
   await expect(footer).toContainText(/submits in [1-4]s/);
   await expectStyle(footer, footStyle);
   await captureCard(row, "answer-countdown");
+  await footer.getByRole("button", { name: "Cancel" }).hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Cancel this pending voice answer" })).toBeVisible();
+  await captureCard(row, "answer-cancel-tooltip");
   await a.click();
   await expect(footer).toHaveCount(0);
   await say(daemon, "reply, option B");
@@ -127,6 +132,7 @@ test("choosing a question opens and focuses that review without answering", asyn
   await say(daemon, "Steve, answer");
   const pick = page.getByRole("status").filter({ hasText: "Which question?" });
   await expect(pick.getByRole("button", { name: /Where should I start/ })).toBeVisible();
+  await expect(pick.getByRole("button", { name: /Where should I start/ })).toHaveAccessibleDescription("Choose this question for your voice reply");
   await captureCard(pick, "answer-question-picker");
   const report = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
     r.request().postDataJSON().cards.some((card: { focused: boolean }) => card.focused));

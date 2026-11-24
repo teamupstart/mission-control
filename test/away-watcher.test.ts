@@ -258,6 +258,13 @@ test("a call sign or reference name names a digest line only while voice is on a
     sessions = [named, resident].map((s) => ({ ...s, state: "idle" as SessionState }));
     w.tick();
     const titles = (w.buffer()?.events ?? []).map((event) => event.title).sort();
+    // Even after session removal, the read uses the current flag without another poll.
+    sessions = [];
+    w.flush();
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: !voice });
+    assert.deepEqual(w.takePending()?.events.map((event) => event.title).sort(), voice
+      ? ["Fix the parser went idle", "Linter watcher went idle"]
+      : ["Alice went idle", "Sage went idle"]);
     w.stop();
     setAwayConfig({ away: false }, 2000);
     return titles;

@@ -304,6 +304,7 @@ so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameIn
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
 New reports capture both author labels when posted. Switching Voice changes which label is shown,
 even after the session exits. Older reports with a single recorded label keep that attribution.
+Away previews and return digests also select the label for buffered session events when read.
 
 ## The voice state
 

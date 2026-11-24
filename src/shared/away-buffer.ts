@@ -19,6 +19,7 @@ import { reportToRead, type ReportItem } from "./reports.ts";
  * from the alert engine's idea of what counts as "the same event".
  */
 export interface AwayEvent {
+  sessionTitles?: Alert["sessionTitles"];
   key: string;
   kind: AlertKind;
   sessionId: string | null;
@@ -170,6 +171,7 @@ export function closeBuffer(buf: AwayBuffer, at: number): AwayBuffer {
 function absorb(existing: AwayEvent, a: Alert, at: number | null): AwayEvent {
   return {
     ...existing,
+    ...(existing.sessionTitles || a.sessionTitles ? { sessionTitles: a.sessionTitles } : {}),
     ...(a.agentName !== undefined ? { agentName: a.agentName } : {}),
     title: a.title,
     body: a.body,
@@ -210,6 +212,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
       sessionId: a.sessionId,
       title: a.title,
       body: a.body,
+      ...(a.sessionTitles ? { sessionTitles: a.sessionTitles } : {}),
       firstAt: now,
       lastAt: now,
       count: 1,

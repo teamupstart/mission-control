@@ -201,7 +201,7 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   // strip if the entire rail is folded.
   assert.match(
     app,
-    /\(sessionEls\.current\.get\(id\)\s*\?\? document\.querySelector<HTMLElement>\("\.idle-rail-section-toggle\[data-contains-selection\]"\)\s*\?\? document\.querySelector<HTMLElement>\("\.session-rail-strip"\)\)\s*\?\.focus\(\{ preventScroll: true \}\)/,
+    /const target = sessionEls\.current\.get\(id\)\s*\?\? document\.querySelector<HTMLElement>\("\.idle-rail-section-toggle\[data-contains-selection\]"\)\s*\?\? document\.querySelector<HTMLElement>\("\.session-rail-strip"\);\s*target\?\.focus\(\{ preventScroll: true \}\)/,
   );
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);

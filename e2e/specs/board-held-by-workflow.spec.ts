@@ -542,6 +542,16 @@ test("the Idle rail scrolls a focused row into view after a live status move", a
   const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
   await rail.getByRole("button", { name: "held by a workflow 1", exact: true }).click();
   const row = rail.getByRole("button", { name: heldName, exact: true });
+  const freeHeading = rail.getByRole("button", { name: "free 2", exact: true });
+  await freeHeading.click();
+  await row.focus();
+  await expect(freeHeading).not.toBeInViewport({ ratio: 0.75 });
+  await dashboard.locator(".cdetail .detail-body").focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(freeHeading).toBeFocused();
+  await expect(freeHeading).toBeInViewport({ ratio: 0.95 });
+  await freeHeading.click();
+
   await row.focus();
   await expect(row).toBeInViewport({ ratio: 0.95 });
 

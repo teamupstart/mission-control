@@ -1123,10 +1123,13 @@ export function App(): React.JSX.Element {
     // A folded rail draws no rows, so no row is registered for the id. The strip that stands
     // in for them takes the keyboard instead: leaving the reader must still leave it, or every
     // Escape would land back inside the reader and the next one could never peel further.
-    (sessionEls.current.get(id)
+    const target = sessionEls.current.get(id)
       ?? document.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
-      ?? document.querySelector<HTMLElement>(".session-rail-strip"))
-      ?.focus({ preventScroll: true });
+      ?? document.querySelector<HTMLElement>(".session-rail-strip");
+    target?.focus({ preventScroll: true });
+    if (target?.closest(".has-idle-sections")) {
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }, []);
 
   const focusReaderBody = useCallback(() => {

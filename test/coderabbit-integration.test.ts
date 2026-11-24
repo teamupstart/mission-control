@@ -27,6 +27,7 @@ const { WorkflowCheckOutcomeSchema }=await import("../src/shared/protocol.ts");
 const enabled=parseCodeRabbitConfig(Buffer.from('reviews: {auto_review: {enabled: true}}'));
 const comparison:CodeRabbitComparison={interpreterVersion:1,yaml:enabled,head:"a".repeat(40),baseTip:"b".repeat(40),mergeBase:"c".repeat(40),baseRef:"main",severity:"major",maxRuns:10,timeoutMs:2700000,ruleRevision:1,empty:false,error:null,command:["coderabbit","review","--deep"]};
 const summary={comparison,status:"complete" as const,counts:{critical:0,major:0,minor:1,trivial:0,info:0,none:0},titles:["minor advisory"],diagnostic:"Complete review"};
+const cleanReview = { ...summary, counts: { ...summary.counts, minor: 0 }, titles: [] };
 const input=():RunCheckInput=>({slot:"coderabbit",command:emptyWorkflowCommandView("coderabbit"),policy:{checksEnabled:true,repoAllowlist:["/repo"]},reserveRun:()=>({granted:true,spent:0}),cwd:"/repo",repoRoot:"/repo",headSha:comparison.head,coderabbit:{yaml:enabled,dirty:false,comparison:async()=>comparison}});
 const deps=():CheckRunDeps=>({codeRabbitProbe:async()=>({command:"/fake/coderabbit",env:{HOME:home},error:null}),execute:async()=>({kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary})});
 test("the real CodeRabbit probe hands a scrubbed managed environment to the review child", async () => {
@@ -72,7 +73,6 @@ test("YAML true needs no catalog override and defaults to ten runs and 45 minute
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
 });
 test("CodeRabbit reuse requires an exact comparison and respects --fresh", async () => {
-  const clean = { ...summary, counts: { ...summary.counts, minor: 0 }, titles: [] };
   const fresh = { ...comparison, command: ["coderabbit", "review", "--fresh"] };
   const cases = [
     { prior: comparison, current: { ...comparison }, probes: 0 },
@@ -82,7 +82,7 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
   ];
   for (const { prior, current, probes } of cases) {
     const i = input();
-    i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...clean, comparison: prior } };
+    i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...cleanReview, comparison: prior } };
     i.coderabbit!.comparison = async () => current;
     let called = 0;
     const d = deps();
@@ -93,6 +93,33 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
     assert.equal(called, probes);
   }
 });
+for (const dirty of [true, false]) {
+  const name = dirty ? "dirty submission" : "rejected comparison lookup";
+  test(`CodeRabbit blocks a ${name} even with a prior clean review`, async (t) => {
+    const lookup = t.mock.fn(async () => {
+      if (dirty) return comparison;
+      throw new Error("fixture lookup failed");
+    });
+    const i = input();
+    i.coderabbit = {
+      ...i.coderabbit!,
+      dirty,
+      comparison: lookup,
+      priorCleanReview: { attemptId: "prior-clean-review", review: cleanReview },
+    };
+    const d = deps();
+    const probe = t.mock.fn(d.codeRabbitProbe!);
+    const execute = t.mock.fn(d.execute!);
+    const result = await runCheck(i, { ...d, codeRabbitProbe: probe, execute });
+
+    assert.equal(result.kind, "action_required");
+    assert.match(result.reason, dirty ? /uncommitted changes without a review snapshot/ : /could not establish a complete review/);
+    assert.equal(result.review?.status, "incomplete");
+    assert.equal(lookup.mock.callCount(), dirty ? 0 : 1);
+    assert.equal(probe.mock.callCount(), 0);
+    assert.equal(execute.mock.callCount(), 0);
+  });
+}
 test("eight long finding titles still produce a schema-valid outcome for Persona evidence",async()=>{
  const r=await runCheck(input(),{...deps(),execute:async()=>({kind:"exited",exitCode:2,output:"",truncatedBytes:0,
   review:{...summary,counts:{...summary.counts,major:8},titles:Array.from({length:8},(_,i)=>`${i}: ${"x".repeat(246)}`)}})});

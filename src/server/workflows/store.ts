@@ -8090,13 +8090,15 @@ export class WorkflowStore {
     });
   }
 
-  recoveredInspectorBranchActivity(runId: string, submissionId: string, head: string, requestId?: string): WorkflowJson {
+  inspectorRecoveryReceipt(runId: string, submissionId: string, head: string): {
+    requestId: string; branchActivity: WorkflowJson;
+  } | null {
     const event = this.listEvents(runId).findLast(row => row.kind === "inspector_stale_grant_recovered");
     if (!event) return null;
     const receipt = this.eventPayload(event);
     if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation
-        || (requestId !== undefined && receipt.requestId !== requestId)) return null;
-    return receipt.branchActivity ?? null;
+        || typeof receipt.requestId !== "string" || !receipt.branchActivity) return null;
+    return { requestId: receipt.requestId, branchActivity: receipt.branchActivity };
   }
 
   private eventPayload(event: WorkflowEvent): Record<string, WorkflowJson> {

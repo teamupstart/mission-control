@@ -648,6 +648,11 @@ function expectationMismatch(
   };
 }
 
+interface PendingInspectorRecoveryCheck {
+  requestId: string;
+  observation: InspectionUpdated | null;
+}
+
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
@@ -658,7 +663,7 @@ export class WorkflowManager {
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
   private readonly inspectorRecoveryReads = new Map<string, ReturnType<typeof readInspectorBranchActivity>>();
-  private readonly pendingInspectorRecoveryChecks = new Set<string>();
+  private readonly pendingInspectorRecoveryChecks = new Map<string, PendingInspectorRecoveryCheck>();
   private readonly inspectorFeedbackRefreshes = new Map<string, {
     pending: boolean;
     observationAfter: number;
@@ -4580,30 +4585,37 @@ export class WorkflowManager {
       refreshPreparedFeedback?: boolean; recoveryRequestId?: string;
     } = {},
   ): void {
-    const recoveryKey = recoveryRequestId === undefined ? undefined : JSON.stringify([runId, recoveryRequestId]);
-    // Claim the receipt before queueing behind the run lock. An outage leaves it eligible
-    // for a new request once this check finishes.
-    if (recoveryKey !== undefined && this.pendingInspectorRecoveryChecks.has(recoveryKey)) return;
+    const run = this.store.getRun(runId);
+    const state = run && this.gateState(run);
+    const head = state?.grantObservation?.verifiedHeadSha;
+    const stranded = head && this.store.latestSubmission(runId);
+    const receipt = head && stranded ? this.store.inspectorRecoveryReceipt(runId, stranded.id, head) : null;
+    if (recoveryRequestId !== undefined && receipt?.requestId !== recoveryRequestId) return;
+    let recoveryCheck: PendingInspectorRecoveryCheck | undefined;
+    if (receipt && !refreshPreparedFeedback) {
+      const signal = event && event.prKey === state?.prKey && event.ledger.key === event.prKey
+        && event.observedState !== null ? event : null;
+      const pending = this.pendingInspectorRecoveryChecks.get(runId);
+      if (pending?.requestId === receipt.requestId) {
+        if (signal && (!pending.observation || signal.observedAt >= pending.observation.observedAt)) {
+          pending.observation = signal;
+        }
+        return;
+      }
+      recoveryCheck = { requestId: receipt.requestId, observation: signal };
+      this.pendingInspectorRecoveryChecks.set(runId, recoveryCheck);
+    }
     if (refreshPreparedFeedback) {
       if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
-      const run = this.store.getRun(runId);
-      const prKey = run ? this.gateState(run)?.prKey : null;
+      const prKey = state?.prKey;
       this.inspectorFeedbackRefreshes.set(runId, {
         pending: true,
         observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
       });
     }
-    if (recoveryKey !== undefined) this.pendingInspectorRecoveryChecks.add(recoveryKey);
     const task = this.withGateLock(runId, async () => {
       let keepRefreshHold = true;
       try {
-        if (recoveryRequestId !== undefined) {
-          // A queued replay may outlive the receipt that scheduled it.
-          const run = this.store.getRun(runId);
-          const head = run && this.gateState(run)?.grantObservation?.verifiedHeadSha;
-          const stranded = head && this.store.latestSubmission(runId);
-          if (!stranded || !this.store.recoveredInspectorBranchActivity(runId, stranded.id, head, recoveryRequestId)) return;
-        }
         if (refreshPreparedFeedback) {
           const run = this.store.getRun(runId);
           const delivery = run ? this.store.recoverableInspectorFeedback(run) : null;
@@ -4615,9 +4627,11 @@ export class WorkflowManager {
           } else keepRefreshHold = false;
           return;
         }
-        await this.evaluateInspectorGate(runId, event);
+        await this.evaluateInspectorGate(runId, event, recoveryCheck);
       } finally {
-        if (recoveryKey !== undefined) this.pendingInspectorRecoveryChecks.delete(recoveryKey);
+        if (recoveryCheck && this.pendingInspectorRecoveryChecks.get(runId) === recoveryCheck) {
+          this.pendingInspectorRecoveryChecks.delete(runId);
+        }
         if (refreshPreparedFeedback) {
           const refresh = this.inspectorFeedbackRefreshes.get(runId);
           // Failure releases the read slot, not the packet. A later successful read or
@@ -4790,9 +4804,11 @@ export class WorkflowManager {
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
+    recoveryCheck?: PendingInspectorRecoveryCheck,
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
+    if (recoveryCheck && !state?.grantObservation?.verifiedHeadSha) return;
     const tiedObservation = observation && state?.lastObservedAt != null
       && observation.prKey === state.prKey && observation.observedAt === state.lastObservedAt;
     if (!state?.grantObservation && state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
@@ -4869,9 +4885,16 @@ export class WorkflowManager {
       const adopted = getInspectorPr(state.prKey);
       const stranded = this.store.latestSubmission(run.id);
       if (!adopted || !stranded) return;
-      const receipt = this.store.recoveredInspectorBranchActivity(run.id, stranded.id, recoveryHead);
-      recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt);
+      const receipt = this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead);
+      if (recoveryCheck && receipt?.requestId !== recoveryCheck.requestId) return;
+      if (receipt && !recoveryCheck) {
+        // This wakeup was queued before the receipt existed. Join the receipt's check.
+        this.scheduleGateEvaluation(runId, observation);
+        return;
+      }
+      recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt?.branchActivity ?? null);
       if (transferForNote(binding.noteKey)) return;
+      if (receipt && this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead)?.requestId !== receipt.requestId) return;
       if (recoveryTipMatches === false) {
         this.blockRecoveredInspectorGrant(run, state, stranded);
         return;
@@ -4880,7 +4903,7 @@ export class WorkflowManager {
     if (state.grantObservation) {
       // A local observation can also arrive during the final live read. Read the
       // ledger last and synchronously compare the gate when inserting the round.
-      observation = grantedHeadObservation(state, observation);
+      observation = grantedHeadObservation(state, recoveryCheck?.observation ?? observation);
       if (!observation) return;
     }
     const now = Date.now();

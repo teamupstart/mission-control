@@ -2855,9 +2855,10 @@ of an independent mismatch, including
 when the GitHub CLI exits successfully. Confirming a match requires a successful read
 with complete source and timeline evidence. A response for another PR or an activity
 row for another ref supplies no evidence about the pinned identity. Replaying the
-original request retries verification while that receipt is pending. Concurrent
-replays of the same request share one queued or active check. After that check
-finishes, a new replay can retry the same receipt.
+original request retries verification while that receipt is pending. Replays and
+Inspector updates for the same receipt share one queued or active check. After the
+live read, selection compares the latest positive notification with the current
+durable PR observation. A later replay or update can retry an unavailable check.
 An unavailable read leaves the round available for the next
 evaluation. The insertion transaction also checks for a conversation transfer hold.
 Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.

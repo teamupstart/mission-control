@@ -3884,6 +3884,10 @@ test("concurrent replays share a pending recovery check and a later replay retri
     assert.equal((await recover()).status, 200);
     await waitFor(() => existsSync(pullPending), "the pending receipt never reached its PR check");
     rmSync(recoveryPr);
+    const observedAt = Date.now();
+    updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: verifiedRecoveryOid, observedAt }, observedAt);
+    seeded.registry.inspectionUpdated(seeded.key, verifiedRecoveryOid, "OPEN", observedAt);
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
     for (const replay of await Promise.all([recover(), recover(), recover()])) {
       assert.equal(replay.status, 200);
       assert.equal((await replay.json()).idempotent, true);
@@ -3909,6 +3913,56 @@ test("concurrent replays share a pending recovery check and a later replay retri
     rmSync(recoveryPrReads, { force: true });
   }
 });
+
+for (const changed of ["ledger", "notification"] as const) {
+  test(`an observation starts one recovery check and a newer ${changed} head vetoes the replacement`, async () => {
+    let loseRead = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (loseRead && head === priorRefOid) {
+        loseRead = false;
+        rmSync(recoveryPr);
+      }
+      return head;
+    } });
+    const { manager, store, ids, key, registry } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const recover = await legacyRecoveryRoute(seeded);
+      const pull = readFileSync(recoveryPr);
+      const submissions = store.listSubmissions(ids.run);
+      loseRead = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+
+      writeFileSync(recoveryPr, pull);
+      writeFileSync(holdRecoveryPull, "");
+      writeFileSync(recoveryPrReads, "");
+      const at = Date.now() + 20;
+      registry.inspectionUpdated(key, null, null, at + 3);
+      await waitFor(() => existsSync(pullPending), "the Inspector observation did not start a recovery check");
+      assert.equal((await (await recover()).json()).idempotent, true);
+      if (changed === "ledger") {
+        updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: laterRefOid, observedAt: at + 2 }, at + 2);
+      } else {
+        registry.inspectionUpdated(key, laterRefOid, "OPEN", at + 2);
+      }
+      registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", at + 1);
+      rmSync(holdRecoveryPull);
+      await manager.settleBackgroundWork();
+      // One successful verification samples the timeline twice.
+      assert.deepEqual(readFileSync(recoveryPrReads, "utf8").trim().split("\n"), ["timeline", "timeline"]);
+      assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      await manager.stop();
+      rmSync(recoveryPrReads, { force: true });
+    }
+  });
+}
 
 test("an older recovery request cannot wake a different pending receipt for the same submission and head", async () => {
   let change: "mismatch" | "outage" | undefined;

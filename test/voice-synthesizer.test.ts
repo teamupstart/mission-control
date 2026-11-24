@@ -94,6 +94,20 @@ test("a stalled helper fails within the five-second synthesis deadline and is re
   } finally { clearInterval(handle); synth.stop(); }
 });
 
+test("stopping a preparing audition immediately releases its helper for the next audition", async t => {
+  const { synth, children } = fixture("hang", "ok");
+  t.after(() => synth.stop());
+  const audition = new AbortController();
+  const discarded = assert.rejects(synth.synthesize("First audition", voice, audition.signal), { name: "AbortError" });
+  audition.abort();
+  const replacement = synth.synthesize("Next audition", voice);
+  assert.equal((await replacement).durationMs, 10);
+  await discarded;
+  assert.equal(children.length, 2);
+  assert.equal(children[0]?.alive, false);
+  assert.deepEqual(children.map(child => child.messages.map(m => m.text)), [["First audition"], ["Next audition"]]);
+});
+
 test("shutdown cancels outstanding work without restarting the child", async () => {
   const { synth, children } = fixture("hang");
   const work = synth.synthesize("Steve?", voice);

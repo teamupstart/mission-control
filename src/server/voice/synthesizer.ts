@@ -65,20 +65,26 @@ export class NeuralSynthesizer implements VoiceSynthesizer {
       const id = ++this.serial;
       const stop = AbortSignal.any([signal, helper.closed.signal]);
       const response = once(helper.replies, String(id), { signal: stop });
-      helper.child.send({ ...message, id }, error => { if (error) helper.child.kill("SIGKILL"); });
+      // Native synthesis is synchronous in the child. Retire it during abort dispatch,
+      // before a replacement audition can send work to the same blocked process.
+      const retire = () => {
+        if (this.helper !== helper) return;
+        this.helper = undefined;
+        helper.child.kill("SIGKILL");
+      };
+      signal.addEventListener("abort", retire, { once: true });
       try {
+        helper.child.send({ ...message, id }, error => { if (error) helper.child.kill("SIGKILL"); });
         const [reply] = await response as [SpeechReply];
         signal.throwIfAborted();
         if ("failed" in reply) throw new Error("Speech synthesis failed");
         this.keepAlive();
         return reply;
       } catch (error) {
-        if (deadline.aborted && this.helper === helper) {
-          helper.child.kill("SIGKILL");
-          this.helper = undefined;
-        }
         signal.throwIfAborted();
         if (attempt || !helper.closed.signal.aborted) throw error;
+      } finally {
+        signal.removeEventListener("abort", retire);
       }
     }
   }

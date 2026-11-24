@@ -112,7 +112,10 @@ for the whole of it, process start included. It asks only what is left in doubt:
 
 - **Split or mention.** “Steve, check the build, and Alice, review the PR” is one card with two
   parts: “check the build” to Steve and “review the PR” to Alice, each verbatim from the sentence
-  with only the joining “and” or “then” dropped. “Steve, ask Alice about the build” is a mention:
+  with the joining “and” dropped. When a comma alone marks the boundary, a lone ambiguous “and”
+  or “then” stays in the first message. In “Steve, echo done then, Alice, review the PR”, Steve
+  receives “echo done then” and Alice receives “review the PR” after either a model split or a
+  manual split pick. “Steve, ask Alice about the build” is a mention:
   the whole text goes to Steve and nothing to Alice. Each possible split is considered in spoken
   order, including repeated uses of the same name. The first split determines the two messages.
   A “not sure” before that split leaves the card unsure. A sentence with more than eight possible

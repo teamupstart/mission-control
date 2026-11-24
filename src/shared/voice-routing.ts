@@ -61,8 +61,11 @@ function splitHead(text: string): string {
   // Everything before that boundary belongs to the first message, including punctuation.
   const prefix = text.trim();
   const raw = prefix.replace(/,$/u, "").trimEnd();
+  // When only the comma separates the commands, a lone "and" or "then"
+  // can be the first message's final word. Preserve that reading.
+  const unmarkedJoiner = prefix.endsWith(",") ? /\s+and\s+then$/iu : /\s+(?:and\s+then|and|then)$/iu;
   const conjunction = /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and\s+then|and|then|also|plus)$/iu.exec(raw)
-    ?? /\s+(?:and\s+then|and|then)$/iu.exec(raw);
+    ?? unmarkedJoiner.exec(raw);
   if (!conjunction) return raw;
   const preceding = raw.slice(0, conjunction.index).trimEnd();
   // A literal directive or an unfinished phrase ("replace x with", "rename x to")

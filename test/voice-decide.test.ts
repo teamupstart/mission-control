@@ -1401,9 +1401,9 @@ test("a pick older than the retained choice history abstains while a fresh pick 
 test("a confirmed split removes one conjunction before the address and preserves literal words", async (t) => {
   const { router, say, delivered } = routerRig(() => answered("split"));
   t.after(() => router.reset());
-  for (const [spoken, expected] of [
-    ["check the build and", "check the build"], ["check the build and then", "check the build"],
-    ["check the build then", "check the build"], ["spell then", "spell then"],
+  for (const [spoken, expected, beforeComma = expected] of [
+    ["check the build and", "check the build", "check the build and"], ["check the build and then", "check the build"],
+    ["check the build then", "check the build", "check the build then"], ["spell then", "spell then"],
     ["spell and", "spell and"], ["explain the word and", "explain the word and"],
     ["spell the word: and", "spell the word: and"], ["say, then", "say, then"],
     ["define the term: plus", "define the term: plus"],
@@ -1413,7 +1413,8 @@ test("a confirmed split removes one conjunction before the address and preserves
       const id = String(delivered.length);
       await say(`Steve, ${spoken}${separator}Alice, review the PR`, id);
       assert.ok(await router.sendNow(id));
-      assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+      const first = separator.includes(",") ? beforeComma : expected;
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
     }
   }
 });
@@ -1430,6 +1431,25 @@ test("a split after a question with a stranded preposition drops its connector",
         assert.ok(await router.sendNow(id));
         assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
       }
+    }
+  }
+});
+
+test("model and manual splits keep a lone ambiguous word before the address comma", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [spoken, first] of [
+      ["echo done then,", "echo done then"],
+      ["echo done AND,", "echo done AND"],
+      ["echo done, then,", "echo done"],
+      ["check the build and then,", "check the build"],
+    ] as const) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken} Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
     }
   }
 });

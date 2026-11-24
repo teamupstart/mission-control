@@ -1119,6 +1119,45 @@ test("unrelated appends do not rescan the suffix of an unmatched spoken receipt"
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "first-match");
 });
 
+test("a skipped terminal record prevents a later typed copy from taking the spoken receipt", async t => {
+  const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-skipped-record-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "terminal-skipped-match";
+  const path = join(dir, "transcript.jsonl");
+  const now = Date.now();
+  const words = "inspect the same build";
+  const line = (uuid: string, padding = "") => JSON.stringify({ type: "user", uuid, padding,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content: words } }) + "\n";
+  const native = claudeTranscript.messages!;
+  const conversation = { key, transcript: { path, read: native } };
+  writeFileSync(path, "");
+  const claim = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(conversation, words, words, false, claim, now);
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+  const large = line("spoken-original", "x".repeat(17 * 1024 * 1024));
+  appendFileSync(path, large + line("typed-copy"));
+  const repeat = native.after(path, Buffer.byteLength(large)).messages;
+  assert.equal(repeat[0]?.id, "typed-copy");
+  const project = () => withSpokenReadProofs(conversation, repeat, prepared => spokenLedger.bound(prepared, repeat));
+  assert.equal((await project()).rows.size, 0);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+  await pruneExpiredSpokenTurns(now + 8 * DELIVERY_LAG_MS, k => k === key ? [conversation.transcript] : [], now + 1);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+
+  writeFileSync(path, line("spoken-original") + line("typed-copy"));
+  assert.equal((await project()).rows.size, 0);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "spoken-original");
+
+  // A parser-generated ID can change between reads. Its timestamp fallback must
+  // also rule out a hidden twin before displaying a disclosure on a later record.
+  writeFileSync(path, large + line("typed-copy"));
+  assert.equal((await project()).rows.size, 0);
+  assert.equal(spokenLedger.bound(conversation, repeat).rows.size, 0);
+});
+
 test("a visible spoken match beyond a large suffix yields between pages and restarts on a concurrent rewrite", async t => {
   const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");

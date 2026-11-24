@@ -171,6 +171,24 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
     await expect(late).toContainText(latePayload);
     await late.screenshot({ path: test.info().outputPath("reused-native-id.png") });
+
+    const oversizedWords = "check the archived build";
+    expect(await (await say(daemon, "Steve, " + oversizedWords)).json()).toEqual({ accepted: true });
+    await expect.poll(() => pane.turns().find(text => text.startsWith(oversizedWords)), { timeout: 30_000 }).toContain("post a report");
+    const oversizedPayload = pane.turns().find(text => text.startsWith(oversizedWords))!;
+    const prefix = readFileSync(path, "utf8");
+    const timestamp = Date.now();
+    const original = line("archived-original", oversizedPayload, timestamp);
+    const copy = line("archived-typed-copy", oversizedPayload, timestamp + 1);
+    appendFileSync(path, JSON.stringify({ ...JSON.parse(original), padding: "x".repeat(17 * 1024 * 1024) }) + "\n" + copy);
+    const archived = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: oversizedWords });
+    await expect(archived.last()).toContainText(oversizedPayload);
+    await expect(archived.getByText("Spoken", { exact: true })).toHaveCount(0);
+    writeFileSync(path, prefix + original + copy);
+    await expect(archived).toHaveCount(2);
+    await expect(archived.first().getByText("Spoken", { exact: true })).toBeVisible();
+    await expect(archived.last()).toContainText(oversizedPayload);
+    await expect(archived.last().getByText("Spoken", { exact: true })).toHaveCount(0);
   } finally {
     pane.cleanup();
   }

@@ -415,7 +415,7 @@ export function forgetDeliveryBindingState(): void {
 export class DeliveryLedger<Row extends BindableDelivery> {
   private readonly cache = new Map<string, Row[]>();
   /** How far each unbound row's walk has read, so a later frame continues instead of restarting. */
-  private readonly scanned = new Map<string, number>();
+  private readonly scanned = new Map<string, number | "skipped">();
   /** Spoken scan progress is reusable only in the file revision that supplied its bytes. */
   private readonly scanVersions = new Map<string, string>();
   /** Bound text rows whose saved prefix was verified in this scan revision. */
@@ -430,7 +430,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Per bound row, how many user turns in the whole transcript share its words and timestamp,
    * counted so far. Final once the walk passes a later timestamp; resumed from `from` until then.
    */
-  private readonly twins = new Map<string, { from: number; count: number; final: boolean }>();
+  private readonly twins = new Map<string, { from: number; count: number; final: boolean } | "skipped">();
 
   constructor(
     private readonly store: DeliveryStore<Row>,
@@ -734,7 +734,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
     const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
-    for (const row of rows) {
+    nextRow: for (const row of rows) {
       if (row.messageId !== null || row.contested || this.expired.has(row.id)) {
         this.deferredBindings.delete(row.id);
         continue;
@@ -749,7 +749,9 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           continue;
         }
       }
-      let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
+      const cursor = this.scanned.get(row.id);
+      if (cursor === "skipped") continue;
+      let from = cursor ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
       let closed = false;
       try {
@@ -757,6 +759,12 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           // An empty best-effort page can mean a failed read. Spoken binding needs to
           // distinguish that case from EOF so a quiet connection can finish its retry.
           const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, requireReadable || !!this.store.textBoundary);
+          if (this.store.textBoundary && page.skippedRecord) {
+            // The skipped record could be the delivery. A later copy cannot establish the first match.
+            this.scanned.set(row.id, "skipped");
+            this.deferredBindings.delete(row.id);
+            continue nextRow;
+          }
           for (const m of page.messages) {
             if (m.ts > 0 && m.ts - row.deliveredAt > DELIVERY_LAG_MS) {
               closed = true;
@@ -830,10 +838,15 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    */
   private uniqueAtTimestamp(row: Row, transcript: SessionMessages, singlePage = false): boolean | undefined {
     const state = this.twins.get(row.id) ?? { from: 0, count: 0, final: false };
+    if (state === "skipped") return false;
     this.twins.set(row.id, state);
     try {
       while (!state.final) {
-        const page = transcript.read.after(transcript.path, state.from, BIND_PAGE_TURNS);
+        const page = transcript.read.after(transcript.path, state.from, BIND_PAGE_TURNS, !!this.store.textBoundary);
+        if (this.store.textBoundary && page.skippedRecord) {
+          this.twins.set(row.id, "skipped");
+          return false;
+        }
         for (const m of page.messages) {
           // Turns are written in time order, so nothing later can share this timestamp.
           if (m.ts > row.messageTs!) {

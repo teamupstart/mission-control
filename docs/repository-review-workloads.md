@@ -62,6 +62,9 @@ The daemon checks the open file's size before allocating its read buffer and ret
 capture if the file grows or shrinks during the read. For Git objects, it requests the
 type and size before requesting any payload, including objects needed only by the index,
 HEAD or source base. An oversized required payload fails the whole capture.
+The private Git process also limits individual allocations during packed delta
+reconstruction, including intermediate results and bases larger than the selected
+object. The allocation ceiling allows one extra byte for Git's trailing NUL.
 Loose Git objects are opened under a held descriptor for the source object directory
 and inflated from that file. The private Git process reads packs and indexes through
 inherited file descriptors. It has no source object directory or alternates to follow.
@@ -102,8 +105,12 @@ unstaged deletion even though neither tree contains a file. The same status-only
 worktree array is full. Their allowance covers the union of deleted HEAD and index
 paths, up to twice the per-layer entry limit. Directory replacements are also recovered for previously sealed
 v1 artifacts.
-Comparing the layers avoids running repository
-filters or textconv to produce status. An unmerged index has no single tree and fails capture.
+Worktree reads return literal submitted bytes, including CRLF. For status and diffs,
+capture applies Git's built-in text line-ending rules from attributes and
+`core.autocrlf`. When normalization changes bytes, the artifact also seals a
+comparison tree. Both trees obey the same sensitive-path and storage limits.
+Capture never runs repository filters or textconv to produce status. An unmerged
+index has no single tree and fails capture.
 
 Before reading the index or history, capture verifies where Git stores the checkout's
 metadata. A linked worktree needs its own registration under the common directory and

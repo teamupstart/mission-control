@@ -1,12 +1,16 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { Readable } from "node:stream";
 import { closeSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { oid, unavailable } from "./format.ts";
+import { MAX_CAPTURE_OBJECT_BYTES, oid, unavailable } from "./format.ts";
 import { checkedObjectSize, looseMatches, openObjectRoot, pinPacks, readLoose } from "./object-source.ts";
 import { expansionExceeded } from "./path-budget.ts";
 
 const env = {
+  // Both cat-file and checkout metadata queries can inflate packed objects. Git
+  // allocates each inflated base and patched delta result with a trailing NUL.
+  GIT_ALLOC_LIMIT: String(MAX_CAPTURE_OBJECT_BYTES + 1),
   PATH: "/usr/bin:/bin",
   LC_ALL: "C",
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -78,11 +82,15 @@ function gitExit(child: ChildProcess) {
 
 /** Consume NUL-delimited Git output with backpressure and stop Git on the first refused path. */
 export async function checkoutRecords(executable: string, directories: CheckoutDirectories, args: string[], signal: AbortSignal,
-  maxRecordBytes: number, accept: (record: Buffer) => void) {
+  maxRecordBytes: number, accept: (record: Buffer) => void, input?: Iterable<Buffer>) {
   const child = spawn(executable, [...flags, ...args], {
-    cwd: directories.root, signal, env: checkoutEnvironment(false, directories), timeout: 30_000, stdio: ["ignore", "pipe", "ignore"],
+    cwd: directories.root, signal, env: checkoutEnvironment(false, directories), timeout: 30_000, stdio: ["pipe", "pipe", "ignore"],
   });
   const finished = gitExit(child);
+  const source = input && Readable.from(input);
+  child.stdin.on("error", () => {}); // A refused or cancelled Git process closes its input first.
+  if (source) source.pipe(child.stdin);
+  else child.stdin.end();
   let parts: Buffer[] = [], size = 0;
   try {
     for await (const chunk of child.stdout) {
@@ -103,6 +111,7 @@ export async function checkoutRecords(executable: string, directories: CheckoutD
     if (status instanceof Error) throw status;
     if (status !== 0 || size) unavailable();
   } finally {
+    source?.destroy();
     child.kill();
     await finished;
   }

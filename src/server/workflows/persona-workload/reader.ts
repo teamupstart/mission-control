@@ -415,8 +415,8 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const pairs = {
           base_head: [view.base, view.head],
           head_index: [view.head, view.indexTree],
-          index_worktree: [view.indexTree, view.worktreeTree],
-          base_worktree: [view.base, view.worktreeTree],
+          index_worktree: [view.indexTree, view.worktreeDiffTree ?? view.worktreeTree],
+          base_worktree: [view.base, view.worktreeDiffTree ?? view.worktreeTree],
         } as const;
         const [a, b] = pairs[r.pair];
         if (!b) throw new Refusal("unavailable");

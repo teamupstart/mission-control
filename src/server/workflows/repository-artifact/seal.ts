@@ -19,6 +19,7 @@ import {
   type Layer,
 } from "./checkout.ts";
 import { openObjectReader } from "./git.ts";
+import { autoText, cleanCrlf } from "./line-endings.ts";
 import { RepositoryArtifactStorage } from "./storage.ts";
 import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import {
@@ -52,7 +53,7 @@ async function scanWorking(
   executable: string,
   state: CheckoutState,
   signal: AbortSignal,
-  accept?: (id: string, bytes: Buffer) => void | Promise<void>,
+  accept?: (id: string, bytes: Buffer, key: string, mode: string) => void | Promise<void>,
 ) {
   const layer: Layer = new Map();
   const embedded = new Set(state.embedded);
@@ -66,7 +67,7 @@ async function scanWorking(
         .update(file.data)
         .digest("hex");
       layer.set(key, { id, mode: file.mode });
-      if (accept) await accept(id, file.data);
+      if (accept) await accept(id, file.data, key, file.mode);
     }
   }
   return layer;
@@ -295,12 +296,35 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
     }
-    const worktree = await scanWorking(executable, state, signal, (id, bytes) => { sizes.set(id, bytes.length); });
+    const normalized: Layer = new Map();
+    const indexHasCrlf = new Map<string, boolean>();
+    const worktree = await scanWorking(executable, state, signal, async (id, bytes, key, mode) => {
+      sizes.set(id, bytes.length);
+      const conversion = state.lineEndings.overrides[key] ?? state.lineEndings.fallback;
+      if (mode === "120000" || conversion === "raw" || !bytes.includes("\r\n")) return;
+      if (conversion === "auto") {
+        if (!autoText(bytes)) return;
+        const staged = index.get(key);
+        if (staged && staged.mode !== "160000") {
+          if (!indexHasCrlf.has(staged.id)) {
+            const data = staged.id === id ? bytes : (await reader.get(staged.id, "blob")).data;
+            indexHasCrlf.set(staged.id, data.includes("\r\n") && autoText(data));
+          }
+          if (indexHasCrlf.get(staged.id)) return;
+        }
+      }
+      const clean = cleanCrlf(bytes);
+      const cleanId = createHash(format).update(`blob ${clean.length}\0`).update(clean).digest("hex");
+      normalized.set(key, { mode, id: cleanId });
+      sizes.set(cleanId, clean.length);
+    });
     collect(index);
     collect(worktree);
+    collect(normalized);
     for (const key of Object.keys(state.intentModes)) capturedPaths.add(key);
     const indexTree = await saveTree(index),
       worktreeTree = await saveTree(worktree);
+    const worktreeDiffTree = normalized.size ? await saveTree(new Map([...worktree, ...normalized])) : undefined;
     const requiredBlobs = new Set(needed);
     let requiredBlobBytes = 0;
     for (const blob of requiredBlobs) {
@@ -352,8 +376,11 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     // A shared nonempty blob would disclose denied bytes through the allowed path.
     // The canonical empty blob has no payload. Path policy still denies the sensitive name.
     for (const id of denied) if (id !== state.emptyBlob && needed.has(id)) unavailable();
-    const finalWork = await scanWorking(executable, state, signal, async (id, bytes) => {
+    const finalWork = await scanWorking(executable, state, signal, async (id, bytes, key) => {
+      if (worktree.get(key)?.id !== id) throw new RepositoryCaptureChanged();
       if (needed.has(id) && !table.has(id)) await save("blob", bytes, id, requiredBlobs.has(id));
+      const clean = normalized.get(key);
+      if (clean && needed.has(clean.id) && !table.has(clean.id)) await save("blob", cleanCrlf(bytes), clean.id);
     });
     if (JSON.stringify([...finalWork]) !== JSON.stringify([...worktree]))
       throw new RepositoryCaptureChanged();
@@ -375,7 +402,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
       const equal = (a: typeof working, b: typeof working) => a?.id === b?.id && a?.mode === b?.mode;
       if (committed || (!staged && !working && !intent)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
-      if ((staged && !equal(staged, working)) || missingIntent) classes.push("unstaged");
+      if ((staged && !equal(staged, normalized.get(key) ?? working)) || missingIntent) classes.push("unstaged");
       if (working && !staged) classes.push(intent ? "unstaged" : "untracked");
       if ((committed && !staged) || (staged && !working) || missingIntent) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
@@ -435,6 +462,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
         head,
         indexTree,
         worktreeTree,
+        ...(worktreeDiffTree && { worktreeDiffTree }),
         historyPolicy: policy,
         retainedRevisions,
         retainedCommitCount: ids.size,

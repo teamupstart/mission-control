@@ -541,6 +541,50 @@ test("oversized required Git objects in the index, HEAD or base are rejected bef
   assert.deepEqual(f.service.artifacts(), []);
 });
 
+test("packed delta reconstruction enforces the allocation limit on the base as well as the selected blob", async (t) => {
+  const f = fixture(t);
+  const original = randomBytes(1_400_000);
+  f.write("data", original);
+  f.git("add", "data");
+  f.git("commit", "-qm", "original");
+  const baseBlob = f.git("rev-parse", ":data");
+  f.write("data", original.subarray(0, 850_000));
+  f.git("add", "data");
+  f.git("commit", "-qm", "shorter revision");
+  const selected = f.git("rev-parse", ":data");
+  f.git("repack", "-adf");
+  const packDir = join(f.checkout, ".git/objects/pack");
+  const packIndex = readdirSync(packDir).find(path => path.endsWith(".idx"))!;
+  const packed = f.git("verify-pack", "-v", join(packDir, packIndex));
+  assert.equal(packed.split("\n").find(row => row.startsWith(selected + " "))?.split(/\s+/).at(-1), baseBlob);
+  // Only the smaller blob is reachable from the submitted root.
+  const root = objects(f.checkout).commit(f.git("write-tree"), [], "submission");
+  f.git("update-ref", "HEAD", root);
+  rmSync(join(f.checkout, "data")); // The required index blob must come from the pack.
+  const processes = (await import("node:child_process")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const spawn = processes.spawn;
+  let capped = false;
+  const mock = t.mock.method(processes, "spawn", (command: string, args: string[], options: import("node:child_process").SpawnOptions) => {
+    if (args.includes("--batch-command")) {
+      assert.equal(options.env?.GIT_ALLOC_LIMIT, String(MAX_CAPTURE_OBJECT_BYTES + 1));
+      capped = true;
+      options = { ...options, env: { ...options.env, GIT_ALLOC_LIMIT: "1100000" } };
+    }
+    return spawn(command, args, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.ok(capped);
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await f.service.discard(await f.prepare());
+});
+
 test("aggregate required storage is checked across layers before copying any blobs", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(12_000, 100_000));
   f.write("file", "a".repeat(5_000));
@@ -2185,6 +2229,72 @@ test("publication intent recovers a rename without a committed row and refuses u
   assert.equal((await f.service.reconcile()).orphans, 1);
   assert.ok(existsSync(foreign));
   assert.ok(!existsSync(parent) && !existsSync(dest));
+});
+
+test("CRLF worktree reads preserve literal bytes while status and diffs use Git's clean text", async (t) => {
+  const f = fixture(t);
+  f.git("config", "core.autocrlf", "false");
+  f.write("legacy", "existing CRLF\r\n");
+  f.git("add", "legacy");
+  f.git("config", "core.autocrlf", "input");
+  f.write(".gitattributes", "raw -text\nforced text eol=crlf\nedit filter=fixture\n");
+  f.write("auto", "automatic\r\n");
+  f.write("forced", "explicit\r\n");
+  f.write("raw", "literal\r\n");
+  f.write("binary", Buffer.from("binary\0\r\n"));
+  f.write("edit", "initial\r\n");
+  f.git("add", ".");
+  f.git("commit", "-qm", "line endings");
+  assert.equal(f.git("status", "--porcelain"), "");
+  const candidate = await f.prepare();
+  const cleanView = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", candidate.id, "artifact", "manifest.json"), "utf8"))).view;
+  assert.equal(cleanView.worktreeDiffTree, f.git("write-tree"));
+  assert.notEqual(cleanView.worktreeTree, cleanView.worktreeDiffTree);
+  assert.ok(cleanView.worktree.every(entry => !entry.classifications.includes("unstaged")));
+  f.git("config", "core.autocrlf", "false");
+  assert.equal(await f.service.stillCurrent(candidate, signal), false);
+  await f.service.discard(candidate);
+  f.git("config", "core.autocrlf", "true");
+  f.write("edit", "staged\r\n");
+  f.git("add", "edit");
+  f.write("edit", "working\r\n");
+  assert.equal(f.git("diff", "--name-only"), "edit");
+  f.git("config", "filter.fixture.clean", "touch EXECUTED");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  assert.equal(existsSync(join(f.checkout, "EXECUTED")), false);
+  f.activate(snapshot);
+  rmSync(f.checkout, { recursive: true });
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  const reader = createRepositoryReader({
+    view: lease.descriptor, objectDirectory: lease.objectDirectory, gitBinary: "git",
+    workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {},
+  });
+  assert.deepEqual(lease.descriptor.worktree.find(entry => entry.path === "edit")?.classifications,
+    ["committed", "staged", "unstaged"]);
+  const bytes = await reader.query("read", { path: "edit", unit: "byte" });
+  assert.equal(bytes.items[0]?.text, Buffer.from("working\r\n").toString("base64"));
+  for (const pair of ["index_worktree", "base_worktree"]) {
+    const clean = await reader.query("git_diff", { pair, paths: ["auto", "forced", "raw", "binary", "legacy"] });
+    assert.equal(clean.status, "ok");
+    assert.ok(clean.items.every(item => !item.text?.trim()));
+    const edit = await reader.query("git_diff", { pair, paths: ["edit"] });
+    const patch = edit.items.map(item => item.text).join("\n");
+    assert.match(patch, /\+working/);
+    assert.ok(!patch.includes("\r"));
+  }
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
+
+test("CRLF normalization preserves the sensitive nonempty blob alias check", async (t) => {
+  const f = fixture(t);
+  f.git("config", "core.autocrlf", "true");
+  f.write("public", "same bytes\n");
+  f.write(".env", "same bytes\r\n");
+  await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
 });
 
 test("core.fileMode follows the indexed executable bit for tracked files and preserves working bytes", async (t) => {

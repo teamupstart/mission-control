@@ -8,6 +8,7 @@ import { checkoutGit, checkoutRecords, type CheckoutDirectories } from "./git.ts
 import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
+import { lineEndingModes } from "./line-endings.ts";
 
 export type Entry = { mode: string; id: string };
 /** Hex keys sort in raw byte order, without Unicode decoding or case folding. */
@@ -215,7 +216,9 @@ async function sample(executable: string, directories: CheckoutDirectories, iden
     const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
   });
-  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
+  const sorted = [...paths].sort();
+  const lineEndings = await lineEndingModes(executable, directories, sorted, signal);
+  return { ...directories, identities, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: sorted, lineEndings };
 }
 
 const require = createRequire(import.meta.url);

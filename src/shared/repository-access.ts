@@ -180,6 +180,7 @@ export const RepositoryViewFieldsSchema = z
     base: oid.nullable(),
     indexTree: oid,
     worktreeTree: oid,
+    worktreeDiffTree: oid.optional(),
     historyPolicy: RepositoryHistoryPolicyV1Schema,
     retainedRevisions: z
       .array(

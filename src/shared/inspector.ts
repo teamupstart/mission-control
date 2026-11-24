@@ -6,6 +6,8 @@ import type { CodeRabbitSummary } from "./code-rabbit.ts";
 import type { InspectorInspection, InspectorSummary } from "./types.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
+import type { ThinkingLevel } from "./types.ts";
 
 const INSPECTOR_MAX_ROUNDS = 100;
 const INSPECTOR_MAX_COMMENTS_PER_ROUND = 20;
@@ -87,6 +89,32 @@ export function reviewNeedsLiveRerun(
   reviewed: InspectorPosture | null,
 ): boolean {
   return current === "live" && reviewed !== "live";
+}
+
+/**
+ * The reasoning effort a full review asks for.
+ *
+ * A review is now asked for every finding that clears the bar in its first round, and later
+ * rounds only check the repair, so the first read has to be the thorough one. At the
+ * provider's default effort a round returned one or two findings and the rest surfaced a
+ * push at a time. Follow-up replies keep the provider default: answering one thread is a
+ * smaller job.
+ */
+export const INSPECTOR_REVIEW_EFFORT: ThinkingLevel = "xhigh";
+
+/**
+ * The effort to pass for a review on this provider and model, or undefined when the pair
+ * does not offer `INSPECTOR_REVIEW_EFFORT`. Undefined leaves the provider's own default in
+ * place: a runner forwards the level without checking it, so an unoffered level must never
+ * reach one.
+ */
+export function inspectorReviewEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+): ThinkingLevel | undefined {
+  return launchEffortLevels(runner, model).includes(INSPECTOR_REVIEW_EFFORT)
+    ? INSPECTOR_REVIEW_EFFORT
+    : undefined;
 }
 
 /**

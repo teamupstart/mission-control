@@ -26,6 +26,7 @@ import { unref } from "../util/timers.ts";
 import {
   INSPECTOR_LIMITS,
   inspectorPosture,
+  inspectorReviewEffort,
   reviewNeedsLiveRerun,
 } from "@shared/inspector.ts";
 import type { PrOpened, Registry } from "../registry.ts";
@@ -211,11 +212,17 @@ function inspectorRunOptions(
   // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
   // ladder, and resolving it here a second way is how the worker and the panel come to print
   // different providers for the same call.
-  const runner = llmRunner(inspectorRunner(cfg).id);
+  const runnerId = inspectorRunner(cfg).id;
+  const runner = llmRunner(runnerId);
+  const model = reviewModel(cfg);
+  // Only the full review: it is the one thorough read a pull request gets. A reply answers
+  // one thread and keeps the provider's default.
+  const effort = role === "inspector:review" ? inspectorReviewEffort(runnerId, model) : undefined;
   return {
     runner,
     options: {
-      model: reviewModel(cfg),
+      model,
+      ...(effort ? { effort } : {}),
       timeoutMs,
       role,
       ...(schema ? { schema } : {}),

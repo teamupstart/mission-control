@@ -255,6 +255,12 @@ A model is a **cost** choice here, not a latency one. The same 10KB PR measured 
 Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
 `MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
 
+A full review runs at `xhigh` reasoning effort wherever the provider offers that level for the
+resolved model, and at the provider's default where it does not. It is the one thorough read a
+pull request gets: the first round is asked for every finding that clears the bar, and later
+rounds only check the repair. Follow-up replies keep the provider's default effort. The
+timings above were measured at default effort, so a review now takes longer than they show.
+
 ### Whether a finding reached GitHub
 
 Every finding records whether, and when, it was posted. The time is stamped when GitHub

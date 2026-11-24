@@ -174,7 +174,7 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
   test(`the ${label} route immediately restores an older cancel window ahead of a newer outcome`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
-    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 7 } } })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
     expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
@@ -182,8 +182,15 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     const card = page.getByRole("status");
     await say(daemon, "Steve, inspect the older message", { id: "older" });
     await expect(card).toContainText("inspect the older message");
-    await say(daemon, "Steve, inspect the newer message");
+    await say(daemon, "Steve, inspect the newer message", { id: "newer" });
     await expect(card).toContainText("inspect the newer message");
+    const choose = page.getByRole("combobox", { name: "Voice message" });
+    await choose.selectOption("older");
+    await say(daemon, "Steve, inspect the third message", { id: "third" });
+    await expect(card).toContainText("inspect the third message", { timeout: 3000 });
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(choose).toHaveValue("older");
+    await choose.selectOption("newer");
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(card).toContainText("inspect the older message", { timeout: 2000 });
     await page.mouse.move(640, 400);

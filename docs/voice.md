@@ -48,8 +48,9 @@ countdown expires, it switches to another open window even if the event stream i
 With no countdown open or message selected, an address awaiting a recipient choice appears
 ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
-including individual turns held for the same agent. A new countdown takes priority, then
-the surface returns to your selection if the card is still available.
+including individual turns held for the same agent. A new countdown takes priority even
+when you selected another pending delivery. When the new window closes, the surface
+returns to your selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
 while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
 the same launch request.

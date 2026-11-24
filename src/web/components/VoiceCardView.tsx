@@ -81,7 +81,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
     if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
-  }, [card, focused, hidden]);
+  }, [card, focused, busy, feedback, hidden]);
   const retention = busy || (focused && !hidden) ? "in-use" : hidden && feedback ? "hidden-feedback" : "reading";
   useLayoutEffect(() => {
     if (!settled) return;

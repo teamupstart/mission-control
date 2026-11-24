@@ -25,7 +25,7 @@ import {
   type ReviewDeliveryRow,
   type SpokenTurnRow,
 } from "./db.ts";
-import { DELIVERY_LAG_MS, DeliveryLedger, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
+import { DELIVERY_LAG_MS, DeliveryLedger, onSend, registerDeliveryLedgers, transcriptSize, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
@@ -123,10 +123,12 @@ export function followSpokenConversationKey(sessionId: string, fromKey: string, 
 export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"]): number {
   const cutoff = now - DELIVERY_LAG_MS;
   const candidates = expiredSpokenReservations(cutoff);
-  if (!candidates.length) return 0;
-  for (const { noteKey, offset } of candidates) {
+  let removed = 0;
+  for (const { noteKey, offset, lastOffset } of candidates) {
     const transcript = transcriptFor(noteKey);
     if (!transcript) continue;
+    const size = transcriptSize(transcript);
+    if (size === null || size < lastOffset) continue;
     let from = offset;
     for (;;) {
       let page;
@@ -137,11 +139,19 @@ export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: stri
         break;
       }
       spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
-      if (page.atEnd || page.end <= from) break;
+      if (page.start !== from) break;
+      if (page.atEnd) {
+        // A reader can also return an empty terminal page on I/O failure or an incomplete line.
+        if (page.end === size && transcriptSize(transcript) === size) {
+          removed += deleteExpiredSpokenReservations(noteKey, cutoff);
+        }
+        break;
+      }
+      if (page.end <= from || page.end >= size) break;
       from = page.end;
     }
   }
-  return deleteExpiredSpokenReservations(cutoff);
+  return removed;
 }
 
 registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger]);

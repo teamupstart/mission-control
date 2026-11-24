@@ -119,8 +119,9 @@ At the first claim, the daemon appends the agent’s open asks, a reminder of an
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation
 labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
 After a crash, abandoning an uncertain SDK send gives the daemon 24 hours to find the client
-message ID and matching words in the transcript. The next hourly cleanup checks available
-transcripts and removes payloads that still have neither a runtime receipt nor a transcript match.
+message ID and matching words in the transcript. Hourly cleanup checks live and persisted
+conversations. It removes an unmatched payload after reading through the end of its transcript.
+A missing or unreadable transcript is checked again on a later sweep.
 
 ## Turning voice on
 

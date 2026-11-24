@@ -159,6 +159,7 @@ import type {
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
+import { listSdkSessions, type SdkSessionRow } from "./sdk/store.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor, sessionMessages } from "./harness/index.ts";
@@ -9589,9 +9590,18 @@ export class Registry extends EventEmitter {
   pruneAbandonedSpokenTurns(now: number): number {
     if (!this.sweptSessions) return 0;
     const byKey = new Map([...this.sessions.values()].map(session => [noteKeyFor(session), session]));
+    let persisted: Map<string | null, SdkSessionRow> | undefined;
     return pruneAbandonedSpokenTurns(now, key => {
       const session = byKey.get(key);
-      return session ? sessionMessages(session) : null;
+      if (session?.agentSessionId === key) {
+        const transcript = sessionMessages(session);
+        if (transcript) return transcript;
+      }
+      // SDK rows outlive eviction. Only an exact native binding identifies a transcript for deletion.
+      persisted ??= new Map(listSdkSessions().map(row => [row.agentSessionId, row]));
+      const row = persisted.get(key);
+      return row?.agent ? sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
+        agentSessionId: key, startedAt: row.createdAt, transcriptPath: null }) : null;
     });
   }
 

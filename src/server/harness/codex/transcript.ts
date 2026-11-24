@@ -1,5 +1,4 @@
-import type { Session } from "@shared/types.ts";
-import type { TranscriptSpec } from "../types.ts";
+import type { TranscriptSession, TranscriptSpec } from "../types.ts";
 import type { ToolCall, TranscriptMessage } from "@shared/types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { readTailLines } from "../../util/file-tail.ts";
@@ -59,7 +58,7 @@ const bindings = new Map<string, RolloutBinding>();
  * or agent session changes; a miss is retried only every `RESCAN_MS`, so a rollout-less session doesn't
  * trigger a filesystem walk every tick.
  */
-function locate(s: Session): string | null {
+function locate(s: TranscriptSession): string | null {
   if (s.transcriptPath) {
     // Explicit SDK/hook paths own the same retained metadata as discovered paths.
     // Otherwise retain() drops their verified turn after every poll.

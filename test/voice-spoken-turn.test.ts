@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -374,6 +374,62 @@ test("abandoned SDK reservations expire after reconciliation and only exact tran
   const sameTimestamp = transcript.append("typed-after-native", received, now);
   const conversation = transcript.conversation("sdk-expiry-previously-read");
   assert.equal(spokenLedger.bound(conversation, [sameTimestamp]).rows.has(sameTimestamp.id), false);
+});
+
+test("cleanup retains spoken payloads through missing, unreadable and incomplete transcripts until a verified scan", async () => {
+  const { pruneAbandonedSpokenTurns, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const key = "unreadable-sdk";
+  const words = "inspect the build";
+  const transcript = fakeTranscript();
+  const conversation = transcript.conversation(key);
+  const attempt = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(conversation, words, words, true, attempt);
+  db.recoverSendingPendingTurns(Date.now());
+  db.clearPendingTurns(key);
+  const now = Date.now() + DELIVERY_LAG_MS + 1;
+  const message = transcript.append(row.id, words, now - 1000);
+  const read = conversation.transcript!.read;
+  for (const unavailable of [null, { ...read, after: () => { throw new Error("disconnected"); } },
+    { ...read, after: () => ({ messages: [], start: 0, end: 0, atEnd: true }) }]) {
+    pruneAbandonedSpokenTurns(now, k => k === key && unavailable ? { path: "fake", read: unavailable } : null);
+    assert.equal(db.loadSpokenTurns(key)[0]?.received, words);
+  }
+  pruneAbandonedSpokenTurns(now, k => k === key ? conversation.transcript : null);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, message.ts);
+  assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, words);
+});
+
+test("cleanup finds an evicted SDK conversation by its persisted binding and verifies an unread receipt", async t => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
+  const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const projects = mkdtempSync(join(tmpdir(), "spoken-archived-"));
+  t.after(() => rmSync(projects, { recursive: true, force: true }));
+  const key = "evicted-native";
+  const cwd = "/archived";
+  const folder = join(projects, "-archived");
+  mkdirSync(folder);
+  const words = "inspect the build";
+  const now = Date.now();
+  const attempt = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn({ key, transcript: null }, words, words, true, attempt);
+  db.recoverSendingPendingTurns(now);
+  db.clearPendingTurns(key);
+  upsertSdkSession({ id: "sdk:archived", agentSessionId: key, agent: "claude", cwd, taskId: null,
+    model: null, effort: null, permissionMode: null, status: "exited", turnInProgress: false });
+  const timestamp = new Date(now).toISOString();
+  writeFileSync(join(folder, key + ".jsonl"), JSON.stringify({ type: "user", uuid: row.id, timestamp,
+    message: { role: "user", content: words } }) + "\n");
+  t.mock.method(claudeTranscript, "locate", (s: Parameters<typeof resolveTranscriptPath>[0]) => resolveTranscriptPath(s, projects));
+  db.closeDb();
+  const registry = new Registry();
+  registry.applyDiscovery([]);
+  assert.equal(registry.getSession("sdk:archived"), undefined);
+  registry.pruneAbandonedSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now);
 });
 
 test("startup removes an older orphan payload while retaining the still-uncertain handoff", async () => {

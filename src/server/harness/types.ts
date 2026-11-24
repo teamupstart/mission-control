@@ -342,6 +342,9 @@ export interface TranscriptMessages {
   narration(path: string): string | null;
 }
 
+/** Live or persisted identity sufficient to locate one conversation's native transcript. */
+export type TranscriptSession = Pick<Session, "agent" | "id" | "cwd" | "agentSessionId" | "startedAt" | "transcriptPath">;
+
 /**
  * Reading a harness's own record of a session off disk.
  *
@@ -364,7 +367,7 @@ export interface TranscriptSpec {
    * messages-less harness to locate a file it only holds metadata in is a directory walk
    * for an answer nobody uses.
    */
-  locate(session: Session): string | null;
+  locate(session: TranscriptSession): string | null;
   /** One bounded read of that file for the passive poller. Cheap enough for a hot loop. */
   passiveRead(path: string): TranscriptPassiveRead;
   /** Conversation reading, or null when the file carries metadata but no messages. */

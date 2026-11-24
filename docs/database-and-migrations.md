@@ -250,7 +250,9 @@ generation also leaves the current work cycle alone.
 For SDK messages, `message_ts` records that the daemon saw the client UUID and matching payload
 in the native transcript. A reserved UUID alone leaves this field null. Abandoning an unconfirmed
 attempt sets `abandoned_at` once. Startup gives existing orphans the same reconciliation window.
-After 24 hours the hourly sweep reads available transcripts and deletes unmatched payloads.
+After 24 hours the hourly sweep locates transcripts using live sessions or the native conversation
+IDs in persisted SDK sessions. Only a complete read to a stable end permits deletion of that
+conversation's unmatched payloads. A missing, unreadable or changing file is retried later.
 Pending uncertain attempts remain available for the operator to resolve.
 
 For a confirmed transport without client identifiers, a file created after reservation

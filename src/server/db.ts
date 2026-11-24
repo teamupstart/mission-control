@@ -13368,17 +13368,18 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
     WHERE id = ? AND message_id = id AND message_ts IS NULL`).run(messageTs, id);
 }
 
-export function expiredSpokenReservations(cutoff: number): Array<{ noteKey: string; offset: number }> {
-  return openDb().prepare(`SELECT note_key AS noteKey, MIN(COALESCE(transcript_offset, 0)) AS offset
-    FROM session_spoken_turns WHERE abandoned_at <= ? GROUP BY note_key`).all(cutoff) as { noteKey: string; offset: number }[];
+export function expiredSpokenReservations(cutoff: number) {
+  return openDb().prepare(`SELECT note_key AS noteKey, MIN(COALESCE(transcript_offset, 0)) AS offset,
+    MAX(COALESCE(transcript_offset, 0)) AS lastOffset FROM session_spoken_turns WHERE abandoned_at <= ? GROUP BY note_key`)
+    .all(cutoff) as { noteKey: string; offset: number; lastOffset: number }[];
 }
 
-export function deleteExpiredSpokenReservations(cutoff: number): number {
+export function deleteExpiredSpokenReservations(noteKey: string, cutoff: number): number {
   const removed = openDb().prepare(`DELETE FROM session_spoken_turns
-    WHERE abandoned_at <= ? AND message_ts IS NULL AND runtime_confirmed_at IS NULL RETURNING note_key`)
-    .all(cutoff) as { note_key: string }[];
-  for (const row of removed) discardedSpokenKeys.add(row.note_key);
-  return removed.length;
+    WHERE note_key = ? AND abandoned_at <= ? AND message_ts IS NULL AND runtime_confirmed_at IS NULL`)
+    .run(noteKey, cutoff);
+  if (removed.changes) discardedSpokenKeys.add(noteKey);
+  return Number(removed.changes);
 }
 
 const discardedSpokenKeys = new Set<string>();

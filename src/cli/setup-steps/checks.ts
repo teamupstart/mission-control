@@ -163,9 +163,12 @@ export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promis
   // the by-hand fix for a stale mod starts with the uninstall that `mctl setup` itself runs.
   const bin = claudeCommand(claude);
   const reinstall = [`${bin} plugin uninstall ${MOD_PLUGIN_ID} --scope user`, ...recoveryCommands(deps.stateDir, bin)].join(" && ");
-  if ("error" in listed) return [{ name: "mod-enabled", status: "fail", message: listed.error, fix: "Run `mctl setup`." }];
+  // Every outcome reports both mod checks, so a person always sees the same six lines and the
+  // "X of N" summary counts the whole set; a check that cannot run says so and fails.
+  const cannotCheck = (why: string): DoctorCheck => ({ name: "mod-current", status: "fail", message: "cannot be checked: " + why, fix: "Fix the mod-enabled check first." });
+  if ("error" in listed) return [{ name: "mod-enabled", status: "fail", message: listed.error, fix: "Run `mctl setup`." }, cannotCheck("the installed mods could not be listed")];
   const mod = listed.mod;
-  if (!mod) return [{ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is not installed`, fix: "Run `mctl setup`." }];
+  if (!mod) return [{ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is not installed`, fix: "Run `mctl setup`." }, cannotCheck("the mod is not installed")];
   const checks: DoctorCheck[] = [];
   if (mod.enabled && mod.scope === "user") {
     checks.push({ name: "mod-enabled", status: "ok", message: `${MOD_PLUGIN_ID} is installed and enabled at user scope` });
@@ -248,7 +251,10 @@ export async function runChecks(deps: SetupDeps): Promise<DoctorCheck[]> {
   const health = await fetchHealth(deps);
   const checks: DoctorCheck[] = [check, checkDaemon(health, deps), checkFlag(health.body)];
   if (claude) checks.push(...(await checkInstalled(claude, deps)));
-  else checks.push({ name: "mod-enabled", status: "fail", message: "cannot be checked without claude", fix: "Fix the claude check first." });
+  else {
+    checks.push({ name: "mod-enabled", status: "fail", message: "cannot be checked without claude", fix: "Fix the claude check first." });
+    checks.push({ name: "mod-current", status: "fail", message: "cannot be checked without claude", fix: "Fix the claude check first." });
+  }
   checks.push(await checkModCalls(claude, deps));
   return checks;
 }

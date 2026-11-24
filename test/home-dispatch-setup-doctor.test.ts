@@ -944,3 +944,31 @@ test("a passing mod-calls check lists the daemon paths the bundle actually names
     await r.cleanup();
   }
 });
+
+test("doctor always prints all six checks, saying so when one cannot run", async () => {
+  const names = ["claude", "daemon", "flag", "mod-enabled", "mod-current", "mod-calls"];
+  const lines = (out: string) => names.map((n) => out.split("\n").find((l) => l.includes(" " + n + ": ")));
+  const r = await rig();
+  try {
+    // Nothing installed: mod-current cannot be checked.
+    const fresh = await r.run("doctor");
+    assert.ok(lines(fresh.out).every(Boolean), fresh.out);
+    assert.match(fresh.out, /FAIL {2}mod-current: cannot be checked: the mod is not installed/);
+    assert.match(fresh.err, /of 6 checks failed/);
+
+    // An unreadable listing.
+    r.claude.update({ failures: { list: { exitCode: 1, stderr: "boom", times: 5 } } });
+    const broken = await r.run("doctor");
+    assert.ok(lines(broken.out).every(Boolean), broken.out);
+    assert.match(broken.out, /FAIL {2}mod-current: cannot be checked: the installed mods could not be listed/);
+
+    // No claude at all.
+    r.env.MISSION_CLAUDE_BIN = join(r.home, "no-such-claude");
+    const none = await r.run("doctor");
+    assert.ok(lines(none.out).every(Boolean), none.out);
+    assert.match(none.out, /FAIL {2}mod-current: cannot be checked without claude/);
+    assert.match(none.err, /of 6 checks failed/);
+  } finally {
+    await r.cleanup();
+  }
+});

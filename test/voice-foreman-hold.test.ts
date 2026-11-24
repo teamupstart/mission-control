@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Registry } from "../src/server/registry.ts";
+import { reserveSpokenHandoff, spokenLedger } from "../src/server/delivery-ledgers.ts";
 import { PendingTurnManager } from "../src/server/pending-turns.ts";
 import { QueueManager } from "../src/server/queue.ts";
 import { ReviewManager } from "../src/server/reviews.ts";
@@ -117,12 +118,51 @@ test("a typed row and its delivery leave Foreman available even with a voice-pre
   assert.equal(registry.voiceHold(id), false);
 });
 
+test("a failed spoken reservation rolls back its outbox stamp before the runtime sees the message", () => {
+  const key = "atomic-spoken-reservation";
+  const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
+  const claim = db.claimNextPendingTurn(key, 2, row, words => words)!;
+  const reserve = () => reserveSpokenHandoff({ key, transcript: null }, claim, "inspect", true, 0, 3);
+  const d = db.openDb();
+  d.exec("CREATE TEMP TRIGGER fail_spoken_insert BEFORE INSERT ON session_spoken_turns BEGIN SELECT RAISE(ABORT, 'injected insertion failure'); END");
+  try {
+    assert.throws(reserve, /injected insertion failure/);
+  } finally {
+    d.exec("DROP TRIGGER fail_spoken_insert");
+  }
+  assert.equal(d.prepare("SELECT spoken_reservation_id FROM pending_turns WHERE id = ?").get(key)?.spoken_reservation_id, null);
+  assert.deepEqual(spokenLedger.rows(key), []);
+  const reserved = reserve();
+  assert.ok(reserved);
+  assert.equal(reserve(), null, "the same claim cannot receive a second reservation");
+  db.closeDb();
+  assert.equal(db.loadSpokenTurns(key)[0]?.id, reserved.id);
+  assert.equal(db.openDb().prepare("SELECT spoken_reservation_id FROM pending_turns WHERE id = ?").get(key)?.spoken_reservation_id, reserved.id);
+});
+
+test("recovering a legacy handoff stamp without its reservation cannot hold Foreman after mark sent", () => {
+  for (const alreadyUncertain of [false, true]) {
+    const key = "legacy-incomplete-" + alreadyUncertain;
+    const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
+    const claim = db.claimNextPendingTurn(key, 2, row, words => words)!;
+    assert.ok(db.recordSpokenHandoff(row.id, claim.revision, 0, 3));
+    if (alreadyUncertain) db.markPendingTurnUncertain(row.id, claim.revision, "interrupted", 4);
+    db.closeDb();
+    db.recoverSendingPendingTurns(5);
+    const [uncertain] = db.listPendingTurns(key);
+    assert.equal(uncertain?.state, "uncertain");
+    assert.ok(db.resolveUncertainPendingTurn(row.id, uncertain.revision, 6));
+    assert.equal(db.hasDeliveredSpokenHold(key), false);
+    assert.equal(db.workCycleFor(key), null);
+  }
+});
+
 test("settling an uncertain spoken handoff after restart holds only its original receiving cycle", () => {
   for (const finished of [false, true]) {
     const key = "uncertain-spoken-" + finished;
     const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
     const claim = db.claimNextPendingTurn(key, 2, row, words => words)!;
-    assert.ok(db.recordSpokenHandoff(row.id, claim.revision, 0, 2));
+    assert.ok(reserveSpokenHandoff({ key, transcript: null }, claim, "inspect", true, 0, 2));
     db.markWorkCycleActive(key, 3);
     if (finished) {
       db.completeWorkCycle(key, 4, 4);
@@ -163,7 +203,7 @@ test("a confirmed spoken hold follows the first native binding and stays with th
   registry.registerSdkSession({ id, agent: "claude", name: "First bind", cwd: "/tmp" });
   const row = db.createPendingTurn({ id: "first-bind", noteKey: id, text: "inspect", spokenWords: "inspect", now: 1 });
   const claim = db.claimNextPendingTurn(id, 2, row, words => words)!;
-  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0, 2);
+  const reservation = reserveSpokenHandoff({ key: id, transcript: null }, claim, "inspect", true, 0, 2)?.id;
   assert.ok(reservation);
   assert.ok(db.retireDeliveredPendingTurn(row.id, claim.revision, 3, reservation));
   assert.equal(registry.voiceHold(id), true);
@@ -184,7 +224,7 @@ test("a late confirmation uses the native receiving cycle even if the outbox has
   db.completeWorkCycle(native, 2, 2);
   const row = db.createPendingTurn({ id: "in-flight-bind", noteKey: provisional, text: "inspect", spokenWords: "inspect", now: 3 });
   const claim = db.claimNextPendingTurn(provisional, 4, row, words => words)!;
-  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0, 4);
+  const reservation = reserveSpokenHandoff({ key: provisional, transcript: null }, claim, "inspect", true, 0, 4)?.id;
   assert.ok(reservation);
   db.workCycleForBoundSession(provisional, native);
   assert.ok(db.rekeyPendingTurns(provisional, native, 5));

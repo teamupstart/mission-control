@@ -12,6 +12,7 @@ import {
   deleteReviewDelivery,
   deleteSpokenTurn,
   expiredSpokenReservations,
+  inTransaction,
   insertDelegatedTurn,
   insertReviewDelivery,
   insertSpokenTurn,
@@ -20,12 +21,13 @@ import {
   loadSpokenTurns,
   moveSpokenTurns,
   observeSpokenClientReceipt,
+  recordSpokenHandoff,
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
   type SpokenTurnRow,
 } from "./db.ts";
-import { DELIVERY_LAG_MS, DeliveryLedger, onSend, registerDeliveryLedgers, transcriptSize, type DeliveryConversation } from "./delivery-binding.ts";
+import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, transcriptSize, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
@@ -117,6 +119,24 @@ export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWord
 
 export function followSpokenConversationKey(sessionId: string, fromKey: string, toKey: string): void {
   if (fromKey === sessionId && fromKey !== toKey && moveSpokenTurns(fromKey, toKey)) spokenLedger.forgetCaches();
+}
+
+/** At the transport guard, the receiving cycle and its corresponding ledger reservation commit together. */
+export function reserveSpokenHandoff(conversation: DeliveryConversation, turn: PendingTurn, words: string,
+  clientMessageIds: boolean, generation: number, now: number): SpokenTurnRow | null {
+  // Process invalidations from prior outbox transactions before the ledger is read inside this one.
+  spokenLedger.rows(conversation.key);
+  try {
+    return inTransaction(() => {
+      const reservationId = recordSpokenHandoff(turn.id, turn.revision, generation, now);
+      if (!reservationId) return null;
+      return reserveSpokenTurn(conversation, words, turn.text, clientMessageIds, { ...turn, reservationId }, now);
+    });
+  } catch (error) {
+    // Binding can also have updated the other ledgers' contests before the insert or commit failed.
+    forgetDeliveryBindingState();
+    throw error;
+  }
 }
 
 /** Give each abandoned SDK attempt one final transcript walk, including conversations nobody has opened. */

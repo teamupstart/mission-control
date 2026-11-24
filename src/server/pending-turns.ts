@@ -8,7 +8,7 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
-import { followSpokenConversationKey, reserveSpokenTurn, spokenLedger } from "./delivery-ledgers.ts";
+import { followSpokenConversationKey, reserveSpokenHandoff, spokenLedger } from "./delivery-ledgers.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
@@ -17,7 +17,6 @@ import {
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
-  recordSpokenHandoff,
   createReviewContinuationPendingTurn,
   createSnoozeInstructionPendingTurn,
   SNOOZE_INSTRUCTION_TURN_PREFIX,
@@ -249,11 +248,10 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
  * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
 function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, now: number, sdkInput?: SdkTurn): boolean {
   if (send.kind !== "spoken" || send.reservationId !== null) return true;
-  const reservationId = recordSpokenHandoff(turn.id, turn.revision, generation, now);
-  if (!reservationId) return false;
   const conversation = { key: turn.noteKey, transcript: sessionMessages(session) };
-  const row = reserveSpokenTurn(conversation, send.words, turn.text,
-    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, { id: turn.id, revision: turn.revision, reservationId }, now);
+  const row = reserveSpokenHandoff(conversation, turn, send.words,
+    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, generation, now);
+  if (!row) return false;
   send.reservationId = row.id;
   if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
   return true;

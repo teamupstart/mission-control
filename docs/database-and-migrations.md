@@ -231,7 +231,10 @@ and set `spoken_hold` if that generation is still current. A delayed Stop timest
 the work cycle clears the hold in the same write that advances its generation.
 Once the SDK acceptance guard or terminal pre-paste guard stamps the claimed revision, the
 daemon mints a handoff UUID on the outbox row. That UUID identifies the reservation in
-`session_spoken_turns` and travels with the runtime receipt. If a discarded capture is
+`session_spoken_turns` and travels with the runtime receipt. The outbox stamp and transcript
+reservation commit in one transaction before the transport writes. Recovery clears a legacy
+stamp whose reservation is missing. Its uncertain outbox row still awaits the operator, and
+marking it sent cannot establish a receiving turn or hold Foreman. If a discarded capture is
 replayed with the same outbox ID and revision, it receives a new UUID. A late receipt from the
 first handoff cannot retire the new row or confirm its reservation.
 A restart before the guard leaves no transcript reservation. After the guard, the ledger can

@@ -11,6 +11,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-"));
 process.env.MISSION_HOME = home;
 
 const { completeWorkCycle, hooksEverSeen, markWorkCycleActive, openDb, workCycleFor } = await import("../src/server/db.ts");
+const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -81,7 +82,7 @@ test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : 
   }
   const row = db.createPendingTurn({ id: "spoken-before-stop", noteKey: id, text: "inspect", spokenWords: "inspect", now: 3 });
   const claim = db.claimNextPendingTurn(id, 4, row, words => words)!;
-  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0);
+  const reservation = reserveSpokenHandoff({ key: id, transcript: null }, claim, "inspect", false, 0, Date.now())?.id;
   assert.ok(reservation);
   assert.equal(db.completeWorkCycle(id, 3, 5), null, "a Stop timestamped before the claim is not its completion");
   if (sawStart) {
@@ -109,7 +110,7 @@ test("a delayed Stop between claim and handoff cannot release the receiving turn
     const key = "handoff-boundary-" + receiptFirst;
     const turn = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: 1 });
     const claim = db.claimNextPendingTurn(key, 10, turn, words => words)!;
-    const reservation = db.recordSpokenHandoff(turn.id, claim.revision, 0);
+    const reservation = reserveSpokenHandoff({ key, transcript: null }, claim, "inspect", false, 0, Date.now())?.id;
     assert.ok(reservation);
     const receive = () => assert.ok(db.retireDeliveredPendingTurn(turn.id, claim.revision, 22, reservation));
     if (receiptFirst) receive();

@@ -6503,7 +6503,7 @@ export function completeWorkCycle(
       `WITH cycle AS (SELECT * FROM session_work_cycles WHERE logical_key = $key),
             handoff AS (
               SELECT MAX(COALESCE(p.spoken_handoff_at, s.delivered_at)) AS at
-              FROM pending_turns p LEFT JOIN session_spoken_turns s ON s.id = p.spoken_reservation_id
+              FROM pending_turns p JOIN session_spoken_turns s ON s.id = p.spoken_reservation_id AND s.outbox_turn_id = p.id
               WHERE p.spoken_handoff_key = $key AND p.state IN ('sending', 'uncertain')
                 AND p.spoken_handoff_generation = COALESCE((SELECT generation FROM cycle), 0)
             )
@@ -15566,7 +15566,9 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
     const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = ? AND revision = ?
       AND (state = 'uncertain' OR spoken_reservation_id IS ?)
       RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
-                spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation,
+                spoken_words IS NOT NULL AS spoken,
+                CASE WHEN EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
+                  AND s.outbox_turn_id = pending_turns.id) THEN spoken_handoff_generation END AS generation,
                 COALESCE(spoken_handoff_at, (SELECT delivered_at FROM session_spoken_turns WHERE id = spoken_reservation_id)) AS handoffAt,
                 spoken_reservation_id AS reservationId`)
       .get(id, state, revision, reservationId) as {
@@ -15686,6 +15688,13 @@ export function recoverSendingPendingTurns(now: number): number {
             SET state = 'uncertain', revision = revision + 1, updated_at = ?,
                 last_error = 'Mission Control restarted during delivery; confirm before retrying.'
           WHERE state = 'sending'`).run(now);
+    // Older guards could commit the outbox stamp and crash before recording the reservation.
+    // Keep the operator's uncertain row, but it cannot establish that a receiving turn exists.
+    d.prepare(`UPDATE pending_turns SET spoken_handoff_key = NULL, spoken_handoff_generation = NULL,
+        spoken_handoff_at = NULL, spoken_reservation_id = NULL
+      WHERE state = 'uncertain' AND spoken_words IS NOT NULL AND spoken_handoff_generation IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
+          AND s.outbox_turn_id = pending_turns.id)`).run();
     // Earlier builds could leave unbindable rows behind after their outbox attempts were removed.
     const removed = d.prepare(`DELETE FROM session_spoken_turns
       WHERE message_id IS NULL AND runtime_confirmed_at IS NULL AND NOT EXISTS (

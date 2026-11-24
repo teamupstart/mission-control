@@ -287,7 +287,7 @@ export function rememberedOtherSendKeys(): number {
   return otherSends.size;
 }
 
-/** For tests: a full reset, as a daemon restart would leave it, so the next read comes from the tables. */
+/** Reload persisted attribution after a rollback or simulated restart. */
 export function forgetDeliveryBindingState(): void {
   for (const ledger of ledgers) ledger.forgetCaches();
   otherSends.clear();

@@ -395,6 +395,29 @@ for (const kind of ["input", "plan-decisions"] as const) {
   }
 }
 
+test("recalling speech held by a legacy call leaves every compatible call attached", async () => {
+  const sessionId = "sdk:Will";
+  const question = reviews.create(sessionId, "input", "Which branch?", "Choose", null, { snoozable: true });
+  const plan = reviews.create(sessionId, "plan-decisions", "Release", "Choose a channel", null);
+  // A legacy poll vetoes the plan durably, even if a capable poll later takes its place.
+  const expired = new AbortController();
+  const legacy = reviews.wait(plan.id, 5000, expired.signal);
+  expired.abort();
+  await legacy;
+  const calls = [question, plan].map(ask => reviews.wait(ask.id, 5000, undefined, true));
+  await say("Will, check the release", "mixed-blockers");
+  await act("mixed-blockers", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  for (const ask of [question, plan]) assert.equal(registry.getReview(ask.id)?.filedByVoiceAt, undefined);
+  const turn = registry.getSession(sessionId)!.pendingTurns.at(-1)!;
+  assert.ok(pending.recall(sessionId, turn.id, turn.revision));
+  for (const ask of [question, plan]) reviews.resolve(ask.id, "answer", "stable");
+  for (const result of await Promise.all(calls)) {
+    assert.equal(result?.response, "stable");
+    assert.equal(result?.converted, undefined);
+  }
+});
+
 test("the SDK receives the spoken words with both converted asks in its open-questions note", async t => {
   const sessionId = "sdk:Will";
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });

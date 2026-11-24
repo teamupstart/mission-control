@@ -9416,9 +9416,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
       const turn = result.pendingTurn;
       if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      for (const review of registry.pendingReviews(session.id)) {
-        if (review.waitMode !== "message") reviews.tryFileForQueuedSpeech(review.id, turn.noteKey);
-      }
+      reviews.tryFileForQueuedSpeech(session.id, turn.noteKey);
       const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },

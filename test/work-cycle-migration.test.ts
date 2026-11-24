@@ -38,11 +38,13 @@ after(() => rmSync(home, { recursive: true, force: true }));
 test("an upgraded database gains the dedicated current-state table", () => {
   const columns = db.prepare(`PRAGMA table_info(session_work_cycles)`).all() as unknown as Array<{
     name: string;
+    dflt_value: string | null;
   }>;
   assert.deepEqual(
     columns.map((column) => column.name),
-    ["logical_key", "generation", "active", "completed_at", "updated_at"],
+    ["logical_key", "generation", "active", "completed_at", "updated_at", "spoken_hold"],
   );
+  assert.equal(columns.find(column => column.name === "spoken_hold")?.dflt_value, "0");
   assert.equal(workCycleFor("never-observed"), null);
 });
 

@@ -69,7 +69,7 @@ test("a rejected delivery marks the card and Recently heard failed and cannot de
   assert.deepEqual(router.heard.list().map(({ id, outcome }) => [id, outcome]), [["rejected", "failed"]]);
 });
 
-test("delivery receives the routed stop decision across a cancel window and a candidate pick", async () => {
+test("direct and picked stops interrupt immediately while ordinary speech keeps its cancel window", async () => {
   const steve: SpokenName = {
     key: "task:steve", name: "Steve", kind: "session", sessionId: "sdk:steve", taskId: "steve",
     role: "", colorId: null, agent: "codex", state: "running",
@@ -89,15 +89,17 @@ test("delivery receives the routed stop decision across a cancel window and a ca
   try {
     await say("direct", "Steve, STOP!");
     await say("picked", "Steven, stop.");
+    assert.deepEqual(deliveries, [[steve.key, "STOP!", "direct", "stop"]]);
     assert.equal(await router.pick("picked", steve.key), true);
     await say("message", "Steve, stop the build");
-    assert.deepEqual(deliveries, []);
-    for (const id of ["direct", "picked", "message"]) assert.equal(await router.sendNow(id), true);
     assert.deepEqual(deliveries, [
       [steve.key, "STOP!", "direct", "stop"],
       [steve.key, "stop.", "picked", "stop"],
-      [steve.key, "stop the build", "message", undefined],
     ]);
+    for (const id of ["direct", "picked"]) assert.equal(await router.sendNow(id), false);
+    assert.equal(await router.sendNow("message"), true);
+    assert.equal(deliveries.length, 3);
+    assert.deepEqual(deliveries[2], [steve.key, "stop the build", "message", undefined]);
   } finally {
     router.reset();
   }

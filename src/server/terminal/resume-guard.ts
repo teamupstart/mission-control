@@ -8,6 +8,8 @@ import { run } from "../util/exec.ts";
 import { claimResumeLease, completeResumeLease, readResumeEnvironmentSocket, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
 import { parseResumeProcesses, resumeDescendantsExited } from "./resume-processes.ts";
 
+const handoffTicket = process.env.MISSION_TERMINAL_HANDOFF_TICKET;
+delete process.env.MISSION_TERMINAL_HANDOFF_TICKET;
 const inventoryOptions = { timeoutMs: 5_000, env: { ...process.env, LC_ALL: "C", LANG: "C" } };
 
 // A separate packaged process, deliberately independent of the daemon's exit handlers.
@@ -75,6 +77,7 @@ async function processInventory() {
 }
 
 async function readEnvironmentPatch(path: string): Promise<TerminalEnvironmentPatch> {
+  if (!handoffTicket || !/^[a-f0-9]{64}$/.test(handoffTicket)) throw new Error("Missing launch ticket");
   const cwd = process.cwd();
   const directory = dirname(path);
   process.chdir(directory);
@@ -86,6 +89,7 @@ async function readEnvironmentPatch(path: string): Promise<TerminalEnvironmentPa
       throw new Error("Unavailable environment handoff");
     }
     const socket = createConnection(basename(path));
+    socket.write(Buffer.from(handoffTicket, "hex"));
     socket.setTimeout(5_000, () => socket.destroy(new Error("Environment handoff timed out")));
     socket.setEncoding("utf8");
     let payload = "";

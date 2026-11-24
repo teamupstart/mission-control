@@ -52,7 +52,7 @@ export async function launchPreparedResume<T>(
     attempted = true;
     expected = expectTerminalLaunchWorkUnit(prepared.stateHome, prepared.workUnitId, prepared.conversationKey, named?.missing);
     const result = await launch({ name: input.name, cwd: prepared.cwd,
-      argv: prepared.wrappedArgv, stateHome: prepared.stateHome });
+      argv: handoff ? handoff.authorize(prepared.wrappedArgv) : prepared.wrappedArgv, stateHome: prepared.stateHome });
     if (result.outcome === "launched") settleTerminalLaunchWorkUnit(expected, "succeeded");
     if (result.outcome === "refused") {
       await handoff?.dispose();

@@ -115,7 +115,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     if (process.argv[2]) require("node:fs").appendFileSync(process.argv[2], "started\\n");
     const env = process.env;
     const matches = require("node:crypto").createHash("sha256").update(env.FIXTURE_TOKEN ?? "").digest("hex") === ${JSON.stringify(digest)};
-    process.exitCode = matches && !env.MISSION_API_TOKEN && !env.MISSION_SCOUT_SESSION_LOCATOR
+    process.exitCode = matches && !env.MISSION_TERMINAL_HANDOFF_TICKET && !env.MISSION_API_TOKEN && !env.MISSION_SCOUT_SESSION_LOCATOR
       && env.MISSION_PORT !== "spoofed-port" && !env.MISSING_NAME && env.TMUX_PANE === "%real" ? 0 : 1;
   `);
   const agent = [process.execPath, probe];
@@ -146,7 +146,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
         const handoff = await openTerminalEnvironmentHandoff({ cwd: dir, stateHome }, named);
         t.after(handoff.dispose);
         writeResumeEnvironmentSocket(lease, handoff.path);
-        paneCommand = [process.execPath, guard, root, lease.id];
+        paneCommand = handoff.authorize([process.execPath, guard, root, lease.id]);
       }
       assert.ok(!paneCommand.join(" ").includes(secret));
       assert.ok(!readFileSync(launchFile, "utf8").includes(secret));
@@ -160,6 +160,10 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     t.after(handoff.dispose);
     const launch = () => promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: { TMUX_PANE: "%real" } });
 
+    const wrongTicket = handoff.argv.slice(1).map((arg) => arg.startsWith("MISSION_TERMINAL_HANDOFF_TICKET=")
+      ? "MISSION_TERMINAL_HANDOFF_TICKET=" + "00".repeat(32) : arg);
+    await assert.rejects(promisify(execFile)(handoff.argv[0]!, wrongTicket), { code: 1, stderr: /could not read/ });
+    assert.equal(existsSync(starts), false);
     await launch(); // The agent exits successfully only when it receives the expected credential.
     assert.equal(readFileSync(starts, "utf8"), "started\n");
     await assert.rejects(launch(), { code: 1, stderr: /could not read the terminal environment handoff/ });

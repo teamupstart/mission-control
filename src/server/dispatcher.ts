@@ -1130,6 +1130,13 @@ export class Dispatcher {
       // `preparePiLaunch` has already minted the native conversation id, so this needs no
       // provisional key and no later move: it is written under the key the session will hold
       // once `bindLaunchedAgentSession` runs.
+      const named = await launchAgentEnvironment(resident);
+      if (!currentAttempt() || !this.stillDispatching(taskId)) {
+        cleanupDisposableAgentStateHome(stateHome);
+        pendingAgentStateHome = null;
+        if (currentAttempt()) await this.abortIfSettled(taskId);
+        return;
+      }
       const piMarker = piLaunch.sessionId && piText !== null
         ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
         : null;
@@ -1139,7 +1146,6 @@ export class Dispatcher {
         // the one its wrapper runs from. The agent is discovered, and announced, before this
         // function gets control back, and the registry installs the launch record when it
         // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
-        const named = await launchAgentEnvironment(resident);
         expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId, null, named?.missing);
         // The real spawner owns cleanup even if the backend cannot confirm its outcome.
         if (!this.deps.spawn) pendingAgentStateHome = null;

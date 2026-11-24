@@ -544,7 +544,9 @@ and appears in its details. The setting and its backups contain only names. `COD
 reserved because Mission Control selects the Codex profile for each session.
 
 The preview adds selected variables to the usual launch environment. Terminal launches
-transfer them through a private one-use Unix socket. A pane has two minutes to collect its
+transfer them through a private one-use Unix socket. The pane must present the random ticket
+delivered with its launch command. An invalid ticket leaves the handoff available to the pane.
+The terminal backend and processes that can inspect its launch command are trusted. A pane has two minutes to collect its
 environment. If the handoff expires, the pane reports the failure and you can start a new
 launch. Resuming an unmanaged terminal conversation skips the lookup. Embedded Pi receives
 the variables in its shell tool environment. Residents continue to use profile secrets.

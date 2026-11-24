@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -32,7 +32,7 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled") {
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled" | "cancel-probe") {
   const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "settled";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
@@ -43,7 +43,10 @@ async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "residen
   process.env.MC_DISPATCH_LOOKUP_MARKER = lookupMarker;
   for (const key of ["MC_DISPATCH_LISTED", "MC_DISPATCH_UNLISTED", "MC_DISPATCH_MISSING"]) delete process.env[key];
   writeFileSync(process.env.SHELL, `#!/bin/sh
-case "$2" in *MC_DISPATCH_LISTED*) : > "$MC_DISPATCH_LOOKUP_MARKER" ;; esac
+case "$2" in *MC_DISPATCH_LISTED*)
+  : > "$MC_DISPATCH_LOOKUP_MARKER"
+  ${scenario === "cancel-probe" ? 'while [ ! -f "$MC_DISPATCH_LOOKUP_MARKER.release" ]; do sleep 0.02; done' : ""}
+;; esac
 export MC_DISPATCH_LISTED=profile-example MC_DISPATCH_UNLISTED=unlisted-example
 exec /bin/sh -c "$2"
 `, { mode: 0o700 });
@@ -76,12 +79,23 @@ process.stdin.resume();
   const task = mkTask({ id: `fresh-terminal-${scenario}`, kind, status: "dispatching", agent: "pi", repoRoot: repo });
   const discoveredId = `proc:${task.id}`;
   registry.upsertTask(task);
+  if (scenario === "cancel-probe") {
+    const watcher = watch(dir, () => {
+      if (!existsSync(lookupMarker)) return;
+      watcher.close();
+      registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+      writeFileSync(lookupMarker + ".release", "");
+    });
+    t.after(() => watcher.close());
+  }
 
   let observedEnvironment: Record<string, boolean> | undefined;
+  let spawnCount = 0;
   let delayed: { argv: readonly string[]; cwd: string } | undefined;
   const mux = fakeMultiplexer({ sessions: {
     names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
     async spawnDetached({ argv, cwd, name }) {
+      spawnCount++;
       if (timesOut) {
         delayed = { argv, cwd };
         return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
@@ -125,6 +139,12 @@ process.stdin.resume();
   if (timesOut) await Promise.race([retained, dispatch]);
   else await dispatch;
   const launched = registry.getTask(task.id)!;
+  if (scenario === "cancel-probe") {
+    assert.equal(launched.status, "cancelled");
+    assert.equal(spawnCount, 0);
+    assert.equal(launched.worktreeLeaseId, null);
+    return;
+  }
   if (timesOut) {
     assert.equal(launched.status, "failed");
     assert.equal(launched.launchFailure?.sessionKept, true);
@@ -196,6 +216,9 @@ test("a backend timeout releases the failed task's checkout when its wrapper nev
 test("expiry preserves the checkout of a task marked done during the startup window",
   (t) => checkTerminalDispatch(t, "settled"));
 
+test("cancelling during the login shell probe never sends a command to the terminal backend",
+  (t) => checkTerminalDispatch(t, "cancel-probe"));
+
 test("dispatch state-home cleanup follows wrapper startup across the handoff deadline", async (t) => {
   const { spawnUniquely } = await import("../src/server/dispatcher.ts");
   const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
@@ -231,6 +254,8 @@ test("dispatch state-home cleanup follows wrapper startup across the handoff dea
   await t.test("a reader that consumes the socket but never starts its wrapper still expires", async (t) => {
     const { command, stateHome } = await accepted(t, "/bin/true", []);
     const socket = createConnection(command[command.indexOf("--with-agent-environment") + 1]!);
+    const ticket = command.find((arg) => arg.startsWith("MISSION_TERMINAL_HANDOFF_TICKET="))!;
+    socket.write(Buffer.from(ticket.split("=")[1]!, "hex"));
     socket.resume();
     await once(socket, "close");
     assert.ok(existsSync(stateHome));

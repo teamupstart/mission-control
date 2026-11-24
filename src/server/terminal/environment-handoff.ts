@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdtempSync, realpathSync, rmdirSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../agent-subprocess-env.ts";
 import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
@@ -47,6 +47,9 @@ export async function openTerminalEnvironmentHandoff(
   // mkdtemp exclusively creates a 0700 directory for this launch, even in shared /tmp.
   const directory = realpathSync(mkdtempSync("/tmp/mission-agent-env-"));
   const path = join(directory, randomUUID());
+  // Independent of the enumerable socket path. Only the terminal launch receives the ticket.
+  const ticket = randomBytes(32);
+  const readers = new Set<Socket>();
   const removeDirectory = () => {
     try { rmdirSync(directory); }
     catch (error) {
@@ -66,6 +69,7 @@ export async function openTerminalEnvironmentHandoff(
     if (!disposed) {
       disposed = true;
       clearTimeout(timer);
+      for (const reader of readers) reader.destroy();
       server.close();
     }
     return closed;
@@ -75,10 +79,21 @@ export async function openTerminalEnvironmentHandoff(
   const timer = setTimeout(dispose, RESUME_START_MS).unref();
   server.on("connection", (socket) => {
     if (disposed) { socket.destroy(); return; }
-    void dispose();
+    readers.add(socket);
+    socket.once("close", () => readers.delete(socket));
     socket.on("error", () => socket.destroy());
     socket.setTimeout(5_000, () => socket.destroy());
-    socket.end(JSON.stringify(patch));
+    socket.on("readable", () => {
+      const presented: Buffer | null = socket.read(ticket.length);
+      if (!presented) return;
+      if (disposed || presented.length !== ticket.length || !timingSafeEqual(presented, ticket)) {
+        socket.destroy();
+        return;
+      }
+      readers.delete(socket);
+      void dispose();
+      socket.end(JSON.stringify(patch));
+    });
   });
   try {
     const listening = new Promise<void>((resolve, reject) => {
@@ -98,7 +113,8 @@ export async function openTerminalEnvironmentHandoff(
     throw error;
   }
   server.unref();
-  return { path, dispose };
+  const authorize = (argv: string[]) => ["/usr/bin/env", `MISSION_TERMINAL_HANDOFF_TICKET=${ticket.toString("hex")}`, ...argv];
+  return { path, authorize, dispose };
 }
 
 /** A fresh dispatch runs its existing shell wrapper under the selected environment. */
@@ -106,8 +122,8 @@ export async function terminalEnvironmentArgv(
   argv: string[], launch: { cwd: string; stateHome: string }, named?: NamedAgentEnvironment,
 ) {
   if (!named) return { argv, dispose() {} };
-  const { path, dispose } = await openTerminalEnvironmentHandoff(launch, named);
+  const { path, authorize, dispose } = await openTerminalEnvironmentHandoff(launch, named);
   const runtime = resolveOwnedRuntime({ executable: process.execPath, kind: process.versions.electron ? "electron" : "node" });
-  return { argv: ["/usr/bin/env", ...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),
-    runtime.command, resumeGuardPath(), "--with-agent-environment", path, ...argv], dispose };
+  return { argv: authorize([...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),
+    runtime.command, resumeGuardPath(), "--with-agent-environment", path, ...argv]), dispose };
 }

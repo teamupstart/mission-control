@@ -731,6 +731,27 @@ for (const replaced of ["Steve", "Alice"]) {
   });
 }
 
+for (const stopped of ["Steve", "Alice"]) {
+  test(`a split pick stays open when ${stopped} was already stopped at capture`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const gone = roster.find(row => row.name === stopped)!;
+    gone.state = "not-running";
+    gone.sessionId = null;
+    const { router, say, delivered } = routerRig(() => answered(null), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "stopped");
+    assert.equal(await router.pick("stopped", "task:Alice"), false);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(await router.sendNow("stopped"), false);
+    assert.deepEqual(delivered, []);
+    if (stopped === "Alice") {
+      assert.ok(await router.pick("stopped", "task:Steve"));
+      assert.ok(await router.sendNow("stopped"));
+      assert.deepEqual(delivered, [["Steve", "check the build, and Alice, review the PR", "stopped"]]);
+    }
+  });
+}
+
 test("a partial job batch cannot return an actionable split", () => {
   const first = { choice: "split", confidence: 1 };
   for (const answers of [{ q1: first }, { q1: first, q3: first }, { q1: first, q2: { choice: "mention" } }, { q1: first, q2: { choice: "absent", confidence: 1 } }]) {

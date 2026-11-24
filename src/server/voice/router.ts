@@ -418,7 +418,7 @@ export class VoiceRouter {
       if (!first) return false;
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
-    if (parts.some(part => !this.selectedSession(roster, part.target))) return false;
+    if (parts.some(part => !this.deliveryTarget(roster, part.target))) return false;
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);
@@ -438,15 +438,10 @@ export class VoiceRouter {
     return true;
   }
 
-  private selectedSession(roster: readonly SpokenName[], captured: SpokenName): SpokenName | undefined {
-    const target = roster.find(row => row.key === captured.key && row.sessionId === captured.sessionId);
-    if (target?.state !== "running") return captured.state === "running" ? undefined : target;
-    return target.sessionId && this.deliverer.available?.(target.sessionId) !== false ? target : undefined;
-  }
-
   private deliveryTarget(roster: readonly SpokenName[], captured: SpokenName | null): SpokenName | undefined {
-    const target = captured && this.selectedSession(roster, captured);
-    return target?.state === "running" ? target : undefined;
+    const target = captured && roster.find(row => row.key === captured.key && row.sessionId === captured.sessionId);
+    return target?.state === "running" && target.sessionId && this.deliverer.available?.(target.sessionId) !== false
+      ? target : undefined;
   }
 
   async sendNow(id: string): Promise<boolean> {

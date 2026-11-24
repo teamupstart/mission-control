@@ -28,6 +28,8 @@ export class RepositoryReview {
   constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {}
 
   private current(id: string) {
+    // The materializer calls this before opening the checkout and before returning its lease.
+    if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return undefined;
     return this.store.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
       s.id AS submissionId, w.digest, a.locator FROM workflow_repository_workloads w
       JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
@@ -76,7 +78,7 @@ export class RepositoryReview {
     const signal = AbortSignal.any([shutdown, cancel.signal, AbortSignal.timeout(Math.max(1, input.deadline - Date.now()))]);
     const timer = setInterval(() => {
       try {
-        if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID) || !this.current(id)) cancel.abort();
+        if (!this.current(id)) cancel.abort();
       } catch {
         cancel.abort();
       }
@@ -159,7 +161,7 @@ export class RepositoryReview {
         if (event.type === "terminal") terminal = event;
       }
       signal.throwIfAborted();
-      if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID) || !terminal || !this.current(id)) throw new Error("No current terminal repository verdict");
+      if (!terminal || !this.current(id)) throw new Error("No current terminal repository verdict");
       if (terminal.result.status === "failed") {
         errorCode = terminal.result.code;
         if (terminal.result.providerFailure) throw new ProviderFailure(errorCode, null, terminal.result.providerFailure);

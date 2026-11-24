@@ -3149,6 +3149,7 @@ async function captureRepositoryFixture(t: TestContext, store: InstanceType<type
     context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: null,
     fingerprint: "frozen", repositoryFingerprint: "repository",
   } });
+  return service;
 }
 
 for (const timing of ["before initial dispatch", "before provider retry", "during executor setup"] as const) {
@@ -3217,7 +3218,7 @@ for (const timing of ["before initial dispatch", "before provider retry", "durin
   });
 }
 
-test("repository review verifies executor capability, event order, and attempt ownership before accepting a verdict", async (t) => {
+test("repository review verifies executor capability, the live grant at materialization, event order, and attempt ownership", async (t) => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const { RepositoryReview } = await import("../src/server/workflows/repository-review.ts");
   const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
@@ -3227,12 +3228,14 @@ test("repository review verifies executor capability, event order, and attempt o
   const runId = `run-${id}`;
   const reviewer = { ...persona("p1", "Reviewer", "claude", "Review"), repositoryAccess: "read" as const };
   const signal = new AbortController().signal;
-  await captureRepositoryFixture(t, store, submissionId);
+  const service = await captureRepositoryFixture(t, store, submissionId);
   store.setRunState(runId, "running", "persona_review", null);
   applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
   type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
-  const scenarios = ["unsupported", "conflict", "gap", "failed query", "equal replay", "stale"] as const;
+  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "stale"] as const;
+  // The permission decision must hold even when the supervisor's watchdog has never fired.
+  t.mock.timers.enable({ apis: ["setInterval"] });
   for (const [index, scenario] of scenarios.entries()) {
     const attempt = index + 1;
     const attemptId = randomUUID(), callId = randomUUID();
@@ -3244,13 +3247,24 @@ test("repository review verifies executor capability, event order, and attempt o
     let launches = 0;
     const cancellations: { workloadId: string; generation: number }[] = [];
     let cancellationRequested = false;
+    let leaseOpened = false;
     const executor: Executor = {
       repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
-      async *dispatch(request) {
+      async *dispatch(request, workloadSignal) {
         launches++;
         const envelope = { workloadId: request.workloadId, attemptId, timestamp: 7 };
         const accepted = { ...envelope, type: "accepted" as const, eventId: randomUUID(), sequence: 1 };
         yield accepted;
+        if (scenario === "revoked before materialization" || scenario === "equal replay") {
+          if (scenario === "revoked before materialization") {
+            applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+          }
+          const lease = await service.materialize({
+            workloadId: request.workloadId, attemptId, submissionId, ...request.artifact,
+          }, workloadSignal);
+          leaseOpened = true;
+          await lease.release();
+        }
         if (scenario === "conflict") yield { ...accepted, timestamp: 8 };
         if (scenario === "equal replay") yield accepted;
         try {
@@ -3288,13 +3302,19 @@ test("repository review verifies executor capability, event order, and attempt o
     else await assert.rejects(response, {
       unsupported: /executor capability mismatch/i, conflict: /conflicting repository event/i,
       gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
+      "revoked before materialization": { code: "artifact_unavailable" },
     }[scenario]);
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
+    assert.equal(leaseOpened, scenario === "equal replay", scenario);
+    if (scenario === "revoked before materialization") {
+      applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+    }
     assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay"
       ? [] : [{ workloadId: callId, generation: 1 }], scenario);
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
-      unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
+      unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
+      stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
     }[scenario]);
   }
 });

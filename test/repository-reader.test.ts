@@ -723,9 +723,11 @@ test("response and cumulative byte ceilings, timeout, scrubbing and cursor attem
     ).code,
     "timeout",
   );
+  // The response also contains random hexadecimal IDs. Use a distinct marker for the file content.
+  const privateBody = "fixture-only-key-material";
   await writeFile(
     join(f.root, "src/a.txt"),
-    "before\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\nafter\n",
+    `before\n-----BEGIN PRIVATE KEY-----\n${privateBody}\n-----END PRIVATE KEY-----\nafter\n`,
   );
   f.git("add", "src/a.txt");
   f.view.worktree[0]!.blob = f.git("rev-parse", ":src/a.txt");
@@ -738,7 +740,11 @@ test("response and cumulative byte ceilings, timeout, scrubbing and cursor attem
     startLine: 5,
     endLineExclusive: 6,
   });
-  assert.equal(JSON.stringify(scrubbed).includes("abc"), false);
+  const keyLine = await f
+    .make()
+    .query("read", { path: "src/a.txt", start: 2, length: 1 });
+  assert.deepEqual(keyLine.items.map((item) => item.text), ["[redacted]"]);
+  assert.equal(JSON.stringify(keyLine).includes(privateBody), false);
   assert.equal(
     (await f.make().query("read", { path: "src/a.txt", unit: "byte" })).code,
     "denied_path",

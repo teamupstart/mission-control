@@ -75,6 +75,22 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testExactMultiWordAddressWinsOverCompetingRosterCorrection() {
+        for range in [0..<2, 0..<1] {
+            var text = "Mary   Jane, check the build"
+            let original = text
+            let decoded = ["Mary", "Jane,", "check", "the", "build"]
+            var words = decoded.enumerated().map {
+                TimedWord(text: $0.element, startMs: Double($0.offset * 100), endMs: Double($0.offset * 100 + 80))
+            }
+            Recognizer.applyAddressCorrection("Mary Jean", in: range, roster: ["Mary Jean", "mary jane"],
+                                              text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text), decoded)
+            XCTAssertEqual(words.map(\.endMs), [80, 180, 280, 380, 480])
+        }
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
         let speech = Array(repeating: Float(0.1), count: 320)
@@ -300,6 +316,33 @@ final class ListenerTests: XCTestCase {
         let phrase = try XCTUnwrap(tap.finish(at: 100_230))
         XCTAssertEqual(phrase.startNs, 100_000_000_000)
         XCTAssertEqual(phrase.samples.count, 230 * 16)
+    }
+
+    func testKnownCutoffInsideJitteredTapUsesAnchoredSampleTime() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+        frame.frameLength = frame.frameCapacity
+        for i in 0..<960 { frame.floatChannelData![0][i] = 0.3 * sin(Float(i) * 2 * .pi * 400 / 48_000) }
+        let release: Int64 = 100_205
+        func capture(jitter: Double) throws -> Segment {
+            let tap = try InputSegmenter(source: format, held: true)
+            for i in 0...10 {
+                let host = Double(i) * 0.02 + (i == 10 ? jitter : 0)
+                let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: host),
+                                       sampleTime: Int64(i * 960), atRate: 48_000)
+                XCTAssertTrue(tap.consume(frame, at: when, clock: CaptureClock(hostTime: 0, unixTime: 100),
+                                          cutoff: i == 10 ? release : nil).isEmpty)
+            }
+            XCTAssertEqual(tap.deliveredThrough, release)
+            return try XCTUnwrap(tap.finish(at: release))
+        }
+        let expected = try capture(jitter: 0)
+        XCTAssertEqual(expected.endedAt, release)
+        for jitter in [0.0004, -0.0004] {
+            let actual = try capture(jitter: jitter)
+            XCTAssertEqual(actual.samples.count, expected.samples.count)
+            XCTAssertTrue(actual.samples.elementsEqual(expected.samples))
+        }
     }
 
     func testTapGapDiscardsInterruptedSpeechThroughSilenceAndKeepsTheNextCommand() throws {

@@ -276,11 +276,18 @@ final class InputSegmenter {
 
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock(), cutoff: Int64? = nil) -> [Segment] {
         if let cutoff, let deliveredThrough, deliveredThrough >= cutoff { return [] }
-        if when.isHostTimeValid && when.isSampleTimeValid { anchor = when }
-        let time = when.isHostTimeValid ? when : anchor.flatMap { when.extrapolateTime(fromAnchor: $0) }
-        guard let time, time.isHostTimeValid else { interrupt(); return [] }
         let rate = buffer.format.sampleRate
-        let hostSeconds = AVAudioTime.seconds(forHostTime: time.hostTime)
+        // Anchor each contiguous run once. The device's frame positions date
+        // its audio even if an individual callback reports a jittered host time.
+        if when.isSampleTimeValid, when.isHostTimeValid, anchor == nil || nextSample != when.sampleTime { anchor = when }
+        let time: AVAudioTime?
+        if when.isSampleTimeValid, let anchor {
+            time = AVAudioTime(sampleTime: when.sampleTime, atRate: rate).extrapolateTime(fromAnchor: anchor)
+        } else {
+            time = when.isHostTimeValid ? when : nil
+        }
+        guard let time, time.isHostTimeValid else { interrupt(); return [] }
+        let hostSeconds = AVAudioTime.seconds(forHostTime: when.isHostTimeValid ? when.hostTime : time.hostTime)
         // Sample positions catch missing frames even if the device's host clock jitters.
         // Host-only timestamps are compared to within half an input sample for tick rounding.
         if when.isSampleTimeValid, let nextSample {

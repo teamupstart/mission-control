@@ -49,13 +49,21 @@ struct Recognizer {
         guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
               let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),
               let end = last.lastIndex(where: { $0.isLetter || $0.isNumber }), start <= end else { return }
-        // Match the timed address against the original text. A comma inside the span ends
-        // the address, and a known first name already determines the recipient.
+        // Match the timed address against the original text. A comma inside the span ends the address.
         let address = text[start...end]
         guard address.allSatisfy({ $0.isLetter || $0.isNumber || $0.isWhitespace || "'’-".contains($0) }) else { return }
         let source = words[range].map { $0.text.trimmingCharacters(in: .punctuationCharacters).lowercased() }
         guard address.split(whereSeparator: { $0.isWhitespace }).map({ $0.lowercased() }) == source else { return }
-        if roster.contains(where: { $0.lowercased() == source[0] }), name.lowercased() != source[0] { return }
+        // The decoder may already identify the recipient, even if CTC proposes
+        // replacing only the first word of a longer exact address.
+        let leading = text[start...].prefix(while: { $0 != "," }).split(whereSeparator: { $0.isWhitespace })
+        let hasExactAddress = roster.contains { term in
+            let parts = term.split(whereSeparator: { $0.isWhitespace })
+            guard !parts.isEmpty, leading.count >= parts.count else { return false }
+            let decoded = leading.prefix(parts.count).joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
+            return decoded.lowercased() == parts.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters).lowercased()
+        }
+        guard !hasExactAddress else { return }
         // Without an explicit end to a multi-word address, keep the decoder's words.
         if range.count > 1, !text[text.index(after: end)...].drop(while: { $0.isWhitespace }).hasPrefix(",") { return }
 

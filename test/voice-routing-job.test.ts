@@ -7,9 +7,11 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import type { ClaudeSdkMessage, ClaudeSdkOneShotDeps, ClaudeSdkOneShotQueryOptions } from "../src/server/harness/claude/sdk-types.ts";
 import type { VoiceQuestion } from "../src/shared/voice-decide.ts";
 
@@ -59,11 +61,10 @@ const { setLlmConfig } = await import("../src/server/llm/config.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
+const retestArgs = ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts")];
+const retestEnv = { ...process.env, TSX_TSCONFIG_PATH: join(import.meta.dirname, "../tsconfig.json") };
 function retest(...args: string[]) {
-  return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
-    join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), ...args], {
-    cwd: home, encoding: "utf8", env: { ...process.env, TSX_TSCONFIG_PATH: join(import.meta.dirname, "../tsconfig.json") },
-  });
+  return spawnSync(process.execPath, [...retestArgs, ...args], { cwd: home, encoding: "utf8", env: retestEnv });
 }
 
 test("offline retest summaries distinguish transport-specific results from historical rows", () => {
@@ -167,6 +168,35 @@ test("resuming or summarizing a retest refuses a different prompt and schema rev
   assert.notEqual(revised.promptSchemaSha256, row.promptSchemaSha256);
   writeFileSync(file, original + JSON.stringify({ ...revised, id: "later" }) + "\n");
   assert.match(retest("--summarize", label).stderr, /mixed prompt and schema revisions/i);
+});
+
+test("a running retest reserves its label before the first result and releases it for the next slice", async () => {
+  const waiting = record("waiting-claude");
+  writeFileSync(waiting, `#!/bin/sh
+touch "$VOICE_JOB_RECORD/retest-started"
+while [ ! -f "$VOICE_JOB_RECORD/retest-release" ]; do sleep 0.05; done
+exec "$VOICE_JOB_RECORD/claude" "$@"
+`, { mode: 0o755 });
+  const args = ["--yes", "--transport", "print", "--label", "concurrent", "--limit", "1",
+    "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json")];
+  const first = promisify(execFile)(process.execPath, [...retestArgs, ...args], {
+    cwd: home, env: { ...retestEnv, MISSION_CLAUDE_BIN: waiting },
+  });
+  try {
+    const started = record("retest-started");
+    const until = Date.now() + 10_000;
+    while (!existsSync(started) && Date.now() < until) await delay(25);
+    assert.ok(existsSync(started), "the first retest entered its fixture provider");
+    const overlapping = retest(...args);
+    assert.equal(overlapping.status, 1);
+    assert.match(overlapping.stderr, /label.*already in use/i);
+    assert.equal(existsSync(record(".tmp/voice-spike/retest-concurrent.jsonl")), false);
+  } finally {
+    writeFileSync(record("retest-release"), "");
+    await first;
+  }
+  assert.equal(retest(...args, "--start", "1").status, 0);
+  assert.equal(JSON.parse(retest("--summarize", "concurrent").stdout).n, 2);
 });
 
 test("on Codex: reasoning effort none, the system prompt ahead of the questions, the strict schema and Luna", async () => {

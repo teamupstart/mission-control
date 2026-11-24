@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { acquireHelperLock, realHelperLockOperations, releaseHelperLock } from "../update-lock.mjs";
 import type { VoiceQuestion } from "../../src/shared/voice-decide.ts";
 import type { ClaudeTransport, CodexTransport } from "../../src/shared/llm.ts";
 
@@ -158,22 +159,31 @@ async function run(): Promise<void> {
     console.error("This spends provider usage through your own CLI login. Re-run with --yes.");
     process.exit(2);
   }
-  // Before any daemon module is evaluated: the state home they resolve is a throwaway one.
-  const home = mkdtempSync(join(tmpdir(), "voice-retest-"));
-  process.env.MISSION_HOME = home;
+  const runner = flag("--runner") ?? "claude";
+  if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
+  const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
+  const label = flag("--label") ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`;
+  const lockDir = join(OUT, `retest-${label}.lock.d`);
+  const ops = realHelperLockOperations();
+  const claim = acquireHelperLock(lockDir, ops);
+  if (!claim.ok || !claim.entryName) throw new Error(`Retest label ${label} is already in use.`);
   try {
-    await runCorpus();
+    const home = mkdtempSync(join(tmpdir(), "voice-retest-"));
+    process.env.MISSION_HOME = home;
+    try {
+      await runCorpus(runner, casesPath, label);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    releaseHelperLock(lockDir, claim.entryName, ops);
   }
 }
 
-async function runCorpus(): Promise<void> {
+async function runCorpus(runner: "claude" | "codex", casesPath: string, label: string): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
   const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
   const { DEFAULT_CLAUDE_TRANSPORT, DEFAULT_CODEX_TRANSPORT } = await import("../../src/shared/llm.ts");
-  const runner = flag("--runner") ?? "claude";
-  if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
   const requested = flag("--transport");
   let transport: ClaudeTransport | CodexTransport = DEFAULT_CODEX_TRANSPORT;
   if (runner === "claude") {
@@ -186,8 +196,6 @@ async function runCorpus(): Promise<void> {
     throw new Error("--transport selects a Claude transport. Omit it for Codex.");
   }
   const { voiceQuestionChoices } = await import("../../src/shared/voice-decide.ts");
-  const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
-  const label = flag("--label") ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`;
   const input = readFileSync(casesPath);
   const corpusSha256 = createHash("sha256").update(input).digest("hex");
   const corpus = JSON.parse(input.toString("utf8")) as Corpus;

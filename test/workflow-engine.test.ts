@@ -3186,12 +3186,13 @@ test("recovery capture replays the inherited parent digest before and after star
   store.cancelRun(runId, "test complete", Date.now());
 });
 
-test("failed executor cancellation blocks repository retries across restart until the workload is confirmed terminal", async (t) => {
+for (const restartState of ["cancellation_pending", "running", "interrupted"] as const)
+test(`external repository workload left ${restartState} blocks retries across restart until confirmed terminal`, async (t) => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
-  const id = "failed-cancel", runId = `run-${id}`, submissionId = `submission-${id}`;
+  const id = "failed-cancel-" + restartState, runId = `run-${id}`, submissionId = `submission-${id}`;
   const store = seedSubmission(id, { ...providerRetryGraph, nodes: providerRetryGraph.nodes.map(node =>
     node.kind === "persona" ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node) });
   await captureRepositoryFixture(t, store, submissionId);
@@ -3231,6 +3232,10 @@ test("failed executor cancellation blocks repository retries across restart unti
   assert.equal(prior()?.state, "cancellation_pending");
   assert.equal(launches.length, 1);
   await engine.stop();
+  // The same external job can survive an abrupt crash before cancellation, or a
+  // previous daemon that classified it as interrupted without contacting the executor.
+  openDb().prepare("UPDATE workflow_repository_workloads SET state=?, cancellation_generation=? WHERE id=?")
+    .run(restartState, restartState === "running" ? 0 : 1, launches[0]!);
   engine = makeEngine();
   engine.start();
   for (const state of ["unknown", "running", "terminal"] as const) {
@@ -3240,7 +3245,8 @@ test("failed executor cancellation blocks repository retries across restart unti
     await waitBlocked();
     assert.equal(launches.length, state === "terminal" ? 2 : 1);
     assert.equal(store.listLlmCallPage(runId).items.length, launches.length);
-    assert.equal(prior()?.state, state === "terminal" ? "failed" : "cancellation_pending");
+    assert.equal(prior()?.state, state === "terminal" ? "failed"
+      : restartState === "interrupted" ? "interrupted" : "cancellation_pending");
   }
   assert.equal(store.getRun(runId)?.currentPhase, "provider_token_exhausted");
 });
@@ -3326,7 +3332,7 @@ test("repository review verifies executor capability, the live grant at material
   applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
   type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
-  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "stale"] as const;
+  const scenarios = ["unsupported", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "stale"] as const;
   // The permission decision must hold even when the supervisor's watchdog has never fired.
   t.mock.timers.enable({ apis: ["setInterval"] });
   for (const [index, scenario] of scenarios.entries()) {
@@ -3386,7 +3392,19 @@ test("repository review verifies executor capability, the live grant at material
       },
       async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
     };
-    const response = new RepositoryReview(store, executor).run({
+    if (scenario === "revoked during cleanup") {
+      const { LocalPersonaWorkloadExecutor } = await import("../src/server/workflows/persona-workload/executor.ts");
+      const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+      t.mock.method(LocalPersonaWorkloadExecutor.prototype, "dispatch", executor.dispatch);
+      const close = LocalRepositoryWorkloadOwnership.prototype.confirmClosed;
+      t.mock.method(LocalRepositoryWorkloadOwnership.prototype, "confirmClosed", async function (
+        this: InstanceType<typeof LocalRepositoryWorkloadOwnership>, ...args: Parameters<typeof close>
+      ) {
+        await close.apply(this, args);
+        applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+      });
+    }
+    const response = new RepositoryReview(store, scenario === "revoked during cleanup" ? undefined : executor).run({
       attemptId, submissionId, persona: reviewer, execution: { provider: "claude", model: "fake-model" },
       accounting: { runId, purpose: "persona_review", attempt: 1, callId }, images: [], prompt: "Review",
       deadline: Date.now() + 30_000,
@@ -3396,18 +3414,22 @@ test("repository review verifies executor capability, the live grant at material
       unsupported: /executor capability mismatch/i, conflict: /conflicting repository event/i,
       gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
       "revoked before materialization": { code: "artifact_unavailable" },
+      "revoked during cleanup": /ownership expired before verdict acceptance/i,
     }[scenario]);
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
     assert.equal(leaseOpened, scenario === "equal replay", scenario);
-    if (scenario === "revoked before materialization") {
+    if (scenario === "revoked during cleanup") {
+      assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
+    }
+    if (scenario === "revoked before materialization" || scenario === "revoked during cleanup") {
       applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
     }
-    assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay"
+    assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay" || scenario === "revoked during cleanup"
       ? [] : [{ workloadId: callId, generation: 1 }], scenario);
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
       unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
-      stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
+      stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
     }[scenario]);
   }
 });

@@ -3149,7 +3149,9 @@ it needs the checkout. A built-in
 Persona stores its local access override separately from its shipped guidance. Version History
 shows the permission frozen at publication and identifies older snapshots as outdated.
 After a lost publish response, **Retry publish** shows the original draft revision and sends
-the same request ID. The daemon returns the version it originally selected, even if another
+the same request ID. The dashboard saves both before sending the request, so the retry is
+available after reloading or reopening the dashboard in the same browser profile.
+The daemon returns the version it originally selected, even if another
 editor has since changed the draft or published a different grant. After the retry succeeds,
 choose **Publish** to publish a changed draft or grant with a new request ID. Clients that omit
 the ID can publish a draft revision once or retrieve its sole published version. If multiple

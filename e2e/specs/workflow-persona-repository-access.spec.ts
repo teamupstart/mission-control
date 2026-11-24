@@ -351,12 +351,14 @@ for (const { title, provider, marker } of scenarios) {
       await expect(frozen).toBeVisible();
       await captureState(dashboard, "frozen-outdated", frozen);
       const publishRequests: { requestId: string; expectedDraftRevision: number }[] = [];
+      const firstResponse = Promise.withResolvers<void>();
       await dashboard.route(`**/api/workflows/${workflow.id}/publish`, async route => {
         publishRequests.push(route.request().postDataJSON());
         if (publishRequests.length === 1) {
           // The daemon commits the version, but the browser never receives its receipt.
           const committed = await route.fetch();
           expect(committed.ok()).toBe(true);
+          await firstResponse.promise;
           await route.fulfill({ status: 503, json: { error: "Publish response unavailable" } });
         } else {
           await route.continue();
@@ -366,6 +368,14 @@ for (const { title, provider, marker } of scenarios) {
       await publish.click();
       const second = dashboard.getByRole("button", { name: /^Version 2/ });
       await expect(second).toBeVisible();
+      const reopened = await dashboard.context().newPage();
+      try {
+        await reopened.goto(dashboard.url());
+        await expect(reopened.getByRole("button", { name: "Retry publish (revision 1)", exact: true })).toBeEnabled();
+      } finally {
+        firstResponse.resolve();
+        await reopened.close();
+      }
       const retry = dashboard.getByRole("button", { name: "Retry publish (revision 1)", exact: true });
       await expect(retry).toBeEnabled();
       const workflowUrl = `${daemon.baseURL}/api/workflows/${workflow.id}`;
@@ -375,6 +385,8 @@ for (const { title, provider, marker } of scenarios) {
       expect(advanced.ok()).toBe(true);
       await expect(dashboard.getByRole("heading", { name: "Advanced review draft" })).toBeVisible();
       await expect(dashboard.getByText("Draft revision 2", { exact: true })).toBeVisible();
+      await dashboard.reload();
+      await expect(retry).toBeEnabled();
       await captureState(dashboard, "publish-retry", retry);
       const replayResponse = dashboard.waitForResponse(response => response.url() === workflowUrl + "/publish");
       await retry.click();
@@ -391,6 +403,9 @@ for (const { title, provider, marker } of scenarios) {
       expect(publishRequests[2]).toMatchObject({ expectedDraftRevision: 2, requestId: expect.any(String) });
       expect(publishRequests[2]!.requestId).not.toBe(publishRequests[0]!.requestId);
       await expect(publish).toBeDisabled();
+      await dashboard.reload();
+      await expect(publish).toBeDisabled();
+      await expect(retry).toHaveCount(0);
     }
   });
 }

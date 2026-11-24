@@ -7,6 +7,7 @@ import type {
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { reservePublish, settlePublish, usePendingPublish } from "./workflowPublishIntent.ts";
 
 interface WorkflowWriteResponse {
   workflow: WorkflowDefinition;
@@ -16,11 +17,6 @@ interface WorkflowWriteResponse {
 interface WorkflowPublishResponse extends WorkflowWriteResponse {
   version: WorkflowVersion;
   idempotent: boolean;
-}
-
-interface PublishIntent {
-  expectedDraftRevision: number;
-  requestId: string;
 }
 
 type WorkflowEditableSnapshot = Pick<
@@ -208,8 +204,7 @@ export function useWorkflowDraft(
   const savedFingerprintRef = useRef(savedFingerprint);
   const conflictRef = useRef(currentConflict);
   const versionRefreshRef = useRef<string | null>(null);
-  const [publishRetries, setPublishRetries] = useState<Record<string, PublishIntent | undefined>>({});
-  const publishRetry = workflowId ? publishRetries[workflowId] : undefined;
+  const { raw: pendingPublish, revision: publishRetryRevision } = usePendingPublish(workflowId);
   const inFlight = useRef<Promise<boolean> | null>(null);
   // History contains editable fields only. The CAS revision is server metadata and must
   // stay current after autosave, otherwise the first Undo after a successful save would
@@ -405,15 +400,20 @@ export function useWorkflowDraft(
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;
     if (!current || dirty || saving || currentConflict) return null;
-    // A streamed draft advance does not reveal whether the previous publish committed.
-    const intent = publishRetry ?? { expectedDraftRevision: current.draftRevision, requestId: crypto.randomUUID() };
-    let retry: PublishIntent | undefined;
     setError(null);
     try {
+      const intent = await reservePublish(current.id, current.draftRevision, pendingPublish);
       const response = await workflowRequest<WorkflowPublishResponse>(`/api/workflows/${current.id}/publish`, {
         method: "POST",
         body: JSON.stringify(intent),
+      }).catch(async (caught: unknown) => {
+        if (caught instanceof WorkflowApiError && caught.status < 500 && caught.status !== 408) {
+          await settlePublish(current.id, intent.requestId);
+        }
+        throw caught;
       });
+      if (!response?.version) throw new Error("Could not confirm the published version");
+      await settlePublish(current.id, intent.requestId);
       if (workflowIdRef.current !== current.id) return response.version;
       const local = workflowRef.current;
       if (local && local.draftRevision <= response.workflow.draftRevision && editableFingerprint(local) === savedFingerprintRef.current) {
@@ -428,13 +428,10 @@ export function useWorkflowDraft(
         : [versionMetadata(response.version), ...items]);
       return response.version;
     } catch (caught) {
-      if (!(caught instanceof WorkflowApiError && caught.status < 500)) retry = intent;
       if (workflowIdRef.current === current.id) setError(caught instanceof Error ? caught.message : "Could not publish workflow");
       return null;
-    } finally {
-      setPublishRetries(previous => previous[current.id] === retry ? previous : { ...previous, [current.id]: retry });
     }
-  }, [currentConflict, dirty, publishRetry, saving]);
+  }, [currentConflict, dirty, pendingPublish, saving]);
 
   const duplicate = useCallback(async (name: string): Promise<WorkflowSummary | null> => {
     const current = workflowRef.current;
@@ -530,7 +527,7 @@ export function useWorkflowDraft(
     saveNow,
     reload,
     publish,
-    publishRetryRevision: publishRetry?.expectedDraftRevision ?? null,
+    publishRetryRevision,
     duplicate,
     saveRoundLimit,
     savingRoundLimit,
@@ -545,5 +542,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, publishRetry, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, publishRetryRevision, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

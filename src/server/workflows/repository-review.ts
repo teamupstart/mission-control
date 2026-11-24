@@ -38,7 +38,7 @@ export class RepositoryReview {
   pendingCancellations(runId: string, nodeId: string) {
     return this.store.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
       FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
-      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state='cancellation_pending' AND l.run_id=? AND n.node_id=?`)
+      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state IN ('cancellation_pending','interrupted') AND l.run_id=? AND n.node_id=?`)
       .all(runId, nodeId)) as { id: string; generation: number }[];
   }
 
@@ -57,7 +57,7 @@ export class RepositoryReview {
       if (status?.workloadId !== id || status.state !== "terminal")
         throw new Error(`Repository workload ${id} has not confirmed cleanup`);
       this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
-        WHERE id=? AND state='cancellation_pending' AND cancellation_generation=?`).run(id, generation));
+        WHERE id=? AND state IN ('cancellation_pending','interrupted') AND cancellation_generation=?`).run(id, generation));
       this.cleanupExecutors.delete(id);
     }
   }
@@ -93,8 +93,7 @@ export class RepositoryReview {
 
   interrupt() {
     const local = this.store.transact(db => {
-      db.prepare(`UPDATE workflow_repository_workloads SET state=CASE WHEN id IN (SELECT workload_id
-        FROM workflow_repository_local_owners) THEN 'cancellation_pending' ELSE 'interrupted' END,
+      db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
         cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
       return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
         ON workload_id=id WHERE state='cancellation_pending'`).all();
@@ -171,7 +170,7 @@ export class RepositoryReview {
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     let errorCode = "workload_interrupted";
-    let completed = false;
+    let verdictJson: string | undefined;
     let terminal: Extract<PersonaWorkloadEvent, { type: "terminal" }> | undefined;
     let events: AsyncIterator<PersonaWorkloadEvent> | undefined;
     let streamFinished = false;
@@ -258,8 +257,7 @@ export class RepositoryReview {
         for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
           throw new Error("Repository citation does not belong to this review");
       });
-      completed = true;
-      return JSON.stringify(verdict);
+      verdictJson = JSON.stringify(verdict);
     } finally {
       clearInterval(timer);
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
@@ -271,12 +269,20 @@ export class RepositoryReview {
         await stopping;
         if (!this.injected) await this.finishLocal(id, service);
         this.store.transact(db => {
+          // Cleanup can yield after the last event. Authorize the verdict in the same
+          // transaction that commits it, while the attempt still owns the workload.
+          if (verdictJson !== undefined && (signal.aborted || Date.now() >= input.deadline || !this.current(id))) {
+            verdictJson = undefined;
+          }
+          const completed = verdictJson !== undefined;
           db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
             WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
           if (!this.injected) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
         });
       }
     }
+    if (verdictJson === undefined) throw new Error("Repository workload ownership expired before verdict acceptance");
+    return verdictJson;
   }
 
   private async finishLocal(id: string, service: WorkflowRepositoryArtifactService) {

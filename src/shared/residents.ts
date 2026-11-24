@@ -23,6 +23,7 @@ import { ModelIdSchema } from "./model-id.ts";
 import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
 import { MAX_TASK_EXTRA_REPOS } from "./task.ts";
 import { ResidentScheduleSectionSchema } from "./resident-schedule.ts";
+import { BlankableSpokenNameSchema } from "./voice-names.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
@@ -77,10 +78,20 @@ export const RESIDENT_LIMITS = {
   archivedInSnapshot: 200,
 } as const;
 
-/** Who the profile is. The name is unique among live profiles. */
+/**
+ * Who the profile is. The name is unique among live profiles.
+ *
+ * `referenceName` is what the operator says to address the resident by voice, when the profile
+ * name is not something to say (`@shared/voice-names.ts`); absent or blank, the profile name is
+ * said. Blank is how the editor clears it, because a save that omits a key keeps the previous
+ * revision's (`preserveUnknownResidentSettings`). Optional with no default, so a revision saved
+ * before it existed parses exactly as before. A spoken name, not a launch setting: the roster
+ * reads it from the current revision.
+ */
 export const ResidentIdentitySectionSchema = z.object({
   name: z.string().trim().min(1, "a resident needs a name").max(RESIDENT_LIMITS.nameLength),
   description: z.string().max(RESIDENT_LIMITS.descriptionLength).default(""),
+  referenceName: BlankableSpokenNameSchema.optional(),
 });
 
 /**

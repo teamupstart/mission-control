@@ -1,5 +1,6 @@
 import { useContext, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
 import { AgentName, InboxActionButton } from "./AgentName.tsx";
@@ -416,9 +417,10 @@ function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefin
  */
 function useInboxSubject(item: AttentionItem): AgentNameView {
   const enabled = useFeatureFlag(INBOX_FLAG);
+  const spokenNames = useFeatureFlag(VOICE_FLAG);
   const runs = useContext(ResidentNamesContext);
   const legacy = inboxSubject(item);
-  return "session" in item ? agentNameView(item.session, legacy, enabled, runs) : { name: legacy, colorId: null };
+  return "session" in item ? agentNameView(item.session, legacy, enabled, runs, spokenNames) : { name: legacy, colorId: null };
 }
 
 function inboxSubject(item: AttentionItem): string {

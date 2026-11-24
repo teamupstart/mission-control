@@ -58,7 +58,7 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { isAnnotationOnlyUpdate, TASK_ANNOTATION_FIELDS } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
@@ -245,6 +245,7 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
 import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
+import { RESIDENT_CALL_SIGN_REFUSAL, taskKindTakesCallSign } from "@shared/voice-names.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import { configuredTerminalDeps } from "./terminals-config.ts";
@@ -292,6 +293,8 @@ export interface CreateTaskInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** Launch with this Library Persona's guidance as standing instructions; omitted is none. */
   personaId?: string;
+  /** A call sign the operator can say to address the session by voice; omitted is none. */
+  callSign?: string;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -484,6 +487,22 @@ function newTaskEdgeRefusal(target: Task, activeSession: Session | undefined): s
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/**
+ * `stale` with the annotation `current` holds now (`TASK_ANNOTATION_FIELDS`), for a write built
+ * from a copy read before an await: a priority, label or call sign edit that landed meanwhile is
+ * kept rather than written back over. An annotation `current` lacks is absent from the result too,
+ * since absent and null both mean none.
+ */
+export function withCurrentAnnotation(stale: Task, current: Task | undefined): Task {
+  if (!current || current === stale) return stale;
+  const next: Record<string, unknown> = { ...stale };
+  for (const field of TASK_ANNOTATION_FIELDS) {
+    if (field in current) next[field] = current[field];
+    else delete next[field];
+  }
+  return next as unknown as Task;
+}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
@@ -3392,6 +3411,11 @@ export class TaskManager {
     ) {
       throw new TaskKindBacklogError(refusal);
     }
+    // The rule `update` holds, held here too, where every creator arrives, the resident launch
+    // included: the dispatch and MCP schemas refuse a resident kind before it gets this far.
+    if (input.callSign && !taskKindTakesCallSign(input.kind)) {
+      throw new TaskKindBacklogError(RESIDENT_CALL_SIGN_REFUSAL);
+    }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     // The ONE place an omitted agent becomes a real one, so every creator - the dispatch
@@ -3553,6 +3577,8 @@ export class TaskManager {
       // An id, read again at launch like model and effort: a Persona edited while the task
       // waits reaches it, and the launch's standing-instruction snapshot pins what was sent.
       personaId: input.personaId ?? null,
+      // Present only when given, so a task with none carries no key, as a stored row reads back.
+      ...(input.callSign ? { callSign: input.callSign } : {}),
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -4567,6 +4593,10 @@ export class TaskManager {
     if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
+    // Checked here because only the stored row knows its kind. Taking one off stays allowed.
+    if (patch.callSign && !taskKindTakesCallSign(patch.kind ?? t.kind)) {
+      return { ok: false, error: RESIDENT_CALL_SIGN_REFUSAL };
+    }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
     const agent = patch.agent ?? t.agent;
@@ -4769,6 +4799,9 @@ export class TaskManager {
       effort,
       advisorModel,
       personaId,
+      // Annotation, like priority: `undefined` leaves it and `null` takes it off, and either may
+      // reach a running task (`isAnnotationOnlyUpdate`).
+      ...(patch.callSign === undefined ? {} : { callSign: patch.callSign }),
       // A recorded Persona refusal is answered by choosing another Persona (or none), so that
       // edit returns the task to autopilot. Any other recorded error is left for its own fix.
       ...(personaId !== t.personaId && isPersonaLaunchRefusal(t.error) ? { error: null } : {}),
@@ -7655,9 +7688,11 @@ export class TaskManager {
     // behavior it always had: stop the home, clear its identity, and settle. Retention is a
     // worktree policy, and holding a ledger row open for a shell would be inventing one.
     const archived = await this.settleArchivesBeforeTeardown(t.id);
+    // Each write below is built from `t`, read before these awaits, so each takes the annotation
+    // the task holds when it is written: an edit that landed meanwhile is not undone.
     if (!archived.ok) {
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
@@ -7673,7 +7708,7 @@ export class TaskManager {
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
@@ -7689,7 +7724,7 @@ export class TaskManager {
       return;
     }
     this.registry.upsertTask({
-      ...t,
+      ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
       ...interrupted,
       status: settledStatus,
       error: settledError,

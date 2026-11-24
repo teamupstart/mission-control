@@ -53,6 +53,7 @@ import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
+import { SpokenNameSchema } from "./voice-names.ts";
 import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
@@ -1529,6 +1530,13 @@ export const DispatchSchema = z
      */
     personaId: TaskPersonaIdSchema.optional(),
     /**
+     * A call sign: a short name the operator can say to address this task's session by voice
+     * (the `voice` preview). Trimmed, 1 to 40 characters. Omitted is none. Accepted whether or
+     * not the flag is on, so a task keeps the name it was given; only the dashboard's field is
+     * behind the flag.
+     */
+    callSign: SpokenNameSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
      * and the machine default for other kinds.
@@ -1875,8 +1883,8 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * cannot be rewritten afterwards, while model and effort are baked into the launched
  * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
  * patch touching any of them is refused once the task has left the backlog.
- * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
- * can be changed at any point in a task's life, including while its agent is running.
+ * `priority`, `labels` and `callSign` are pure annotation that nothing is provisioned from, so
+ * they can be changed at any point in a task's life, including while its agent is running.
  *
  * `priority` is `.optional()` WITHOUT the create schema's `.default(null)`: here an
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
@@ -1930,6 +1938,13 @@ const UpdateTaskFieldsSchema = z
     advisorModel: z.null().optional(),
     /** A Persona to launch with, or `null` to take the task's Persona back off. */
     personaId: TaskPersonaIdSchema.nullable().optional(),
+    /**
+     * A call sign, or `null` to take it off. Annotation like `priority`: a spoken name changes
+     * nothing the launch provisioned, so it may change while the agent runs.
+     */
+    callSign: SpokenNameSchema.nullable().optional().describe(
+      "Call sign: a short spoken name (1 to 40 characters) this task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available. Not the title. Null takes it off. A resident's task takes none",
+    ),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
     /** Grill me first. Provisioning intent, like `workflowId`. */
@@ -2119,9 +2134,16 @@ export type BulkUpdateTasksInput = z.input<typeof BulkUpdateTasksSchema>;
 export const BulkDeleteTasksSchema = z.object({ taskIds: BulkTaskIdsSchema });
 export type BulkDeleteTasks = z.infer<typeof BulkDeleteTasksSchema>;
 
+/**
+ * A task's annotation: the fields that re-describe it and provision nothing, so an update may
+ * change them in any status. A writer that awaits between reading a task and writing it back
+ * carries these from the task as it reads then, or it undoes an edit that landed meanwhile.
+ */
+export const TASK_ANNOTATION_FIELDS = ["priority", "labels", "callSign"] as const satisfies readonly (keyof UpdateTask & keyof Task)[];
+
 /** True when this patch only re-describes a task, so no status guard applies. */
 export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
-  return Object.keys(patch).every((k) => k === "priority" || k === "labels");
+  return Object.keys(patch).every((k) => (TASK_ANNOTATION_FIELDS as readonly string[]).includes(k));
 }
 
 /**

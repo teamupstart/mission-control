@@ -5488,6 +5488,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
+        callSign: data.callSign ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -9757,6 +9758,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
+      // The same agent tried again answers to the same name.
+      callSign: task.callSign ?? undefined,
       workflowId: task.workflowId,
       grillFirst: task.grillFirst ?? false,
       priority: task.priority,

@@ -107,7 +107,7 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
-  app.get("/voice/listener/directive", gate, async (c) => {
+  app.get("/voice/listener/directive", gate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
     const id = c.req.header(VOICE_LISTENER_ID_HEADER);
@@ -115,7 +115,9 @@ export function registerVoiceRoutes(
     const current = store.directive();
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal);
-    if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
+    await next();
+  }, gate, (c) => {
+    if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) return c.json({ error: "not_listener_owner" }, 409);
     const state = store.state();
     const next = store.directive(state);
     if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);

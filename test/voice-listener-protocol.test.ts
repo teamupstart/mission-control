@@ -65,6 +65,17 @@ test("poll holds through identical hellos then returns unchanged at 25 seconds",
   assert.deepEqual(await response, initial);
 });
 
+test("disabling Voice returns 404 to an outstanding directive poll", { timeout: 3000 }, async (t) => {
+  voiceStateStore.reset();
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true }); });
+  assert.ok((await listener.hello()).ok);
+  const current = await listener.poll();
+  const pending = assert.rejects(listener.poll(current.revision), /404/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  await pending;
+});
+
 test("a terminal denial releases capture immediately while Setup retains the denial", async () => {
   voiceStateStore.reset();
   const replacement = new FakeVoiceListener("http://localhost", tokenPath(), async (url, init) => app.request(url, init));

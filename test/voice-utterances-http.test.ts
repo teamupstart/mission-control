@@ -228,6 +228,34 @@ test("a held POST times out without routing and can retry the same ID after key-
   assert.deepEqual((await readHeard()).map(entry => entry.id), [words.id]);
 });
 
+test("a replayed key-up cannot stop a later hold and a heartbeat does not move its start", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const press = (pushToTalk: boolean, pushToTalkReleasedAt?: number) =>
+    post("/voice/shell-report", { callActive: true, pushToTalk, pushToTalkReleasedAt }, token);
+  await press(true);
+  t.mock.timers.setTime(now + 20);
+  await press(false, now + 20);
+  t.mock.timers.setTime(now + 40);
+  await press(true);
+  const current = voiceStateStore.directive();
+  t.mock.timers.setTime(now + 80);
+  await press(true);
+  const stale = await press(false, now + 20);
+  assert.equal((await stale.json()).state.mode, "push-to-talk");
+  assert.deepEqual(voiceStateStore.directive(), current);
+  assert.equal(voiceStateStore.releasedCapture(current.revision), undefined);
+  const released = await press(false, now + 60);
+  assert.equal((await released.json()).state.mode, "auto-muted");
+  assert.deepEqual(voiceStateStore.releasedCapture(current.revision), { revision: current.revision, at: now + 60 });
+
+  // Both events of a quick tap can have occurred before the daemon receives key-down.
+  await post("/voice/shell-report", { callActive: true, pushToTalk: true, pushToTalkPressedAt: now + 70 }, token);
+  const quick = voiceStateStore.directive();
+  assert.equal((await (await press(false, now + 75)).json()).state.mode, "auto-muted");
+  assert.deepEqual(voiceStateStore.releasedCapture(quick.revision), { revision: quick.revision, at: now + 75 });
+});
+
 test("a rapid second press preserves the first release, until a privacy or recipient change", async () => {
   const press = (down: boolean) => post("/voice/shell-report", {
     callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAt: Date.now() }),

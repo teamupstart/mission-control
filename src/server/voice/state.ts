@@ -59,7 +59,7 @@ export class VoiceStateStore {
   private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
-  private report: { at: number; report: VoiceShellReport } | null = null;
+  private report: { at: number; heldSince: number | null; report: VoiceShellReport } | null = null;
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
    * allows the microphone does not change because a listener stopped, and the Setup row reads it.
@@ -241,13 +241,16 @@ export class VoiceStateStore {
     return { ok: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION };
   }
 
-  /** Take the shell's report. The latest one wins whole. */
+  /** A dated key-up from an earlier press cannot supersede the current shell snapshot. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
     const keyUp = report.pushToTalkReleasedAt;
+    const heldSince = this.report && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? this.report.heldSince : null;
+    if (!report.pushToTalk && keyUp !== undefined && heldSince !== null && keyUp < heldSince) return;
     const held = !report.pushToTalk && this.report?.report.pushToTalk && this.state().mode === "push-to-talk"
       ? this.directive() : null;
-    this.report = { at, report };
+    const press = heldSince ?? Math.min(report.pushToTalkPressedAt ?? at, at);
+    this.report = { at, heldSince: report.pushToTalk ? press : null, report };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && keyUp !== undefined && keyUp <= at && this.state().mode === "auto-muted") {
       this.directive();

@@ -94,7 +94,11 @@ the input timeline discards the interrupted utterance through the next silence b
 
 The shell sends `pushToTalk: false` with `pushToTalkReleasedAt` set to the key event's
 Unix time in milliseconds on the shared host clock. Transport delay does not extend the
-held interval. A missing, invalid or future timestamp closes capture and discards the tail.
+held interval. On key-down the shell can supply the key event's Unix milliseconds in
+`pushToTalkPressedAt`, so even a short tap can finish before the daemon receives the press.
+Otherwise the daemon dates the press on receipt. A dated key-up older than that press is
+ignored. Shell heartbeats preserve its start time. A missing, invalid or future key-up
+timestamp closes capture and discards the tail.
 
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
@@ -562,7 +566,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkReleasedAt?, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkPressedAt?, pushToTalkReleasedAt?, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.
 

@@ -3,11 +3,13 @@ import { VOICE_HELLO_INTERVAL_MS } from "../shared/voice.ts";
 import { ListenerClient } from "./client.ts";
 import { tokenWords, type Recognition } from "./words.ts";
 
-export interface RecordingSegment { samples: Float32Array; last: boolean }
+type SegmentIterator = Iterator<Float32Array | null, void, string> | AsyncIterator<Float32Array | null, void, string>;
+/** EOF can be checked even while muted, without asking the detector to read any more audio. */
+export type RecordingSegments = SegmentIterator & { readonly exhausted: boolean };
 
 /** File playback is a finite listener session. A changed directive invalidates only the segment decoded under it. */
 export async function playRecording(client: ListenerClient,
-  open: (signal: AbortSignal) => Iterator<RecordingSegment | null, void, string> | AsyncIterator<RecordingSegment | null, void, string>,
+  open: (signal: AbortSignal) => RecordingSegments,
   decode: (samples: Float32Array, roster: string[]) => Promise<Recognition>): Promise<void> {
   const lifetime = new AbortController();
   const segments = open(lifetime.signal);
@@ -22,17 +24,15 @@ export async function playRecording(client: ListenerClient,
     }
   }
   async function play() {
-    let last = false;
-    while (!last) {
+    while (!segments.exhausted) {
       let directive = await client.poll(undefined, lifetime.signal);
       while (!directive.capture) directive = await client.poll(directive.revision, lifetime.signal);
       const segment = await segments.next(directive.revision);
       if (segment.done) return;
       if (segment.value === null) continue;
-      last = segment.value.last;
       lifetime.signal.throwIfAborted();
       const capturedAt = Date.now();
-      const result = await decode(segment.value.samples, directive.roster);
+      const result = await decode(segment.value, directive.roster);
       lifetime.signal.throwIfAborted();
       if (!result.text.trim()) continue;
       const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal);

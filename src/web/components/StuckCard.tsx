@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { canMessage } from "@shared/pane.ts";
 import { canInterruptSession } from "@shared/session.ts";
-import type { InboxMessageKind } from "@shared/inbox.ts";
-import type { Stall, StallFacts, StallKind } from "@shared/stall.ts";
+import type { Stall, StallFacts } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
-import { api, type ActionResult } from "../lib/api.ts";
+import { api } from "../lib/api.ts";
+import { parkedMissingStep, parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 import { interruptReport, type InterruptOutcome } from "../lib/interrupting.ts";
 import type { AgentNameView } from "../lib/agent-names.ts";
 import { AgentName, InboxActionButton } from "./AgentName.tsx";
@@ -26,25 +26,6 @@ import { AgentDot } from "./session-bits.tsx";
  * when the session has moved, or when the operator dismisses it.
  */
 
-/** The rule that fired, as the row's label names it. */
-export const STUCK_RULE_LABELS: Record<StallKind, string> = {
-  "silent-working": "Silent while working",
-  "unfinished-work": "Idle with work open",
-  "workflow-parked": "Workflow run parked",
-  escalated: "Foreman escalation unanswered",
-};
-
-/** What a completed action reports under the row, by the action that ran. */
-const DONE: Record<string, string> = {
-  nudge: "Nudge sent.",
-  continue: "Asked it to continue.",
-  push: "Told it to push.",
-  stop: "Interrupted.",
-  "mark-done": "Task marked done.",
-  resubmit: "Resubmitted the run.",
-  message: "Message sent.",
-};
-
 const MARK_DONE_OUTCOME = "Marked done from the inbox";
 
 /**
@@ -54,16 +35,6 @@ const MARK_DONE_OUTCOME = "Marked done from the inbox";
  */
 export function interruptDone(result: InterruptOutcome): string {
   return interruptReport(result).flash ?? "Interrupted.";
-}
-
-/**
- * A refused action's line under the row. A resubmission of an unchanged repository is refused
- * until someone confirms it, and that confirmation lives on the run's own page, so the line
- * says where to go rather than asking for a control this row does not have.
- */
-function refusalText(result: ActionResult & { code?: string }): string {
-  const error = result.error ?? "The action failed.";
-  return result.code === "workflow_unchanged_repository" ? `${error}. Open run to confirm it there.` : error;
 }
 
 export function StuckCard({
@@ -91,28 +62,10 @@ export function StuckCard({
    */
   onReplyBox?: (present: boolean) => void;
 }): React.JSX.Element {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const { busy, error, done, run, fixed } = useStallActions(session.id, stall);
+  // The draft is kept across a change of stall: it is the operator's words, not a report about
+  // an action.
   const [draft, setDraft] = useState("");
-  // The row keeps its id (`stuck:<session>`) when the rule or the facts change, so feedback
-  // about an action taken on the earlier stall is cleared when this one is a different stall,
-  // and the controls are released for it. The draft is kept: it is the operator's words, not a
-  // report about an action.
-  const identity = `${stall.kind}:${stall.fingerprint ?? stall.reason}`;
-  const [shownFor, setShownFor] = useState(identity);
-  if (shownFor !== identity) {
-    setShownFor(identity);
-    setError(null);
-    setDone(null);
-    setBusy(null);
-  }
-  // Read when a request settles, so a result can tell whether the stall it was sent for is
-  // still the one on screen. `latest` numbers each request, so an older one settling late
-  // never releases the controls a newer one is holding.
-  const current = useRef(identity);
-  current.current = identity;
-  const latest = useRef(0);
   // Counts every edit to the message box. A send remembers the count it started at, and its
   // success clears the box only if nothing was typed since: a draft written while the send was
   // pending stays, even when it repeats the words that were sent.
@@ -130,36 +83,6 @@ export function StuckCard({
     return () => notifyReplyBox.current?.(false);
   }, [messageable]);
 
-  const run = (
-    action: string,
-    go: () => Promise<ActionResult>,
-    after?: () => void,
-    describe?: (result: ActionResult) => string,
-  ) => () => {
-    const request = ++latest.current;
-    const sentFor = identity;
-    setBusy(action);
-    setError(null);
-    setDone(null);
-    // `api` answers failures as `{ ok: false }` rather than rejecting, but a rejection is still
-    // turned into one here, so a request that throws can never leave the row's controls disabled.
-    const settled = Promise.resolve()
-      .then(go)
-      .catch((err: unknown): ActionResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
-    void settled.then((result) => {
-      if (request === latest.current) setBusy(null);
-      // A sent message has left the box whatever is on screen now, so the draft is cleared.
-      if (result.ok) after?.();
-      // A result about an earlier stall says nothing about this one: it is not shown.
-      if (current.current !== sentFor || request !== latest.current) return;
-      if (!result.ok) {
-        setError(refusalText(result));
-        return;
-      }
-      setDone(describe ? describe(result) : DONE[action] ?? null);
-    });
-  };
-  const fixed = (kind: InboxMessageKind) => run(kind, () => api.sendInboxMessage(session.id, kind));
   const disabled = busy !== null;
 
   return (
@@ -327,43 +250,9 @@ export function stuckDetail(facts: StallFacts): string {
       }
       return `Open: ${queue}. A queue's items are handled in the session.`;
     }
-    case "workflow-parked": {
-      // A run an orchestrator started reviews one exact result, so only that source can submit
-      // again (`WorkflowManager.resubmit` refuses it). Said plainly, so the row does not promise
-      // that the session's next turn or a resubmission from here would move it.
-      if (parkedStep(facts) === "source") {
-        return `Missing step: the ${facts.externalSource} that started ${facts.workflowName} must submit again. Neither a resubmission from here nor the session's next turn moves this run.`;
-      }
-      if (facts.status === "waiting_for_new_head") {
-        const unpushed = facts.unpushedCommits === 1 ? "1 commit" : `${facts.unpushedCommits} commits`;
-        return facts.unpushedCommits > 0
-          ? `Missing step: a pushed head. ${unpushed} on this branch have not been pushed.`
-          : `Missing step: a pushed head on this branch for ${facts.workflowName}.`;
-      }
-      return facts.resubmittable
-        ? `Missing step: a resubmission to reopen ${facts.workflowName} round ${facts.round}.`
-        : `Missing step: the session's next turn, which reopens ${facts.workflowName} round ${facts.round}.`;
-    }
+    case "workflow-parked":
+      return `Missing step: ${parkedMissingStep(facts)}`;
     case "escalated":
       return facts.text ? `Foreman escalated: ${facts.text}` : "Foreman escalated a decision to you.";
   }
-}
-
-type ParkedFacts = Extract<StallFacts, { kind: "workflow-parked" }>;
-
-/**
- * Whose step a parked run is waiting on, which decides the one remedy its row offers.
- *
- * - `resubmit`: a manual or Preview round that Resubmit reopens.
- * - `push`: a run waiting for a pushed head, with commits the remote has not seen. Only this
- *   status is moved by a push; a run waiting for the session is not, whatever is unpushed.
- * - `source`: a run an orchestrator started, waiting for the session. Only that source can
- *   submit it again, so nothing on the row moves it.
- * - `next-turn`: everything else, which the session's own next turn moves.
- */
-export function parkedStep(facts: ParkedFacts): "resubmit" | "push" | "source" | "next-turn" {
-  if (facts.resubmittable) return "resubmit";
-  if (facts.status === "waiting_for_new_head") return facts.unpushedCommits > 0 ? "push" : "next-turn";
-  if (facts.externalSource !== null) return "source";
-  return "next-turn";
 }

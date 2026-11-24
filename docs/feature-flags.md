@@ -10,7 +10,8 @@ The flag core stores one set of operator choices for this machine. The registry 
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
 [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
-[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) and
+[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`),
+[Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`) and
 [Voice addressing](voice.md) (`voice`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
@@ -82,7 +83,7 @@ answer within 10 seconds counts as failed, so Retry is never stuck behind a stal
 
 Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAGS`,
 `RETIRED_FEATURE_FLAG_IDS` and one `<FLAG>_ID` constant for each flag whose gates need to name it
-(today `HEADLESS_MODE_FLAG_ID` and `SESSION_AWAITING_FLAG_ID`), so a gate imports the id instead
+(today `HEADLESS_MODE_FLAG_ID`, `SESSION_AWAITING_FLAG_ID` and `IDLE_STALLED_FLAG_ID`), so a gate imports the id instead
 of respelling it. It holds data
 only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
@@ -188,6 +189,7 @@ gates, not by resolving an unknown id as on.
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `idle-stalled` | preview | Idle's Stalled section on the Board and the Console rail, its head count, the card's fact sheet and fixes, and removing the two idle stall rules from the inbox's Stuck section. It also opens `POST /api/sessions/:id/inbox-message`, which the `inbox` flag opens too. Switching it off returns those stalls to the inbox's Stuck section while the `inbox` preview is on (with `inbox` off there is no Stuck section, so they appear in neither); dismissals carry over | [Stuck rows](attention-and-alerts.md#stuck-rows), [UI](ui.md) |
 | `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state` and `voice_roster` events and snapshot field, the speech model manager, the Settings > Voice category with its roster, the **Call sign** field under Dispatch > Advanced, the **Reference name** field on a resident profile, and the Setup panel's Voice family. A call sign or reference name already saved is kept while the flag is off, and the task and profile routes accept one either way, but it names an agent (in the inbox, cards, alerts, the Away digest and report authors) only while the flag is on. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.

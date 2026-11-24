@@ -56,6 +56,8 @@ interface PendingDismissal {
 export interface AttentionDismissalState {
   /** The stored set as of the newest read applied: item id to occurrence. */
   stored: ReadonlyMap<string, string>;
+  /** Revisions from the same read, for conditional upgrades of pre-upgrade dismissal keys. */
+  storedRevisions: ReadonlyMap<string, number>;
   /** This window's dismissals not yet confirmed by a later read. */
   pending: ReadonlyMap<string, PendingDismissal>;
   /** The number of the newest read applied, 0 before any. Reads number from 1 as they start. */
@@ -64,6 +66,7 @@ export interface AttentionDismissalState {
 
 export const INITIAL_DISMISSAL_STATE: AttentionDismissalState = {
   stored: new Map(),
+  storedRevisions: new Map(),
   pending: new Map(),
   appliedRead: 0,
 };
@@ -135,6 +138,7 @@ export function applyDismissalRead(
   }
   return {
     stored: new Map(dismissals.map((entry) => [entry.itemId, entry.occurrence])),
+    storedRevisions: new Map(dismissals.map((entry) => [entry.itemId, entry.revision])),
     pending,
     appliedRead: read,
   };
@@ -207,6 +211,9 @@ interface DismissalWriteAnswer {
   accepted?: readonly { itemId: string; revision: number }[];
 }
 
+/** An operator write uses the latest seen revision. A migration must replace its exact source revision. */
+export type DismissalIntent = AttentionDismissalKey & { basis?: number };
+
 /**
  * Send this window's dismissals, each with the basis that makes the daemon's ordering honest.
  *
@@ -229,16 +236,17 @@ interface DismissalWriteAnswer {
 export function createDismissalSender<Answer extends DismissalWriteAnswer>(
   post: (writes: readonly AttentionDismissalWrite[]) => Promise<Answer>,
   seen: RevisionLedger,
-): (keys: readonly AttentionDismissalKey[]) => Promise<Answer> {
+): (keys: readonly DismissalIntent[]) => Promise<Answer> {
   /** Revisions this window's own writes were stored at, and nothing else. */
   const own = createRevisionLedger();
-  type Stamped = AttentionDismissalKey & { seenAtClick: number };
+  type Stamped = DismissalIntent & { seenAtClick: number };
   const enqueue = createDismissalWriteQueue<Stamped, Answer>(async (stamped) => {
     const answer = await post(
-      stamped.map(({ itemId, occurrence, seenAtClick }) => ({
+      stamped.map(({ itemId, occurrence, seenAtClick, basis }) => ({
         itemId,
         occurrence,
-        basis: Math.max(seenAtClick, own.basisFor(itemId)),
+        // A migration may replace only the exact revision whose old hash matched.
+        basis: basis ?? Math.max(seenAtClick, own.basisFor(itemId)),
       })),
     );
     if (answer.ok && answer.accepted) {

@@ -1,7 +1,8 @@
 import { shell, systemPreferences } from "electron";
 import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
@@ -56,6 +57,9 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let reportRequested = false;
   let reportFailed = false;
   let sending: Promise<boolean> | undefined;
+  let hostTimeUs: (() => number) | undefined;
+  let lastReportUs = -1;
+  const disabled = () => state.mode === "off";
 
   async function sendReports() {
     let accepted = false;
@@ -63,7 +67,10 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       while (connection && reportRequested && state.mode !== "off") {
         reportRequested = false;
         const microphone = systemPreferences.getMediaAccessStatus("microphone");
+        hostTimeUs ??= loadVoiceHostClock(join(dirname(binary), "state-lock.node"));
+        lastReportUs = Math.max(hostTimeUs(), lastReportUs + 1);
         const report: VoiceShellReport = {
+          reportedAtHostUs: lastReportUs,
           capabilities: {
             tray: { available: true, reason: null },
             microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
@@ -92,7 +99,9 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
 
   async function checkMicrophone(): Promise<"checked" | "unavailable"> {
     if (state.mode === "off") return "unavailable";
-    if (!await requestReport()) throw new Error("Microphone status report was not accepted");
+    const accepted = await requestReport();
+    if (disabled()) return "unavailable";
+    if (!accepted) throw new Error("Microphone status report was not accepted");
     return "checked";
   }
 
@@ -105,7 +114,8 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       return;
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
-    const installed = existsSync(binary);
+    // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
+    const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener.update(state, installed && microphone === "granted");
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
@@ -196,7 +206,10 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       if (permission === "denied" || permission === "restricted") {
         await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
       } else if (permission === "not-determined") await ask();
-      if (!await sync()) throw new Error("Microphone status report was not accepted");
+      if (disabled()) return "unavailable";
+      const accepted = await sync();
+      if (disabled()) return "unavailable";
+      if (!accepted) throw new Error("Microphone status report was not accepted");
       return "checked";
     },
     async mute(muted: boolean) {

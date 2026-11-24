@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
+  VOICE_BACKEND_CHOICES,
   applyVoiceConfigPatch,
   VOICE_CONFIG_DEFAULTS,
   VOICE_PROVIDER_EDIT_TIMEOUT_MS,
@@ -108,12 +109,21 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
-export function getVoiceConfig(): VoiceConfig {
+function storedConfig(): VoiceConfig {
   const parsed = VoiceConfigSchema.safeParse(getAppConfig(ENTRY) ?? {});
   if (parsed.success) return parsed.data;
   // A value this build cannot read reads as the defaults; the next write replaces it whole.
   console.warn("[voice] stored config does not parse; using defaults:", parsed.error.issues[0]?.message);
   return structuredClone(VOICE_CONFIG_DEFAULTS);
+}
+
+function effectiveConfig(config: VoiceConfig): VoiceConfig {
+  const override = VOICE_BACKEND_CHOICES.find(choice => choice === process.env.MISSION_VOICE_BACKEND);
+  return override ? { ...config, backend: override } : config;
+}
+
+export function getVoiceConfig(): VoiceConfig {
+  return effectiveConfig(storedConfig());
 }
 
 function notify(config: VoiceConfig): void {
@@ -143,7 +153,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     if (patch.decisionProvider !== "off" && observedOrder < lastOptOut && !canApply(author, observedOrder)) return null;
     writer = author;
   }
-  const next = applyVoiceConfigPatch(getVoiceConfig(), patch);
+  const next = applyVoiceConfigPatch(storedConfig(), patch);
   setAppConfig(ENTRY, next);
   if (patch.decisionProvider !== undefined) {
     if (writer !== lastWriter) writerBase = applied;
@@ -151,8 +161,9 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     applied = order ?? issueProviderOrder();
     if (patch.decisionProvider === "off") lastOptOut = applied;
   }
-  notify(next);
-  return next;
+  const config = effectiveConfig(next);
+  notify(config);
+  return config;
 }
 
 /** A settings restore rewrote the row: tell the listeners what it holds now. */

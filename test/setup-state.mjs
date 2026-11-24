@@ -136,6 +136,8 @@ if (process.env.NODE_TEST_CONTEXT) {
   // sentence reach OpenAI or Jev. No test may: a test that needs a key sets one itself.
   delete process.env.OPENAI_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
+  // Voice fixtures select their own backend. An operator override would supersede even an explicit selection.
+  delete process.env.MISSION_VOICE_BACKEND;
 
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a

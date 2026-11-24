@@ -6,8 +6,9 @@ machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
-and queues it to the addressed agent. On Apple silicon, the standalone listener captures and
-recognizes speech locally. The on-screen confirmation card belongs to a later phase.
+and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
+recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
+and Linux. The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
@@ -63,8 +64,12 @@ Any launcher can run `dist/native/voice-listener` directly with these three vari
 The desktop shell supplies an HTTPS origin and its pinned DER certificate in
 `MISSION_VOICE_DAEMON_CERT` (base64). The managed listener requires both for its requests.
 
-The development launcher fills missing values from the local daemon configuration and the
-FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper
+The development launcher reads the effective backend, model manifest and verified directory from
+the running daemon. With the daemon set to `auto`, `--backend` can use either installed model.
+If the daemon selects a specific backend, the launcher reports a conflicting override before
+starting a helper. Change the daemon selection through `PUT /api/voice/config` or its
+`MISSION_VOICE_BACKEND` environment, then verify the model in Voice Setup.
+When macOS reports `not-determined` at startup, the helper
 prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
 closed. Run the development command from a terminal app that already has microphone access.
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
@@ -72,9 +77,12 @@ prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-
 
 On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
-Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
-directive poll and utterance POST, alongside the daemon token. The first compatible hello
-claims the listener lease. While its microphone permission is granted, a second process
+Standalone listeners generate a UUID per process. The desktop supervisor generates its own
+UUID and passes it to each managed helper after the previous child exits. This lets its
+replacement resume capture immediately after the daemon event stream reconnects.
+Send the UUID in `x-voice-listener-id` on each hello, directive poll and utterance POST,
+alongside the daemon token. The first compatible hello claims the listener lease.
+While its microphone permission is granted, a listener with a different UUID
 receives HTTP 409 `listener_in_use` and exits before
 opening the microphone. A new process can claim capture 30 seconds after the owner's last
 hello. It receives a fresh revision even when settings are identical. The daemon checks
@@ -208,6 +216,11 @@ It clips on 16 kHz sample boundaries and rounds the exclusive end up to host mil
 for `x-voice-capture-end-host-ms`. At key-up the detector tests a partial 20 ms frame
 with silence padding. The recognizer receives only recorded samples through release.
 A clipped prefix containing only quiet lead-in is discarded.
+
+For sherpa WAV playback, the host times describe when the listener fed the first and last
+sample windows of a detected phrase to the detector. A phrase read entirely during a hold
+can finish decoding after key-up. The file listener uses the same retry budget and
+utterance ID across held responses. A phrase that crosses key-up is discarded.
 The daemon timestamps dashboard picks on the listener's host clock. On macOS it reads
 `CLOCK_UPTIME_RAW`, the Core Audio clock in nanoseconds, and converts it to microseconds.
 On Linux the host clock is `CLOCK_MONOTONIC`. The router uses these timestamps to order
@@ -485,9 +498,41 @@ a 40-character commit does not parse. The `fluidaudio` entry holds two models, 5
 | Parakeet TDT 0.6B v2, Core ML | `FluidInference/parakeet-tdt-0.6b-v2-coreml` at `ee09c569f73759e6d44c9bd16766f477b2b36d39`: the Encoder, Decoder, JointDecision and Preprocessor models and `parakeet_vocab.json` | The recognizer |
 | Parakeet TDT-CTC 110M, Core ML | `FluidInference/parakeet-ctc-110m-coreml` at `accdafd8cf8a2ff1cabe3c11e54416b405d409aa` | FluidAudio primes the roster's names with a vocabulary-boosting pass over this model |
 
-The `sherpa-onnx` entry is empty until its backend is built. The configured `backend` decides which
-entry is used: `auto` is `fluidaudio` on Apple silicon and `sherpa-onnx` everywhere else. A machine
-whose backend has no model reads so on the row, with nothing to download.
+On Apple silicon running macOS 14 or newer, `auto` selects FluidAudio.
+Elsewhere it selects sherpa-onnx. Select either backend with `PUT /api/voice/config`
+or set `MISSION_VOICE_BACKEND` when starting the daemon. Switching keeps the other
+backend's verified files. The sherpa download includes the int8 Parakeet TDT 0.6B v2
+recognizer (about 661 MB) and a Silero speech detector (2.2 MB).
+
+The 2026-11-23 spike sampled the sherpa process's resident memory after each file on
+an M4 Pro Mac. The highest reading with the production model was about 2.0 GB.
+Memory use during a file could have been higher. [Sherpa spike findings](voice-spike-findings.md#s2-sherpa-onnx)
+
+**Sherpa currently accepts recordings only. Live microphone capture is unverified.**
+On macOS or Linux, build the helper, select sherpa in the daemon, download its model
+in Setup, unmute, then run
+`npm run voice:listener -- --backend sherpa-onnx --input-file sample.wav` from the
+checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
+The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
+The listener validates the recording before claiming
+the daemon lease, so a rejected file can be corrected and retried immediately. With capture
+permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances. During
+playback the development listener reports its file input as granted and enumerates
+zero microphones. Use ordinary listening mode for playback. After the file ends,
+allow the listener’s 30-second lease to expire before launching another process. The packaged app excludes file playback. The desktop
+shell starts FluidAudio for live capture. Linux supports the standalone recognizer path;
+desktop capture, daemon launch, hotkeys and call detection belong to the Linux follow-on.
+
+The dedicated Linux CI job tests the shipped addon layout against a loopback daemon with
+a 16 kHz mono recording of “Steve, check the build”. The fixture uses the macOS Samantha
+voice at 180 words per minute, with 400 ms of silence inserted between the name and
+the message. The test checks the decoded words and their timings. Routing uses the
+first word regardless of the measured gap. The pinned fp32 Parakeet 110M model
+and detector cache occupy about 480 MB. Unit shards use a complete existing cache and
+skip recognition on a cold cache. To run the required check locally, set
+`MISSION_VOICE_RECOGNIZER_JOB=1` and run
+`node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts`.
+`MISSION_VOICE_TEST_MODEL_DIR` overrides the temporary cache location.
 
 ### Download and verification
 

@@ -23,6 +23,9 @@ interface CardReportTiming {
   confirmed?: number;
 }
 
+// The browser and daemon each round their wall-to-monotonic calibration to milliseconds.
+const FOCUS_CLOCK_ROUNDING_US = 2_000;
+
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
   private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number }>();
@@ -65,11 +68,12 @@ export class VoiceOpenCards {
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
     // on the same translated clock even if a browser's time has coarser precision.
-    if (observedAtUs !== undefined && !this.reports.has(report.windowId) && observedAtUs + stream.clockOffsetUs < stream.floorUs) {
-      stream.clockOffsetUs = stream.floorUs + 1 - observedAtUs;
-    }
-    const focusAtUs = observedAtUs === undefined ? Math.max(Date.now() * 1000, this.latestFocusUs + 1)
-      : observedAtUs + stream.clockOffsetUs;
+    const offsetUs = observedAtUs !== undefined && !this.reports.has(report.windowId) && observedAtUs + stream.clockOffsetUs < stream.floorUs
+      ? stream.floorUs + 1 - observedAtUs : stream.clockOffsetUs;
+    const receivedUs = Math.floor((performance.timeOrigin + performance.now()) * 1000);
+    const focusAtUs = observedAtUs === undefined ? Math.max(receivedUs, this.latestFocusUs + 1) : observedAtUs + offsetUs;
+    if (focusAtUs > receivedUs + FOCUS_CLOCK_ROUNDING_US) return false;
+    stream.clockOffsetUs = offsetUs;
     // A focus transition is dated by the observing dashboard, before HTTP delivery.
     const last = this.reports.get(report.windowId);
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;

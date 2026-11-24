@@ -105,3 +105,23 @@ test("withdrawing a dashboard rejects late reports and a newer dashboard report 
   assert.equal(windows.dashboard, windowId);
   assert.equal(windows.target([q])?.id, q.id);
 });
+
+test("a future focus timestamp cannot prevent another live dashboard taking over the countdown", async t => {
+  const q = question();
+  const windows = registry.voiceRouter!.openCards;
+  const leave = windows.connect("initial");
+  t.after(windows.connect("already-connected"));
+  const report = (windowId: string, stamp: number) => put("/api/voice/open-cards", {
+    windowId, focused: true, cards: [{ kind: "question", id: q.id, focused: true }],
+  }, { "x-voice-focus-at-us": String(stamp) });
+  const now = Date.now() * 1000;
+  assert.equal((await report("initial", now)).status, 200);
+  await say("Steve, option B");
+  const [answer] = answers();
+  assert.equal(answer?.footerWindowId, "initial");
+  assert.equal((await report("initial", now + 60_000_000)).status, 409);
+  leave();
+  assert.equal((await report("already-connected", Date.now() * 1000 + 1)).status, 200);
+  assert.equal(windows.target([q])?.id, q.id);
+  assert.deepEqual(answers(), [{ ...answer, footerWindowId: "already-connected" }]);
+});

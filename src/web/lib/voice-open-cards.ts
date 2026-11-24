@@ -1,5 +1,5 @@
 import { createContext, useEffect, useRef } from "react";
-import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceTimeBounds } from "@shared/voice-answers.ts";
+import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceTimeBounds } from "@shared/voice-answers.ts";
 
 import { fetchVoiceCardTime } from "./api.ts";
 import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
@@ -23,6 +23,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     const clock = stream.current;
     let pending: { key: string; controller: AbortController } | undefined;
     let last = "";
+    let confirmation = 0;
     let retry: ReturnType<typeof setTimeout>;
     let observed: { state: string; at: number; id: number } | undefined;
     const cardClock = new VoiceCardClock();
@@ -52,7 +53,8 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       const state = voiceReplyState(payload);
       if (state !== observed?.state) observed = state ? { state, at: performance.now(), id: ++clock.revision } : undefined;
       const body = JSON.stringify(payload);
-      const key = clock.focusAtUs + body;
+      const requested = confirmation;
+      const key = clock.focusAtUs + ":" + requested + body;
       if (pending?.key === key || (!pending && last === key)) return;
       clearTimeout(retry);
       pending?.controller.abort();
@@ -68,6 +70,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
             [VOICE_REPORT_REVISION_HEADER]: String(++clock.revision),
             ...(observation && { [VOICE_OBSERVATION_ID_HEADER]: String(observation.id) }),
             ...(calibrating && { [VOICE_CALIBRATING_HEADER]: "1" }),
+            ...(!calibrating && requested && { [VOICE_CONFIRM_FOCUS_HEADER]: String(requested) }),
             ...(bounds && { [VOICE_CARDS_OBSERVED_HEADER]: String(bounds.latest), [VOICE_CARDS_EARLIEST_HEADER]: String(bounds.earliest) }) }, body });
         let bounds = observation && cardClock.serverTimeAt(observation.at);
         if (observation && (!bounds || bounds.latest - bounds.earliest > 100)) {
@@ -94,11 +97,19 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       attributeFilter: ["data-overlay-top", "data-voice-question", "inert", "hidden"] });
     const events = ["focus", "blur", "focusin", "focusout", "visibilitychange"];
     for (const event of events) window.addEventListener(event, report, true);
+    const confirm = (event: Event) => {
+      const { windowId: requestedWindow, sequence } = (event as CustomEvent<{ windowId: string; sequence: number }>).detail;
+      if (windowId !== requestedWindow || sequence <= confirmation) return;
+      confirmation = sequence;
+      void report();
+    };
+    window.addEventListener("voice-confirm-focus", confirm);
     return () => {
       controller.abort();
       clearTimeout(retry);
       observer.disconnect();
       for (const event of events) window.removeEventListener(event, report, true);
+      window.removeEventListener("voice-confirm-focus", confirm);
     };
   }, [windowId, dashboard]);
 }

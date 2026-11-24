@@ -1,4 +1,4 @@
-import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
+import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -342,8 +342,11 @@ export function registerVoiceUtteranceRoutes(
     if (id !== undefined && (!/^\d+$/.test(id) || !Number.isSafeInteger(observationId))) return c.json({ error: "Invalid observation ID." }, 400);
     const calibrating = c.req.header(VOICE_CALIBRATING_HEADER) === "1";
     if (calibrating && observationId === undefined) return c.json({ error: "Calibration requires an observation ID." }, 400);
+    const echo = c.req.header(VOICE_CONFIRM_FOCUS_HEADER);
+    const confirmed = echo === undefined ? undefined : Number(echo);
+    if (echo !== undefined && (!/^\d+$/.test(echo) || !Number.isSafeInteger(confirmed))) return c.json({ error: "Invalid focus confirmation." }, 400);
     const ok = router.openCards.report(parsed.data, { focusAtUs, revision, withdraw: c.req.query("withdraw") === "1",
-      observation: bounds, observationId, calibrating });
+      observation: bounds, observationId, calibrating, confirmed });
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {

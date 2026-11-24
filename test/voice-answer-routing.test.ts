@@ -668,3 +668,32 @@ test("an addressed agent retains its one open target when another agent has focu
   await say("reply, option A");
   assert.equal(answers()[0]?.reviewId, focused.id);
 });
+
+test("only a fresh confirmation from the requested live dashboard can arm a reply", async t => {
+  const q = question();
+  await show([q.id]);
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("background"));
+  const requests: number[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") requests.push(event.sequence);
+    else publish(event);
+  });
+  const reply = (id: string) => router.accept({ id, text: "reply, option B", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+  const report = (windowId: string, sequence: number) => put("/api/voice/open-cards", {
+    windowId, focused: windowId !== "background", cards: [{ kind: "question", id: q.id, focused: true }],
+  }, { "x-voice-confirm-focus": String(sequence) });
+  const cancelled = reply("unconfirmed");
+  await say("cancel");
+  await cancelled;
+  const pending = reply("next-reply");
+  assert.equal(requests.length, 2);
+  await report("voice-question-test", requests[0]!);
+  await report("background", requests[1]!);
+  assert.deepEqual(answers(), []);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  await report("voice-question-test", requests[1]!);
+  await pending;
+  assert.equal(answers()[0]?.id, "next-reply");
+});

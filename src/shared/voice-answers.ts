@@ -7,6 +7,7 @@ export const VOICE_CARDS_OBSERVED_HEADER = "x-voice-cards-observed-at-ms";
 export const VOICE_CARDS_EARLIEST_HEADER = "x-voice-cards-earliest-at-ms";
 export const VOICE_OBSERVATION_ID_HEADER = "x-voice-observation-id";
 export const VOICE_CALIBRATING_HEADER = "x-voice-calibrating";
+export const VOICE_CONFIRM_FOCUS_HEADER = "x-voice-confirm-focus";
 export const VOICE_MONOTONIC_TIME_HEADER = "x-voice-monotonic-time-ms";
 
 /** A document or daemon keeps its monotonic time origin across a wall clock adjustment.

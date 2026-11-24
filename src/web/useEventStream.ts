@@ -896,6 +896,9 @@ export function useEventStream(): MissionState {
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
           break;
+        case "voice_confirm_focus":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail: msg }));
+          break;
         case "voice_answer": {
           const answer = msg.answer;
           const sample = answer && sampleCardClock(msg, true);

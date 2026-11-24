@@ -9428,6 +9428,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     publish: (reviewId, answer) => registry.emitQuestionEvent({ type: "voice_answer", reviewId, answer }),
     removeCompanion: id => registry.emitQuestionEvent({ type: "voice_card_remove", id }),
     open: (windowId, review) => registry.emitQuestionEvent({ type: "voice_open_question", windowId, sessionId: review.sessionId, reviewId: review.id }),
+    confirmFocus: (windowId, sequence) => registry.emitQuestionEvent({ type: "voice_confirm_focus", windowId, sequence }),
     async resolve(answer) {
       const review = registry.getReview(answer.reviewId);
       if (!featureEnabled(VOICE_FLAG) || review?.kind !== "input" || review.status !== "pending") return false;

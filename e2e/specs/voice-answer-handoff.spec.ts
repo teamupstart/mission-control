@@ -244,6 +244,47 @@ test("a reply cannot reach the old question while a new focus is calibrating", a
   }
 });
 
+test("a transcript delivered before the new question's focus report waits for a live confirmation", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const first = await file(page, daemon, steve.cwd, "First benchmark?");
+  const second = await file(page, daemon, steve.cwd, "Second benchmark?");
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const field = (id: string) => inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+  const firstReport = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    !r.request().headers()["x-voice-calibrating"] && r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === first));
+  await field(first).focus();
+  await firstReport;
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/open-cards", async route => {
+    held.resolve();
+    await release.promise;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await field(second).focus();
+    await held.promise;
+    const focusedAt = Date.now();
+    await expect.poll(() => Date.now(), { intervals: [10] }).toBeGreaterThan(focusedAt + 30);
+    const reply = say(daemon, "reply, tomorrow", { id: "before-focus-delivery" });
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries
+      .some((entry: { id: string }) => entry.id === "before-focus-delivery"), { intervals: [10] }).toBe(true);
+    await expect(field(first)).toBeEmpty();
+    await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+    release.resolve();
+    await reply;
+    await expect(field(second)).toHaveValue("tomorrow");
+    await inbox.getByRole("button", { name: "Submit now" }).click();
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).response).toBe("tomorrow");
+    expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + first)).json()).status).toBe("pending");
+  } finally {
+    release.resolve();
+  }
+});
+
 test("a focused multi-decision form blocks replies to its single-decision neighbor", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");

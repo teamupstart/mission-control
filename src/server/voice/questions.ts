@@ -10,6 +10,7 @@ export interface VoiceQuestions {
   publish(reviewId: string, answer: VoiceAnswer | null): void;
   removeCompanion(id: string): void;
   open(windowId: string, review: ReviewItem): void;
+  confirmFocus(windowId: string, sequence: number): void;
 }
 
 interface CardReportTiming {
@@ -19,6 +20,7 @@ interface CardReportTiming {
   observation?: VoiceTimeBounds;
   observationId?: number;
   calibrating?: boolean;
+  confirmed?: number;
 }
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
@@ -30,8 +32,9 @@ export class VoiceOpenCards {
   private replyState?: string;
   private latestFocusUs = 0;
   private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number;
-    observation?: VoiceTimeBounds; observationId?: number; receivedAt: number; calibration?: AbortController }>();
-  private calibration?: AbortController;
+    observation?: VoiceTimeBounds; observationId?: number; receivedAt: number; calibrating?: boolean }>();
+  private confirmationSequence = 0;
+  private readonly confirmations = new Map<number, { windowId: string; finish: (ok: boolean) => void }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -46,6 +49,7 @@ export class VoiceOpenCards {
     return () => {
       if (this.streams.get(windowId) !== token) return;
       this.streams.delete(windowId);
+      for (const request of this.confirmations.values()) if (request.windowId === windowId) request.finish(false);
       // Keep the report for reconnection, but its footer cannot show a live countdown.
       if (this.reports.has(windowId)) this.reportChanged();
       setTimeout(() => {
@@ -73,10 +77,8 @@ export class VoiceOpenCards {
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
     const sameObservation = observationId !== undefined && last?.observationId === observationId;
     const receivedAt = sameObservation ? last.receivedAt : performance.now();
-    const ongoing = sameObservation && last.calibration && !last.calibration.signal.aborted ? last.calibration : undefined;
-    const calibration = calibrating ? ongoing ?? new AbortController() : undefined;
     this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs,
-      observation, observationId, receivedAt, calibration });
+      observation, observationId, receivedAt, calibrating });
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
     // The question was already drawn by the first receipt of this observation.
     const clamp = (stamp: number) => Math.max(stream.connectedAt, Math.min(stamp, receivedAt));
@@ -85,18 +87,17 @@ export class VoiceOpenCards {
       : this.current === report && observationId !== undefined
         ? { earliest: calibrating ? stream.connectedAt : receivedAt, latest: receivedAt } : undefined;
     this.reportChanged(observedAt, observationId !== last?.observationId || observation?.latest !== last?.observation?.latest ||
-      observation?.earliest !== last?.observation?.earliest);
+      observation?.earliest !== last?.observation?.earliest || !!calibrating !== !!last?.calibrating);
+    if (!calibrating && timing.confirmed && timing.confirmed <= this.confirmationSequence) {
+      for (const [sequence, request] of this.confirmations) {
+        if (request.windowId === report.windowId && sequence <= timing.confirmed) request.finish(this.current === report);
+      }
+    }
     return true;
   }
 
   private reportChanged(observedAt?: VoiceTimeBounds, observedAgain = false): void {
     const current = this.current;
-    const calibration = current && this.reports.get(current.windowId)?.calibration;
-    if (calibration !== this.calibration) {
-      this.calibration?.abort();
-      this.calibration = calibration;
-      observedAgain = true;
-    }
     const state = voiceReplyState(current);
     if (state !== this.replyState || (observedAt !== undefined && observedAgain)) {
       this.replyState = state;
@@ -106,8 +107,26 @@ export class VoiceOpenCards {
     this.changed();
   }
 
-  get pendingCalibration(): AbortSignal | undefined {
-    return this.calibration?.signal;
+  /** Only a report read from the DOM after this request can confirm a spoken reply. */
+  confirmFocus(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted || !this.streams.has(windowId)) return Promise.resolve(false);
+    const sequence = ++this.confirmationSequence;
+    return new Promise(resolve => {
+      const stop = () => finish(false);
+      const finish = (ok: boolean) => {
+        this.confirmations.delete(sequence);
+        signal.removeEventListener("abort", stop);
+        resolve(ok);
+      };
+      this.confirmations.set(sequence, { windowId, finish });
+      signal.addEventListener("abort", stop, { once: true });
+      request(windowId, sequence);
+    });
+  }
+
+  get calibrating(): boolean {
+    const report = this.current;
+    return !!report && !!this.reports.get(report.windowId)?.calibrating;
   }
 
   private get current(): OpenCardsReport | undefined {
@@ -150,8 +169,7 @@ export class VoiceOpenCards {
   }
 
   clear(): void {
-    this.calibration?.abort();
-    this.calibration = undefined;
+    for (const request of this.confirmations.values()) request.finish(false);
     this.replyState = undefined;
     this.latestFocusUs = 0;
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);

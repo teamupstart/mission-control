@@ -432,20 +432,16 @@ export class VoiceRouter {
     const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !!target && (!!answer || choiceCommand);
-    if (!explicit && !(reply && drawn && timing !== "before")) return false;
+    const replyWindow = reply && this.openCards.dashboard;
+    if (!explicit && !(replyWindow && pending.length)) return false;
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit && answer ? answer[1]!.trim() : body;
     const item: OpenCard = { entry, time, message: body,
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     entry.matchedName = target?.name ?? null;
-    const calibration = reply && drawn && this.openCards.pendingCalibration;
-    if (calibration && drawn) {
-      return this.prepareAnswer(item, drawn, body, !choiceCommand, undefined, calibration).then(() => true);
-    }
-    if (reply && timing === "uncertain") {
-      this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
-      return true;
+    if (replyWindow) {
+      return this.confirmReply(item, replyWindow, body, !choiceCommand, drawn).then(() => true);
     }
     if (explicit && !pending.length) {
       this.questionNotice(item, target!.name + " has no open questions");
@@ -481,31 +477,48 @@ export class VoiceRouter {
     this.publish({ ...item.card, state: "cancelled", reason: "question-notice", detail, deadline: null });
   }
 
+  private reserveAnswer(item: OpenCard): void {
+    const id = item.card.id;
+    item.card = { ...item.card, state: "resolving", candidates: [] };
+    item.modelStep = new AbortController();
+    this.open.set(id, item);
+    this.pendingVoiceActions.push({ id, kind: "card", ...item.time, cancel: () => this.cancel(id) });
+  }
+
+  private async confirmReply(item: OpenCard, windowId: string, words: string, allowText: boolean, drawn?: ReviewItem): Promise<void> {
+    const sequence = ++this.answerSequence;
+    const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
+    this.reserveAnswer(item);
+    const signal = AbortSignal.any([item.modelStep!.signal, this.lifetime.signal, AbortSignal.timeout(3000)]);
+    const confirmed = await this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, signal);
+    if (this.open.get(item.card.id) !== item) return;
+    const candidates = this.questions!.pending().filter(q => q.createdAt <= item.time.openedAt);
+    const review = this.openCards.target(candidates);
+    const timing = this.questionCaptureTiming(item.time);
+    if (confirmed && review && timing === "eligible" && this.openCards.footerOwner(review.id) === windowId &&
+        (!calibratingTarget || calibratingTarget === review.id)) {
+      await this.prepareAnswer(item, review, words, allowText, undefined, sequence);
+      return;
+    }
+    this.take(item);
+    if ((!confirmed && drawn) || (review && timing === "uncertain") || (calibratingTarget && review?.id !== calibratingTarget)) {
+      this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
+    }
+  }
+
   private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean,
-    correction?: { id: string; time: ActionTime }, calibration?: AbortSignal): Promise<void> {
+    correction?: { id: string; time: ActionTime }, reservedSequence?: number): Promise<void> {
     const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
-    const attempt = { ...(correction?.time ?? item.time), reviewId: review.id, sequence: ++this.answerSequence };
+    const attempt = { ...(correction?.time ?? item.time), reviewId: review.id, sequence: reservedSequence ?? ++this.answerSequence };
     const accepted = this.lastAnswer.get(review.id);
-    if (accepted && compareAnswerCaptures(attempt, accepted) < 0) return;
-    if (!correction) {
-      // Reserve the capture's place while an option question is at the model.
-      item.answerAttempt = attempt;
-      item.card = { ...item.card, state: "resolving", candidates: [] };
-      item.modelStep = new AbortController();
-      this.open.set(id, item);
-      this.pendingVoiceActions.push({ id, kind: "card", ...item.time, cancel: () => this.cancel(id) });
+    if (accepted && compareAnswerCaptures(attempt, accepted) < 0) {
+      if (reservedSequence !== undefined) this.take(item);
+      return;
     }
-    if (calibration) {
-      const wake = AbortSignal.any([calibration, item.modelStep!.signal, signal, AbortSignal.timeout(3000)]);
-      if (!wake.aborted) await new Promise<void>(resolve => wake.addEventListener("abort", () => resolve(), { once: true }));
-      if (signal.aborted || this.open.get(id) !== item) return;
-      const target = this.openCards.target(this.questions!.pending());
-      if (this.openCards.pendingCalibration || target?.id !== review.id || this.questionCaptureTiming(item.time) !== "eligible") {
-        this.take(item);
-        this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
-        return;
-      }
+    if (!correction) {
+      item.answerAttempt = attempt;
+      if (reservedSequence === undefined) this.reserveAnswer(item);
     }
     const target = item.card.parts[0]?.target ?? null;
     const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);

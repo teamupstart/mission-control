@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { afterEach } from "node:test";
+import { afterEach, beforeEach } from "node:test";
+import type { OpenCardsReport } from "../../src/shared/voice-answers.ts";
 import { app, registry, reviews } from "./voice-http.ts";
 
 const windowId = "voice-question-test";
@@ -8,9 +9,32 @@ export function question(title = "Which database?", sessionId = "sdk:Steve") {
     options: [{ id: "sqlite", label: "SQLite" }, { id: "postgres", label: "Postgres", recommended: true }] }]);
 }
 
-export function put(path: string, data: unknown, headers: Record<string, string> = {}) {
-  return app.request(path, { method: "PUT", headers: { host: "localhost", "content-type": "application/json", ...headers },
+// Stand in for the dashboard's DOM and targeted event listener in in-process routing tests.
+const drawn = new Map<string, { body: OpenCardsReport; headers: Record<string, string> }>();
+const confirmations = new Map<string, number>();
+beforeEach(() => { drawn.clear(); confirmations.clear(); });
+registry.subscribe(event => {
+  if (event.type !== "voice_confirm_focus") return;
+  confirmations.set(event.windowId, event.sequence);
+  const snapshot = drawn.get(event.windowId);
+  if (snapshot && !snapshot.headers["x-voice-calibrating"]) void put("/api/voice/open-cards", snapshot.body, snapshot.headers);
+});
+
+export async function put(path: string, data: unknown, headers: Record<string, string> = {}) {
+  const body = path === "/api/voice/open-cards" ? data as OpenCardsReport : undefined;
+  const sequence = body && !headers["x-voice-calibrating"] && confirmations.get(body.windowId);
+  const response = await app.request(path, { method: "PUT", headers: { host: "localhost", "content-type": "application/json", ...headers,
+    ...(sequence && { "x-voice-confirm-focus": String(sequence) }) },
     body: JSON.stringify(data) });
+  if (body && response.ok) {
+    const previous = drawn.get(body.windowId)?.headers;
+    const stamp = Number(headers["x-voice-focus-at-us"] ?? 0);
+    const last = Number(previous?.["x-voice-focus-at-us"] ?? 0);
+    if (stamp > last || (stamp === last && Number(headers["x-voice-report-revision"] ?? 0) >= Number(previous?.["x-voice-report-revision"] ?? 0))) {
+      drawn.set(body.windowId, { body, headers });
+    }
+  }
+  return response;
 }
 
 export async function show(ids: string[], focused?: string) {

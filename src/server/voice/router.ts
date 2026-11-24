@@ -10,7 +10,7 @@ import {
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceBackend, VoiceConfig, VoiceState } from "@shared/voice.ts";
-import { VOICE_MODEL_STAGE_DEADLINE_MS, VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
+import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
@@ -300,7 +300,7 @@ export class VoiceRouter {
       this.publish(item.card);
     }, VOICE_RESOLVING_AFTER_MS);
     item.timer.unref?.();
-    const deadline = performance.now() + VOICE_MODEL_STAGE_DEADLINE_MS;
+    const startedAt = performance.now();
     const ask = async (current: NeedsModel): Promise<VoiceDecisionResult> => {
       const questions = voiceQuestionsFor(current, utterance);
       if (!questions.length) return { rung: "none", answers: [], detail: "manual selection required" };
@@ -308,7 +308,7 @@ export class VoiceRouter {
         q.kind === "who" ? q.candidates.map(c => c.id) : []));
       const agents = current.candidates.filter(c => involved.has(c.key)).map(c => c.agent);
       try {
-        return await this.decider.ask(questions, { agents, signal: modelStep.signal, deadline });
+        return await this.decider.ask(questions, { agents, signal: modelStep.signal, startedAt });
       } catch {
         return { rung: "none", answers: [], detail: "routing failed" };
       }

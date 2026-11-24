@@ -45,8 +45,8 @@ export interface VoiceAskOptions {
   /** The harness of every agent the questions are about: it chooses the job's provider. */
   agents: readonly AgentType[];
   signal?: AbortSignal;
-  /** Absolute monotonic deadline shared by dependent questions from one capture. */
-  deadline?: number;
+  /** Monotonic start of the model stage, shared by dependent questions from one capture. */
+  startedAt?: number;
 }
 
 export interface VoiceDecider {
@@ -186,7 +186,8 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
   return {
     async ask(questions, options = { agents: [] }) {
       if (questions.length === 0) return { rung: "none", answers: [], detail: "no questions" };
-      const deadline = Math.min(options.deadline ?? Infinity, now() + (deps.deadlineMs ?? VOICE_MODEL_STAGE_DEADLINE_MS));
+      const startedAt = Math.min(options.startedAt ?? Infinity, now());
+      const deadline = startedAt + (deps.deadlineMs ?? VOICE_MODEL_STAGE_DEADLINE_MS);
       const notes: string[] = [];
       const { signal } = options;
 
@@ -196,7 +197,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
       const key = provider ? decisionKeyFor(provider, saved, env) : null;
       if (provider && key) {
         const label = VOICE_KEY_PROVIDER_LABEL[provider];
-        const providerDeadline = Math.min(deadline, now() + (deps.providerTimeoutMs ?? VOICE_DECISION_PROVIDER_TIMEOUT_MS));
+        const providerDeadline = Math.min(deadline, startedAt + (deps.providerTimeoutMs ?? VOICE_DECISION_PROVIDER_TIMEOUT_MS));
         try {
           const raw = await within(
             requestSignal => deps.providers[provider].ask(questions, { key, signal: requestSignal, fetch: deps.fetch }),

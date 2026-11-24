@@ -323,7 +323,7 @@ function FasterRoutingGroup({ config, update, keys }: {
             <select
               className="settings-select"
               value={chosen}
-              disabled={!config || keys.busy}
+              disabled={!config}
               aria-label="Decision model provider"
               onChange={(event) => {
                 const next = DECISION_PROVIDER_CHOICES.find((choice) => choice.value === event.target.value);

@@ -218,6 +218,43 @@ test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev name
 test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
   test.use({ environmentKey: ENVIRONMENT_KEY });
 
+  for (const mutation of ["save", "remove"] as const) {
+    test(`Off stops provider routing before a pending key ${mutation} completes`, async ({ dashboard: page, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+      if (mutation === "remove") await saveKey(page, "Jev", SAVED_JEV);
+      const method = mutation === "save" ? "PUT" : "DELETE";
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      await page.route("**/api/voice/decision-key*", async route => {
+        if (route.request().method() === method) {
+          started.resolve();
+          await release.promise;
+        }
+        await route.continue();
+      });
+      try {
+        if (mutation === "save") await keyField(page, "Jev").fill(SAVED_JEV);
+        await row(page, "Jev").getByRole("button", { name: mutation === "save" ? "Save" : "Remove" }).click();
+        await started.promise;
+        await expect(providerMenu(page)).toBeEnabled({ timeout: 1_500 });
+        await providerMenu(page).selectOption({ label: "Off" });
+        await expect(line(page)).toHaveText(NOT_SET);
+        const { entry } = await sayAndSettle(daemon, SPLIT);
+        expect(entry.detail).toBe("job on codex answered: split");
+        expect(decisions.requests).toHaveLength(0);
+        if (mutation === "save") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "17-off-during-write");
+      } finally {
+        release.resolve();
+      }
+      await expect(keyField(page, "Jev")).toBeEnabled();
+      await expect(providerMenu(page)).toHaveValue("off");
+      await expect(line(page)).toHaveText(NOT_SET);
+    });
+  }
+
   test("a broken key file still identifies the environment provider that receives speech", async ({ dashboard: page, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

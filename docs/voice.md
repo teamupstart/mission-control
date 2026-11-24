@@ -134,7 +134,9 @@ that was not on the card a confidence of 1.0.
 
 1. **A decision model**, when one is in use (see [Faster routing](#faster-routing)): one HTTPS
    request per batch to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
-   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying each question as a typed choice. It may take up to two seconds. A valid “not sure”, a refusal, or
+   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying each question as a typed choice.
+   Its two-second allowance covers the whole capture, including a follow-up split question.
+   A valid “not sure”, a refusal, or
    confidence below 0.98 leaves routing unsure. An error, timeout, malformed reply, or choice
    outside the offered values falls to the next rung with the time remaining.
 2. **The `voice-routing` job**, with thinking off and its own short system prompt, on the time

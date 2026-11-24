@@ -886,9 +886,9 @@ test("a resolving card suppresses a spoken pick that could match two captures", 
 
 test("a phonetic first choice and a later split share one deadline, including manual choices", async (t) => {
   for (const manual of [false, true]) {
-    const deadlines: (number | undefined)[] = [];
+    const starts: (number | undefined)[] = [];
     const { router, say, asked, delivered } = routerRig((questions, opts) => {
-      deadlines.push(opts?.deadline);
+      starts.push(opts?.startedAt);
       return answered(manual ? null : questions[0]?.kind === "who" ? "task:Steve" : "split");
     }, ["Steve", "Stevie", "Alice"].map(n => name(n, "codex")));
     t.after(() => router.reset());
@@ -902,12 +902,41 @@ test("a phonetic first choice and a later split share one deadline, including ma
       assert.ok(await router.pick("compound", split.id));
     } else {
       assert.deepEqual(asked.map(q => q[0]?.kind), ["who", "split"]);
-      assert.equal(typeof deadlines[0], "number");
-      assert.equal(deadlines[0], deadlines[1]);
+      assert.equal(typeof starts[0], "number");
+      assert.equal(starts[0], starts[1]);
     }
     assert.ok(await router.sendNow("compound"));
     assert.deepEqual(delivered, [["Steve", "check the build", "compound"], ["Alice", "review the PR", "compound#2"]]);
   }
+});
+
+test("a phonetic choice and its split share the two-second provider allowance, leaving three seconds for Luna", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  t.mock.method(performance, "now", () => Date.now());
+  let startSecond!: (signal: AbortSignal) => void;
+  const secondStarted = new Promise<AbortSignal>(resolve => { startSecond = resolve; });
+  let requests = 0;
+  const { decider, jobs } = rig({ saved: { openai: OPENAI_ENV }, reply: (_call, signal) => {
+    if (++requests === 1) {
+      t.mock.timers.tick(1_700);
+      return json({ answers: [{ name: "q1", type: "choice", choice: "Steve", confidence: 1 }] });
+    }
+    startSecond(signal);
+    return new Promise<Response>(() => {});
+  }, job: async () => [{ choice: "split", confidence: 1 }] });
+  const { router, say, delivered } = routerRig(decider.ask, ["Steve", "Stevie", "Alice"].map(n => name(n, "codex")));
+  t.after(() => router.reset());
+  const pending = say("Steven, check the build, and Alice, review the PR", "shared-budget");
+  const signal = await secondStarted;
+  t.mock.timers.tick(299);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, true);
+  await pending;
+  assert.deepEqual(jobs.map(({ runner, timeoutMs }) => [runner, timeoutMs]), [["codex", 3_000]]);
+  assert.equal(await router.sendNow("shared-budget"), true);
+  assert.deepEqual(delivered.map(([agent, text]) => [agent, text]), [["Steve", "check the build"], ["Alice", "review the PR"]]);
 });
 
 test("a retried first pick leaves the whole-message choice available", async (t) => {

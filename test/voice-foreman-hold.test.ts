@@ -102,6 +102,54 @@ test("confirmed speech holds Foreman past ten minutes and across restart until i
   assert.equal(boot().voiceHold(id), false, "restart cannot revive a finished turn's hold");
 });
 
+test("a spoken retirement retry clears the rekeyed live outbox and releases its next turn", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  const id = "sdk:retire-then-bind";
+  const native = "native-after-failed-retirement";
+  const registry = new Registry();
+  registry.registerSdkSession({ id, agent: "claude", name: "Binding", cwd: "/tmp" });
+  const sent: string[] = [];
+  const receipts: string[] = [];
+  registry.onTurnDelivered(event => receipts.push(event.turnId));
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_, input, guard) => {
+      assert.equal(guard?.(), null);
+      sent.push(input.text);
+      registry.applyDriverEvent(id, { kind: "state", state: "working", activity: null });
+      return "started";
+    },
+  }, { idleSettleMs: 0, now: () => Date.now() });
+  manager.start();
+  const d = db.openDb();
+  t.after(() => { manager.stop(); d.exec("DROP TRIGGER IF EXISTS refuse_rekeyed_retirement"); });
+  d.exec("CREATE TEMP TRIGGER refuse_rekeyed_retirement BEFORE DELETE ON pending_turns BEGIN SELECT RAISE(ABORT, 'injected retire failure'); END");
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  const spoken = manager.submitSpoken(id, "inspect the build", "retry-rekey").pendingTurn!;
+  const tick = async (ms: number) => {
+    t.mock.timers.tick(ms);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+  await tick(1);
+  assert.equal(db.listPendingTurns(id)[0]?.state, "sending");
+  registry.applyDriverEvent(id, { kind: "bound", agentSessionId: native, transcriptPath: null, modelId: null, pid: null });
+  const next = manager.submit(id, "next message").pendingTurn!;
+  assert.deepEqual(registry.getSession(id)!.pendingTurns.map(row => row.noteKey), [native, native]);
+  d.exec("DROP TRIGGER refuse_rekeyed_retirement");
+  await tick(1_001);
+  assert.deepEqual(receipts, [spoken.id]);
+  assert.deepEqual(db.listPendingTurns(native).map(row => row.id), [next.id]);
+  assert.deepEqual(registry.getSession(id)!.pendingTurns.map(row => row.id), [next.id]);
+  assert.equal(registry.voiceHold(id), true);
+  registry.applyDriverEvent(id, { kind: "turn_done", usage: null });
+  assert.equal(registry.voiceHold(id), false);
+  await tick(1);
+  assert.deepEqual(receipts, [spoken.id, next.id]);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1], "next message");
+});
+
 test("a typed row and its delivery leave Foreman available even with a voice-prefixed id", () => {
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
   const registry = new Registry();

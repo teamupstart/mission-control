@@ -23,7 +23,7 @@ import {
   MESSAGE_ANSWER_TURN_PREFIX,
   afterWorkTurnOwed,
   deleteClaimedPendingTurn,
-  retireDeliveredPendingTurn,
+  retireDeliveredPendingTurnKey,
   dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -132,8 +132,8 @@ interface PendingTurnDeps {
   afterWorkTurnOwed: (turnId: string) => boolean;
   /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
   afterWorkRecheckMs: number;
-  /** Retire a delivered turn with its after-work prompt row (`retireDeliveredPendingTurn`). */
-  retireDelivered: typeof retireDeliveredPendingTurn;
+  /** Retire a delivered turn with its after-work prompt row and return the committed outbox key. */
+  retireDelivered: typeof retireDeliveredPendingTurnKey;
 }
 
 /**
@@ -320,7 +320,7 @@ export class PendingTurnManager {
       afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
       afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
       afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
-      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurn,
+      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurnKey,
     };
   }
 
@@ -1786,20 +1786,20 @@ export class PendingTurnManager {
     failures = 0): "committed" | "retrying" | "stale" {
     const retryKey = reservationId ?? turn.id;
     this.retireRetries.delete(retryKey);
-    let retired: boolean;
+    let retiredKey: string | null;
     try {
-      retired = this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
+      retiredKey = this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
     } catch (error) {
       console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
       if (this.stopped) return "stale";
       const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
       this.retireRetries.set(retryKey, unref(setTimeout(() => {
         this.retireDelivered(turn, reservationId, onCommit, failures + 1);
-        this.registry.refreshPendingTurns(turn.noteKey);
       }, delay)));
       return "retrying";
     }
-    if (!retired) return "stale";
+    if (retiredKey === null) return "stale";
+    if (failures > 0 || retiredKey !== turn.noteKey) this.registry.refreshPendingTurns(retiredKey);
     onCommit?.();
     return "committed";
   }

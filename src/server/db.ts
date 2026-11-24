@@ -15549,30 +15549,35 @@ export function recordSpokenHandoff(id: string, revision: number, generation: nu
  * settled too, since delivery is the fact. Returns whether the turn was retired.
  */
 export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, reservationId: string | null = null): boolean {
+  return retireDeliveredPendingTurnKey(id, revision, deliveredAt, reservationId) !== null;
+}
+
+/** The outbox can move after runtime acceptance. Return the key on the row SQLite actually retired. */
+export function retireDeliveredPendingTurnKey(id: string, revision: number, deliveredAt: number, reservationId: string | null = null): string | null {
   return settleDeliveredPendingTurn(id, revision, deliveredAt, "sending", reservationId);
 }
 
 /** Marking an uncertain turn sent confirms the same delivery after a restart. */
 export function resolveUncertainPendingTurn(id: string, revision: number, resolvedAt = Date.now()): boolean {
-  return settleDeliveredPendingTurn(id, revision, resolvedAt, "uncertain");
+  return settleDeliveredPendingTurn(id, revision, resolvedAt, "uncertain") !== null;
 }
 
 function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, state: "sending" | "uncertain",
-  reservationId: string | null = null): boolean {
+  reservationId: string | null = null): string | null {
   const d = openDb();
   const nested = d.isTransaction;
   d.exec(nested ? "SAVEPOINT retire_delivered_turn" : "BEGIN IMMEDIATE");
   try {
     const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = ? AND revision = ?
       AND (state = 'uncertain' OR spoken_reservation_id IS ?)
-      RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
+      RETURNING note_key AS noteKey, COALESCE(spoken_handoff_key, note_key) AS receivingKey,
                 spoken_words IS NOT NULL AS spoken,
                 CASE WHEN EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
                   AND s.outbox_turn_id = pending_turns.id) THEN spoken_handoff_generation END AS generation,
                 COALESCE(spoken_handoff_at, (SELECT delivered_at FROM session_spoken_turns WHERE id = spoken_reservation_id)) AS handoffAt,
                 spoken_reservation_id AS reservationId`)
       .get(id, state, revision, reservationId) as {
-        receivingKey: string; spoken: number; generation: number | null; reservationId: string | null; handoffAt: number | null;
+        noteKey: string; receivingKey: string; spoken: number; generation: number | null; reservationId: string | null; handoffAt: number | null;
       } | undefined;
     if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId, deliveredAt);
     if (retired?.spoken && retired.generation !== null) {
@@ -15593,7 +15598,7 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
                    WHERE turn_id = ? AND state IN ('queued', 'not_delivered')`).run(deliveredAt, id);
     }
     d.exec(nested ? "RELEASE retire_delivered_turn" : "COMMIT");
-    return !!retired;
+    return retired?.noteKey ?? null;
   } catch (error) {
     if (d.isTransaction) {
       d.exec(nested ? "ROLLBACK TO retire_delivered_turn; RELEASE retire_delivered_turn" : "ROLLBACK");

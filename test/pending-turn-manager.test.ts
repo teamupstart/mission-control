@@ -3610,7 +3610,7 @@ test("a delivered turn whose retire fails is retired again, and its after-work r
     retireDelivered: (turnId, revision, at) => {
       retires += 1;
       if (retires === 1) throw new Error("disk I/O error");
-      return db.retireDeliveredPendingTurn(turnId, revision, at);
+      return db.retireDeliveredPendingTurnKey(turnId, revision, at);
     },
   });
   manager.start();

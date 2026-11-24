@@ -1,6 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdirSync,
@@ -24,6 +25,7 @@ const daemonPort = 17317;
 process.env.MISSION_PORT = String(daemonPort);
 
 const { shellCommand } = await import("../src/server/terminal/shell.ts");
+const { LAUNCH_PID_FILE } = await import("../src/server/terminal/launch-process.ts");
 const {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
@@ -198,10 +200,31 @@ test("the launch wrapper carries the environment and the agent, so what a backen
   // `exec`ed: `exec` replaces the shell, so the EXIT trap below would never fire and the
   // disposable state home would never be released.
   assert.equal(script.includes("exec "), false);
-  assert.match(script, /^trap '\/bin\/rm -rf -- "\$MISSION_HOME"' EXIT$/m);
   assert.equal(script.trimEnd().split("\n").at(-1), `'/agents/claude' '--model' 'opus' 'don'"'"'t'`);
 
   rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("a duplicate wrapper exiting before its PID claim preserves the live owner's home", async () => {
+  const [shell, wrapper] = isolatedAgentArgv(["/bin/sh", "-c", "echo ready; read -r line; exit 19"]);
+  const home = dirname(wrapper!);
+  const lines = readFileSync(wrapper!, "utf8").split("\n");
+  const trap = lines.findIndex((line) => line.startsWith("trap ") && line.endsWith(" EXIT"));
+  assert.ok(trap >= 0, "wrapper installs its cleanup trap");
+  const owner = spawn(shell!, [wrapper!]);
+  const exited = once(owner, "close");
+  try {
+    assert.equal(String((await once(owner.stdout, "data"))[0]).trim(), "ready");
+    // End a second shell immediately after it installs the real trap, before it can claim.
+    const duplicate = spawnSync(shell!, [], { input: lines.slice(0, trap + 1).join("\n") + "\nexit 27\n" });
+    assert.equal(duplicate.status, 27);
+    assert.ok(existsSync(home), "the interrupted duplicate must preserve the running owner's home");
+    assert.equal(readFileSync(join(home, LAUNCH_PID_FILE), "utf8").trim(), String(owner.pid));
+  } finally {
+    owner.stdin.end("done\n");
+    assert.deepEqual(await exited, [19, null]);
+  }
+  assert.equal(existsSync(home), false, "the owning wrapper cleans up on exit");
 });
 
 test("a workflow-style environment gets disposable state without daemon credentials", () => {

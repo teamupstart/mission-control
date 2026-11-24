@@ -321,10 +321,10 @@ function launchAndCleanupScript(
         ? `if [ -z "\${GOCACHE:-}" ]; then ${assignment}; fi`
         : assignment;
     }),
-    `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
-    // POSIX noclobber claims the start record exclusively against expiry or another pane.
-    // A loser must disarm its trap: the winning wrapper may already have a running agent.
-    `(set -C; printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}") || { trap - EXIT; exit 1; }`,
+    // Install cleanup before competing for the start record. An interrupted contender
+    // can reach EXIT at any point, so only the recorded owner may remove the home.
+    `trap 'if IFS= read -r launch_pid 2>/dev/null < "$MISSION_HOME/${LAUNCH_PID_FILE}" && [ "$launch_pid" = "$$" ]; then /bin/rm -rf -- "$MISSION_HOME"; fi' EXIT`,
+    `(set -C; printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}") || exit 1`,
     ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",
   ].join("\n");

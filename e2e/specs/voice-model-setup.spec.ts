@@ -5,7 +5,7 @@ import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
+import { beListener, voiceToken, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
 
 // Voice addressing's speech model and microphone in Setup (Phase 8), end to end: the Voice family's
 // speech model row reads missing, Download shows a progress bar with its figures and Cancel and
@@ -222,4 +222,83 @@ test("the microphone row reads not checked until a listener reports, and the inp
   } finally {
     listener?.stop();
   }
+});
+
+test("desktop Setup asks for microphone access, reflects a shell grant and offers System Settings after denial", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const report = async (microphone: string) => {
+    const response = await fetch(daemon.baseURL + "/voice/shell-report", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      body: JSON.stringify({ microphone, capabilities: { microphone: { available: microphone === "granted" } } }),
+    });
+    expect(response.ok).toBe(true);
+  };
+  let repairs = 0;
+  let checks = 0;
+  await page.exposeFunction("fixtureCheckMicrophone", async () => {
+    checks++;
+    await report("granted");
+    return "checked";
+  });
+  await page.exposeFunction("fixtureMicrophone", async () => {
+    repairs++;
+    if (repairs === 1) await report("granted");
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "missionDesktop", {value: {
+      ...window.missionDesktop, onOpenSettings: () => () => {}, fixVoiceMicrophone: () => Reflect.get(window, "fixtureMicrophone")(),
+      checkVoiceMicrophone: () => Reflect.get(window, "fixtureCheckMicrophone")(),
+    }, configurable: true});
+  });
+  await page.reload(); // Install the fixture preload before hash-only Settings navigation.
+  await report("not-determined");
+  await openVoiceSetup(page, daemon);
+  const row = setupRow(page, MICROPHONE_ROW);
+  const ask = row.getByRole("button", {name: "Ask macOS"});
+  await expect(ask).toHaveAccessibleDescription("Ask macOS to allow Mission Control to use the microphone");
+  await ask.click();
+  await expectRowStatus(page, MICROPHONE_ROW, "Ready");
+  await expect(row).toContainText("Allowed, as the desktop app reports");
+  await report("denied");
+  await expectRowStatus(page, MICROPHONE_ROW, "Needs setup");
+  await expect(row.getByRole("button", {name: "Check again"})).toBeVisible();
+  const settings = row.getByRole("button", {name: "Open System Settings"});
+  await expect(settings).toHaveAccessibleDescription("Open the macOS Microphone privacy pane");
+  await settings.click();
+  await expect.poll(() => repairs).toBe(2);
+  await expect(settings).toBeEnabled();
+  await capture(page, "shell-microphone-denied");
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await expect(page.getByRole("status", { name: "Voice mode" })).toContainText("microphone access is denied");
+  await openVoiceSetup(page, daemon);
+  await row.getByRole("button", {name: "Check again"}).click();
+  await expectRowStatus(page, MICROPHONE_ROW, "Ready");
+  await expect(row).toContainText("Allowed, as the desktop app reports");
+  expect(checks).toBe(1);
+  expect(repairs).toBe(2);
+});
+
+test("desktop Setup explains an unavailable microphone controller and hides actions on an unsupported desktop", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.addInitScript(() => {
+    const supported = sessionStorage.getItem("unsupportedDesktop") !== "1";
+    Object.defineProperty(window, "missionDesktop", {value: {
+      ...window.missionDesktop, isDesktop: true, onOpenSettings: () => () => {},
+      fixVoiceMicrophone: supported ? async () => "unavailable" : undefined,
+    }, configurable: true});
+  });
+  await page.reload();
+  await openVoiceSetup(page, daemon);
+  const row = setupRow(page, MICROPHONE_ROW);
+  const ask = row.getByRole("button", {name: "Ask macOS"});
+  await ask.click();
+  await expect(row.getByRole("alert")).toContainText("Desktop microphone controls are unavailable");
+  await capture(page, "controller-unavailable");
+  await page.evaluate(() => sessionStorage.setItem("unsupportedDesktop", "1"));
+  await page.reload();
+  await openSetupFamily(page, "voice");
+  await expect(row).toContainText("Microphone controls are unavailable in this desktop app.");
+  await expect(ask).toHaveCount(0);
+  await expect(row.getByRole("button", {name: "Check again"})).toBeVisible();
 });

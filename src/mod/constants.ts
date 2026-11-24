@@ -13,6 +13,14 @@ export const PANE_REQUEST_ID = "mission";
 /** How often the mod asks the daemon for the inbox (and, while not connected, for health), in ms. */
 export const POLL_INTERVAL_MS = 5000;
 
+/**
+ * How long one daemon request may take before the mod treats the daemon as down. `$.http.fetch` has
+ * no deadline of its own, and the poll runs one tick at a time, so a request that never settles would
+ * stop the glance layer for the rest of the session. Generous on purpose: a confirm that starts a task
+ * waits for the launch, and reporting "down" for a slow start would mislead the person.
+ */
+export const DAEMON_REQUEST_DEADLINE_MS = 30_000;
+
 declare const __MOD_VERSION__: string | undefined;
 
 /**
@@ -21,3 +29,17 @@ declare const __MOD_VERSION__: string | undefined;
  * (tests) has no definition and reads `0.0.0-dev`.
  */
 export const MOD_VERSION: string = typeof __MOD_VERSION__ === "string" ? __MOD_VERSION__ : "0.0.0-dev";
+
+/** The command the mod registers (spec 7.11). */
+export const DISPATCH_COMMAND = "mission-dispatch";
+
+/** The tool the mod registers (spec 7.20). Claude Code names a plugin's tool `mcp__{plugin}__{tool}`. */
+export const DISPATCH_TOOL = "start_dispatch";
+export const DISPATCH_TOOL_ID = `mcp__${MOD_NAME}__${DISPATCH_TOOL}`;
+
+/**
+ * Whether the launcher (the Start dialog offered as a session opens, spec 7.4) may run. Its gate
+ * is spike S10 or S11, answered by the owner in Commonroom; no answer was recorded when P11 was
+ * built, so it is off. Turning it on is this one value plus the call in `register.ts`.
+ */
+export const LAUNCHER_ENABLED = false;

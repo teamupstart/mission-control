@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { VOICE_CONFIRMATION_PLACEMENTS, voiceCapable, type VoiceState, type VoiceConfirmationPlacement } from "@shared/voice.ts";
-import { api } from "../lib/api.ts";
-import { useUiConfig } from "../lib/uiConfig.ts";
+import { updateVoicePlacement, useUiConfig } from "../lib/uiConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 const choices = { pill: "Floating pill", toast: "Corner toast", popover: "Tray popover" } as const;
@@ -11,8 +10,8 @@ export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
   const [error, setError] = useState("");
   const save = async (placement: VoiceConfirmationPlacement) => {
     setSaving(placement);
-    const result = await api.setVoicePlacement(placement);
-    setError(result.ok ? "" : "Could not save the confirmation card placement.");
+    const saved = await updateVoicePlacement(placement);
+    setError(saved ? "" : "Could not save the confirmation card placement.");
     setSaving(null);
   };
   return <fieldset className="settings-group vc-placements" data-anchor="voice/confirmation">

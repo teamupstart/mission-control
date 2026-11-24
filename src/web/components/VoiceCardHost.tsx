@@ -52,7 +52,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
         const remaining = Math.max(0, deadline - performance.now());
         const seconds = Math.ceil(remaining / 1000);
         if (seconds === 0) return;
-        const title = recipient + " · sending in " + seconds + "s";
+        const title = recipient + (card.provisionalDeadline ? " · up to " + seconds + "s to cancel" : " · sending in " + seconds + "s");
         const shell = window.missionDesktop;
         if (shell?.showVoiceCardNotice) {
           const id = newRequestId();
@@ -101,7 +101,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
-  }, [cardId, deadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
+  }, [cardId, deadline, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
   return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 

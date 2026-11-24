@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
-import type { VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
+import type { VoiceConfirmationPlacement, VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -217,7 +217,10 @@ function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boole
 
 /** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
 export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision, confirmation = current.voice.confirmation): void {
-  if (!acceptIndicatorVersion(version, true)) return;
+  if (acceptIndicatorVersion(version, true)) commitVoiceSelection(indicators, confirmation);
+}
+
+function commitVoiceSelection(indicators: string[], confirmation = current.voice.confirmation) {
   indicatorReadGeneration++;
   clearTimeout(indicatorRetryTimer);
   indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
@@ -242,6 +245,23 @@ async function reconcileVoiceIndicators(): Promise<void> {
   indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
 }
 
+/** Apply the confirmed pair before the radio group releases its saving state. */
+export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
+  const result = await api.setVoicePlacement(placement);
+  if (!result.ok) {
+    // The daemon may have committed a write whose response was lost.
+    void reconcileVoiceIndicators();
+    return false;
+  }
+  if (result.indicators && result.confirmation) {
+    if (acceptIndicatorVersion(result.voiceIndicatorVersion)) commitVoiceSelection(result.indicators, result.confirmation);
+  } else {
+    // Older daemons acknowledged the write without returning the committed selection.
+    await reconcileVoiceIndicators();
+  }
+  return true;
+}
+
 /** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
 export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<"saved" | "failed" | "unconfirmed"> {
   const atWrite = current.voice.indicators;
@@ -255,7 +275,7 @@ export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolea
   if (!result.ok || !result.indicators) return "failed";
   const overlap = current.voice.indicators !== atWrite;
   if ((!overlap || result.voiceIndicatorVersion) && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
-    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+    commitVoiceSelection(result.indicators, result.confirmation);
   }
   if (overlap) {
     // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.

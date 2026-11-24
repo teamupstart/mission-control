@@ -145,7 +145,7 @@ test("the foreground dashboard can cancel an explicit answer to a background que
   await say(daemon, "Steve, answer: Postgres");
   const companion = foreground.getByRole("status").filter({ hasText: "Voice answer" });
   await expect(companion).toContainText("Postgres");
-  await expect(companion.getByText(/^\d+s$/)).toBeVisible();
+  await expect(companion.getByText(/^≤?\d+s$/)).toBeVisible();
   await expect(companion.getByRole("button", { name: "Submit now" })).toBeVisible();
   await expect(inbox.getByRole("textbox")).toHaveValue("Postgres");
   await captureCard(companion, "answer-background-dashboard");

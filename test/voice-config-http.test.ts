@@ -387,6 +387,17 @@ test("newer explicit provider tickets win across windows unless an intervening O
   assert.equal((await choose("jev", stale)).status, 409);
 });
 
+test("a confirmed placement advances the selection revision without changing indicators", async () => {
+  const write = async (confirmation: string) => (await json("/api/voice/confirmation", "PUT", { confirmation })).json();
+  const start = await write("toast");
+  const saved = await write("pill");
+  assert.equal(saved.confirmation, "pill");
+  assert.deepEqual(saved.indicators, start.indicators);
+  assert.equal(saved.voiceIndicatorVersion.source, start.voiceIndicatorVersion.source);
+  assert.ok(saved.voiceIndicatorVersion.revision > start.voiceIndicatorVersion.revision);
+  assert.deepEqual(registry.snapshot().voiceIndicatorVersion, saved.voiceIndicatorVersion);
+});
+
 test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
   const selections: string[][] = [];
   const revisions: number[] = [];
@@ -424,7 +435,7 @@ test("a full indicator list refuses an addition and still permits removing an in
   assert.equal((await json("/api/ui/config", "PUT", { voice: { confirmation: "pill", indicators: [...indicators, "edge"] } })).status, 200);
   assert.equal((await json("/api/voice/indicators", "PUT", { id: "topbar", enabled: true })).status, 409);
   const removed = await json("/api/voice/indicators", "PUT", { id: "edge", enabled: false });
-  assert.deepEqual(await removed.json(), { indicators, voiceIndicatorVersion: registry.snapshot().voiceIndicatorVersion });
+  assert.deepEqual(await removed.json(), { indicators, confirmation: "pill", voiceIndicatorVersion: registry.snapshot().voiceIndicatorVersion });
 });
 
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {

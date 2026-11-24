@@ -152,16 +152,16 @@ export function registerVoiceRoutes(
   app.put("/api/voice/confirmation", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }));
     if (!parsed.ok) return parsed.res;
-    setUiConfig({ voice: { ...getUiConfig().voice, ...parsed.data } });
-    return c.json({ ok: true });
+    const { voice } = setUiConfig({ voice: { ...getUiConfig().voice, ...parsed.data } });
+    return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const indicators = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
-    return indicators === null
+    const voice = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
+    return voice === null
       ? c.json({ error: "The indicator selection is full." }, 409)
-      : c.json({ indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+      : c.json({ ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });

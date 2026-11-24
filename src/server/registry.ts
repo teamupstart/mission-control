@@ -1530,7 +1530,7 @@ export class Registry extends EventEmitter {
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
         voiceAnswers: this.voiceRouter?.activeAnswers() ?? [],
-        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi.indicators),
+        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
@@ -1677,7 +1677,9 @@ export class Registry extends EventEmitter {
   }
 
   emitVoiceIndicators(indicators: string[]): void {
-    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", confirmation: storedVoiceUi().confirmation, indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const selection = { confirmation: storedVoiceUi().confirmation, indicators };
+    this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
   emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" | "voice_card_remove" }>): void {

@@ -228,6 +228,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     autoMuteDuringCalls: "setting",
     cancelWindow: "setting",
     whenUnsure: "setting",
+    speech: "setting",
     planFormsByVoice: "setting",
     inputDevice: "setting",
     decisionProvider: "setting",

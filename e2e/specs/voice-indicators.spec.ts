@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 test("five selected indicators follow the daemon and advertise only a registered chord", async ({ dashboard: page, context, daemon }) => {
@@ -59,7 +60,7 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(page.locator("button.vi .kb-hint")).toHaveCount(0);
     await expect(status).not.toContainText("⌃");
     const report = (hotkeyError: unknown, callActive = false, pushToTalk = false) => page.request.post(daemon.baseURL + "/voice/shell-report", {
-      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m", hotkeyError, callActive, pushToTalk },
+      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m", hotkeyError, callActive, pushToTalk, reportedAtHostUs: voiceHostTimeUs() },
     });
     expect((await report(null)).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveText("⌃⌥M");

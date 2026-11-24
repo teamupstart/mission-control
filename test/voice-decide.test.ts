@@ -1,7 +1,7 @@
 import { buildVoiceRoutingPrompt, parseVoiceRoutingReply, voiceChoiceValues, voiceQuestionInstructions, VOICE_ROUTING_SYSTEM_PROMPT } from "../src/server/voice/decide-prompt.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { before, test } from "node:test";
 import type { LlmRunnerId } from "../src/shared/llm.ts";
 import type { AgentType } from "../src/shared/types.ts";
 import type { VoiceDecisionProvider } from "../src/shared/voice.ts";
@@ -16,6 +16,9 @@ import { VoiceUtteranceSchema, type VoiceCard } from "../src/shared/voice-routin
 import { createVoiceDecider, voiceRoutingRunner, VOICE_ROUTING_JOB_RUNGS, type VoiceDecider } from "../src/server/voice/decide.ts";
 import { DECISION_PROVIDERS, JEV_MODEL, OPENAI_DECISIONS_MODEL } from "../src/server/voice/decision-providers.ts";
 import { VoiceRouter } from "../src/server/voice/router.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+before(() => { ensureNativeStateLockAddon(); });
 
 // The model step (contract E) with fake rungs: both real adapters over a fake `fetch` answering
 // in each provider's documented reply shape, and a scripted job. No test reaches a provider or

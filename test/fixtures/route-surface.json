@@ -174,6 +174,7 @@
   "GET /mcp/reviews/:id/wait": "401 {\"error\":\"unauthorized\"}",
   "GET /mcp/schedules": "401 {\"error\":\"unauthorized\"}",
   "GET /mcp/session-control/requests/:requestId/wait": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"session-control-requests\"}",
+  "GET /voice/listener/directive": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "PATCH /api/archives/:archiveKey": "503 {\"error\":\"archive library unavailable\"}",
   "PATCH /api/personas/:id": "503 {\"error\":\"Persona manager unavailable\"}",
   "PATCH /api/residents/profiles/:id": "503 {\"error\":\"Resident service unavailable\"}",

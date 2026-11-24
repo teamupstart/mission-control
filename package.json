@@ -34,6 +34,8 @@
     "build:installer": "node scripts/render-install-bootstrap.mjs",
     "build:pi-extension": "node --import tsx scripts/build-pi-extension.ts",
     "build:native": "node scripts/build-native.mjs",
+    "build:voice-listener": "node scripts/build-voice-listener.mjs",
+    "voice:listener": "tsx scripts/run-voice-listener.ts",
     "build:state-lock-native": "node scripts/build-state-lock-native.mjs",
     "build:keep-awake-native": "node scripts/build-keep-awake-native.mjs",
     "build:web": "vite build",

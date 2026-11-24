@@ -193,6 +193,18 @@ export const VoiceUiConfigPatchSchema = z.object({
 export const VOICE_MODES = ["off", "unavailable", "listening", "muted", "auto-muted", "push-to-talk"] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
 
+export function voiceCaptures(mode: VoiceMode): boolean {
+  return mode === "listening" || mode === "push-to-talk";
+}
+
+export interface VoiceListenerDirective {
+  capture: boolean;
+  roster: string[];
+  inputDevice: string;
+  pauseMs?: number | null;
+  revision: string;
+}
+
 /**
  * Why voice is unavailable, in the order they are reported.
  *
@@ -437,8 +449,18 @@ export function voiceStateOff(): VoiceState {
 // ---- the listener's hello and the shell's report ----
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
-export const VOICE_LISTENER_PROTOCOL_MAJOR = 1;
+export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
+/** Response headers on the capture-off directive for an explicit push-to-talk key release. */
+export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
+export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
+export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
+export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
+export const VOICE_SPEECH_START_HEADER = "x-voice-speech-start-host-us";
+export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
+export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
+export const VoiceListenerIdSchema = z.uuid();
 
 /** The values macOS reports for a media permission, which a Linux listener can also name. */
 export const VOICE_MICROPHONE_PERMISSIONS = ["granted", "denied", "not-determined", "restricted", "unknown"] as const;
@@ -448,6 +470,7 @@ const VoiceInputDeviceSchema = z.object({
   id: z.string().min(1).max(VOICE_LIMITS.deviceIdChars),
   name: z.string().min(1).max(VOICE_LIMITS.deviceNameChars),
   builtIn: z.boolean().optional(),
+  bluetooth: z.boolean().optional(),
 });
 export type VoiceInputDevice = z.infer<typeof VoiceInputDeviceSchema>;
 
@@ -460,6 +483,7 @@ export const VoiceListenerHelloSchema = z.object({
   version: z.string().regex(/^\d+(\.\d+){0,2}$/).max(VOICE_LIMITS.versionChars),
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
+  primingAvailable: z.boolean().optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;
@@ -483,6 +507,14 @@ export const VoiceShellReportSchema = z.object({
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
   pushToTalk: z.boolean().default(false),
+  /** Legacy Unix fields are accepted for compatibility. They cannot authorize release. */
+  pushToTalkPressedAt: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAt: z.number().int().nonnegative().optional().catch(undefined),
+  /** Monotonic host time when the shell sampled this snapshot, strictly increasing across reports. */
+  reportedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  /** Physical key event on the same monotonic microsecond clock as the snapshot. */
+  pushToTalkPressedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
   registeredHotkey: ChordSchema.nullable().optional(),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),

@@ -134,8 +134,9 @@ export interface DaemonHandle {
    * SIGKILL the daemon - the CRASH case, with no orderly shutdown of any kind. The
    * port, home and database stay put so `restart()` can bring a successor up on the
    * same coordinates. Exists for the states only an ungraceful death can produce:
-   * transient daemon state (keep awake) must reset, `-w`-style child backstops must
-   * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
+   * process-owned state (a keep awake assertion) must be released with no orderly stop,
+   * `-w`-style child backstops must fire, and the dashboard must fall to `reconnecting`
+   * rather than keep old claims.
    */
   crash(): Promise<void>;
   /** Gracefully suspend SDK sessions, retaining the home and database for restart(). */
@@ -798,7 +799,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       else isolatedEnv[key] = value;
     }
     // Same port, same home, same env: the successor is the same installation coming back,
-    // which is exactly the case transient state (keep awake) must reset across. The boot
+    // which is exactly the case process-owned state (a keep awake assertion) must be
+    // reacquired across, from the operator's saved choice rather than from the dead process. The boot
     // check re-verifies identity by pid, so a squatter that stole the freed port between
     // the crash and this bind still fails loudly rather than being driven silently.
     child = spawnDaemon();

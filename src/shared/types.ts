@@ -3888,11 +3888,12 @@ export interface SettingsStatus {
 // ---- Keep Awake (transient idle-sleep inhibition) ----
 
 /**
- * The daemon's observed Keep Awake state - never a saved preference. There is nothing
- * durable behind this on purpose: the mode applies only to the current daemon run, so a
- * quit, crash, or restart returns the next snapshot to `off` and nothing reacquires the
- * assertion. The one writer is the daemon's `KeepAwakeManager`; the browser's one source
- * is the snapshot plus `keep_awake_status` below.
+ * The daemon's observed Keep Awake state - never the saved choice. The assertion belongs to
+ * one daemon process, so this is `off` in every new daemon's first snapshot and becomes `on`
+ * only once that daemon has acquired its own; the operator's choice lives apart from it, in
+ * `app_config.keepAwake`, and is what the daemon re-applies after a restart or upgrade. The
+ * one writer is the daemon's `KeepAwakeManager`; the browser's one source is the snapshot
+ * plus `keep_awake_status` below.
  *
  * `state` reports what was OBSERVED of the OS assertion, not what was requested: `on` is
  * reachable only after the provider confirms the assertion, and a provider failure lands

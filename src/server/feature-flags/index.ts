@@ -1,4 +1,4 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   applyFeatureFlagIntent as applyIntent, FEATURE_FLAGS_DEFAULTS, FeatureFlagsConfigSchema,
@@ -77,9 +77,10 @@ export function applyFeatureFlagIntent(intent: FeatureFlagIntent): FeatureFlagIn
   setAppConfig(APP_CONFIG_ENTRIES.featureFlags, config);
   return { ok: true, config: publish(config) };
 }
+export function disabledFeatureResponse(c: Context, id: FeatureFlagId) {
+  if (!featureEnabled(id)) return c.json({ error: "This feature is disabled.", feature: id }, 404);
+}
+
 export function requireFeature(id: FeatureFlagId): MiddlewareHandler {
-  return async (c, next) => {
-    if (!featureEnabled(id)) return c.json({ error: "This feature is disabled.", feature: id }, 404);
-    await next();
-  };
+  return async (c, next) => disabledFeatureResponse(c, id) ?? next();
 }

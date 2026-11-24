@@ -9,7 +9,7 @@ import {
 export type { NativeKeepAwakeBinding } from "./keep-awake-native.ts";
 
 /**
- * The daemon's transient idle-sleep inhibitor: one owner for one OS assertion.
+ * The daemon's idle-sleep inhibitor: one owner for one OS assertion.
  *
  * On macOS the daemon itself owns one IOKit
  * `kIOPMAssertionTypePreventUserIdleSystemSleep` assertion. It prevents user-idle
@@ -21,13 +21,18 @@ export type { NativeKeepAwakeBinding } from "./keep-awake-native.ts";
  * `MISSION_KEEP_AWAKE_BIN` selects the legacy command mechanics only as an explicit
  * test seam. It is never a production fallback after native loading or IOKit fails.
  *
- * There is intentionally NOTHING durable here. Keep Awake applies only to the current
- * daemon run by an approved human decision: every new manager starts `off`, no config
- * key is written, and nothing reacquires the assertion at boot. The status this class
- * publishes is an OBSERVATION of the assertion, never an echo of the request - `on` is
- * reachable only after the provider confirms acquisition. A command provider's unexpected
- * exit lands on `error` without a restart, so the dashboard cannot claim an assertion the
- * OS is not holding.
+ * What is durable is the operator's CHOICE, and only that. The switch the operator last
+ * left (`KeepAwakePreferenceStore`) is saved when they flip it and read once, when the daemon
+ * has won its port, so a restart or an upgrade puts the Mac back in the state they chose. The
+ * assertion itself is never stored: it dies with the process, and the new daemon acquires its
+ * own. An orderly shutdown (`stop`) releases the assertion WITHOUT touching the saved choice -
+ * a daemon going away is not the operator switching the mode off.
+ *
+ * The status this class publishes is an OBSERVATION of the assertion, never an echo of the
+ * request or of the saved choice - `on` is reachable only after the provider confirms
+ * acquisition. A restore that fails lands on `error` like any other failed acquisition, and a
+ * command provider's unexpected exit lands on `error` without a restart, so the dashboard
+ * cannot claim an assertion the OS is not holding.
  */
 
 /** The slice of `ChildProcess` the manager touches, injectable so tests script it. */
@@ -37,6 +42,34 @@ export interface KeepAwakeChild {
   on(event: "error", listener: (err: Error) => void): unknown;
   on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
   kill(signal?: NodeJS.Signals): boolean;
+}
+
+/**
+ * Where the operator's last choice lives. Injectable so the manager stays free of SQLite and
+ * a test scripts it; production wires `keepAwakePreferenceStore` (`./keep-awake-preference.ts`).
+ */
+export interface KeepAwakePreferenceStore {
+  /** The saved choice, or `false` when none was saved or what is stored cannot be read. */
+  load(): boolean;
+  save(enabled: boolean): void;
+}
+
+/**
+ * The operator's request could not be made durable, so it was not kept. Carries the state
+ * the daemon OBSERVES after undoing it, so a caller can draw the truth at once: switching on
+ * leaves the mode off (an assertion that would vanish at the next restart is released), and
+ * switching off leaves it as it was. Never a half-applied choice - the toggle may only show
+ * what a restart will bring back.
+ */
+export class KeepAwakeSaveError extends Error {
+  constructor(
+    readonly status: KeepAwakeStatus,
+    cause: unknown,
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(bounded(`could not save the Keep awake choice, so it was not applied: ${detail}`), { cause });
+    this.name = "KeepAwakeSaveError";
+  }
 }
 
 export interface KeepAwakeDeps {
@@ -61,6 +94,11 @@ export interface KeepAwakeDeps {
   forceKillAfterMs?: number;
   /** Where every observed transition goes - production wires the Registry here. */
   onStatus?: (status: KeepAwakeStatus) => void;
+  /**
+   * The saved choice. Absent means nothing is remembered and every manager starts off, which
+   * is what a test that only exercises the transitions wants.
+   */
+  preference?: KeepAwakePreferenceStore;
 }
 
 /**
@@ -90,6 +128,7 @@ export class KeepAwakeManager {
   private readonly clearTimeoutFn: (t: NodeJS.Timeout) => void;
   private readonly forceKillAfterMs: number;
   private readonly onStatus: ((status: KeepAwakeStatus) => void) | undefined;
+  private readonly preference: KeepAwakePreferenceStore | undefined;
 
   private current: KeepAwakeStatus;
   private child: KeepAwakeChild | null = null;
@@ -97,12 +136,7 @@ export class KeepAwakeManager {
   private hasNativeHandle = false;
   /** The child whose exit `disable()` is awaiting - what separates it from a crash. */
   private expectedExit: { child: KeepAwakeChild; resolve: () => void } | null = null;
-  /**
-   * The transition mutex. Every `setEnabled` chains onto it, so two dashboards clicking
-   * at once cannot interleave acquisition with release or produce two assertions; each queued
-   * request re-reads the observed state when its turn comes, which is what makes a
-   * repeated request for the already-achieved state a no-op rather than a second assertion.
-   */
+  /** The tail of the transition chain; see `transition`. */
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(deps: KeepAwakeDeps = {}) {
@@ -142,6 +176,9 @@ export class KeepAwakeManager {
     this.clearTimeoutFn = deps.clearTimeoutFn ?? ((t) => clearTimeout(t));
     this.forceKillAfterMs = deps.forceKillAfterMs ?? DEFAULT_FORCE_KILL_AFTER_MS;
     this.onStatus = deps.onStatus;
+    this.preference = deps.preference;
+    // Always `off`, whatever is saved: the saved choice is applied by `restore()` once the
+    // daemon is serving, so a status read before then never claims an assertion not yet held.
     this.current = {
       supported: this.provider.kind !== "unavailable",
       unavailableReason: this.provider.kind === "unavailable" ? this.provider.reason : null,
@@ -161,25 +198,94 @@ export class KeepAwakeManager {
   }
 
   /**
-   * Request a transition and resolve with the state OBSERVED once it settles - never
-   * with an echo of the request. Serialized: concurrent calls run one at a time in
-   * arrival order, so the last response describes the state the last caller produced.
+   * The operator's request: flip the mode, make the choice durable, and resolve with the
+   * state OBSERVED once it settles - never with an echo of the request.
+   *
+   * The switch may only show a choice that a restart will bring back, so the request is
+   * atomic with its save. Off is saved BEFORE the transition: if the save fails nothing has
+   * moved and the assertion is still held, exactly as the error says. On is saved AFTER the
+   * OS confirms the assertion - an acquisition the OS refused is never saved, so it cannot
+   * re-fail on every boot - and if that save fails the fresh assertion is released again
+   * rather than left held for a choice that would be gone after the next restart. A request
+   * that finds the assertion already held takes nothing new and so has nothing to undo.
+   * Either failure rejects with `KeepAwakeSaveError`.
    */
   async setEnabled(enabled: boolean): Promise<KeepAwakeStatus> {
-    const run = this.queue.then(() => (enabled ? this.enable() : this.disable()));
-    // Keep the chain alive whatever a transition did; the caller still sees its result.
-    this.queue = run.catch(() => {});
-    return run;
+    return this.transition(async () => {
+      if (!enabled) {
+        try {
+          this.save(false);
+        } catch (err) {
+          throw new KeepAwakeSaveError(this.current, err);
+        }
+        return this.disable();
+      }
+      const alreadyOn = this.current.state === "on";
+      const status = await this.enable();
+      if (status.state !== "on") return status;
+      try {
+        this.save(true);
+      } catch (err) {
+        throw new KeepAwakeSaveError(alreadyOn ? this.current : await this.disable(), err);
+      }
+      return status;
+    });
   }
 
   /**
-   * The daemon-shutdown half: the disable path, and nothing more. There is no durable
-   * state to write because none exists. IOKit drops a native assertion with its owning
-   * process, while the explicit command fixture's `-w <daemon PID>` covers exits that
-   * never reach this method.
+   * Apply the saved choice at daemon start. Called once the daemon has won its port, so a
+   * second daemon that lost the lock never takes a power assertion. A saved `off` (or none) is
+   * a no-op; a saved `on` goes through the ordinary acquisition, so a failure is published as
+   * `error` and the saved choice stays for the next boot to try again.
+   */
+  async restore(): Promise<KeepAwakeStatus> {
+    return this.transition(async () => (this.recall() ? this.enable() : this.current));
+  }
+
+  /**
+   * The daemon-shutdown half: the disable path, and nothing more. The saved choice is left
+   * exactly as the operator set it, because a daemon exiting - an upgrade, a restart, a quit -
+   * is not a decision about the mode, and clearing it here is what would make every restart
+   * switch Keep awake off. IOKit drops a native assertion with its owning process, while the
+   * explicit command fixture's `-w <daemon PID>` covers exits that never reach this method.
    */
   async stop(): Promise<void> {
-    await this.setEnabled(false);
+    await this.transition(() => this.disable());
+  }
+
+  /**
+   * The transition mutex. Every transition chains onto it, so two dashboards clicking at once
+   * cannot interleave acquisition with release or produce two assertions; each queued request
+   * re-reads the observed state when its turn comes, which is what makes a repeated request for
+   * the already-achieved state a no-op rather than a second assertion.
+   */
+  private transition(run: () => Promise<KeepAwakeStatus>): Promise<KeepAwakeStatus> {
+    const result = this.queue.then(run);
+    // Keep the chain alive whatever a transition did; the caller still sees its result.
+    this.queue = result.catch(() => {});
+    return result;
+  }
+
+  /** The saved choice, with a store that cannot be read treated as never having been saved. */
+  private recall(): boolean {
+    if (!this.preference) return false;
+    try {
+      return this.preference.load();
+    } catch (err) {
+      console.warn("[mission-control] could not read the saved Keep awake choice:", err);
+      return false;
+    }
+  }
+
+  /** Write the choice. A failure is logged and rethrown for `setEnabled` to turn into its error. */
+  private save(enabled: boolean): void {
+    if (!this.preference) return;
+    try {
+      this.preference.save(enabled);
+    } catch (err) {
+      console.warn("[mission-control] could not save the Keep awake choice:", err);
+      throw err;
+    }
   }
 
   private async enable(): Promise<KeepAwakeStatus> {

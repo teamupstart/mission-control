@@ -221,6 +221,11 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
   const state = h.store.state();
   assert.ok(voiceCapable(state, "hotkey"));
   assert.equal(state.registeredHotkey, "ctrl+alt+m");
+  assert.equal(state.configuredHotkey, "ctrl+alt+m");
+  h.setConfig({ hotkey: "ctrl+alt+k" });
+  assert.equal(h.store.state().configuredHotkey, "ctrl+alt+k");
+  assert.equal(h.store.state().registeredHotkey, "ctrl+alt+m");
+  assert.notEqual(canonicalVoiceState(state), canonicalVoiceState(h.store.state()));
   assert.ok(!voiceCapable(state, "call-detection"));
   assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
   assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  voiceCapable, VOICE_INDICATOR_IDS, type VoiceConfig, type VoiceIndicatorId, type VoiceMode, type VoiceState,
+  voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
@@ -74,9 +74,9 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   </VoiceWindow.Provider>;
 }
 
-export function confirmedVoiceHotkey(state: VoiceState, config: VoiceConfig | null): string | null {
+export function confirmedVoiceHotkey(state: VoiceState): string | null {
   const chord = state.registeredHotkey;
-  return chord && chord === config?.hotkey && voiceCapable(state, "hotkey") && !state.hotkeyError ? chord : null;
+  return chord && chord === state.configuredHotkey && voiceCapable(state, "hotkey") && !state.hotkeyError ? chord : null;
 }
 
 const modes = {
@@ -114,7 +114,7 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick, pending }: {
     description: `${tip}${chord ? ` Hold ${formatChord(chord)} ${holdAction}. Tap the shortcut to toggle mute.` : ""}`,
     // The floating control expands into its own hint on hover or focus.
     content: id === "floating" ? null : <>{tip}{shortcut && <> {shortcut}. Tap the shortcut to toggle mute.</>}</>,
-  }}><button type="button" className={cls} aria-label={name} disabled={pending} onClick={onClick}>{face}</button></Tooltip>
+  }}><button type="button" className={cls} aria-label={name} aria-disabled={pending || undefined} onClick={pending ? undefined : onClick}>{face}</button></Tooltip>
     : <span className={cls}>{face}</span>;
   return id === "edge" ? <div className={`vi-edge-line vi-${mode}`}>{button}</div> : button;
 }
@@ -123,7 +123,7 @@ export function useVoiceComposerHint(sessionId: string): string | null {
   const voice = useContext(VoiceWindow);
   const ui = useUiConfig();
   if (!voice || !ui.voice.indicators.includes("composer")) return null;
-  const { state, settings } = voice;
+  const { state } = voice;
   switch (state.mode) {
     case "listening": {
       const name = state.roster.find(entry => entry.sessionId === sessionId)?.name;
@@ -132,7 +132,7 @@ export function useVoiceComposerHint(sessionId: string): string | null {
     case "muted": return "Voice is muted";
     case "push-to-talk": return "Listening while held";
     case "auto-muted": {
-      const chord = confirmedVoiceHotkey(state, settings.config);
+      const chord = confirmedVoiceHotkey(state);
       return chord && ui.keybindingHints ? `On a call · hold ${formatChord(chord)} to talk` : "On a call";
     }
     default: return null;
@@ -143,8 +143,8 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
   const voice = useContext(VoiceWindow);
   const ui = useUiConfig();
   if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes(id)) return null;
-  const { state, settings, openSetup, setMuted } = voice;
-  const chord = ui.keybindingHints && state.mode !== "unavailable" ? confirmedVoiceHotkey(state, settings.config) : null;
+  const { state, openSetup, setMuted } = voice;
+  const chord = ui.keybindingHints && state.mode !== "unavailable" ? confirmedVoiceHotkey(state) : null;
   const activate = () => {
     if (state.mode === "unavailable") openSetup();
     else void setMuted(id, state.mode !== "muted");

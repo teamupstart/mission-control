@@ -194,7 +194,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
   } finally { listener.stop(); }
 });
 
-test("a changed voice shortcut stays hidden until the shell confirms the exact chord", async ({ dashboard: page, daemon }) => {
+test("a changed voice shortcut stays hidden in both windows until the shell confirms the exact chord", async ({ dashboard: page, context, daemon }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);
   const status = page.locator("button.vi-status-line");
@@ -210,7 +210,14 @@ test("a changed voice shortcut stays hidden until the shell confirms the exact c
     expect((await report("ctrl+alt+m")).ok()).toBe(true);
     await expect(status).toContainText("Hold ⌃⌥M to talk");
 
+    const peer = await context.newPage();
+    const oldConfig = await (await page.request.get(daemon.baseURL + "/api/voice/config")).json();
+    await peer.route("**/api/voice/config", route => route.fulfill({ json: oldConfig }));
+    await peer.goto(daemon.baseURL);
+    const peerStatus = peer.locator("button.vi-status-line");
+    await expect(peerStatus.locator("kbd")).toHaveText("⌃⌥M");
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { hotkey: "ctrl+alt+k" } })).ok()).toBe(true);
+    await expect(peerStatus.locator("kbd")).toHaveCount(0, { timeout: 3000 });
     await expect(keycap).toHaveCount(0, { timeout: 10_000 });
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(status).toContainText("Click to mute");
@@ -225,7 +232,8 @@ test("a changed voice shortcut stays hidden until the shell confirms the exact c
     if (capture) await status.screenshot({ path: join(capture, "pending.png") });
     expect((await report("ctrl+alt+k")).ok()).toBe(true);
     await expect(status).toContainText("Hold ⌃⌥K to talk");
-    if (capture) await status.screenshot({ path: join(capture, "confirmed.png") });
+    await expect(peerStatus).toContainText("Hold ⌃⌥K to talk");
+    if (capture) await peerStatus.screenshot({ path: join(capture, "confirmed.png") });
   } finally {
     listener.stop();
   }
@@ -252,14 +260,18 @@ for (const muted of [true, false]) {
         // Leave the first request unanswered through the dashboard's deadline.
       });
       const write = page.waitForRequest(endpoint);
-      await status.click();
+      const key = muted ? "Enter" : "Space";
+      await status.focus();
+      await page.keyboard.press(key);
       const first = await write;
       expect(first.postDataJSON()).toEqual({ muted });
       const pending = page.getByRole("status").filter({ hasText: muted ? "Muting voice…" : "Unmuting voice…" });
       await expect(pending).toBeVisible({ timeout: 2000 });
       await expect(status).toBeDisabled();
       await expect(floating).toBeDisabled();
-      await floating.click({ force: true });
+      await expect(status).toBeFocused({ timeout: 1500 });
+      await page.keyboard.press(key);
+      await floating.evaluate(button => (button as HTMLButtonElement).click());
       await expect(status).toHaveAccessibleName(mode);
       const alert = page.getByRole("alert").filter({ hasText: "Voice mute change timed out" });
       await expect(alert).toContainText("unconfirmed", { timeout: 8000 });
@@ -267,6 +279,7 @@ for (const muted of [true, false]) {
       await expect(pending).toHaveCount(0);
       await expect(floating).toBeEnabled();
       await expect(status).toHaveAccessibleName(mode);
+      await expect(status).toBeFocused();
       if (muted && process.env.MC_E2E_EVIDENCE) {
         const root = artifactsDir("voice-window");
         mkdirSync(root, { recursive: true });
@@ -276,11 +289,19 @@ for (const muted of [true, false]) {
         // A transport timeout can precede the daemon committing this same request.
         expect((await page.request.fetch(first)).ok()).toBe(true);
       } else {
-        await floating.click();
+        await page.keyboard.press(key);
       }
       await expect(status).toHaveAccessibleName(nextMode);
       await expect(alert).toHaveCount(0);
       expect(requests).toBe(muted ? 1 : 2);
+      await expect(status).toBeFocused();
+      if (muted && process.env.MC_E2E_EVIDENCE) {
+        const root = artifactsDir("voice-window");
+        await status.screenshot({ path: join(mkdtempSync(join(root, "keyboard-mute-")), "focused.png") });
+      }
+      await page.keyboard.press(key);
+      await expect(status).toHaveAccessibleName(mode);
+      await expect(status).toBeFocused();
     } finally { listener.stop(); }
   });
 }

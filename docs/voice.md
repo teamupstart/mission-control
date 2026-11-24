@@ -420,7 +420,8 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+The state also carries `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+Every window receives the saved chord and current shell registration together when either changes.
 The dashboard shows a shortcut only when the shell confirms the exact configured chord,
 reports the hotkey capability and has no registration error. Until then the indicator shows its
 click action. A missing or expired confirmation yields `registeredHotkey: null`. The capabilities and

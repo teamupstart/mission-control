@@ -35,7 +35,8 @@ interface PendingEdit {
 }
 
 /**
- * The dashboard shares one config between the registered-hotkey hints and Settings > Voice.
+ * Window-owned settings keep pending edits in order across navigation. Live shortcut hints
+ * use the configured and registered chords from the daemon's voice state.
  * Nothing is read or polled with the preview off.
  *
  * Edits are saved one at a time, in the order they were made. Each controls a different field,

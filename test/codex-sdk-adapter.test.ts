@@ -338,7 +338,7 @@ test("a launch preserves developer instructions and routes discrete choices thro
   const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
   assert.equal(
     String(start.developerInstructions),
-    "Keep this operator instruction.\n\nWhenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool. Pass discrete choices through the tool's options field. Its result either carries the operator's answer, or says the question is filed and the answer will arrive later as a message; then keep working on what does not depend on it, and if nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. A decision must carry what the operator needs to make it without reconstructing your context: keep `question` to the decision itself, put the background in `context` (what is being decided, why it came up, and what you found), give each option a `detail` that states its tradeoff, and mark the option you would pick as `recommended`. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
+    "Keep this operator instruction.\n\nWhenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool. Pass discrete choices through the tool's options field. Its result either carries the operator's answer, or says the question is filed and the answer will arrive later as a message; then keep working on what does not depend on it, and if nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. A decision must carry what the operator needs to make it without reconstructing your context: keep `question` to the decision itself, put the background in `context` (what is being decided, why it came up, and what you found), give each option a `detail` that states its tradeoff, and mark the option you would pick as `recommended`. Write context as markdown. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
   );
 });
 
@@ -615,15 +615,18 @@ test("a second turn steers while one is running, and starts when the thread is i
   // Running: `turn/start` here would be accepted and then never run.
   assert.equal(await handle.sendIfIdle({ text: "keep this editable" }), null);
   assert.equal(server.calls("turn/steer").length, 0, "idle-only delivery must never steer");
-  assert.equal(await handle.send({ text: "also mention heapsort" }), "steered");
+  assert.equal(await handle.send({ text: "also mention heapsort", clientMessageId: "spoken-steer" }), "steered");
   const steer = server.calls("turn/steer")[0]?.params as Record<string, unknown>;
   assert.equal(steer.expectedTurnId, "turn-1", "a steer must name the turn it expects");
+  assert.equal(steer.clientUserMessageId, "spoken-steer");
   assert.equal(server.calls("turn/start").length, 1);
 
   server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
   await settle();
-  assert.equal(await handle.sendIfIdle({ text: "now do the next thing" }), "started");
+  assert.equal(await handle.sendIfIdle({ text: "now do the next thing", clientMessageId: "spoken-start" }), "started");
   assert.equal(server.calls("turn/start").length, 2, "an idle thread takes a new turn");
+  const started = server.calls("turn/start")[1]!.params as Record<string, unknown>;
+  assert.equal(started.clientUserMessageId, "spoken-start");
   await handle.stop();
   await drained;
 });

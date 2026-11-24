@@ -22,6 +22,7 @@ const {
   clearPendingTurns,
   markPendingTurnUncertain,
 } = await import("../src/server/db.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -754,6 +755,188 @@ test("a verified terminal submit waits for fresh activity and idle before draini
   assert.deepEqual(f.injected, ["first terminal turn", "second terminal turn"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
   f.manager.stop();
+});
+
+for (const runtime of ["sdk", "terminal"] as const) test(runtime + " refusal retries only the atomic spoken settlement after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const name = "refusal-settlement-" + runtime;
+  let attempts = 0;
+  const refuse = () => {
+    attempts++;
+    db.openDb().exec(`CREATE TRIGGER refuse_queue_write BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'queue write failed'); END`);
+  };
+  const f = runtime === "sdk" ? sdkFixture(name, async () => { refuse(); return null; }) :
+    terminalFixture(name, async () => { refuse(); return { ok: false, pasted: false, submitVerified: false, error: "positive refusal" }; });
+  t.after(() => { f.manager.stop(); db.openDb().exec("DROP TRIGGER IF EXISTS refuse_queue_write"); });
+  if (runtime === "sdk") idle(f.registry, f.id);
+  assert.ok(f.manager.submitSpoken(f.id, "inspect this refusal", name).ok);
+  await until(() => attempts === 1, "transport refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  const receipts = db.loadSpokenTurns(f.key);
+  assert.equal(receipts.length, 1, "the failed transition also rolled back reservation withdrawal");
+  db.openDb().exec("DROP TRIGGER refuse_queue_write");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "bookkeeping retry", 5000);
+  assert.equal(db.loadSpokenTurns(f.key).length, 0);
+  await tick(30); // Let a drain erroneously scheduled by the queue update run.
+  assert.equal(attempts, 1, "the storage retry did not call the transport");
+  db.recoverSendingPendingTurns(Date.now());
+  assert.equal(listPendingTurns(f.key)[0]?.state, "queued");
+});
+
+test("a spoken refusal before the handoff retries only the requeue after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  let boundaries = 0;
+  const f = terminalFixture("spoken-before-handoff", async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++boundaries !== 1) return;
+    db.openDb().exec(`CREATE TEMP TRIGGER block_unreserved_requeue BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'busy'); END`);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  t.after(() => {
+    f.manager.stop();
+    db.openDb().exec("DROP TRIGGER IF EXISTS block_unreserved_requeue");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  const spoken = f.manager.submitSpoken(f.id, "do not send", "before-guard").pendingTurn!;
+  await until(() => boundaries === 1, "transport guard refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  assert.deepEqual(db.loadSpokenTurns(f.key), []);
+  db.openDb().exec("DROP TRIGGER block_unreserved_requeue");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "claim requeued without restart", 5000);
+  assert.equal(boundaries, 1);
+  assert.deepEqual(f.injected, []);
+  const released = listPendingTurns(f.key)[0]!;
+  assert.equal(released.id, spoken.id);
+  assert.ok(f.manager.recall(f.id, released.id, released.revision));
+  f.manager.submit(f.id, "next typed message");
+  await until(() => f.injected.length > 0, "typed message following the recalled speech");
+  assert.deepEqual(f.injected, ["next typed message"]);
+});
+
+test("a spoken paste retries a changed transcript boundary and sends once against the fresh file", async t => {
+  const name = "spoken-boundary-retry";
+  const path = join(home, name + ".jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  let attempts = 0;
+  const f = terminalFixture(name, async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++attempts === 1) appendFileSync(path, "{}\n");
+  });
+  t.after(() => f.manager.stop());
+  const receipt = f.manager.submitSpoken(f.id, "check the build", name);
+  assert.equal(receipt.ok, true);
+  await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("transcript changed") === true, "safe retry");
+  assert.deepEqual(f.injected, []);
+  await until(() => listPendingTurns(f.key).length === 0, "confirmed spoken paste", 10_000);
+  assert.equal(attempts, 2);
+  assert.equal(f.injected.length, 1);
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  const [row] = loadSpokenTurns(f.key);
+  assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
+});
+
+test("failed spoken preparation retries SQLite settlement without sending and releases the following turn", async t => {
+  const { openDb } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-preparation-settlement.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const d = openDb();
+  let attempts = 0;
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  t.mock.method(read, "prepareHandoffBoundaries", async () => {
+    attempts++;
+    if (attempts === 1) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE UPDATE OF state ON pending_turns
+      WHEN NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'cannot requeue yet'); END`);
+    if (attempts === 3) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE DELETE ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL BEGIN SELECT RAISE(ABORT, 'cannot remove yet'); END`);
+    throw new Error("proof worker unavailable");
+  });
+  const f = terminalFixture("spoken-preparation-settlement", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  t.after(() => { f.manager.stop(); d.exec("DROP TRIGGER IF EXISTS block_prepare_settlement"); });
+  const spoken = f.manager.submitSpoken(f.id, "first spoken instruction", f.key).pendingTurn!;
+  f.manager.submit(f.id, "next typed turn");
+  for (const attempt of [1, 3]) {
+    await until(() => attempts === attempt, "blocked preparation settlement " + attempt, 10_000);
+    assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+    assert.equal(d.prepare("SELECT spoken_proof_failures AS count FROM pending_turns WHERE id = ?").get(spoken.id)?.count, attempt - 1);
+    assert.equal(f.registry.voiceHold(f.id), true);
+    assert.deepEqual(f.injected, []);
+    d.exec("DROP TRIGGER block_prepare_settlement");
+  }
+  await until(() => f.injected.length > 0, "following typed delivery", 5_000);
+  assert.equal(attempts, 3, "bookkeeping retries did not consume proof attempts");
+  assert.deepEqual(f.injected, ["next typed turn"]);
+  assert.equal(f.registry.voiceHold(f.id), false);
+  assert.equal(listPendingTurns(f.key).some(row => row.id === spoken.id), false);
+});
+
+test("a quiet spoken delivery bounds worker failures and changed transcript revisions across restart, then releases Foreman", async t => {
+  const { VoiceRouter } = await import("../src/server/voice/router.ts");
+  const { closeDb, loadSpokenTurns } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-worker-recovery.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  const prepare = read.prepareHandoffBoundaries.bind(read);
+  let workerFailures = 0;
+  let attempts = 0;
+  t.mock.method(read, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    attempts++;
+    if (attempts <= workerFailures) throw new Error("Transcript worker exited before returning proof");
+    return prepare(...args);
+  });
+  for (const [errors, changes] of [[1, 0], [3, 0], [0, 3], [1, 2]] as const) {
+    workerFailures = errors;
+    attempts = 0;
+    const fixture = () => terminalFixture(`spoken-proof-${errors}-${changes}`, async () => ({ ok: true, pasted: true, submitVerified: true }),
+      15, async () => { if (attempts <= errors + changes) appendFileSync(path, "{}\n"); });
+    let f = fixture();
+    t.after(() => f.manager.stop());
+    const target = { key: "task:steve", name: "Steve", kind: "session", sessionId: f.id, taskId: null,
+      role: "", colorId: null, agent: "claude", state: "running" } as const;
+    const cards: import("../src/shared/voice-routing.ts").VoiceCard[] = [];
+    const router = new VoiceRouter(() => ({ mode: "listening", backend: "fluidaudio", roster: [target] }),
+      () => ({ enabled: false, seconds: 1 }), { deliver: async (_target, words, id, _command, _active, queued) => {
+        const turn = f.manager.submitSpoken(f.id, words, id, queued).pendingTurn!;
+        return { outcome: "queued", turnId: turn.id };
+      } }, card => cards.push(card));
+    f.registry.voiceRouter = router;
+    await router.accept({ id: f.key, text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+    assert.equal(f.registry.voiceHold(f.id), true);
+    if (changes === 2) {
+      await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("Retrying the spoken message") === true, "first proof retry");
+      f.manager.stop();
+      closeDb();
+      f = fixture();
+      f.registry.voiceRouter = router;
+    }
+    await until(() => listPendingTurns(f.key).length === 0, "worker-result settlement", 10_000);
+    const failed = errors + changes === 3;
+    assert.equal(attempts, failed ? 3 : 2);
+    assert.equal(f.injected.length, failed ? 0 : 1);
+    assert.equal(loadSpokenTurns(f.key).length, failed ? 0 : 1);
+    assert.equal(cards.at(-1)?.state, failed ? "failed" : "sent");
+    assert.equal(router.heard.list()[0]?.outcome, cards.at(-1)?.state);
+    if (failed) {
+      assert.match(cards.at(-1)?.detail ?? "", /Nothing was sent.*try again/);
+      assert.equal(router.heard.list()[0]?.detail, cards.at(-1)?.detail);
+      assert.equal(f.registry.voiceHold(f.id), false);
+      await router.accept({ id: f.key + "-retry", text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+      await until(() => cards.at(-1)?.state === "sent", "operator retry", 10_000);
+      assert.equal(f.injected.length, 1);
+    }
+    f.manager.stop();
+  }
 });
 
 test("a terminal refusal before paste returns to queued", async () => {
@@ -3119,7 +3302,6 @@ for (const mode of ["steer", "interrupt"] as const) test(`coalescing preserves t
 // ---- async-input answer cards: a marked row records its own delivery -----------------------
 
 const { openDb } = await import("../src/server/db.ts");
-const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { parseReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
 const deliveriesFor = (key: string) => openDb().prepare(
   "SELECT id, review_ids AS reviewIds, confirmed_at AS confirmedAt FROM session_review_deliveries WHERE note_key = ?",
@@ -3610,7 +3792,7 @@ test("a delivered turn whose retire fails is retired again, and its after-work r
     retireDelivered: (turnId, revision, at) => {
       retires += 1;
       if (retires === 1) throw new Error("disk I/O error");
-      return db.retireDeliveredPendingTurn(turnId, revision, at);
+      return db.retireDeliveredPendingTurnKey(turnId, revision, at);
     },
   });
   manager.start();

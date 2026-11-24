@@ -1,5 +1,5 @@
 import type { ZodTypeAny, TypeOf } from "zod";
-import type { LlmJobId } from "@shared/llm-jobs.ts";
+import { LLM_JOB_SPECS, type LlmJobId } from "@shared/llm-jobs.ts";
 import type { LlmConfig } from "@shared/protocol.ts";
 import { resolveLlmEffort, type LlmRunnerId } from "@shared/llm.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
@@ -66,12 +66,22 @@ export interface JobRunOptions {
 
 /** Structured-only options kept off `runJob`, whose callers ask for unconstrained text. */
 export interface StructuredJobRunOptions extends JobRunOptions {
+  signal?: AbortSignal;
   /** The already-rendered provider input schema. Caller-side parsing remains mandatory. */
   schema?: Record<string, unknown>;
   /** Trim the syntax retry only when this call site's rendered schema is faithful. */
   shapeGuaranteed?: boolean;
   /** Limit executions independently of provider schema support when the caller owns retries. */
   maxAttempts?: 1 | 2;
+  /**
+   * Run on this provider rather than the job's configured one. For a job whose subject decides
+   * the provider (voice routing asks Claude about Claude sessions and Codex about Codex ones).
+   * The MODEL still comes from the job's ladder, resolved for this provider, so a Settings
+   * override keeps working and a model of the other provider is never handed across.
+   */
+  runner?: LlmRunnerId;
+  /** Passed to the runner: see `LlmRunOptions.systemPrompt`. */
+  systemPrompt?: string;
   /**
    * Told the resolved pair ONCE, before the first attempt spends anything.
    *
@@ -101,6 +111,7 @@ export async function runJob(
   const text = await llmRunner(execution.runner).run(prompt, {
     model: execution.model,
     effort: execution.effort,
+    thinking: LLM_JOB_SPECS[job].fixedThinking,
     timeoutMs: opts.timeoutMs,
   });
   return { text, execution };
@@ -114,10 +125,10 @@ export async function runJob(
  * two reads is how a Claude id ends up handed to Codex. Once, because the config is editable
  * at runtime and a structured retry must keep the execution settings of its first attempt.
  */
-function jobExecution(job: LlmJobId, cfg: LlmConfig): JobExecution {
-  const runner = llmJobRunner(job, cfg).id;
+function jobExecution(job: LlmJobId, cfg: LlmConfig, runnerOverride?: LlmRunnerId): JobExecution {
+  const runner = runnerOverride ?? llmJobRunner(job, cfg).id;
   const model = llmJobModel(job, cfg, runner).id;
-  const effort = backgroundReasoningEffortEnabled()
+  const effort = !LLM_JOB_SPECS[job].fixedThinking && backgroundReasoningEffortEnabled()
     ? resolveLlmEffort(runner, model, cfg.efforts?.[job]).level
     : null;
   return effort ? { runner, model, effort } : { runner, model };
@@ -136,7 +147,7 @@ export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = Ty
   opts: StructuredJobRunOptions = {},
 ): Promise<StructuredResult<T> & { execution: JobExecution }> {
   const cfg = getLlmConfig();
-  const execution = jobExecution(job, cfg);
+  const execution = jobExecution(job, cfg, opts.runner);
   opts.onExecution?.(execution);
   const runner = llmRunner(execution.runner);
   const result = await runStructured<S, T>(
@@ -146,6 +157,9 @@ export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = Ty
         effort: execution.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
+        ...(opts.signal && { signal: opts.signal }),
+        thinking: LLM_JOB_SPECS[job].fixedThinking,
+        ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
       }),
     prompt,
     extract,

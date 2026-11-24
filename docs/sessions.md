@@ -128,13 +128,30 @@ unavailable for that daemon run. If assertion creation or release fails, the ind
 retry automatically or fall back to a command provider; another explicit switch action retries,
 reconciling an exact retained handle before reacquiring when a release failed.
 
-The mode is **deliberately transient**: on until Mission Control quits or restarts, never
-persisted, never reacquired at boot. An orderly shutdown releases the assertion itself,
-and a crash releases it too because IOKit assertions are owned by the daemon process.
-The tradeoff is stated in the dropdown rather than hidden: a daemon restart
-while you are away returns the mode to off. Keep awake is also independent of
-[Away mode](attention-and-alerts.md#away-mode) - alert delivery and host power are different decisions, and
-neither implies the other.
+The switch **stays where you leave it**. Mission Control saves your choice (the operational
+`keepAwake` value in `app_config`) and applies it every time the daemon starts, so a restart
+or an upgrade puts the Mac back in the state you chose: on stays on, off stays off. What
+survives is the choice, never the assertion. The assertion belongs to the daemon process:
+an orderly shutdown releases it, a crash releases it because IOKit assertions are owned by
+the process, and the next daemon takes a fresh one once it is serving. Shutting down is not
+switching the mode off, so it never changes the saved choice. The choice is saved when the
+OS has confirmed the assertion (switching on) or when you switch it off, so an acquisition
+the OS refused is not saved and cannot fail again on every boot.
+
+The switch never shows a choice a restart would undo. If the daemon cannot write the choice
+(a locked or full database), the request is refused with the reason in the dropdown and
+nothing is left half-applied: a switch-on releases the assertion it just took and stays off,
+and a switch-off leaves the assertion held and the switch on. Try the switch again once the
+fault clears.
+
+If the saved choice is on and the daemon cannot take the assertion at boot, the indicator
+reads **`live · awake failed`** and the saved choice stays, so a later boot tries again; the
+switch retries it right away. There is no automatic retry. The choice is deliberately outside
+[settings backups](skills-and-settings.md): restoring a snapshot from another installation
+never turns this Mac's keep-awake on or off. The first daemon after upgrading to the build
+that added this has nothing saved yet, so switch it on once. Keep awake is also independent
+of [Away mode](attention-and-alerts.md#away-mode) - alert delivery and host power are
+different decisions, and neither implies the other.
 
 Because the **daemon** owns the assertion (not the Electron shell), the switch behaves
 identically in every launch mode: browser dashboard, desktop app, adopted daemon, or a
@@ -2863,7 +2880,10 @@ The MCP tools are:
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
   needs to decide on their own, including why the decision came up, what the agent found, and the tradeoffs.
   Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
-  pick. The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
+  pick. The rule also asks the agent to write `context` as Markdown, and says nothing about how
+  to lay it out: that choice stays with each operator and their own agent's instructions. With the
+  [Markdown questions](#markdown-questions-preview) preview on, the card renders it as Markdown.
+  The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
   and the dispatch-scoped Claude and Codex prompts repeat it in the same words. Either shape
   can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
   card could not carry is refused
@@ -3087,6 +3107,21 @@ the first is evidence of your intent.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+#### Markdown questions (preview)
+
+With the **Markdown questions** preview flag (`markdown-questions`) on, the part of a
+`request_input` question printed beneath its heading, usually its `context`, renders as Markdown
+with the renderer plans use. Bullets become a list, headings and code read as written, and a
+single newline is still a line break, so a plain-text context looks as it always did. A path in
+the session's checkout still opens the file in Files. The same rendering applies wherever that
+text appears: the review card, the attention inbox, and the question's entry in the conversation.
+Raw HTML is shown as text and never rendered.
+
+Turning the flag off brings back the plain paragraph immediately, in every open window. It
+changes no question and no answer. The rule that asks agents to write `context` as Markdown is
+unconditional, so an agent writes the same text either way. With the flag off, that text shows
+as typed.
 
 #### Chat about it
 
@@ -3560,3 +3595,9 @@ A Pi assistant turn recorded with an error shows **Pi turn failed** and a bounde
 provider diagnostic in the conversation, including when the provider produced no response.
 The marker survives reload and remains beside later successful turns. The managed session
 stays available for another message after the provider or credentials are repaired.
+
+## Spoken messages
+
+With Voice addressing enabled, a spoken operator turn waits for the agent to finish working.
+In either conversation view, the Spoken mark identifies the operator’s words. Expand **What the
+agent received** to read those words together with the notes the daemon appended at delivery.

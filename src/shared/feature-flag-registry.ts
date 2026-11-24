@@ -16,6 +16,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
+
 /**
  * The one owner of the Stalled section's id: idle stalls move from the inbox's Stuck section into
  * Idle's Stalled section on the Board and the Console rail. See `docs/attention-and-alerts.md`.
@@ -27,6 +29,9 @@ export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
 export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
+
+/** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 export const FEATURE_FLAGS = [
   {
@@ -150,6 +155,13 @@ export const FEATURE_FLAGS = [
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
+    id: IDLE_RAIL_SECTION_COUNTS_FLAG_ID,
+    label: "Counts on Idle rail sections",
+    description: "Show a session total in the conversation’s Idle rail and put status counts on expandable section headings.",
+    stage: "preview",
+    keywords: ["idle", "rail", "conversation", "sections", "counts"],
+  },
+  {
     id: IDLE_STALLED_FLAG_ID,
     label: "Stalled section in Idle",
     description:
@@ -190,6 +202,15 @@ export const FEATURE_FLAGS = [
     description: "Choose the reasoning effort for each background model call in Settings > Models.",
     stage: "preview",
     keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
+  },
+  {
+    id: MARKDOWN_QUESTIONS_FLAG_ID,
+    label: "Markdown questions",
+    description:
+      "Render the context an agent sends with request_input as Markdown, so its lists, headings and code " +
+      "read as they were written: on the question card, in the attention inbox and in the conversation.",
+    stage: "preview",
+    keywords: ["request_input", "question", "context", "markdown", "bullets", "inbox"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

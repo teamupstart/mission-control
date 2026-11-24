@@ -10,7 +10,11 @@ import { createModCore, DAEMON_DOWN_NOTICE, type ModSessionFacts } from "../src/
 import { daemonBaseUrl, readDaemonToken, tokenFileCandidates } from "../src/mod/daemon-link.ts";
 import type { ModState } from "../src/mod/host.ts";
 import type { HomeDispatchInbox } from "../src/shared/home-dispatch.ts";
-import { findDisallowedModCalls, isAllowedModCall } from "../scripts/mod-calls.mjs";
+import { findDisallowedModCalls, isAllowedModCall, pathLiterals } from "../scripts/mod-calls.mjs";
+import { isFlagOffAnswer } from "../src/mod/client.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CANNED_INBOX,
   CANNED_REGISTRATION,
@@ -620,4 +624,242 @@ test("a session ended while a pane retry is pending starts no inbox request", as
   held.release();
   await ticking;
   assert.equal(inboxRequests(), before);
+});
+
+test("a 404 that is not the flag-off answer is an error, not the flag being off", async () => {
+  const { daemon, fake, core } = setup();
+  await core.start();
+  assert.equal(core.phase(), "active");
+  // The daemon forgets the route: not the flag, so nothing is cleared and the poll keeps trying.
+  daemon.override("GET /dispatch/inbox", () => ({ status: 404, body: { error: "not found" } }));
+  const bandsBefore = fake.bands.length;
+  await core.tick();
+  assert.equal(core.phase(), "active");
+  assert.equal(fake.bands.length, bandsBefore);
+  // The flag-off answer is the one that clears it.
+  daemon.setFlag(false);
+  await core.tick();
+  assert.equal(core.phase(), "connecting");
+});
+
+test("registration tells the daemon the launcher is off while its gate is closed, so no banner promises it", async () => {
+  const { daemon, core } = setup();
+  await core.start();
+  const registration = daemon.requests.find((r) => r.pattern === "/dispatch/sessions")!;
+  assert.equal((registration.body as { launcherDisabled: boolean }).launcherDisabled, true);
+});
+
+test("the mod-calls scan ignores a path quoted in a comment and still catches a real call", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    writeFileSync(join(root, "src/mod/prose.ts"), [
+      '// Once it called "/api/removed" and may call "/dispatch/ok".',
+      '/** An example: `/api/planned` in a block comment, and "/api/also-planned". */',
+      'export const url = "http://127.0.0.1:1/dispatch/real"; // trailing "/api/nope"',
+    ].join("\n"));
+    assert.deepEqual(findDisallowedModCalls(root), []);
+    writeFileSync(join(root, "src/mod/call.ts"), 'export const bad = "/api/secret"; // fine\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/secret"]);
+    // A `//` inside a string is not a comment, and a trailing comment is not a literal.
+    assert.deepEqual(pathLiterals('const u = "http://x/api/y"; // "/api/gone"'), ["http://x/api/y"]);
+    // A regex literal that ends in `//` is not a comment: a disallowed path later on the line is still found.
+    writeFileSync(join(root, "src/mod/call.ts"), 'const parts = path.split(/\\//); const bad = "/api/hidden"; // trailing\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/hidden"]);
+    // Division and a slash inside a regex class do not confuse it, and a comment after them is still blanked.
+    const tricky = 'const half = total / 2; const re = /[/]x/g; const ok = "/api/health"; // "/api/gone"';
+    assert.deepEqual(pathLiterals(tricky), ["/api/health"]);
+    assert.deepEqual(pathLiterals('return /a\\/b/.test(x) && "/api/seen"'), ["/api/seen"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one definition of the flag-off answer serves every daemon call: only a 404 carrying the feature", () => {
+  assert.equal(isFlagOffAnswer(404, { error: "This feature is disabled.", feature: "headless-mode" }), true);
+  assert.equal(isFlagOffAnswer(404, { error: "not found" }), false);
+  assert.equal(isFlagOffAnswer(404, null), false);
+  assert.equal(isFlagOffAnswer(404, undefined), false);
+  assert.equal(isFlagOffAnswer(404, "headless-mode"), false);
+  assert.equal(isFlagOffAnswer(200, { feature: "headless-mode" }), false);
+  assert.equal(isFlagOffAnswer(401, { feature: "headless-mode" }), false);
+});
+
+test("the write queue runs a read-modify-write after the writes queued before it, so none is overwritten", async () => {
+  const { runQueued } = await import("../src/mod/write-queue.ts");
+  const queue = { writes: Promise.resolve() as Promise<void> };
+  const store = { value: 0 };
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  // A write is in flight (held); an update is queued behind it and must read what the write left.
+  const write = runQueued(queue, undefined, async () => { await held; store.value = 10; });
+  const update = runQueued(queue, undefined, async () => { const current = store.value; store.value = current + 1; });
+  release();
+  await Promise.all([write, update]);
+  assert.equal(store.value, 11);
+
+  // A turn whose guard has gone false is skipped, and a task that throws does not stop the queue.
+  let alive = true;
+  const skipped = runQueued(queue, () => alive, async () => { store.value = -1; });
+  alive = false;
+  await skipped;
+  assert.equal(store.value, 11);
+  await runQueued(queue, undefined, async () => { throw new Error("refused"); });
+  await runQueued(queue, undefined, async () => { store.value = 12; });
+  assert.equal(store.value, 12);
+});
+
+test("a refused pane open gives back its claim, and only its own", async () => {
+  const { releaseClaim } = await import("../src/mod/pane-owner.ts");
+  const holder = { owner: 3 as number | null };
+  // This session's claim is released.
+  assert.equal(releaseClaim(holder, 3), true);
+  assert.equal(holder.owner, null);
+  // A replacement that has claimed the pane since keeps its claim.
+  holder.owner = 4;
+  assert.equal(releaseClaim(holder, 3), false);
+  assert.equal(holder.owner, 4);
+  // Nothing to release when nobody holds it.
+  holder.owner = null;
+  assert.equal(releaseClaim(holder, 3), false);
+  assert.equal(holder.owner, null);
+});
+
+test("a multi-line notice becomes one line: the engine draws newlines as replacement characters", async () => {
+  const { noticeLine } = await import("../src/mod/notice-text.ts");
+  assert.equal(
+    noticeLine("Repo: /repo\nKind: ship\nAfter work: no mistakes review\n\nDescription:\nadd retries to the webhook client"),
+    "Repo: /repo · Kind: ship · After work: no mistakes review · Description: add retries to the webhook client",
+  );
+  // Context Claude added follows the same rule, and a single line, spaces and CRLF are kept sane.
+  assert.equal(noticeLine("Description:\nadd retries\n\nContext Claude added:\nsee client.ts"), "Description: add retries · Context Claude added: see client.ts");
+  assert.equal(noticeLine("Started mc-1: ship, in repo."), "Started mc-1: ship, in repo.");
+  assert.equal(noticeLine("  a  \r\n  b  "), "a · b");
+  assert.equal(noticeLine("\n\n"), "");
+});
+
+test("the mod-calls scan walks nested template literals, so a disallowed path cannot hide behind one", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-nested-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+
+    // A path built from a template with a nested template is judged by its static prefix.
+    assert.deepEqual(scan("const p = `/api/${flag ? `yes` : `no`}`;\n"), ["/api/"]);
+    // A real call after a nested template on the same line is still found (the old tokenizer closed on the inner backtick).
+    assert.deepEqual(scan("const x = `${a ? `b` : `c`}`; const bad = \"/api/secret\";\n"), ["/api/secret"]);
+    // Deeper nesting, an object literal in the expression, and a string containing a backtick.
+    assert.deepEqual(scan("const x = `${fn({ k: `${y ? `1` : '`'}` })}`; const bad = '/api/deep';\n"), ["/api/deep"]);
+    // An expression that contains a comment and braces does not end the template early.
+    assert.deepEqual(scan("const x = `${/* } */ a}`; const bad = \"/api/after\";\n"), ["/api/after"]);
+
+    // Allowed shapes stay allowed: a dispatch route built with an interpolated id, and the health path.
+    assert.deepEqual(scan("const u = `/dispatch/drafts/${encodeURIComponent(id)}/confirm`; const h = \"/api/health\";\n"), []);
+    // Comments still never count, including one that quotes a nested template.
+    assert.deepEqual(scan("// `/api/${flag ? `a` : `b`}` is not a call\nconst ok = 1;\n"), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the mod-calls scan treats a $ in a quoted path as an ordinary character, and only ${ as an interpolation", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-dollar-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A plain string with a $ in it is still read to its closing quote and judged.
+    assert.deepEqual(scan("fetch(\"/api/$secret\");\n"), ["/api/$secret"]);
+    assert.deepEqual(scan("fetch('/api/a$b$c');\n"), ["/api/a$b$c"]);
+    assert.deepEqual(scan("fetch(\"/api/$\");\n"), ["/api/$"]);
+    // A $ inside a template that is not an interpolation is the same.
+    assert.deepEqual(scan("const u = `/api/$notInterpolated`;\n"), ["/api/$notInterpolated"]);
+    // An interpolation still ends the static prefix, and allowed shapes stay allowed.
+    assert.deepEqual(scan("const u = `/api/${x}`;\n"), ["/api/"]);
+    assert.deepEqual(scan("const u = `/dispatch/drafts/${id}/confirm`; const c = \"/dispatch/a$b\";\n"), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the mod-calls scan treats a regex literal inside ${} as one unit, so its braces do not end the template early", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-regex-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A lone `{` or `}` in a regex must not shift the brace count; the comment after it stays a comment.
+    assert.deepEqual(scan("const x = `${/\\{/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    assert.deepEqual(scan("const x = `${/}/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    assert.deepEqual(scan("const x = `${/[{]/.test(y)}`; // \"/api/in-comment\"\nconst ok = 1;\n"), []);
+    // A brace quantifier balances on its own and is still read correctly.
+    assert.deepEqual(scan("const x = `${/a{2}/.test(y)}`; const bad = \"/api/after\";\n"), ["/api/after"]);
+    // Division is not a regex: the template ends where it should and a later call is found.
+    assert.deepEqual(scan("const x = `${a / b}`; const bad = \"/api/div\";\n"), ["/api/div"]);
+    assert.deepEqual(scan("const x = `${a / b / c}` + `${/\\}/.test(d)}`; const bad = '/api/two';\n"), ["/api/two"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the mod-calls scan judges a plain quoted string whole: ${ is only an interpolation in a template", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-plain-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // Static literals containing `${`: the whole path is judged, not the prefix before it.
+    assert.deepEqual(scan("fetch(\"/dispatch/a${b}/c\");\n"), []);
+    assert.deepEqual(scan("fetch(\"/api/health${b}/secret\");\n"), ["/api/health${b}/secret"]);
+    assert.deepEqual(scan("fetch('/api/foo${bar}/secret');\n"), ["/api/foo${bar}/secret"]);
+    // The same text in a template is dynamic, so its static prefix is judged.
+    assert.deepEqual(scan("fetch(`/api/health${b}/secret`);\n"), []);
+    assert.deepEqual(scan("fetch(`/api/foo${bar}/secret`);\n"), ["/api/foo"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the mod-calls scan reads source with a real tokenizer: no regex, comment or space can hide a call", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-tokens-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A path whose query has a space is one literal, judged whole.
+    assert.deepEqual(scan('fetch("/api/tasks?search=needs review");\n'), ["/api/tasks?search=needs review"]);
+    assert.deepEqual(scan("fetch(`/api/tasks?q=a b`);\n"), ["/api/tasks?q=a b"]);
+    assert.deepEqual(scan('fetch("/dispatch/inbox?repo=my repo");\n'), []);
+    // A regex after a control-flow condition is a regex: its closing `//` does not hide a later call.
+    assert.deepEqual(scan('if (ok) /\\//.test(value); const bad = "/api/hidden";\n'), ["/api/hidden"]);
+    assert.deepEqual(scan('while (x) /\\//.exec(v); const bad = "/api/loop";\n'), ["/api/loop"]);
+    // A regex inside `${}` with a brace in it does not end the template early, so a URL's `//` after
+    // it is inside a string and a later call is still found.
+    assert.deepEqual(scan("const s = `${/[}]/.test(`http://x`)}`; const bad = \"/api/hidden\";\n"), ["/api/hidden"]);
+    // A comment inside `${}` is a comment: the path it quotes is not a call.
+    assert.deepEqual(scan('const s = `/dispatch/${id /* "/api/comment-only" */}`;\n'), []);
+    // .tsx files are read as TSX, and a JSX attribute's string is a literal like any other.
+    writeFileSync(join(root, "src/mod/case.ts"), "export {};\n");
+    writeFileSync(join(root, "src/mod/view.tsx"), 'export const v = <a href="/api/jsx">x</a>;\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/jsx"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

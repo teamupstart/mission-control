@@ -578,6 +578,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.turns.push({
       type: "user",
       message: { role: "user", content: turnContent(turn) },
+      ...(turn.clientMessageId && { uuid: turn.clientMessageId }),
       parent_tool_use_id: null,
       ...(this.agentSessionId ? { session_id: this.agentSessionId } : {}),
     });
@@ -1583,6 +1584,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
     drainMs: deps.authRecoveryDrainMs ?? DEFAULT_AUTH_TIMING.drainMs,
   };
   return {
+    clientMessageIds: true,
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // Every decision a Claude SDK session asks goes through `request_input` - with its

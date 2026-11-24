@@ -37,6 +37,13 @@ if (!have("rsvg-convert")) {
   process.exit(1);
 }
 
+for (const glyph of ["mic", "mic-off", "phone", "ptt"]) {
+  const svg = join(buildDir, `voice-${glyph}.svg`);
+  render(svg, 16, join(buildDir, `voice-${glyph}Template.png`));
+  render(svg, 32, join(buildDir, `voice-${glyph}Template@2x.png`));
+}
+if (process.argv.includes("--voice-only")) process.exit(0);
+
 // --- app icon: build an .iconset then fold to .icns -------------------------
 const iconset = join(buildDir, "icon.iconset");
 rmSync(iconset, { recursive: true, force: true });

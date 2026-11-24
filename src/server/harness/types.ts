@@ -200,6 +200,23 @@ export interface TranscriptStreamRead {
   pos: number;
 }
 
+/** File identity and contents through the byte offset recorded for a delivery. */
+export interface TranscriptBoundary {
+  offset: number;
+  proof: string;
+}
+
+/** Proofs from one file revision, prepared off the daemon thread before a spoken write. */
+export interface PreparedTranscriptBoundaries {
+  /** A file read failed. Handoffs can proceed, but display and cleanup must retry verification. */
+  unreadable?: true;
+  fileId?: string;
+  size?: number;
+  version: string | null;
+  eof: TranscriptBoundary | null;
+  proofs: Map<number, TranscriptBoundary>;
+}
+
 /**
  * A contiguous run of turns, and the exact byte range they were read from.
  *
@@ -262,6 +279,12 @@ export interface TranscriptForwardPage {
    * collector against a record that may never be completed.
    */
   atEnd: boolean;
+  /** Strict native read reached this byte at EOF beyond the final newline. */
+  partialTailEnd?: number;
+  /** A complete native record exceeded the parse budget and its contents were not inspected. */
+  skippedRecord?: true;
+  /** A cooperative reader stopped at its parse budget. Resume to locate the newline or verified partial EOF. */
+  finishOversizedRecord?(signal?: AbortSignal): Promise<TranscriptForwardPage>;
 }
 
 /** A live stream's opening history: turns, where to resume, and where to page back from. */
@@ -301,8 +324,14 @@ export interface TranscriptMessages {
    * item is delivered. Null when the file is missing.
    */
   size(path: string): number | null;
-  /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
-  initial(path: string): TranscriptInitialRead;
+  /** Identify one file revision for a scan that needs to prove a receipt is absent. */
+  snapshot?(path: string): { size: number; version: string; fileId?: string; changedAt?: number } | null;
+  /** Identity of the file and its bytes through an offset, stable across later appends. */
+  boundary?(path: string, offset?: number): TranscriptBoundary | null;
+  /** Batch native prefix proofs off-thread. A dashboard read only needs its supplied offsets. */
+  prepareHandoffBoundaries?(path: string, offsets: number[], includeEof?: boolean): Promise<PreparedTranscriptBoundaries | null>;
+  /** Recent history through the captured EOF (default: current EOF). Throws if unreadable. */
+  initial(path: string, through?: number): TranscriptInitialRead;
   /**
    * The turns immediately BEFORE a byte offset - how the conversation panel scrolls back
    * through history the tail window did not reach.
@@ -330,11 +359,13 @@ export interface TranscriptMessages {
    * Chaining it - each page's `end` becoming the next call's `after` - walks forward from
    * a recorded boundary to the last complete turn without ever holding more than one page.
    * Returns an empty page with `atEnd` when the anchor is already past the last complete
-   * record.
+   * record. A caller that needs proof of a successful read can request `requireReadable`:
+   * an I/O failure then throws, including on an empty file. The cooperative mode also
+   * returns a continuation when locating the end of one record would exceed the page budget.
    */
-  after(path: string, after: number, wantTurns?: number): TranscriptForwardPage;
-  /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
-  appended(path: string, pos: number): TranscriptStreamRead;
+  after(path: string, after: number, wantTurns?: number, requireReadable?: boolean | "cooperative"): TranscriptForwardPage;
+  /** Complete turns from `pos` to the captured EOF (default: current EOF). Throws if unreadable. */
+  appended(path: string, pos: number, through?: number): TranscriptStreamRead;
   /**
    * The current active narration, or null when there is none. Null is also the right
    * answer for a harness with no such notion. It is a
@@ -342,6 +373,9 @@ export interface TranscriptMessages {
    */
   narration(path: string): string | null;
 }
+
+/** Live or persisted identity sufficient to locate one conversation's native transcript. */
+export type TranscriptSession = Pick<Session, "agent" | "id" | "cwd" | "agentSessionId" | "startedAt" | "transcriptPath">;
 
 /**
  * Reading a harness's own record of a session off disk.
@@ -365,7 +399,9 @@ export interface TranscriptSpec {
    * messages-less harness to locate a file it only holds metadata in is a directory walk
    * for an answer nobody uses.
    */
-  locate(session: Session): string | null;
+  locate(session: TranscriptSession): string | null;
+  /** Locate a native conversation independently of the mutable runtime path hint and its cache. */
+  locateByConversation?(session: TranscriptSession & { agentSessionId: string; cwd: string }): string | null;
   /** One bounded read of that file for the passive poller. Cheap enough for a hot loop. */
   passiveRead(path: string): TranscriptPassiveRead;
   /** Conversation reading, or null when the file carries metadata but no messages. */
@@ -690,6 +726,8 @@ export type ControlSpec =
  * pane-backed whatever this slot says. See `docs/plans/agent-sdk-sessions/plan.md`.
  */
 export interface SdkSpec {
+  /** The SDK accepts a caller-supplied identifier on the native user message. */
+  clientMessageIds?: true;
   /**
    * Start (or resume) an embedded session.
    *
@@ -945,6 +983,7 @@ export interface SdkImage {
 /** One turn of user input. */
 export interface SdkTurn {
   text: string;
+  clientMessageId?: string;
   images?: readonly SdkImage[];
 }
 

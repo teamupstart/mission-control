@@ -1,0 +1,89 @@
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+
+const MAX_WAV_BYTES = 32 * 1024 * 1024;
+
+/** In a WAVEFORMATEXTENSIBLE header, the encoding tag is the first DWORD of the subformat GUID. */
+function sampleFormat(fmt: Buffer, bits: number): number {
+  const tag = fmt.readUInt16LE(0);
+  if (tag !== 0xfffe) return tag;
+  if (fmt.length < 40) throw new Error("Invalid WAV format extension");
+  const extra = fmt.readUInt16LE(16);
+  if (extra < 22 || extra > fmt.length - 18) throw new Error("Invalid WAV format extension");
+  if (fmt.toString("hex", 28, 40) !== "00001000800000aa00389b71") throw new Error("Unsupported WAV subformat");
+  const format = fmt.readUInt32LE(24);
+  const validBits = fmt.readUInt16LE(18);
+  const channelMask = fmt.readUInt32LE(20);
+  if (!validBits || validBits > bits || (format === 3 && validBits !== bits) || (channelMask & (channelMask - 1)) !== 0) {
+    throw new Error("Invalid WAV format extension");
+  }
+  return format;
+}
+
+/** Read a bounded snapshot from one regular file. Never size an allocation from a WAV header. */
+function recordingBytes(path: string): Buffer {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const file = fstatSync(fd);
+    if (!file.isFile()) throw new Error("Expected a regular WAV file");
+    if (file.size > MAX_WAV_BYTES) throw new Error("Recording exceeds the 32 MiB WAV limit");
+    const bytes = Buffer.allocUnsafe(file.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (!count) throw new Error("Truncated WAV recording");
+      offset += count;
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readRecording(path: string): Float32Array {
+  const wav = recordingBytes(path);
+  if (wav.length < 12 || wav.toString("latin1", 0, 4) !== "RIFF" || wav.toString("latin1", 8, 12) !== "WAVE") {
+    throw new Error("Expected a RIFF/WAVE recording");
+  }
+  const end = 8 + wav.readUInt32LE(4);
+  if (end > wav.length) throw new Error("Truncated WAV recording");
+  let width = 0;
+  let floating = false;
+  let data: Buffer | undefined;
+  for (let offset = 12; offset < end;) {
+    if (end - offset < 8) throw new Error("Truncated WAV chunk header");
+    const chunk = wav.toString("latin1", offset, offset + 4);
+    const size = wav.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    const next = start + size + (size % 2); // RIFF chunks start on even byte boundaries.
+    if (next > end) throw new Error("Truncated WAV chunk");
+    if (chunk === "fmt ") {
+      if (size < 16 || width) throw new Error("Invalid WAV format chunk");
+      if (wav.readUInt16LE(start + 2) !== 1 || wav.readUInt32LE(start + 4) !== 16000) throw new Error("Expected a 16 kHz mono WAV");
+      const bits = wav.readUInt16LE(start + 14);
+      const format = sampleFormat(wav.subarray(start, start + size), bits);
+      floating = format === 3 && bits === 32;
+      if (!floating && !(format === 1 && [8, 16, 32].includes(bits))) throw new Error("Unsupported WAV sample encoding");
+      width = bits / 8;
+      if (wav.readUInt16LE(start + 12) !== width || wav.readUInt32LE(start + 8) !== width * 16000) throw new Error("Invalid WAV frame size");
+    } else if (chunk === "data") {
+      if (!width || size % width || data) throw new Error("Invalid WAV data chunk");
+      data = wav.subarray(start, start + size);
+    }
+    offset = next;
+  }
+  if (!data) throw new Error("Missing WAV data chunk");
+  const samples = new Float32Array(data.length / width);
+  const scale = 2 ** (width * 8 - 1);
+  for (let i = 0; i < samples.length; i++) {
+    const at = i * width;
+    if (floating) {
+      const sample = data.readFloatLE(at);
+      if (!Number.isFinite(sample)) throw new Error("Non-finite WAV sample");
+      samples[i] = sample;
+    } else {
+      const integer = width === 1 ? data[at]! - 128 : data.readIntLE(at, width);
+      samples[i] = integer / scale;
+    }
+  }
+  return samples;
+}

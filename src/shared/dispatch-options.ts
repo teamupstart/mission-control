@@ -238,6 +238,17 @@ export function briefText(input: { words: string; context?: string | null }): st
   return context ? `${input.words}\n\n## Context Claude added\n${context}` : input.words;
 }
 
+/**
+ * What a shaper receives from a home-session brief (7.20, D62): the person's own words as
+ * `task`, and Claude's added context as its own field. They are never joined, unlike
+ * `briefText`, which is what the worker reads. A shaper that must show the person's words
+ * back unchanged would otherwise print Claude's paraphrase as if the person had written it.
+ */
+export function shaperInputFor(input: { words: string; context?: string | null }): { task: string; context: string | null } {
+  const context = input.context?.trim() ?? "";
+  return { task: input.words, context: context === "" ? null : context };
+}
+
 /** The Form 3 message of a draft summary (7.6). The words and the context are never merged. */
 export function draftSummaryText(input: {
   repoRoot: string;

@@ -8,8 +8,15 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import {
+  followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff,
+  SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
+} from "./delivery-ledgers.ts";
+import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
+import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
+  type ClaimedPendingTurn,
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
@@ -20,7 +27,8 @@ import {
   MESSAGE_ANSWER_TURN_PREFIX,
   afterWorkTurnOwed,
   deleteClaimedPendingTurn,
-  retireDeliveredPendingTurn,
+  failSpokenPreparation,
+  retireDeliveredPendingTurnKey,
   dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -28,12 +36,13 @@ import {
   recoverSendingPendingTurns,
   rekeyPendingTurns,
   releasePendingTurn,
+  releaseUnreservedSpokenClaim,
   resolveUncertainPendingTurn,
   retryPendingTurn,
 } from "./db.ts";
 import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
-import { sessionMessages, type SessionMessages } from "./harness/index.ts";
+import { sdkFor, sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { noteOtherSend, withdrawOtherSend, type OtherSendHandle } from "./delegated-turns.ts";
 import {
@@ -74,6 +83,8 @@ export const AFTER_WORK_SUPERSEDED = "A later launch of the task replaced the la
  * read. It stays queued, undelivered and unsettled, and is checked again (`afterWorkRecheckMs`).
  */
 export const AFTER_WORK_UNVERIFIED = "Mission Control could not check that this after-work prompt's launch still owns it.";
+const SPOKEN_PROOF_RETRY = "The transcript changed or could not be read. Retrying the spoken message.";
+const SPOKEN_PROOF_RETRY_MS = 1_000;
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -109,6 +120,7 @@ export interface PendingTurnSubmitResult {
 }
 
 interface PendingTurnDeps {
+  unseenReports: (session: Session) => string | null;
   now: () => number;
   id: () => string;
   inject: typeof injectPrompt;
@@ -128,8 +140,8 @@ interface PendingTurnDeps {
   afterWorkTurnOwed: (turnId: string) => boolean;
   /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
   afterWorkRecheckMs: number;
-  /** Retire a delivered turn with its after-work prompt row (`retireDeliveredPendingTurn`). */
-  retireDelivered: (id: string, revision: number, deliveredAt: number) => boolean;
+  /** Retire a delivered turn with its after-work prompt row and return the committed outbox key. */
+  retireDelivered: typeof retireDeliveredPendingTurnKey;
 }
 
 /**
@@ -159,6 +171,8 @@ interface PickupCandidate {
   sessionId: string;
   turn: PendingTurn;
   boundaryAt: number;
+  generation: number;
+  spokenReservationId: string | null;
   injectionSucceeded: boolean;
   pickupObserved: boolean;
   pickupObservedAt: number | null;
@@ -224,9 +238,13 @@ function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
  */
 type OutboxSend =
   | { kind: "review"; noteKey: string; id: string }
+  | { kind: "spoken"; words: string; reservationId: string | null }
   | { kind: "other"; handle: OtherSendHandle };
 
 function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
+  if (turn.spokenWords !== undefined) {
+    return { kind: "spoken", words: turn.spokenWords, reservationId: null };
+  }
   const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
   // Only a row the daemon queued about a review: an operator's message that happens to begin
   // with the marker line is the operator's, and is noted like any other send.
@@ -234,10 +252,30 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
   return id ? { kind: "review", noteKey: conversation.key, id } : { kind: "other", handle: noteOtherSend(conversation, turn.text) };
 }
 
+/** Both transports run this guard immediately before the write. Only a current, stamped
+ * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
+function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, now: number,
+  prepared?: PreparedSpokenTranscript, sdkInput?: SdkTurn): string | null {
+  if (send.kind !== "spoken" || send.reservationId !== null) return null;
+  const conversation = { key: turn.noteKey, transcript: sessionMessages(session), session };
+  try {
+    const row = reserveSpokenHandoff(conversation, turn, send.words,
+      sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, generation, now, prepared);
+    if (!row) return "The spoken turn is no longer claimed for delivery.";
+    send.reservationId = row.id;
+    if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
+    return null;
+  } catch (error) {
+    if (error instanceof SpokenTranscriptChanged) return error.message;
+    throw error;
+  }
+}
+
 /** Positive evidence that nothing landed: give the record back. */
 function withdrawOutboxSend(send: OutboxSend): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
-  else withdrawOtherSend(send.handle);
+  else if (send.kind === "other") withdrawOtherSend(send.handle);
+  // Spoken reservations are withdrawn in the same transaction that requeues the claim.
 }
 
 /**
@@ -260,8 +298,8 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   /** After-work turns a delivery guard held back because their launch could not be checked. */
   private readonly unverifiedAfterWork = new Set<string>();
-  /** Retires of delivered turns that failed and are tried again, by turn id. */
-  private readonly retireRetries = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Failed database settlements retried by reservation or turn id. */
+  private readonly settlementRetries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -283,6 +321,7 @@ export class PendingTurnManager {
     deps: Partial<PendingTurnDeps> = {},
   ) {
     this.deps = {
+      unseenReports: deps.unseenReports ?? (() => null),
       now: deps.now ?? Date.now,
       id: deps.id ?? randomUUID,
       inject: deps.inject ?? injectPrompt,
@@ -295,7 +334,7 @@ export class PendingTurnManager {
       afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
       afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
       afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
-      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurn,
+      retireDelivered: deps.retireDelivered ?? retireDeliveredPendingTurnKey,
     };
   }
 
@@ -306,6 +345,7 @@ export class PendingTurnManager {
     recoverSendingPendingTurns(this.deps.now());
     this.unsubscribe = this.registry.subscribe((event) => this.observe(event));
     for (const session of this.registry.snapshot().sessions) {
+      followSpokenConversationKey(session.id, session.id, noteKeyFor(session));
       this.knownKeys.set(session.id, noteKeyFor(session));
       this.registry.refreshPendingTurns(noteKeyFor(session));
       this.observeSession(this.registry.getSession(session.id) ?? session);
@@ -322,8 +362,8 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
-    for (const timer of this.retireRetries.values()) clearTimeout(timer);
-    this.retireRetries.clear();
+    for (const timer of this.settlementRetries.values()) clearTimeout(timer);
+    this.settlementRetries.clear();
     this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
     if (this.steerTimer) clearTimeout(this.steerTimer);
@@ -410,6 +450,10 @@ export class PendingTurnManager {
     return this.queueMessage(sessionId, text, "");
   }
 
+  submitSpoken(sessionId: string, words: string, utteranceId: string, onQueued?: (turnId: string) => void): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, words, VOICE_TURN_PREFIX, utteranceId, onQueued);
+  }
+
   /**
    * Queue a Stuck row's fixed Nudge, Continue or push message (`inbox`). The manager chooses
    * both the words and the turn id, so the row is always recorded as daemon-written
@@ -421,7 +465,8 @@ export class PendingTurnManager {
   }
 
   /** The one queueing path both kinds of message share; `idPrefix` is the authorship mark. */
-  private queueMessage(sessionId: string, text: string, idPrefix: string): PendingTurnSubmitResult {
+  private queueMessage(sessionId: string, text: string, idPrefix: string, utteranceId?: string,
+    onQueued?: (turnId: string) => void): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -447,11 +492,14 @@ export class PendingTurnManager {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
     }
     const pendingTurn = createPendingTurn({
-      id: `${idPrefix}${this.deps.id()}`,
+      id: `${idPrefix}${utteranceId ?? this.deps.id()}`,
+      ...(utteranceId !== undefined && { spokenWords: text }),
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
     });
+    // Replays can find a row already sending. Subscribe before registry observers or the drain can settle it.
+    onQueued?.(pendingTurn.id);
     this.registry.refreshPendingTurns(pendingTurn.noteKey);
     this.scheduleDrain(pendingTurn.noteKey);
     return {
@@ -559,7 +607,10 @@ export class PendingTurnManager {
     if (!session) return null;
     const key = noteKeyFor(session);
     const recalled = recallPendingTurn(key, id, revision);
-    if (recalled) this.registry.refreshPendingTurns(key);
+    if (recalled) {
+      if (recalled.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(recalled.id, "cancelled");
+      this.registry.refreshPendingTurns(key);
+    }
     return recalled;
   }
 
@@ -618,7 +669,14 @@ export class PendingTurnManager {
       if (deleteClaimedPendingTurn(interruption.turn.id, interruption.turn.revision)) dropped++;
     }
     dropped += dropQueuedPendingTurns(key);
-    if (dropped > 0) this.registry.refreshPendingTurns(key);
+    if (dropped > 0) {
+      const spoken = session.pendingTurns.filter(turn => turn.spokenWords !== undefined);
+      this.registry.refreshPendingTurns(key);
+      const remaining = this.registry.getSession(sessionId)?.pendingTurns;
+      for (const turn of spoken) {
+        if (!remaining?.some(row => row.id === turn.id)) this.registry.voiceRouter?.settleSpoken(turn.id, "cancelled");
+      }
+    }
     return dropped;
   }
 
@@ -646,6 +704,7 @@ export class PendingTurnManager {
     if (!row || row.noteKey !== key) return false;
     const resolved = resolveUncertainPendingTurn(id, revision, this.deps.now());
     if (resolved) {
+      if (row.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(row.id, "sent");
       this.registry.refreshPendingTurns(key);
       this.scheduleDrain(key);
     }
@@ -667,12 +726,18 @@ export class PendingTurnManager {
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);
+    if (event.type === "feature_flags") {
+      for (const session of this.registry.liveSessions()) {
+        if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));
+      }
+    }
   }
 
   private observeSession(session: Session): void {
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
+    if (previousKey !== key) followSpokenConversationKey(session.id, previousKey ?? session.id, key);
     if (previousKey && previousKey !== key) {
       this.registry.moveSteeredTurns(previousKey, key);
       // Review deliveries follow a session id becoming its native key, never a `/clear`.
@@ -804,6 +869,7 @@ export class PendingTurnManager {
   private canDrain(session: Session): boolean {
     const drainBoundary = this.terminalDrainBoundaries.get(noteKeyFor(session));
     return (
+      !this.stopped &&
       drainBoundary?.sessionId !== session.id &&
       session.stateConfirmed &&
       session.state === "idle" &&
@@ -864,20 +930,27 @@ export class PendingTurnManager {
    */
   private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
     return session.pendingTurns.flatMap((row) => {
-      if (row.interruptAttemptedAt != null) return [];
+      if (this.spokenBlocked(session, row) || row.interruptAttemptedAt != null) return [];
       const stage = deliveryStage(session, this.rebased(session, row), this.deps.now());
       return stage ? [{ turn: row, ...stage }] : [];
     });
   }
 
+  private spokenBlocked(session: Session, turn: PendingTurn): boolean {
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+  }
+
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
-    const first = session.pendingTurns[0];
+    const first = session.pendingTurns.find(turn => !this.spokenBlocked(session, turn));
     if (!first) return null;
     const stages = this.stages(session);
     const due = stages.find(stage => stage.at <= this.deps.now());
     if (this.canDrain(session)) {
-      return { turn: due?.turn ?? first, at: (session.lastActivity ?? session.firstSeen) + this.deps.idleSettleMs, action: "idle" };
+      const turn = due?.turn ?? first;
+      const idleAt = (session.lastActivity ?? session.firstSeen) + this.deps.idleSettleMs;
+      const retryAt = turn.spokenWords !== undefined && turn.lastError === SPOKEN_PROOF_RETRY ? turn.updatedAt + SPOKEN_PROOF_RETRY_MS : 0;
+      return { turn, at: Math.max(idleAt, retryAt), action: "idle" };
     }
     // A terminal can still show old idle evidence while a previous paste awaits pickup.
     // That is not proof of a running turn that may be interrupted.
@@ -995,9 +1068,12 @@ export class PendingTurnManager {
       return;
     }
     this.draining.add(key);
-    let turn: PendingTurn | null = null;
+    let turn: ClaimedPendingTurn | null = null;
     try {
-      turn = claimNextPendingTurn(key, this.deps.now(), next.turn);
+      turn = claimNextPendingTurn(key, this.deps.now(), next.turn, words => spokenMessageText(words, {
+        openQuestions: openQuestionsNote(this.registry.outstandingReviews(session.id).filter(isAgentAsk)),
+        unseenReports: this.deps.unseenReports(session),
+      }));
       if (!turn) return;
       this.registry.refreshPendingTurns(key);
       if (next.action === "interrupt") {
@@ -1009,8 +1085,23 @@ export class PendingTurnManager {
           return;
         }
       }
-      if (session.runtime === "sdk") await this.deliverSdk(session, turn, next.action === "steer");
-      else await this.deliverTerminal(session, turn);
+      let prepared: PreparedSpokenTranscript | undefined;
+      if (turn.spokenWords !== undefined) {
+        const transcript = sessionMessages(session);
+        if (transcript) {
+          try {
+            prepared = await prepareSpokenTranscript(key, transcript, turn.text,
+              session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds === true, this.deps.now());
+          } catch (error) {
+            if (error instanceof SpokenTranscriptUnavailable || error instanceof SpokenTranscriptChanged) this.spokenPreparationFailed(turn);
+            else this.releaseRefused(turn, null, errorMessage(error));
+            this.registry.refreshPendingTurns(key);
+            return;
+          }
+        }
+      }
+      if (session.runtime === "sdk") await this.deliverSdk(session, turn, next.action === "steer", prepared);
+      else await this.deliverTerminal(session, turn, prepared);
     } finally {
       this.draining.delete(key);
       // Steering may leave state unchanged, and a fast terminal turn may finish before
@@ -1028,10 +1119,11 @@ export class PendingTurnManager {
         // The row is still queued: a refusal, or a stage that did not finish the message.
         // Arm the escalation that is still ahead of it rather than waiting for an event a
         // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
-        // that keeps refusing cannot become a loop. The one exception is an after-work turn
-        // held back because its launch could not be checked: nothing else would ever wake it,
-        // so it is checked again on the recheck interval until the read answers.
-        if (recheckAfterWork) {
+        // that keeps refusing cannot become a loop. A changed transcript revision or an
+        // unverified after-work launch needs another check even if the session stays quiet.
+        if (following?.turn.id === retiredId && following?.turn.lastError === SPOKEN_PROOF_RETRY) {
+          this.armDrain(key, following.at);
+        } else if (recheckAfterWork) {
           this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
         } else {
           const escalation = this.nextEscalationAt(current);
@@ -1039,6 +1131,25 @@ export class PendingTurnManager {
         }
       }
     }
+  }
+
+  private spokenPreparationFailed(turn: ClaimedPendingTurn, settlementFailures = 0): void {
+    const now = this.deps.now();
+    let result: ReturnType<typeof failSpokenPreparation>;
+    try {
+      result = failSpokenPreparation(turn, now, SPOKEN_PROOF_RETRY);
+    } catch (error) {
+      console.warn(`[pending-turns] could not settle failed spoken preparation for ${turn.id}:`, errorMessage(error));
+      if (!this.stopped) this.retrySettlement(`preparation:${turn.spokenClaimId}`, settlementFailures,
+        () => this.spokenPreparationFailed(turn, settlementFailures + 1));
+      return;
+    }
+    if (!result) return;
+    if (result.exhausted) this.registry.voiceRouter?.settleSpoken(turn.id, {
+      outcome: "failed", detail: "Transcript verification failed after three attempts. Nothing was sent. Repeat the spoken message to try again.",
+    });
+    this.registry.refreshPendingTurns(result.noteKey);
+    if (!this.stopped) this.armDrain(result.noteKey, result.exhausted ? now : now + SPOKEN_PROOF_RETRY_MS);
   }
 
   private transcriptEnd(session: Session): SteerReceiptScan | null {
@@ -1129,7 +1240,7 @@ export class PendingTurnManager {
    */
   private announceTurn(
     session: Session,
-    turn: PendingTurn,
+    turn: ClaimedPendingTurn,
     author: TurnOrigin | null,
   ): { personSend: PersonDelivery | null } | null {
     try {
@@ -1140,13 +1251,13 @@ export class PendingTurnManager {
       return { personSend: notePersonDelivery(session.id, turn.text) };
     } catch (error) {
       if (!(error instanceof AutomatedAttributionError) && !(error instanceof PersonAttributionError)) throw error;
-      releasePendingTurn(turn.id, turn.revision, error.message, this.deps.now());
+      this.releaseRefused(turn, null, error.message);
       this.registry.refreshPendingTurns(turn.noteKey);
       return null;
     }
   }
 
-  private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+  private async deliverSdk(session: Session, turn: ClaimedPendingTurn, steer: boolean, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said BEFORE the send, because the prompt hook can report them back
     // while the send is still in flight (see `reserveInjection`). First of all, so one refused
     // for its attribution leaves nothing else to undo. The operator's own words are always the
@@ -1176,11 +1287,18 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
+    let generation = session.workCycle?.generation ?? 0;
+    let spokenRefusal: string | null = null;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
-      const accepted = await send(session.id, { text: turn.text }, () => {
+      const input: SdkTurn = { text: turn.text };
+      const accepted = await send(session.id, input, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) {
+          const current = this.registry.getSession(session.id)!;
+          generation = current.workCycle?.generation ?? 0;
+          spokenRefusal = handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now(), prepared, input);
+          if (spokenRefusal) return spokenRefusal;
           handoff.acceptanceBoundaryCrossed = true;
           // Registered at the acceptance guard, which runs inside the supervisor's serialized
           // boundary immediately before the driver is handed the turn. Earlier, the row could
@@ -1194,6 +1312,7 @@ export class PendingTurnManager {
           if (!author && !reviewMessage) humanEcho ??= expectHumanEcho(session.id, turn.text, {
             noteKey: turn.noteKey,
             cycle: this.registry.getSession(session.id)?.workCycle,
+            spokenWords: turn.spokenWords,
             now: this.deps.now(),
           });
         }
@@ -1218,12 +1337,8 @@ export class PendingTurnManager {
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
-        releasePendingTurn(
-          turn.id,
-          turn.revision,
-          "The agent became busy before delivery.",
-          this.deps.now(),
-        );
+        if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
+        else this.releaseRefused(turn, outboxSend, spokenRefusal ?? "The agent became busy before delivery.");
         this.dropIfRefused(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
@@ -1245,7 +1360,7 @@ export class PendingTurnManager {
         try {
           // A daemon-written row is nobody's ask, so it never becomes a Goal revision.
           if (!author && !reviewMessage && !echo.captured
-            && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
+            && this.registry.captureAcceptedPrompt(session.id, turn.spokenWords ?? turn.text, turn.noteKey)
             && humanEcho) {
             markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
           }
@@ -1263,7 +1378,10 @@ export class PendingTurnManager {
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
         }
-        this.retireDelivered(turn);
+        const reservationId = outboxSend.kind === "spoken" ? outboxSend.reservationId : null;
+        const publish = () => this.journalDelivered(session.id, turn, generation);
+        const retirement = this.retireDelivered(turn, reservationId, turn.spokenWords !== undefined ? publish : undefined);
+        if (retirement === "stale" && reservationId !== null) return;
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1276,7 +1394,7 @@ export class PendingTurnManager {
           });
           this.watchSteerReceipt(turn.noteKey, receiptFrom);
         }
-        this.journalDelivered(session.id, turn);
+        if (turn.spokenWords === undefined) publish();
       }
     } catch (err) {
       if (
@@ -1308,7 +1426,8 @@ export class PendingTurnManager {
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
-        releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+        if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
+        else this.releaseRefused(turn, outboxSend, errorMessage(err));
       }
     } finally {
       if (this.sdkHandoffs.get(turn.noteKey) === handoff) {
@@ -1322,7 +1441,7 @@ export class PendingTurnManager {
     }
   }
 
-  private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
+  private async deliverTerminal(session: Session, turn: ClaimedPendingTurn, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said first and withdrawn as `deliverSdk` does.
     const author = daemonAuthorOf(turn);
     const announced = this.announceTurn(session, turn, author);
@@ -1330,6 +1449,8 @@ export class PendingTurnManager {
     const personSend = announced.personSend;
     const outboxSend = recordOutboxSend(session, turn);
     let boundaryCrossed = false;
+    let spokenRefusal: string | null = null;
+    let spokenEcho: HumanEchoTicket | null = null;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
       if (
@@ -1337,7 +1458,7 @@ export class PendingTurnManager {
         current.runtime !== "terminal" ||
         noteKeyFor(current) !== turn.noteKey ||
         this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id ||
-        !this.readyToDrain(current)
+        this.spokenBlocked(current, turn) || !this.readyToDrain(current)
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
@@ -1348,13 +1469,23 @@ export class PendingTurnManager {
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
+        const generation = current.workCycle?.generation ?? 0;
+        spokenRefusal = handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now(), prepared);
+        if (spokenRefusal) return spokenRefusal;
         boundaryCrossed = true;
         // The write is next: a review message's echo belongs to the cycle as it stands now.
         if (outboxSend.kind === "review") stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, current.workCycle);
+        if (turn.spokenWords !== undefined) {
+          spokenEcho = expectHumanEcho(session.id, turn.text, {
+            noteKey: turn.noteKey, cycle: current.workCycle, spokenWords: turn.spokenWords, now: this.deps.now(),
+          });
+        }
         this.pickup.set(turn.noteKey, {
           sessionId: session.id,
           turn,
           boundaryAt: this.deps.now(),
+          generation,
+          spokenReservationId: outboxSend.kind === "spoken" ? outboxSend.reservationId : null,
           injectionSucceeded: false,
           pickupObserved: false,
           pickupObservedAt: null,
@@ -1377,6 +1508,11 @@ export class PendingTurnManager {
       };
     }
 
+    if (spokenEcho) {
+      if (result.ok || result.pasted) confirmHumanEcho(spokenEcho, { now: this.deps.now() });
+      else releaseHumanEcho(spokenEcho, this.deps.now());
+    }
+
     const candidate = this.pickup.get(turn.noteKey);
     if (
       !candidate ||
@@ -1394,12 +1530,8 @@ export class PendingTurnManager {
         if (author) releaseInjection(session.id, turn.text);
         withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
-        releasePendingTurn(
-          turn.id,
-          turn.revision,
-          result.error ?? "The terminal refused the message.",
-          this.deps.now(),
-        );
+        if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
+        else this.releaseRefused(turn, outboxSend, result.error ?? "The terminal refused the message.");
         this.dropIfRefused(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
@@ -1467,12 +1599,7 @@ export class PendingTurnManager {
       if (author) releaseInjection(session.id, turn.text);
       withdrawOutboxSend(outboxSend);
       withdrawPersonDelivery(personSend);
-      releasePendingTurn(
-        turn.id,
-        turn.revision,
-        result.error ?? "The terminal refused the message.",
-        this.deps.now(),
-      );
+      this.releaseRefused(turn, outboxSend, result.error ?? "The terminal refused the message.");
     }
     this.registry.refreshPendingTurns(turn.noteKey);
   }
@@ -1489,6 +1616,7 @@ export class PendingTurnManager {
       handoff.ownershipUncertain = true;
       return "The SDK conversation owner changed before delivery.";
     }
+    if (this.spokenBlocked(current, handoff.turn)) return "Voice is off or the agent is waiting on a review.";
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
@@ -1683,9 +1811,44 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    this.retireDelivered(turn);
-    this.journalDelivered(sessionId, turn);
+    const publish = () => this.journalDelivered(sessionId, turn, candidate.generation);
+    this.retireDelivered(turn, candidate.spokenReservationId, turn.spokenWords !== undefined ? publish : undefined);
+    if (turn.spokenWords === undefined) publish();
     this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  private retrySettlement(key: string, failures: number, retry: () => void): void {
+    const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
+    this.settlementRetries.set(key, unref(setTimeout(() => {
+      this.settlementRetries.delete(key);
+      retry();
+    }, delay)));
+  }
+
+  /** Retry only the bookkeeping for a known refusal. The handoff UUID or original unreserved claim fences a replay. */
+  private releaseRefused(turn: ClaimedPendingTurn, send: OutboxSend | null, detail: string, failures = 0): void {
+    const reservationId = send?.kind === "spoken" ? send.reservationId : null;
+    let released: PendingTurn | null;
+    try {
+      released = turn.spokenWords !== undefined && reservationId === null
+        ? releaseUnreservedSpokenClaim(turn, detail, this.deps.now())
+        : releasePendingTurn(turn.id, turn.revision, detail, this.deps.now(), reservationId ?? undefined);
+    } catch (error) {
+      if (turn.spokenWords === undefined) throw error;
+      console.warn(`[pending-turns] could not record spoken refusal for ${turn.id}:`, errorMessage(error));
+      const key = reservationId ?? `refusal:${turn.spokenClaimId}`;
+      if (!this.stopped) this.retrySettlement(key, failures, () => this.releaseRefused(turn, send, detail, failures + 1));
+      return;
+    }
+    if (released && failures) {
+      // The original refusal publishes inside the drain. Give its delayed settlement
+      // the same guard so its own session_upsert cannot schedule another transport call.
+      const key = released.noteKey;
+      const alreadyDraining = this.draining.has(key);
+      this.draining.add(key);
+      try { this.registry.refreshPendingTurns(key); }
+      finally { if (!alreadyDraining) this.draining.delete(key); }
+    }
   }
 
   /**
@@ -1697,19 +1860,22 @@ export class PendingTurnManager {
    * operator, never resending it. Marking that sent settles the prompt row too
    * (`resolveUncertainPendingTurn`).
    */
-  private retireDelivered(turn: PendingTurn, failures = 0): void {
-    this.retireRetries.delete(turn.id);
+  private retireDelivered(turn: PendingTurn, reservationId: string | null, onCommit?: () => void,
+    failures = 0): "committed" | "retrying" | "stale" {
+    const retryKey = reservationId ?? turn.id;
+    let retiredKey: string | null;
     try {
-      this.deps.retireDelivered(turn.id, turn.revision, this.deps.now());
+      retiredKey = this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
     } catch (error) {
       console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
-      if (this.stopped) return;
-      const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
-      this.retireRetries.set(turn.id, unref(setTimeout(() => {
-        this.retireDelivered(turn, failures + 1);
-        this.registry.refreshPendingTurns(turn.noteKey);
-      }, delay)));
+      if (this.stopped) return "stale";
+      this.retrySettlement(retryKey, failures, () => this.retireDelivered(turn, reservationId, onCommit, failures + 1));
+      return "retrying";
     }
+    if (retiredKey === null) return "stale";
+    if (failures > 0 || retiredKey !== turn.noteKey) this.registry.refreshPendingTurns(retiredKey);
+    onCommit?.();
+    return "committed";
   }
 
   /**
@@ -1735,7 +1901,7 @@ export class PendingTurnManager {
    * reason stated once on `prompt-journal.ts`, and the emit runs listeners that the
    * Registry's own contract already forbids from throwing.
    */
-  private journalDelivered(sessionId: string, turn: PendingTurn): void {
+  private journalDelivered(sessionId: string, turn: PendingTurn, generation: number): void {
     const now = this.deps.now();
     // No try/catch: `journalScoutPrompt` cannot throw, and the reason is stated once on
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
@@ -1745,8 +1911,11 @@ export class PendingTurnManager {
     // origin through the injection observer; only the operator's words are journaled as human.
     const author = daemonAuthorOf(turn);
     if (author) recordInjection(sessionId, turn.text, author);
-    else journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
-    this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
+    else journalScoutPrompt(this.registry, sessionId, turn.spokenWords ?? turn.text, "human", turn.id, now);
+    this.registry.turnDelivered({
+      sessionId, turnId: turn.id, deliveredAt: now,
+      ...(turn.spokenWords !== undefined && { spoken: { generation } }),
+    });
   }
 
   private armPickupTimeout(sessionId: string, turn: PendingTurn): void {

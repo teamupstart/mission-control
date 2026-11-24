@@ -120,6 +120,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "harnesses",
       "inspector",
       "instructions.standing",
+      // Whether this Mac should be kept awake. `operational` with NO backup domain: a snapshot
+      // restored from another installation must not hold a laptop awake.
+      "keepAwake",
       "llm",
       // Paused sessions by pid, Pause all and the priority session. `operational`, never
       // restored: it names this machine's live processes.
@@ -213,6 +216,13 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.keepAwake.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.keepAwake.backupDomain, null);
+  assert.equal(
+    SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "keepAwake"),
+    false,
+    "a settings backup must never capture or restore the Keep awake choice",
+  );
   assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
     muted: "operational",
     hotkey: "setting",

@@ -449,8 +449,8 @@ test("retained history handles root, retained parent and omitted first-parent fr
   const f = await fixture(t);
   const parent = f.view.head!;
   await writeFile(join(f.root, "src/a.txt"), "one\nchanged\nthree\n");
-  f.git("add", "src/a.txt");
-  // The retained tree references the denied .env blob, which the fixture deliberately omits.
+  f.git("add", "--", "src/a.txt");
+  // Both revisions keep the denied tree entry, whose body is absent from the fixture.
   const tree = f.git("write-tree", "--missing-ok");
   const head = f.git("commit-tree", tree, "-p", parent, "-m", "next");
   f.git("update-ref", "HEAD", head, parent);

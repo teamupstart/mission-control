@@ -27,6 +27,7 @@ import {
   piCatalogControlPath,
   piSdkModelsPath,
   writeFakeAgents,
+  writeFakeCodex,
 } from "./fake-agents.ts";
 import {
   conductorEngineerStatePath,
@@ -133,8 +134,9 @@ export interface DaemonHandle {
    * SIGKILL the daemon - the CRASH case, with no orderly shutdown of any kind. The
    * port, home and database stay put so `restart()` can bring a successor up on the
    * same coordinates. Exists for the states only an ungraceful death can produce:
-   * transient daemon state (keep awake) must reset, `-w`-style child backstops must
-   * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
+   * process-owned state (a keep awake assertion) must be released with no orderly stop,
+   * `-w`-style child backstops must fire, and the dashboard must fall to `reconnecting`
+   * rather than keep old claims.
    */
   crash(): Promise<void>;
   /** Gracefully suspend SDK sessions, retaining the home and database for restart(). */
@@ -318,8 +320,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
-    copyFileSync(bins.codex, join(daemonPathBin, "codex"));
-    chmodSync(join(daemonPathBin, "codex"), 0o755);
+    writeFakeCodex(join(daemonPathBin, "codex"));
   }
   if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
     if (piOnLoginShellOnly) {
@@ -581,6 +582,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // (`startModelServer` in `voice.ts`, passed through `daemonEnv`) reaches a closed loopback
     // port and fails, rather than fetching half a gigabyte from Hugging Face.
     MISSION_VOICE_MODEL_BASE_URL: "http://127.0.0.1:9",
+    // No spec reaches a real decision-model provider (voice Phase 4). A key the machine running
+    // the suite holds is not inherited, so the decision model is off unless a spec supplies one
+    // through `daemonEnv`, and even then both providers point at a closed loopback port unless
+    // the spec points them at its own stand-in server.
+    OPENAI_API_KEY: undefined,
+    TYPESAFE_API_KEY: undefined,
+    MISSION_VOICE_OPENAI_DECISIONS_URL: "http://127.0.0.1:9",
+    MISSION_VOICE_JEV_URL: "http://127.0.0.1:9",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through
@@ -790,7 +799,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       else isolatedEnv[key] = value;
     }
     // Same port, same home, same env: the successor is the same installation coming back,
-    // which is exactly the case transient state (keep awake) must reset across. The boot
+    // which is exactly the case process-owned state (a keep awake assertion) must be
+    // reacquired across, from the operator's saved choice rather than from the dead process. The boot
     // check re-verifies identity by pid, so a squatter that stole the freed port between
     // the crash and this bind still fails loudly rather than being driven silently.
     child = spawnDaemon();

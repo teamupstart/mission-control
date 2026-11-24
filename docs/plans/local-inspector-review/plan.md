@@ -6,8 +6,9 @@ not in this file.
 
 Phase 1 is implemented. An internal harness can run an isolated Codex or Claude review
 against a supplied repository view through the [read-only repository MCP](../../repository-review-workloads.md).
-Phases 2 to 6 remain planned, including exact-state capture, Persona and Workflow integration,
-and Local Inspector reviews before a pull request opens.
+Phase 2 is implemented. The daemon can seal the exact submitted checkout as a portable
+artifact and verify it before materializing a review view. Phases 3 to 6 remain planned,
+covering Persona and Workflow integration and Local Inspector reviews before a pull request opens.
 
 The analysis below uses measurements from 2026-11-20 and 2026-11-21 against `main` at
 `9f4db6308` and this machine's Inspector ledger.

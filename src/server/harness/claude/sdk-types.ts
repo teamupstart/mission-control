@@ -22,6 +22,7 @@ import type { ThinkingLevel } from "@shared/types.ts";
 
 /** A user turn as the streaming-input protocol carries it. */
 export interface ClaudeSdkUserMessage {
+  uuid?: string;
   type: "user";
   message: { role: "user"; content: unknown };
   parent_tool_use_id: string | null;

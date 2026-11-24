@@ -10,7 +10,9 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 export const FEATURE_FLAGS = [
   { id: "preview-navigation", label: "Preview navigation", description: "Try a new way to move between sessions while keeping your existing workspace, preferences and running tasks exactly where you left them.", stage: "preview", keywords: ["wayfinding"] },

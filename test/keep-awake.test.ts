@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import type { KeepAwakeStatus } from "../src/shared/types.ts";
 import {
   KeepAwakeManager,
+  KeepAwakeSaveError,
   type KeepAwakeChild,
+  type KeepAwakePreferenceStore,
   type NativeKeepAwakeBinding,
 } from "../src/server/keep-awake.ts";
 
@@ -79,6 +81,7 @@ function setup(over: {
   obeys?: "sigterm" | "sigkill-only" | "never";
   forceKillAfterMs?: number;
   loadNativeBinding?: () => NativeKeepAwakeBinding;
+  preference?: KeepAwakePreferenceStore;
 } = {}) {
   const spawns: { bin: string; args: string[]; child: FakeChild }[] = [];
   const statuses: KeepAwakeStatus[] = [];
@@ -102,9 +105,28 @@ function setup(over: {
     clearTimeoutFn: timers.clearTimeoutFn,
     forceKillAfterMs: over.forceKillAfterMs ?? 50,
     loadNativeBinding: over.loadNativeBinding,
+    preference: over.preference,
     onStatus: (s) => statuses.push(s),
   });
   return { manager, spawns, statuses, timers };
+}
+
+/** A scriptable saved choice: what the operator last left, and every write made to it. */
+function savedChoice(initial: boolean | "unreadable") {
+  const writes: boolean[] = [];
+  const state = { value: initial, failSave: false };
+  const store: KeepAwakePreferenceStore = {
+    load: () => {
+      if (state.value === "unreadable") throw new Error("the saved row is damaged");
+      return state.value;
+    },
+    save: (enabled) => {
+      if (state.failSave) throw new Error("disk full");
+      writes.push(enabled);
+      state.value = enabled;
+    },
+  };
+  return { store, writes, state };
 }
 
 // ---- provider resolution ----
@@ -148,7 +170,7 @@ test("macOS native load failure is unsupported and never falls back to the comma
   );
 });
 
-test("macOS native provider owns the complete transient keep-awake lifecycle", async () => {
+test("macOS native provider owns the complete keep-awake lifecycle", async () => {
   const handle = { assertion: 42 };
   const createReasons: string[] = [];
   const released: unknown[] = [];
@@ -422,10 +444,260 @@ test("enable spawns exactly `-i -w <daemon PID>`, and never -d, -u, or -s", asyn
   assert.equal(status.since, 1_700_000_000_000);
 });
 
+// ---- the operator's saved choice ----
+
+test("switching on saves the choice only once the OS has confirmed the assertion", async () => {
+  let confirm: (() => void) | null = null;
+  const saved = savedChoice(false);
+  const { manager } = setup({
+    preference: saved.store,
+    script: (child) => {
+      confirm = () => child.emit("spawn");
+    },
+  });
+  const pending = manager.setEnabled(true);
+  await settle();
+  assert.equal(manager.status().state, "starting");
+  assert.deepEqual(saved.writes, [], "a request the OS has not honoured is not yet a choice");
+  confirm!();
+  await pending;
+  assert.deepEqual(saved.writes, [true]);
+});
+
+test("a refused acquisition does not save the choice, so it cannot re-fail on every boot", async () => {
+  const saved = savedChoice(false);
+  const { manager } = setup({ preference: saved.store, script: "spawn-error" });
+  const status = await manager.setEnabled(true);
+  assert.equal(status.state, "error");
+  assert.deepEqual(saved.writes, []);
+  assert.equal(saved.state.value, false);
+});
+
+test("switching off saves off even when releasing the assertion fails", async () => {
+  const saved = savedChoice(false);
+  const { manager, timers } = setup({ preference: saved.store, obeys: "never", forceKillAfterMs: 50 });
+  await manager.setEnabled(true);
+  const off = manager.setEnabled(false);
+  await settle();
+  timers.fire(50);
+  timers.fire(100);
+  const status = await off;
+  assert.equal(status.state, "error", "the child ignored SIGTERM and SIGKILL");
+  assert.deepEqual(saved.writes, [true, false], "turning it off is the operator's decision either way");
+});
+
+test("an orderly stop releases the assertion and leaves the saved choice alone", async () => {
+  const saved = savedChoice(false);
+  const { manager, spawns } = setup({ preference: saved.store });
+  await manager.setEnabled(true);
+  assert.equal(manager.status().state, "on");
+
+  await manager.stop();
+
+  assert.equal(manager.status().state, "off");
+  assert.deepEqual(spawns[0]!.child.killed, ["SIGTERM"], "the assertion was released");
+  assert.deepEqual(saved.writes, [true], "stop must not write: the daemon leaving is not a choice");
+  assert.equal(saved.state.value, true);
+});
+
+test("a restart (stop, then a new manager over the same store) puts the assertion back", async () => {
+  const saved = savedChoice(false);
+  const first = setup({ preference: saved.store });
+  await first.manager.setEnabled(true);
+  await first.manager.stop();
+
+  const second = setup({ preference: saved.store });
+  assert.equal(second.manager.status().state, "off", "off until the daemon has restored");
+  const status = await second.manager.restore();
+
+  assert.equal(status.state, "on");
+  assert.equal(second.spawns.length, 1);
+  assert.deepEqual(second.spawns[0]!.args, ["-i", "-w", "7317"]);
+  assert.deepEqual(second.statuses.map((s) => s.state), ["starting", "on"]);
+});
+
+test("a saved off, or no saved choice, restores to nothing at all", async () => {
+  for (const preference of [savedChoice(false).store, undefined]) {
+    const { manager, spawns, statuses } = setup({ preference });
+    const status = await manager.restore();
+    assert.equal(status.state, "off");
+    assert.equal(spawns.length, 0);
+    assert.deepEqual(statuses, [], "nothing was observed, so nothing is published");
+  }
+});
+
+test("a saved choice that cannot be read restores to off instead of throwing", async () => {
+  const warnings: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args);
+  try {
+    const { manager, spawns } = setup({ preference: savedChoice("unreadable").store });
+    const status = await manager.restore();
+    assert.equal(status.state, "off");
+    assert.equal(spawns.length, 0);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warnings.length, 1, "the unreadable choice is reported, not swallowed silently");
+});
+
+test("a restore the OS refuses is an error, and the saved choice survives for the next boot", async () => {
+  const saved = savedChoice(true);
+  const { manager } = setup({ preference: saved.store, script: "spawn-error" });
+  const status = await manager.restore();
+  assert.equal(status.state, "error");
+  assert.match(status.error ?? "", /could not start/);
+  assert.deepEqual(saved.writes, [], "a failed boot must not erase what the operator chose");
+  assert.equal(saved.state.value, true);
+});
+
+test("restoring a saved on takes the native IOKit assertion, never a command child", async () => {
+  const handle = { assertion: 7 };
+  let creates = 0;
+  const released: unknown[] = [];
+  const { manager, spawns } = setup({
+    override: null,
+    preference: savedChoice(true).store,
+    loadNativeBinding: () => ({
+      create: () => {
+        creates++;
+        return handle;
+      },
+      release: (owned) => released.push(owned),
+    }),
+  });
+  const status = await manager.restore();
+  assert.equal(status.state, "on");
+  assert.equal(status.provider, "iokit");
+  assert.equal(creates, 1);
+  assert.equal(spawns.length, 0);
+
+  // And the orderly shutdown that follows releases exactly that handle.
+  await manager.stop();
+  assert.deepEqual(released, [handle]);
+});
+
+test("restoring on a host with no provider takes nothing and does not fail", async () => {
+  const { manager, spawns } = setup({
+    platform: "linux",
+    override: null,
+    preference: savedChoice(true).store,
+  });
+  const status = await manager.restore();
+  assert.equal(status.supported, false);
+  assert.equal(status.state, "off");
+  assert.equal(spawns.length, 0);
+});
+
+test("restore is serialized with the operator: a switch-off queued behind it wins", async () => {
+  const saved = savedChoice(true);
+  const { manager, spawns } = setup({ preference: saved.store });
+  const restoring = manager.restore();
+  const switchedOff = manager.setEnabled(false);
+  await restoring;
+  const final = await switchedOff;
+  assert.equal(final.state, "off");
+  assert.equal(spawns.length, 1, "one assertion was taken and then released, never two");
+  assert.deepEqual(spawns[0]!.child.killed, ["SIGTERM"]);
+  assert.equal(saved.state.value, false);
+});
+
+test("a switch-on that cannot be saved is undone: the assertion is released and the error says so", async () => {
+  const saved = savedChoice(false);
+  const { manager, spawns } = setup({ preference: saved.store });
+  saved.state.failSave = true;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(manager.setEnabled(true), (err: unknown) => {
+      assert.ok(err instanceof KeepAwakeSaveError);
+      assert.match(err.message, /could not save the Keep awake choice/);
+      assert.match(err.message, /disk full/);
+      assert.equal(err.status.state, "off", "the carried state is what a restart will agree with");
+      return true;
+    });
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(manager.status().state, "off");
+  assert.deepEqual(spawns[0]!.child.killed, ["SIGTERM"], "nothing is left held for a choice that would not last");
+  assert.equal(saved.state.value, false);
+
+  // The fault clears: the very same request now sticks, with nothing stale left behind.
+  saved.state.failSave = false;
+  assert.equal((await manager.setEnabled(true)).state, "on");
+  assert.deepEqual(saved.writes, [true]);
+});
+
+test("a switch-off that cannot be saved changes nothing: it is still on, and still saved on", async () => {
+  const saved = savedChoice(false);
+  const { manager, spawns } = setup({ preference: saved.store });
+  await manager.setEnabled(true);
+  saved.state.failSave = true;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(manager.setEnabled(false), (err: unknown) => {
+      assert.ok(err instanceof KeepAwakeSaveError);
+      assert.equal(err.status.state, "on", "the assertion is still held, so the error says on");
+      return true;
+    });
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(manager.status().state, "on");
+  assert.deepEqual(spawns[0]!.child.killed, [], "the assertion was not released");
+  assert.equal(saved.state.value, true, "so a restart brings back what the toggle shows");
+
+  saved.state.failSave = false;
+  assert.equal((await manager.setEnabled(false)).state, "off");
+  assert.equal(saved.state.value, false);
+});
+
+test("a repeated switch-on takes nothing new, so a failed save has nothing to release", async () => {
+  const saved = savedChoice(false);
+  const { manager, spawns } = setup({ preference: saved.store });
+  await manager.setEnabled(true);
+  saved.state.failSave = true;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(manager.setEnabled(true), KeepAwakeSaveError);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(manager.status().state, "on", "the assertion this run already held is not taken away");
+  assert.deepEqual(spawns[0]!.child.killed, []);
+});
+
+test("if undoing an unsaved switch-on fails as well, the carried state is the visible error", async () => {
+  const saved = savedChoice(false);
+  const { manager, timers } = setup({ preference: saved.store, obeys: "never", forceKillAfterMs: 50 });
+  saved.state.failSave = true;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const outcome = manager.setEnabled(true);
+    await settle(); // acquired, the save failed, and the release is now waiting on the child
+    timers.fire(50);
+    timers.fire(100);
+    await assert.rejects(outcome, (err: unknown) => {
+      assert.ok(err instanceof KeepAwakeSaveError);
+      assert.equal(err.status.state, "error", "an assertion that could not be released is shown, not hidden");
+      return true;
+    });
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(saved.state.value, false);
+});
+
 // ---- lifecycle and truthfulness ----
 
-test("every new manager starts off: the mode is transient by construction", () => {
-  const { manager } = setup();
+test("every new manager starts off, whatever the operator last chose", () => {
+  // The saved choice is applied by `restore()` once the daemon is serving, never by the
+  // constructor: a status read before then must not claim an assertion nothing holds yet.
+  const { manager } = setup({ preference: savedChoice(true).store });
   assert.deepEqual(manager.status(), {
     supported: true,
     unavailableReason: null,

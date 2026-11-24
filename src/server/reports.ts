@@ -583,7 +583,7 @@ export class ReportManager {
   }
 
   /** One author's reports that are still waiting to be read, which are the ones it may replace. */
-  private openReportsBy(authorKey: string): ReportItem[] {
+  openReportsBy(authorKey: string): ReportItem[] {
     return (openDb()
       .prepare("SELECT * FROM reports WHERE author_key = ? AND read_at IS NULL AND superseded_by IS NULL ORDER BY seq")
       .all(authorKey) as unknown as Row[]).map((row) => this.item(row));

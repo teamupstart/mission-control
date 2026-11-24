@@ -8,6 +8,7 @@ import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIO
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
+import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -293,6 +294,7 @@ import {
   ArchiveWorkflowBindingSchema,
   CancelWorkflowRunSchema,
   GrantWorkflowRepairRoundsSchema,
+  RecheckWorkflowInspectorSchema,
   CreateWorkflowBindingSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
@@ -345,6 +347,7 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorInspection,
   InspectorStatus,
+  KeepAwakeStatus,
   LlmStatus,
   ReviewActor,
   ReviewItem,
@@ -370,7 +373,7 @@ import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import { openEndedRequests } from "./http-shutdown.ts";
-import type { KeepAwakeManager } from "./keep-awake.ts";
+import { KeepAwakeSaveError, type KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { grillFirstDispatchBlock } from "./grill-first.ts";
@@ -417,7 +420,7 @@ import { composeStandingInstructions } from "./instructions/compose.ts";
 import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
-import { attributeTranscript } from "./transcript-attribution.ts";
+import { attributeTranscriptPage } from "./transcript-attribution.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
@@ -602,6 +605,7 @@ import {
   inspectorExecution,
   setInspectorConfig,
 } from "./inspector/config.ts";
+import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
 import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
@@ -1045,6 +1049,7 @@ function safeStackStanding(...args: Parameters<typeof stackStandingFor>): Return
 }
 
 function foremanWriteRefusal(
+  registry: Registry,
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
@@ -1057,6 +1062,7 @@ function foremanWriteRefusal(
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
+  if (registry.voiceHold(session.id)) return { error: "voice-message-pending", status: 409 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
   // The daemon's half of the blocker hold, for a worker that predates it and outlives a
   // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
@@ -1092,6 +1098,7 @@ function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string 
  */
 export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
   if (origin !== "foreman") return null;
+  if (registry.voiceHold(sessionId)) return "voice-message-pending";
   const live = registry.getSession(sessionId);
   return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
@@ -1393,7 +1400,7 @@ export interface RouteDeps {
    */
   paneDeps?: PaneDeps;
   /**
-   * The transient Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
+   * The Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
    * than constructing a second owner here - the manager owns exactly one OS child, and a
    * route-built twin would be a second claimant on host power state.
    */
@@ -1467,6 +1474,12 @@ export interface RouteDeps {
    * test does not read the machine's own LaunchServices preferences.
    */
   systemDefaultTerminal?: () => Promise<EmulatorId | null>;
+  /**
+   * The voice model step (contract E). Defaults to the daemon's: the saved and environment
+   * decision-model keys, both providers and the `voice-routing` job. Injected so a route test
+   * routes an ambiguous sentence without reaching a provider or spawning a model.
+   */
+  voiceDecider?: VoiceDecider;
 }
 
 /**
@@ -1517,6 +1530,7 @@ export const ROUTE_DEP_NAMES = [
   "setupInstallDeps",
   "focusTerminals",
   "systemDefaultTerminal",
+  "voiceDecider",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1854,6 +1868,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupInstallDeps,
     focusTerminals,
     systemDefaultTerminal,
+    voiceDecider,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -2334,16 +2349,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerPauseRoutes(app, pauses);
 
   // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
-  registerHibernationRoutes(
-    app,
-    new HibernationManager(registry, sdkSessions ?? null, {
-      workflows,
-      pause: pauses,
-      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
-    }),
-  );
+  const hibernation = new HibernationManager(registry, sdkSessions ?? null, {
+    workflows,
+    pause: pauses,
+    ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+  });
+  registerHibernationRoutes(app, hibernation);
 
-  // --- Keep Awake: the transient idle-sleep inhibitor ---
+  // --- Keep Awake: the idle-sleep inhibitor ---
   //
   // Reads and writes go to the injected manager; convergence goes over SSE. The route
   // answers the CALLER with the settled transition, and the Registry event answers every
@@ -2375,7 +2388,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Waits for the manager's CONFIRMED transition - the response describes observed
     // state, never the request. A failed OS transition reports 502 with the observed
     // error status so the caller can render it without waiting for SSE.
-    const status = await keepAwake.setEnabled(parsed.data.enabled);
+    let status: KeepAwakeStatus;
+    try {
+      status = await keepAwake.setEnabled(parsed.data.enabled);
+    } catch (err) {
+      if (!(err instanceof KeepAwakeSaveError)) throw err;
+      // The daemon's own storage refused the choice, which makes this a 500 and not a 502: the
+      // OS did nothing wrong. The manager has already undone the request, so `err.status` is
+      // the state a restart will agree with - the caller draws it beside the error.
+      return c.json({ error: err.message, code: "keep_awake_not_saved", status: err.status }, 500);
+    }
     const settled = parsed.data.enabled ? status.state === "on" : status.state === "off";
     if (!settled) {
       return c.json(
@@ -3563,9 +3585,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/workflow-runs/:id/recheck-inspector", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const parsed = await parseBody(c, WorkflowRunActionSchema);
+    const parsed = await parseBody(c, RecheckWorkflowInspectorSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    const result = parsed.data.recoverStaleGrant
+      ? await manager.recoverStaleInspectorGrant(c.req.param("id"), parsed.data.requestId, parsed.data.recoverStaleGrant)
+      : manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
     return result.ok
       ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
@@ -4791,7 +4815,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
   });
 
-  app.get("/api/sessions/:id/transcript", (c) => {
+  app.get("/api/sessions/:id/transcript", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     // `unavailable` covers every reason there are no turns to serve - a harness declares
@@ -4811,21 +4835,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
+      const version = featureEnabled("voice") ? t.read.snapshot?.(t.path)?.version : undefined;
       const page = t.read.before(t.path, before, want);
       // The panel's own history pages, so they carry the same launch presentation the stream
       // put on `init` - decorated here rather than in the reader, because paging back far
       // enough to reach the launch turn must not make it reappear in full.
-      return c.json({
-        ...page,
-        // The same task-title projection the live stream applies (`task-titles.ts`).
-        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
-          session.id,
-          page.messages,
-          resolveLaunchMarker(registry, session.id),
-          (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
-          { key: noteKeyFor(session), transcript: t },
-        )),
-      });
+      const projected = await attributeTranscriptPage(
+        session.id, page.messages, resolveLaunchMarker(registry, session.id),
+        (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+        { key: noteKeyFor(session), transcript: t },
+        { end: page.end, version, reread: () => t.read.before(t.path, page.end, want).messages },
+      );
+      return c.json({ ...page, ...projected, messages: taskTitlePresenter(registry).transcript(projected.messages) });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));
@@ -6274,7 +6295,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
+      ? foremanWriteRefusal(registry, composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -6404,7 +6425,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
+    const refusal = foremanWriteRefusal(registry, composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -6526,7 +6547,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
+    const refusal = foremanWriteRefusal(registry, composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6570,7 +6591,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
+    const refusal = foremanWriteRefusal(registry, composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6735,7 +6756,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
+    const refusal = foremanWriteRefusal(registry, composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
@@ -6768,7 +6789,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (candidate.error !== undefined) return candidate.error;
         if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
         if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
-        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        const refusal = foremanWriteRefusal(registry, composerActivity, candidate.session, origin);
         if (refusal) return refusal.error;
         const queue = queues.get(session.id);
         if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
@@ -6801,7 +6822,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
         if (candidate.error !== undefined) return candidate.error;
         if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "Stack prompt delivery channel changed";
-        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        const refusal = foremanWriteRefusal(registry, composerActivity, candidate.session, origin);
         if (refusal) return refusal.error;
         const queue = queues.get(session.id);
         if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
@@ -7028,7 +7049,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       ...(turn ? { identity: c.req.param("turnId") } : {}),
     });
     return turn
-      ? c.json({ ok: true as const, text: turn.text })
+      ? c.json({ ok: true as const, text: turn.spokenWords ?? turn.text })
       : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
   });
 
@@ -8357,14 +8378,42 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // four roles and the Inspector's one keep their own routes and their own blobs, because
   // each is edited by the panel that owns that subsystem - a second writer would turn a
   // per-key merge into a lost update.
-  app.get("/api/llm/config", (c) => c.json(getLlmConfig()));
+  const hiddenLlmJobs = () => LLM_JOB_IDS.filter((job) => {
+    const flag = LLM_JOB_SPECS[job].previewFlag;
+    return flag && !featureEnabled(flag);
+  });
+  const visibleLlmConfig = (config: ReturnType<typeof getLlmConfig>) => {
+    const models = { ...config.models };
+    const runners = { ...config.runners };
+    const efforts = { ...config.efforts };
+    for (const job of hiddenLlmJobs()) {
+      delete models[job];
+      delete runners[job];
+      delete efforts[job];
+    }
+    return { ...config, models, runners, ...(config.efforts && { efforts }) };
+  };
+  app.get("/api/llm/config", (c) => c.json(visibleLlmConfig(getLlmConfig())));
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    for (const job of hiddenLlmJobs()) {
+      if (parsed.data.runners?.[job] !== undefined || parsed.data.models?.[job] !== undefined || parsed.data.efforts?.[job] !== undefined) {
+        return c.json({ error: "This feature is disabled.", feature: LLM_JOB_SPECS[job].previewFlag }, 404);
+      }
+    }
+    for (const job of LLM_JOB_IDS) {
+      if (LLM_JOB_SPECS[job].fixedThinking && parsed.data.efforts?.[job]) {
+        return c.json({ error: "Thinking is fixed for this job." }, 400);
+      }
+      if (LLM_JOB_SPECS[job].fixedModels && parsed.data.models?.[job]) {
+        return c.json({ error: "This job uses a fixed model for each provider." }, 400);
+      }
+    }
     if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
       return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
     }
-    const config = setLlmConfig(parsed.data);
+    const config = visibleLlmConfig(setLlmConfig(parsed.data));
     // Personas without a provider override follow this setting. Refresh their top-level SSE
     // projections in the same mutation so the editor never advertises a stale effective model.
     if ("runner" in parsed.data) personas?.refreshExecution();
@@ -9323,11 +9372,45 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
+  const voiceResumes = new Map<string, {
+    active: Set<() => boolean>;
+    result: Promise<Awaited<ReturnType<typeof hibernation.resume>> | null>;
+  }>();
+  function resumeForVoice(taskId: string, active: () => boolean) {
+    const pending = voiceResumes.get(taskId);
+    if (pending) {
+      pending.active.add(active);
+      return pending.result;
+    }
+    const waiters = new Set([active]);
+    const result = (async () => {
+      const record = registry.getTask(taskId)?.hibernation;
+      if (record?.runtime === "sdk") await registry.waitForPendingEviction(record.sessionId);
+      if (!featureEnabled(VOICE_FLAG) || ![...waiters].some(stillActive => stillActive())) return null;
+      return hibernation.resume(taskId);
+    })().finally(() => voiceResumes.delete(taskId));
+    voiceResumes.set(taskId, { active: waiters, result });
+    return result;
+  }
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
-    async deliver(target, text, _utteranceId, command) {
-      if (target.state !== "running" || !target.sessionId) return "not-running";
-      const session = registry.getSession(target.sessionId);
-      if (!session || session.state === "exited") return "not-running";
+    available(sessionId) {
+      const session = registry.getSession(sessionId);
+      return !!session && session.state !== "exited";
+    },
+    openQuestions: sessionId => reviews.openAsks(sessionId).length,
+    async deliver(target, text, utteranceId, command, active, onQueued) {
+      if (target.state === "not-running") return "not-running";
+      let sessionId = target.sessionId;
+      if (target.state === "hibernated") {
+        if (command === "stop" || !target.taskId) return "not-running";
+        if (!active?.()) return { outcome: "failed", detail: "Voice delivery cancelled." };
+        const resumed = await resumeForVoice(target.taskId, active);
+        if (!resumed || !active() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
+        if (!resumed.ok) return { outcome: "failed", detail: resumed.error };
+        sessionId = resumed.task.sessionId;
+      }
+      const session = sessionId && registry.getSession(sessionId);
+      if (!session || session.state === "exited" || session.state === "stopping") return "not-running";
       if (command === "stop") {
         const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
         if (unsupported) return { outcome: "failed", detail: unsupported };
@@ -9335,10 +9418,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
-      const result = pendingTurns.submit(target.sessionId, text);
-      return result.ok ? "queued" : { outcome: "failed", detail: result.error || "Queue refused the message." };
+      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
+      if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
+      return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
     },
-  }, (card) => registry.emitVoiceCard(card));
+  }, (card) => registry.emitVoiceCard(card), voiceDecider);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

@@ -1,6 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
@@ -655,6 +656,60 @@ test("a trailing partial record is not a turn, and does not stall the walk", () 
   const resumed = claude.after(path, page.end);
   assert.deepEqual(spoken(resumed.messages), ["LATER"]);
   assert.equal(resumed.atEnd, true);
+});
+
+test("strict forward reads distinguish a verified partial tail from a short or failed read", t => {
+  const path = join(dir, "incomplete-strict.jsonl");
+  for (const size of [30, 17 * 1024 * 1024]) {
+    writeFileSync(path, Buffer.alloc(size, 120));
+    const page = claude.after(path, 0, 1, true);
+    assert.equal(page.end, 0);
+    assert.equal(page.atEnd, true);
+    assert.equal(page.partialTailEnd, size);
+    const read = fs.readSync;
+    // For the oversized line, fail only in the scan beyond the parser's 16 MiB budget.
+    const fault = t.mock.method(fs, "readSync", (...args: unknown[]) => {
+      if (Number(args[4]) >= (size > 30 ? 16 * 1024 * 1024 : 0)) return 0;
+      return Reflect.apply(read, fs, args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => claude.after(path, 0, 1, true), /Short transcript/);
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
+test("an oversized forward record yields between boundary chunks and can be interrupted before EOF", async t => {
+  const path = join(dir, "cooperative-forward.jsonl");
+  const size = 17 * 1024 * 1024;
+  writeFileSync(path, Buffer.alloc(size, 120));
+  const read = fs.readSync;
+  let chunks = 0;
+  let serviced = 0;
+  t.mock.method(fs, "readSync", (...args: unknown[]) => {
+    if (Number(args[4]) >= 16 * 1024 * 1024) {
+      assert.equal(serviced, chunks, "the previous boundary read yielded to daemon work");
+      chunks++;
+      setImmediate(() => { serviced++; });
+    }
+    return Reflect.apply(read, fs, args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const start = claude.after(path, 0, 1, "cooperative");
+  assert.ok(start.finishOversizedRecord);
+  assert.equal(chunks, 0);
+  const aborted = new AbortController();
+  const attempt = start.finishOversizedRecord(aborted.signal);
+  setImmediate(() => aborted.abort());
+  await assert.rejects(attempt, { name: "AbortError" });
+  assert.equal(chunks, 1);
+  const end = await start.finishOversizedRecord();
+  assert.deepEqual(end, { start: 0, end: 0, atEnd: true, messages: [], partialTailEnd: size });
+  assert.ok(chunks > 2);
 });
 
 test("an anchor at or past EOF ends the walk instead of throwing", () => {

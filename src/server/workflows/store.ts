@@ -1,13 +1,17 @@
+import type { InspectorBranchActivity } from "../inspector/github.ts";
 import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
-import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
+import { type RecoverStaleInspectorGrant, WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
+import { noteDiscardedWorkflowReceipt, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } from "../delivery-ledgers.ts";
+import type { DeliveredWorkflowTranscriptAnchor } from "./context.ts";
+import { PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -192,7 +196,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
 import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { consumePromptedGeneration, openDb } from "../db.ts";
+import { consumePromptedGeneration, getInspectorPr, openDb, readCodeRabbit } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
@@ -435,6 +439,8 @@ export const WORKFLOW_TABLES = [
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
+  "workflow_repository_artifacts",
+  "workflow_repository_snapshot_claims",
   "workflow_node_attempts",
   "workflow_command_artifact_reservations",
   "workflow_command_artifacts",
@@ -2445,6 +2451,16 @@ function runContextState(
   return "corrupt";
 }
 
+// Both End and Inspector can finish a run. Pin the conversation's generation in the
+// terminal UPDATE itself, before another turn or a daemon restart can change the answer.
+// A run completed before this column existed has no witnessed boundary.
+const completionGenerationSql = `(SELECT c.generation FROM session_work_cycles c
+  JOIN workflow_bindings b ON b.note_key = c.logical_key WHERE b.id = workflow_runs.binding_id)`;
+
+// The author's idle may already have landed at End, or may arrive one generation later.
+// Foreman coalesces missed cycles. A later generation cannot spend an earlier handoff.
+const publicationHandoffDueSql = "? BETWEEN publication_handoff_generation AND publication_handoff_generation + 1";
+
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
   if (db.isTransaction) return fn();
   db.exec("BEGIN IMMEDIATE");
@@ -2867,6 +2883,10 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  /** Includes targets without a publication of their own when a sibling's probe yielded. */
+  expectedLatestRunId?: string | null;
+  /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
+  publicationComparison?: { runId: string; stillMatches: (deadline: number) => boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -3041,6 +3061,14 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
  * so the budget's `check_run_slot = <slot>` counts skip it; see `forgiveCheckRuns`.
  */
 const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
+
+type SubmissionCapture = {
+  context: WorkflowJson;
+  evidence: WorkflowJson;
+  fingerprint?: string;
+  repositoryFingerprint?: string;
+  readiness?: WorkflowEvidenceReadinessResult | null;
+};
 
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
@@ -5253,6 +5281,23 @@ export class WorkflowStore {
     return row ? parseWorkflowRunRow(row) : null;
   }
 
+  /** The action and its accepted continuation are durable even when the author finishes later. */
+  publicationHandoffTree(runId: string, generation: number): string | null {
+    const row = this.db.prepare(
+      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree
+         FROM workflow_submissions child
+        JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
+        JOIN workflow_runs r ON r.id = child.run_id
+        WHERE r.id = ? AND ${publicationHandoffDueSql} AND action.submission_id = child.parent_submission_id
+          AND action.state = 'completed'
+          AND json_extract(action.session_action_snapshot_json, '$.completion.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.expectation.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
+        ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
+    ).get(runId, generation);
+    return typeof row?.tree === "string" ? row.tree : null;
+  }
+
   latestRunForBinding(bindingId: string): WorkflowRun | null {
     const row = this.db.prepare(
       `SELECT * FROM workflow_runs WHERE binding_id = ? ORDER BY started_at DESC, id DESC LIMIT 1`,
@@ -7181,12 +7226,47 @@ export class WorkflowStore {
     });
   }
 
+  /** Validate every probed publication under the same write lock that spends the shared cycle. */
+  claimForemanCompletions(inputs: ForemanCompletionStoreInput[], remainingMs = PUBLICATION_REVISION_BUDGET_MS): ForemanCompletionStoreResult[] {
+    return transaction(this.db, () => {
+      const reservations: ForemanCompletionStoreResult[] = [];
+      const deadline = performance.now() + remainingMs;
+      const matches = (input: ForemanCompletionStoreInput) => performance.now() < deadline
+        && input.publicationComparison?.stillMatches(deadline) === true && performance.now() < deadline;
+      for (const input of inputs) {
+        if (input.expectedLatestRunId !== undefined
+          && (this.latestRunForBinding(input.binding.id)?.id ?? null) !== input.expectedLatestRunId) {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+      }
+      // Collect a common snapshot before spending any pin. Both passes share what remains
+      // of the original budget. A slow checkout cannot start another full-budget Git read.
+      const eligible = new Set(inputs.filter(matches));
+      if (inputs.length > 1) {
+        for (const input of [...eligible].reverse()) {
+          if (matches(input)) continue;
+          if (performance.now() < deadline) throw new Error("Workflow checkout changed during shared completion claim");
+          eligible.delete(input);
+        }
+      }
+      for (const input of inputs) {
+        const stored = this.claimForemanCompletion(input, eligible.has(input));
+        if (!stored.result.claimed) {
+          if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
+          return [stored];
+        }
+        reservations.push(stored);
+      }
+      return reservations;
+    });
+  }
+
   /**
    * Claim one Foreman proof and retire its matching once-only guard atomically.
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
+  claimForemanCompletion(input: ForemanCompletionStoreInput, reusePublication?: boolean): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7274,7 +7354,24 @@ export class WorkflowStore {
       let created = false;
       let previousFingerprint: string | undefined;
 
-      if (!run) {
+      const comparison = input.publicationComparison;
+      if (comparison) {
+        const latest = this.latestRunForBinding(binding.id);
+        if (run || latest?.id !== comparison.runId || latest.status !== "completed") {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+      }
+      if (comparison && (reusePublication ?? comparison.stillMatches(performance.now() + PUBLICATION_REVISION_BUDGET_MS))) {
+        // One follow-through per repository. Clearing the pin and consuming the shared
+        // generation commit together. An identical retry is answered by duplicateEvent.
+        const spent = this.db.prepare(
+          `UPDATE workflow_runs SET publication_handoff_generation = NULL
+            WHERE id = ? AND ${publicationHandoffDueSql}`,
+        ).run(comparison.runId, input.expectedWorkCycle!.generation);
+        if (!spent.changes) throw new Error("Workflow publication handoff is no longer current");
+        run = this.mustRun(comparison.runId);
+        state = "already_claimed";
+      } else if (!run) {
         const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
@@ -7395,14 +7492,7 @@ export class WorkflowStore {
 
   updateSubmissionCapture(
     id: string,
-    input: {
-      context: WorkflowJson;
-      evidence: WorkflowJson;
-      fingerprint?: string;
-      repositoryFingerprint?: string;
-      readiness?: WorkflowEvidenceReadinessResult | null;
-      status?: WorkflowSubmission["status"];
-    },
+    input: SubmissionCapture & { status?: WorkflowSubmission["status"] },
     now = Date.now(),
   ): WorkflowSubmission {
     const current = this.mustSubmission(id);
@@ -7612,9 +7702,10 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_runs
             SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
+                publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
                 completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
           WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
+      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, status === "completed" ? 1 : 0, terminal ? 1 : 0, now, id);
       return this.mustRun(id);
 
     }, () => ({ kind: "run", id, now }));
@@ -7921,6 +8012,7 @@ export class WorkflowStore {
       `UPDATE workflow_runs
           SET status = ?, current_phase = ?, inspector_pr_key = ?,
               inspector_head_sha = ?, gate_state_json = ?, updated_at = ?,
+              publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
         WHERE id = ? AND gate_state_json = ?
           AND status NOT IN ('completed', 'cancelled', 'failed')`,
@@ -7931,6 +8023,7 @@ export class WorkflowStore {
       input.state.targetHeadSha,
       stateJson,
       input.now,
+      completed ? 1 : 0,
       completed ? 1 : 0,
       input.now,
       input.runId,
@@ -7977,6 +8070,131 @@ export class WorkflowStore {
     });
   }
 
+  /** Explicit recovery for the first bypass bought by a legacy cached-head grant. */
+  recoverStaleInspectorGrant(
+    runId: string, requestId: string, input: RecoverStaleInspectorGrant, now: number,
+    activity?: InspectorBranchActivity,
+  ): { run: WorkflowRun; idempotent: boolean } | { verifyPrUrl: string } | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(runId);
+      if (!run) return null;
+      const events = this.listEvents(runId);
+      const recovered = events.find((event) => event.kind === "inspector_stale_grant_recovered"
+        && this.eventPayload(event).requestId === requestId);
+      if (recovered) {
+        const payload = this.eventPayload(recovered);
+        return Object.entries(input).every(([key, value]) => payload[key] === value)
+          ? { run, idempotent: true } : null;
+      }
+      const gate = inspectorGateState(run);
+      if (run.status !== "blocked" || run.currentPhase !== "inspector_head_mismatch"
+          || gate?.waitReason !== "head_mismatch" || !gate.prKey || !gate.failedHeadSha
+          || gate.targetHeadSha !== input.staleHeadSha || gate.failedHeadSha === input.staleHeadSha
+          || gate.findingFingerprints.length === 0) return null;
+
+      const policy = this.getWorkflowVersionById(run.workflowVersionId)?.completionPolicy;
+      const submissions = this.listSubmissions(runId);
+      const latest = submissions.at(-1);
+      const prior = submissions.at(-2);
+      if (!workflowInspectorOnlyRepair(policy, gate)
+          || latest?.id !== input.submissionId || latest.mode !== "inspector_only"
+          || latest.status !== "completed" || latest.prHeadSha !== input.staleHeadSha
+          || latest.round + 1 > run.maxRepairRounds || prior?.mode !== "inspector_only"
+          || prior.round !== latest.round - 1 || prior.prHeadSha !== gate.failedHeadSha
+          || submissions.some((sub) => sub.prHeadSha === input.currentHeadSha)) return null;
+      const context = latest.context;
+      if (!context || typeof context !== "object" || Array.isArray(context)
+          || context.failedHeadSha !== gate.failedHeadSha || context.newHeadSha !== latest.prHeadSha
+          || JSON.stringify(context.priorFindingFingerprints) !== JSON.stringify(gate.findingFingerprints)) return null;
+
+      const grant = events.findLast((event) => event.kind === "repair_rounds_granted");
+      const bypass = events.findLast((event) => event.kind === "inspector_persona_bypass_used");
+      if (!grant || !bypass || bypass.id <= grant.id) return null;
+      const receipt = this.eventPayload(grant);
+      const selection = this.eventPayload(bypass);
+      if (receipt.requestId !== input.grantRequestId || receipt.currentObservationRequired !== undefined
+          || receipt.resumed !== "waiting_for_new_head" || receipt.round !== prior.round
+          || receipt.from !== prior.round - 1 || receipt.to !== run.maxRepairRounds
+          || selection.submissionId !== latest.id || selection.failedHeadSha !== gate.failedHeadSha
+          || selection.newHeadSha !== latest.prHeadSha) return null;
+      const ledger = getInspectorPr(gate.prKey, this.db);
+      if (ledger?.state !== "open" || ledger.observedState !== "OPEN"
+          || ledger.observedHeadSha !== input.currentHeadSha || ledger.observedAt === null
+          || ledger.observedAt <= latest.createdAt || ledger.observedAt < (gate.lastObservedAt ?? 0)
+          || (ledger.observedAt === gate.lastObservedAt && ledger.observedHeadSha !== gate.observedHeadSha)) return null;
+
+      // A push after a correctly pinned legacy grant produces the very same mismatch.
+      // Require a retained observation of the replacement while the budget was blocked.
+      // Inspector's reviewed head/time pair survives later polls until the next review.
+      const limit = events.findLast((event) => event.kind === "inspector_round_limit" && event.id < grant.id);
+      if (!limit || this.eventPayload(limit).maxRepairRounds !== receipt.from
+          || limit.timestamp < prior.createdAt || grant.timestamp > latest.createdAt) return null;
+      const inSpentWindow = (at: number | null): at is number =>
+        at !== null && at > limit.timestamp && at < grant.timestamp;
+      let witness: { source: "gate_observation" | "inspector_review"; observedAt: number };
+      if (gate.observedHeadSha === input.currentHeadSha && inSpentWindow(gate.lastObservedAt)) {
+        witness = { source: "gate_observation", observedAt: gate.lastObservedAt };
+      } else if (ledger.headSha === input.currentHeadSha && inSpentWindow(ledger.lastReviewedAt)) {
+        witness = { source: "inspector_review", observedAt: ledger.lastReviewedAt };
+      } else return null;
+
+      // Inspector dates its poll at start. A read started before the grant can
+      // return afterwards. The adoption row's CodeRabbit scan is dated after
+      // fetchPr finishes; a retained delivery claim also postdates that scan.
+      const scan = readCodeRabbit(gate.prKey, this.db);
+      if (!scan) return null;
+      const claim = scan.receipts.find(row => row.headSha === input.currentHeadSha && inSpentWindow(row.at));
+      const completedObservation = scan.state === "OPEN" && !scan.error && scan.headSha === input.currentHeadSha && inSpentWindow(scan.observedAt)
+        ? { source: "pr_scan", observationId: scan.observationId, at: scan.observedAt }
+        : claim ? { source: "delivery_claim", observationId: claim.observationId, at: claim.at } : null;
+      if (!completedObservation) return null;
+
+      // Local polls overwrite one another. Even both witnesses for B are compatible
+      // with a return to A at grant time and a later push back to B. Ask outside the
+      // transaction, then repeat all eligibility checks with the provider's ref history.
+      if (!activity) return { verifyPrUrl: ledger.url };
+      // The verified ref history ties this unique arrival at the head to our
+      // pre-grant witness. The legacy timestamp margin is only an additional veto.
+      if (activity.prKey !== gate.prKey || activity.headSha !== input.currentHeadSha
+          || (ledger.headRefName && activity.ref !== `refs/heads/${ledger.headRefName}`)
+          || !Number.isFinite(activity.changedAt)
+          || activity.changedAt + 1_000 > grant.timestamp) return null;
+
+      const updated = this.updateInspectorGate({
+        runId, expectedState: gate, status: "waiting_for_new_head", phase: "inspector_findings",
+        state: {
+          ...gate, targetHeadSha: gate.failedHeadSha, waitReason: "findings",
+          lastObservedAt: ledger.observedAt, observedHeadSha: input.currentHeadSha,
+          grantObservation: { minimumObservedAt: ledger.observedAt, requestedAt: now, verifiedHeadSha: input.currentHeadSha },
+        },
+        now,
+      });
+      if (!updated) return null;
+      this.appendEvent(runId, "inspector_stale_grant_recovered", {
+        ...input, requestId, prKey: gate.prKey, observedAt: ledger.observedAt,
+        branchActivity: { ...activity }, completedObservation, limitEventId: limit.id, grantEventId: grant.id, bypassEventId: bypass.id,
+        failedHeadSha: gate.failedHeadSha, preGrantWitness: { ...witness, headSha: input.currentHeadSha },
+      }, now);
+      return { run: updated, idempotent: false };
+    });
+  }
+
+  inspectorRecoveryReceipt(runId: string, submissionId: string, head: string): {
+    requestId: string; branchActivity: WorkflowJson;
+  } | null {
+    const event = this.listEvents(runId).findLast(row => row.kind === "inspector_stale_grant_recovered");
+    if (!event) return null;
+    const receipt = this.eventPayload(event);
+    if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation
+        || typeof receipt.requestId !== "string" || !receipt.branchActivity) return null;
+    return { requestId: receipt.requestId, branchActivity: receipt.branchActivity };
+  }
+
+  private eventPayload(event: WorkflowEvent): Record<string, WorkflowJson> {
+    const payload = event.payload;
+    return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  }
+
   createInspectorOnlySubmission(input: {
     id: string;
     runId: string;
@@ -8006,6 +8224,8 @@ export class WorkflowStore {
       ) return null;
       const currentGate = inspectorGateState(run);
       if (!currentGate || JSON.stringify(currentGate) !== JSON.stringify(input.expectedState)) return null;
+      const binding = this.getBinding(run.bindingId);
+      if (!binding || transferForNote(binding.noteKey, this.db)) return null;
       this.insertSubmissionInTransaction({
         id: input.id,
         runId: run.id,
@@ -8062,6 +8282,23 @@ export class WorkflowStore {
         submission: this.mustSubmission(input.id),
         idempotent: false,
       };
+    });
+  }
+
+  commitRepositoryCaptureActivation(
+    input: { submissionId: string; digest: string; capture: Required<SubmissionCapture> },
+    now = Date.now(),
+  ): WorkflowSubmission {
+    return transaction(this.db, () => {
+      if (this.mustSubmission(input.submissionId).status !== "capturing")
+        throw new Error("Repository submission activation conflict");
+      const activated = this.db.prepare(`
+        UPDATE workflow_repository_snapshot_claims SET state='active', activated_at=?
+        WHERE submission_id=? AND digest=? AND state='provisional'
+          AND EXISTS (SELECT 1 FROM workflow_repository_artifacts WHERE digest=? AND state='ready')
+      `).run(now, input.submissionId, input.digest, input.digest);
+      if (activated.changes !== 1) throw new Error("Repository claim activation conflict");
+      return this.updateSubmissionCapture(input.submissionId, { ...input.capture, status: "running" }, now);
     });
   }
 
@@ -9112,7 +9349,7 @@ export class WorkflowStore {
   /**
    * Confirmed packets that can still appear in one session's bounded transcript window.
    *
-   * The delivery ledger and its post-send transcript anchors are the durable authorship source
+   * The delivery ledger and its transcript anchors are the durable authorship source
    * for workflow context capture. Only confirmed sends with an anchor qualify: prepared,
    * refused, uncertain, and unanchored packets cannot identify a transcript turn. Newest first
    * and capped beyond the transcript window so a long-lived session cannot make context capture
@@ -9121,13 +9358,30 @@ export class WorkflowStore {
   listDeliveredTranscriptAnchors(
     sessionId: string,
     noteKey: string,
-    limit = 200,
-  ): Array<{ payload: string; transcriptAnchor: number }> {
+    limit = WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT,
+  ): DeliveredWorkflowTranscriptAnchor[] {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
-      `SELECT d.payload, d.session_id,
-              CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
-                AS transcript_anchor
+      `SELECT d.payload, d.delivered_at, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
+              json_extract(e.payload_json, '$.clientMessageId') AS client_message_id,
+              json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
+              CASE WHEN json_extract(e.payload_json, '$.submitVerified') = 1
+                    AND json_type(e.payload_json, '$.receiptId') IS NULL
+                    AND json_type(e.payload_json, '$.clientMessageId') IS NULL
+                    AND json_type(e.payload_json, '$.transcriptPath') IS NULL
+                   THEN COALESCE((
+                     SELECT sending.ts FROM workflow_events sending
+                      WHERE sending.run_id = e.run_id AND sending.id < e.id
+                        AND sending.event_kind = 'delivery_sending'
+                        AND json_extract(sending.payload_json, '$.deliveryId') = d.id
+                      ORDER BY sending.id DESC LIMIT 1
+                   ), d.delivered_at) END AS legacy_start,
+              json_extract(e.payload_json, '$.transcriptTurn.id') AS turn_id,
+              json_extract(e.payload_json, '$.transcriptTurn.fileId') AS turn_file_id,
+              json_extract(e.payload_json, '$.transcriptTurn.ts') AS turn_ts,
+              COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
+                       json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
+              json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
          FROM workflow_deliveries d
          JOIN workflow_events e
            ON e.run_id = d.run_id
@@ -9136,16 +9390,34 @@ export class WorkflowStore {
         WHERE d.note_key = ? AND d.session_id IN (${sessions.map(() => "?").join(",")})
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
-          AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+          AND (json_type(e.payload_json, '$.transcriptStart') = 'integer'
+            OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+            OR json_type(e.payload_json, '$.clientMessageId') = 'text'
+            OR json_type(e.payload_json, '$.transcriptTurn.id') = 'text')
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
-      session_id: string;
+      receipt_id: string | null;
+      client_message_id: string | null;
+      delivered_at: number;
+      legacy_start: number | null;
+      transcript_path: string | null;
+      turn_id: string | null;
+      turn_file_id: string | null;
+      turn_ts: number | null;
       payload: string;
-      transcript_anchor: number;
+      transcript_anchor: number | null;
+      before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.legacy_start !== null ? { legacySend: { start: row.legacy_start, end: row.delivered_at } } : {}),
+      ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
+      ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts,
+        ...(row.turn_file_id ? { fileId: row.turn_file_id } : {}) } } : {}),
+      ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
+      ...(row.client_message_id ? { clientMessageId: row.client_message_id } : {}),
+      ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
   }
 
@@ -9359,13 +9631,20 @@ export class WorkflowStore {
     }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
+  private discardDeliveryReceipt(deliveryId: string, receiptId: string, now: number): void {
+    this.db.prepare("UPDATE workflow_delivery_turns SET discarded_at = ? WHERE id = ? AND delivery_id = ?")
+      .run(now, receiptId, deliveryId);
+  }
+
   finishDeliverySend(
     id: string,
-    state: Extract<WorkflowDelivery["state"], "refused" | "uncertain">,
+    state: Extract<WorkflowDelivery["state"], "prepared" | "refused" | "uncertain">,
     error: string | null,
     now = Date.now(),
+    unsentReceiptId?: string,
   ): WorkflowDelivery | null {
     return this.mutate(() => {
+      if (unsentReceiptId) this.discardDeliveryReceipt(id, unsentReceiptId, now);
       const result = this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = ?, error = ?, updated_at = ?
@@ -9381,8 +9660,12 @@ export class WorkflowStore {
     transcriptAnchor: number | null,
     submitVerified: boolean,
     now = Date.now(),
+    transcriptStart: number | null = null,
+    attribution?: { clientMessageId?: string; transcriptPath?: string; unusableReceiptId?: string;
+      terminalTurn?: { path: string; fileId: string; id: string; ts: number } | null },
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
+      if (attribution?.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);
@@ -9449,7 +9732,11 @@ export class WorkflowStore {
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
-        transcriptAnchor,
+        transcriptAnchor: attribution && !attribution.clientMessageId && !attribution.terminalTurn ? null : transcriptAnchor,
+        transcriptStart,
+        ...(attribution?.clientMessageId ? { clientMessageId: attribution.clientMessageId, transcriptPath: attribution.transcriptPath } : {}),
+        ...(attribution?.terminalTurn ? { transcriptPath: attribution.terminalTurn.path,
+          transcriptTurn: { id: attribution.terminalTurn.id, ts: attribution.terminalTurn.ts, fileId: attribution.terminalTurn.fileId } } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);
@@ -10665,6 +10952,9 @@ export class WorkflowStore {
             updates.push({ id: row.id, context: parsed });
           }
 
+          this.db.prepare(`UPDATE workflow_repository_snapshot_claims SET state='released', released_at=?
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id=?) AND state!='released'`)
+            .run(input.now, runId);
           this.appendEvent(runId, "evidence_pruned", {
             submissions: updates.length,
             diffBytes,
@@ -10722,6 +11012,13 @@ export class WorkflowStore {
                 AND state IN ('delivered', 'refused')
                 AND payload_pruned_at IS NULL`,
           ).run(input.now, runId);
+          const discardedReceipts = this.db.prepare(
+            `UPDATE workflow_delivery_turns SET discarded_at = ?
+              WHERE discarded_at IS NULL AND delivery_id IN
+                (SELECT id FROM workflow_deliveries WHERE run_id = ? AND payload_pruned_at IS NOT NULL)
+              RETURNING note_key`,
+          ).all(input.now, runId) as { note_key: string }[];
+          for (const key of new Set(discardedReceipts.map(row => row.note_key))) noteDiscardedWorkflowReceipt(key);
           this.db.prepare(
             `UPDATE workflow_runs
                 SET evidence_pruned_at = ?, updated_at = ?

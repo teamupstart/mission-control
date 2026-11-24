@@ -86,6 +86,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/main/update-runtime.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded probes of locator-selected Node and npm, and fixed OS env for child-runtime identity" },
   ],
+  "src/main/voice-listener.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Electron supplies the absolute path to dist/native/voice-listener under its app root" },
+  ],
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
   ],
@@ -149,6 +152,14 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
+  ],
+  "src/server/workflows/publication-revision.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded checkout revision read using resolved Git at the publication claim" },
+  ],
+  "src/server/workflows/repository-artifact/git.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git reads checkout metadata with closed arguments" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git streams bounded index and untracked path records" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "the same Git reads literal object ids through a private batch wrapper" },
   ],
   "src/server/workflows/persona-workload/git.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "injected locator-resolved Git reads closed argv against a verified sparse view through a private bare wrapper" },

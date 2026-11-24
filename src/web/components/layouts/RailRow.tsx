@@ -46,6 +46,7 @@ export function RailRow({
   session,
   shortcutChord = null,
   selected,
+  sectionNavigation = false,
   onSelect,
   registerEl,
   workflowRun = null,
@@ -74,6 +75,7 @@ export function RailRow({
    */
   shortcutChord?: string | null;
   selected: boolean;
+  sectionNavigation?: boolean;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -129,8 +131,14 @@ export function RailRow({
   // Keep the selected row in view as the arrow keys walk the rail. Local to the row
   // because the rail scrolls independently of the detail beside it.
   useEffect(() => {
-    if (!selected) return;
-    ref.current?.scrollIntoView({ block: "nearest" });
+    const row = ref.current;
+    if (!selected || !row) return;
+    // A status update can remount a repository group. Leave a focused row or heading
+    // visible even if the open conversation's selected row is elsewhere in the Idle rail.
+    const rail = row.closest(".has-idle-sections");
+    const focused = document.activeElement;
+    if (focused !== row && focused?.matches(".rail-row, .idle-rail-section-toggle") && rail?.contains(focused)) return;
+    row.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
   const marks: string[] = [];
@@ -159,7 +167,9 @@ export function RailRow({
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
   const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
-  }`;
+  }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
+  const keyshortcuts = [shortcutChord && ariaKeyshortcuts(shortcutChord), sectionNavigation && "Home"]
+    .filter(Boolean).join(" ");
   const firstFact = stall && stalledFactRows(session, stall)[0];
   const descriptionId = useId();
   const actionWaitId = useId();
@@ -181,7 +191,7 @@ export function RailRow({
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
            the rail is the row itself rather than a button stretched over a card. */
-        aria-keyshortcuts={shortcutChord ? ariaKeyshortcuts(shortcutChord) : undefined}
+        aria-keyshortcuts={keyshortcuts || undefined}
         onClick={onSelect}
       >
         <AgentDot agent={session.agent} />

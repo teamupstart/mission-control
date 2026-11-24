@@ -71,12 +71,15 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /api/sessions/:id/inbox-message` then opened to the `idle-stalled` flag as well, so its
   // 403 with both flags off names both previews.
   // GET and PUT /api/agent-environment both answer 404 with the preview off.
-  // The six utterance, card action and Recently heard routes answer 404 with the voice preview off.
+  // The six utterance, card action and Recently heard routes answer 404 with the voice preview off,
+  // as do GET /voice/listener/directive and the dashboard's PUT /api/voice/indicators.
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
+  // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
+  // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 467);
+  assert.equal(others.length, 474);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "b725a89227ac897a1279351ccedb1c9344359f12b19be05406a701051094c9e1");
+    "00b1b1e0cb19f3ceadfcf33cfcbbd21909da9f2abfa9814697194d44d6b31452");
 });
 
 function sourceFiles(dir: string): string[] {

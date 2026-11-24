@@ -251,6 +251,24 @@ test("At the top of Idle counts the blocked frame in a split idle header", async
   await expect(idle.locator(".board-col-head .board-col-n")).toHaveText(["1 blocked", "1 free", "1 held"]);
 
   await shoot(dashboard, "idle-split-with-blocked-frame");
+
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await frame.locator(".tile.is-blocked").click();
+  await dashboard.setViewportSize({ width: 700, height: 800 });
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  const header = rail.locator("header");
+  await expect(header.getByText("3 sessions", { exact: true })).toBeVisible();
+  await expect(header.getByText("1 blocked", { exact: true })).toHaveCount(0);
+  const blockedHeading = rail.getByRole("button", { name: "blocked 1", exact: true });
+  const blockedRow = rail.getByRole("button", { name: await sessionName(daemon, blocked), exact: true });
+  await expect(blockedHeading).toHaveAttribute("aria-expanded", "true");
+  await expect(blockedRow).toHaveAttribute("aria-current", "true");
+  await blockedHeading.click();
+  await expect(blockedHeading).toHaveAttribute("aria-expanded", "false");
+  await expect(blockedRow).toHaveCount(0);
+  await shoot(dashboard, "idle-rail-blocked-collapsed");
+  await blockedHeading.click();
+  await expect(blockedRow).toBeVisible();
 });
 
 test("a held tile refuses the backlog drop a free tile still offers", async ({
@@ -381,4 +399,188 @@ test("a run that reaches a terminal status releases its session back to free", a
   await expect(idle.locator(".fleet-section")).toHaveCount(0);
   await expect(idle.locator(".tile-held")).toHaveCount(0);
   await expect(idle.locator(".tile.is-held")).toHaveCount(0);
+});
+
+test("the conversation Idle rail puts counts on expandable sections", async ({ dashboard, daemon }) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "free for section counts");
+  const held = await dispatchIdleAgent(dashboard, daemon, "held for section counts");
+  const runId = await openRunOn(daemon, held, "section-counts");
+  await useBoardLayout(dashboard, daemon);
+
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  const freeName = await sessionName(daemon, free);
+  await idle.locator(".tile").filter({ hasText: freeName }).click();
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  await expect(rail.locator("header")).toContainText("1 held");
+  await dashboard.setViewportSize({ width: 700, height: 800 });
+
+  const setSectionCounts = (enabled: boolean) => api(
+    daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled }, "PUT",
+  );
+  await setSectionCounts(true);
+  const header = rail.locator("header");
+  await expect(header.getByText("2 sessions", { exact: true })).toBeVisible();
+  await expect(header.getByText("1 held", { exact: true })).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "Back to the board" })).toBeInViewport();
+  const freeSection = rail.getByRole("button", { name: "free 1", exact: true });
+  const heldSection = rail.getByRole("button", { name: "held by a workflow 1", exact: true });
+  await expect(freeSection).toHaveAttribute("aria-expanded", "true");
+  await expect(heldSection).toHaveAttribute("aria-expanded", "false");
+  await expect(rail.locator(".rail-row")).toHaveCount(1);
+  await freeSection.focus();
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  const detailBody = dashboard.locator(".cdetail .detail-body");
+  const freeRow = rail.getByRole("button", { name: freeName, exact: true });
+  await expect(freeRow).toBeFocused();
+  await dashboard.keyboard.press("Tab");
+  await expect(detailBody).toBeFocused();
+  await dashboard.keyboard.press("Escape");
+  await expect(freeRow).toBeFocused();
+  // SDK sessions have no writable terminal pane. The mode shortcut still consumes the
+  // key, keeping focus on the row instead of moving to the previous control.
+  await freeRow.press("Shift+Tab");
+  await expect(freeRow).toBeFocused();
+  await expect(freeRow).toHaveAttribute("aria-keyshortcuts", "Home");
+  await dashboard.keyboard.press("Home");
+  await expect(freeSection).toBeFocused();
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(heldSection).toBeFocused();
+  await dashboard.keyboard.press("Enter");
+  await expect(heldSection).toHaveAttribute("aria-expanded", "true");
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await expect(rail.locator(".rail-row.is-held")).toBeFocused();
+  await dashboard.keyboard.press("Home");
+  await expect(heldSection).toBeFocused();
+  await shoot(dashboard, "idle-rail-section-counts");
+  await heldSection.click();
+  await expect(rail.locator(".rail-row.is-held")).toHaveCount(0);
+  // Held follows Free in fleet order. Down would select the hidden held session if it
+  // were still in the keyboard navigation list.
+  await freeRow.press("ArrowDown");
+  await expect(freeRow).toHaveAttribute("aria-current", "true");
+  await expect(heldSection).toHaveAttribute("aria-expanded", "false");
+
+  await header.getByRole("button", { name: "Back to the board" }).click();
+  const heldName = await sessionName(daemon, held);
+  await idle.getByRole("button", { name: `Open ${heldName}`, exact: true }).press("Enter");
+  const heldRow = rail.getByRole("button", { name: heldName, exact: true });
+  await expect(heldSection).toHaveAttribute("aria-expanded", "true");
+  await expect(heldRow).toHaveAttribute("aria-current", "true");
+  await shoot(dashboard, "idle-rail-reopened-held");
+  await heldSection.click();
+  await expect(heldSection).toHaveAttribute("aria-expanded", "false");
+  await expect(heldRow).toHaveCount(0);
+  await detailBody.focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(heldSection).toBeFocused();
+  await header.getByRole("button", { name: "Back to the board" }).click();
+  await idle.getByRole("button", { name: `Open ${heldName}`, exact: true }).press("Enter");
+  await expect(heldSection).toHaveAttribute("aria-expanded", "true");
+  await expect(heldRow).toHaveAttribute("aria-current", "true");
+
+  // A real workflow update moves the held session into Free over SSE.
+  await heldRow.focus();
+  await api(daemon, `/api/workflow-runs/${runId}/cancel`, { requestId: "section-counts-release" });
+  await expect(rail.getByRole("button", { name: "free 2", exact: true })).toBeVisible();
+  await expect(heldSection).toHaveCount(0);
+  await expect(rail.locator(".rail-row")).toHaveCount(2);
+  await expect(heldRow).toBeFocused();
+
+  await setSectionCounts(false);
+  await expect(header.getByText("2 sessions", { exact: true })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "free 2", exact: true })).toHaveCount(0);
+});
+
+for (const focused of ["row", "heading"] as const) {
+  test(`the Idle rail focuses the destination heading when a focused ${focused} disappears`, async ({
+    dashboard, daemon,
+  }) => {
+    const free = await dispatchIdleAgent(dashboard, daemon, "keep reading this free session");
+    const held = await dispatchIdleAgent(dashboard, daemon, "move into the collapsed section");
+    const run = await openRunOn(daemon, held, "collapsed-destination");
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+    await useBoardLayout(dashboard, daemon);
+
+    const freeName = await sessionName(daemon, free);
+    const heldName = await sessionName(daemon, held);
+    const idle = dashboard.locator("section.board-col.tone-idle");
+    await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+    const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+    await rail.getByRole("button", { name: "free 1", exact: true }).click();
+    const heldHeading = rail.getByRole("button", { name: "held by a workflow 1", exact: true });
+    if (focused === "row") {
+      await heldHeading.click();
+      await rail.getByRole("button", { name: heldName, exact: true }).focus();
+    } else {
+      await heldHeading.focus();
+    }
+
+    await api(daemon, `/api/workflow-runs/${run}/cancel`, { requestId: "release-to-collapsed-section" });
+    const targetHeading = rail.getByRole("button", { name: "free 2", exact: true });
+    await expect(targetHeading).toHaveAttribute("aria-expanded", "false");
+    await expect(targetHeading).toBeFocused();
+    await expect(rail.getByRole("button", { name: heldName, exact: true })).toHaveCount(0);
+    await expect(dashboard.locator(".cdetail .detail-head")).toContainText(freeName);
+  });
+}
+
+test("the Idle rail scrolls a focused row into view after a live status move", async ({ dashboard, daemon }) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "keep reading this free session");
+  await dispatchIdleAgent(dashboard, daemon, "second free session");
+  const held = await dispatchIdleAgent(dashboard, daemon, "alpha moved session");
+  const run = await openRunOn(daemon, held, "scroll-destination");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+
+  const freeName = await sessionName(daemon, free);
+  const heldName = await sessionName(daemon, held);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+  await dashboard.setViewportSize({ width: 700, height: 320 });
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  await rail.getByRole("button", { name: "held by a workflow 1", exact: true }).click();
+  const row = rail.getByRole("button", { name: heldName, exact: true });
+  const freeHeading = rail.getByRole("button", { name: "free 2", exact: true });
+  await freeHeading.click();
+  await row.focus();
+  await expect(freeHeading).not.toBeInViewport({ ratio: 0.75 });
+  await dashboard.locator(".cdetail .detail-body").focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(freeHeading).toBeFocused();
+  await expect(freeHeading).toBeInViewport({ ratio: 0.95 });
+  await freeHeading.click();
+
+  await row.focus();
+  await expect(row).toBeInViewport({ ratio: 0.95 });
+
+  await api(daemon, `/api/workflow-runs/${run}/cancel`, { requestId: "release-to-offscreen-row" });
+  await expect(rail.getByRole("button", { name: "free 3", exact: true })).toHaveCount(1);
+  await expect(row).toBeFocused();
+  await expect(row).toBeInViewport({ ratio: 0.95 });
+});
+
+test("the Idle rail keeps focus in the rail when a focused session starts working", async ({ dashboard, daemon }) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "keep this conversation open");
+  const leaving = await dispatchIdleAgent(dashboard, daemon, "start working from Idle");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+
+  const freeName = await sessionName(daemon, free);
+  const leavingName = await sessionName(daemon, leaving);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  const row = rail.getByRole("button", { name: leavingName, exact: true });
+  await row.focus();
+  await expect(row).toBeFocused();
+
+  await api(daemon, `/api/sessions/${encodeURIComponent(leaving)}/send`, {
+    text: "hold the current turn open for queued review setup",
+    submit: true,
+  });
+  await expect(row).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "free 1", exact: true })).toBeFocused();
+  await expect(dashboard.locator(".cdetail .detail-head")).toContainText(freeName);
 });

@@ -1213,6 +1213,12 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **Counts on Idle rail sections (preview).** Open an Idle session from the board to see
+  the session total in the sidebar header. Each status heading shows its own count and
+  expands or collapses its rows. The first section and the open session's section start
+  expanded. Collapsing a section keeps the conversation open and skips its hidden rows
+  in fleet keyboard navigation. Enable **Counts on Idle rail sections** under
+  **Settings > Feature flags**.
 - **The idle column groups agents awaiting a background process.** While the **Awaiting
   background work** preview is on, a session that
   [declared a wait](sessions.md#sessions-awaiting-a-background-process-preview) on its own CI, build,
@@ -2265,3 +2271,7 @@ are the first thing that row gives up to stay on one line, and the chords keep w
 them. Small icon-only controls (such as the ⚙ gear) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
 instead.
+
+## Voice in the dashboard
+
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).

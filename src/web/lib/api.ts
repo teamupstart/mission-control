@@ -2,7 +2,9 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
+import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
+import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -293,9 +295,9 @@ async function readJson<T>(path: string): Promise<JsonRead<T>> {
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
-async function fetchJson<T>(path: string): Promise<T | null> {
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
   try {
-    const res = await actionFetch(path);
+    const res = await actionFetch(path, init);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -445,7 +447,7 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
-export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
+export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from
@@ -513,10 +515,34 @@ export async function fetchAgentEnvironment(): Promise<AgentEnvironmentSettingsV
   }
 }
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+export interface VoiceDashboardSnapshot {
+  providerRevision: string;
+  snapshotOrder: number;
+  serverTime: number;
+  intentReceipt?: string;
+}
+
+export interface VoiceKeyWriteOptions {
+  revision: string;
+  expiresAt: number;
+  signal: AbortSignal;
+}
+
+function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) {
+  return { signal, headers: { "x-voice-key-revision": revision, "x-voice-key-expires-at": String(expiresAt) } };
+}
+
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
-export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
+  { signal, headers: { "x-voice-provider-revision": "read" } });
+export const fetchRecentlyHeard = (signal: AbortSignal) =>
+  fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
-export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
+export const fetchVoiceDevices = (signal?: AbortSignal) => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices", { signal });
+/** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
+export const fetchVoiceDecisionKey = (signal?: AbortSignal) =>
+  fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; keyRevisions: Record<VoiceKeyProvider, string> }>("/api/voice/decision-key",
+    { signal, headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -1496,7 +1522,7 @@ export async function fetchTranscriptBefore(
   before: number,
   signal?: AbortSignal,
 ): Promise<
-  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean }
+  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean; spokenDeferred?: true }
   | { ok: false; error: string }
 > {
   try {
@@ -1508,6 +1534,7 @@ export async function fetchTranscriptBefore(
       messages?: TranscriptMessage[];
       start?: number;
       end?: number;
+      spokenDeferred?: true;
       atStart?: boolean;
       error?: string;
     };
@@ -1519,6 +1546,7 @@ export async function fetchTranscriptBefore(
       messages: data.messages,
       start: data.start,
       end: data.end,
+      ...(data.spokenDeferred && { spokenDeferred: true }),
       // A response that omits the flag is treated as "nothing older", which stops the
       // scroll-back rather than looping on an anchor the server never moved.
       atStart: data.atStart ?? true,
@@ -1816,7 +1844,8 @@ export async function submitProductIssue(
 }
 
 /**
- * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ * Turn the Keep Awake mode on or off: `PUT /api/keep-awake`. The daemon remembers the choice
+ * across restarts and upgrades.
  *
  * Resolves with the daemon's OBSERVED status - never an echo of the request - and never
  * throws into React, like the other mutators here. On a refusal (unsupported host, failed
@@ -2519,15 +2548,30 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  setVoiceConfig: (patch: VoiceConfigPatch) =>
-    put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
-  setVoiceMuted: (muted: boolean) =>
-    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  reserveVoiceProviderWrite: (intent: VoiceProviderIntent, signal: AbortSignal) =>
+    post<ActionResult & { ticket?: string; intentReceipt?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; receipt: string; quietForMs: number; pendingSelection: boolean } }>(
+      "/api/voice/config/provider-intent", intent, { signal }),
+  setVoiceConfig: (patch: VoiceConfigPatch, ticket: string | undefined, signal: AbortSignal, settingsExpiry?: number) =>
+    put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
+      { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
+        ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
+  clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
+  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
+    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+  setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
   startVoiceModelDownload: () =>
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  /** Save one provider's decision-model key. The answer is the report, never the key. */
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
+    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
+      keyWriteRequest(options)),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider, options: VoiceKeyWriteOptions) =>
+    request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, keyWriteRequest(options)),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>

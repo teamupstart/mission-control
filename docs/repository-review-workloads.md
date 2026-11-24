@@ -1,8 +1,8 @@
 # Repository review workload foundation
 
-This is an internal, unwired Phase 1 foundation. No Persona setting, Workflow dispatch,
-artifact capture, database migration, HTTP query service, or Local Inspector behavior is
-activated. Existing Workflow execution and the general `LlmRunner` retain their contracts.
+Mission Control provides an internal executor, repository MCP and portable checkout artifact
+service. Workflow submissions continue to use the existing prompt evidence by default.
+Commands and the Inspector gate still pin their existing review commit and publication tree.
 
 ## Ownership and data flow
 
@@ -26,19 +26,196 @@ kind is append-only: `persona_verdict` is the sole current member. Later work ca
 in `request.execution`; the frozen Persona remains separate. Prompt, daemon-owned images,
 call-ledger identity and returned usage survive this boundary. This phase writes no ledger.
 
-`RepositoryArtifactMaterializer` is injected. Phase 2 must verify submission, workload,
-attempt, locator and digest against active ownership **before filesystem access**, and return
-those identities with a verified descriptor and an immutable, private object directory.
-The executor checks the returned identities again. The directory must be detached from the
-live repository, contain no filesystem symlinks or external object dependencies, and remain
-alive until lease release. This phase supplies fixture materializers only.
+`WorkflowRepositoryArtifactService.forRoot` gives the manager and supervisor the same
+daemon-owned materializer for a canonical artifact directory. The supervisor can install
+or revoke its current workload lookup using `setActiveRequestLookup`. The service checks submission, workload, attempt,
+locator and digest, and requires the active SQLite claim and ready artifact before opening
+the artifact directory. The executor checks the returned identities again.
 
-The descriptor carries the exact index and worktree manifests/trees, captured HEAD and source
-base, and the deterministic all-parent breadth-first history prefix. Limits are 2,048 commits
-and 512 MiB of unique allowed historical blob bodies, stopping before overflow. Descriptor
-validation checks ordering and omitted-parent boundaries; Phase 2 computes the prefix and
-verifies object integrity and byte accounting. Denied bodies may be physically absent. An
-unaddressable non-UTF-8 path is never decoded lossily into an addressable path.
+## Sealing and retention
+
+`prepare` takes the selected checkout, the Workflow diff's source base and an abort signal.
+Each stable-capture attempt samples the exact checkout before reading prompt evidence.
+The prepared candidate must match that initial fingerprint and a final live sample.
+An index-only edit between the prompt read and preparation therefore discards the
+candidate and retries the entire read, even when HEAD, worktree bytes and porcelain
+status all stay the same. A cleanup failure on a rejected candidate is logged.
+Reconciliation retries removal, and the boundary check keeps its original outcome.
+The default caller leaves the callback absent.
+
+The version 1 directory contains a canonical JSON manifest and flat files named by Git
+object id. Each object file holds its Git type and size header followed by its original
+bytes. The SHA-256 of the manifest identifies the artifact. Its sorted object table
+authenticates every object's type, size, Git id and SHA-256. Original tree bytes preserve
+path spelling, mode and gitlink identity. The path table uses hex for raw filename bytes.
+Phase 1 can address only canonical UTF-8 paths. A sensitive or unaddressable path keeps
+its tree reference and classification while its blob body is omitted. If an allowed and
+a denied path share a nonempty blob, capture fails closed. They can share Git's empty
+blob, which has zero payload bytes. The sensitive path still denies reads.
+
+Capture reads index entries and Git's nonignored untracked enumeration with optional locks
+disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
+A checked-out nested repository supplies only its HEAD object ID. Capture fails if that ID
+uses a different hash width from the parent repository's tree format.
+Each regular worktree file and each Git object read for capture may be at most 64 MiB.
+The daemon checks the open file's size before allocating its read buffer and retries
+capture if the file grows or shrinks during the read. For Git objects, it requests the
+type and size before requesting any payload, including objects needed only by the index,
+HEAD or source base. An oversized required payload fails the whole capture.
+The private Git process also limits individual allocations during packed delta
+reconstruction, including intermediate results and bases larger than the selected
+object. The allocation ceiling allows one extra byte for Git's trailing NUL.
+Loose Git objects are opened under a held descriptor for the source object directory
+and inflated from that file. The private Git process reads packs and indexes through
+inherited file descriptors. It has no source object directory or alternates to follow.
+Capture can pin up to 256 pack/index pairs. This bounds the file descriptors held for
+a single capture, including when the checkout and artifact are on different volumes.
+An abbreviated base must identify one distinct object across loose files and pinned packs.
+All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
+storage allowance, including their Git headers. Capture checks the combined blob sizes
+before copying any blob. Both the boundary sample and sealing count unique allowed
+working blobs as they are read and stop at the first blob that exceeds the allowance.
+Independently, each worktree scan reads at most 512 MiB of payload across all paths.
+Denied files, repeated content and literal link targets all consume this allowance.
+During sealing, a staged blob read to check automatic CRLF conversion also consumes
+the scan allowance. Capture checks its declared size before reading the payload
+and reuses the result for other paths with the same staged content.
+Sealing makes two bounded passes, one to measure the checkout and one to copy it.
+Pending candidates and private reader leases share a 2 GiB
+allowance for object files, manifests and lease data. Each write reserves its bytes
+before it starts. A candidate or lease holds its share until its directory is removed.
+A repair also reserves the actual size of the old digest before moving it into the
+pending directory. Failed cleanup retains this charge for the next maintenance pass.
+Recovery accounts for surviving candidates and leases before moving a published
+digest back into pending storage. If the digest does not fit, it stays published
+until cleanup frees enough space for the move.
+After restart, capture and materialization wait for reconciliation. It measures the
+payload left in each owned candidate or lease that cleanup could not remove. If it
+cannot measure that payload, new writes wait for a successful measurement or cleanup.
+Writes also leave 64 MiB free on the state volume and account for in-flight filesystem
+allocations.
+An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
+Files present on disk supply their actual contents, including edits outside a sparse cone.
+With `core.fileMode=false`, tracked regular files retain their indexed executable bit,
+including intent-to-add entries. Untracked regular files retain their on-disk mode.
+With `core.symlinks=false`, a regular file representing an indexed symlink supplies
+its literal target bytes and retains symlink mode. Changing either setting invalidates
+a pending stable capture.
+An index entry marked assume-unchanged supplies its staged value to status and Git
+comparisons. Reads still see the submitted worktree contents, and an absent file
+with a staged change still appears in status. Changing the flag invalidates a pending capture.
+If a file or symlink disappears or is replaced between inspection and opening it, stable
+capture reads the submission again.
+When a symlink replaces a tracked directory, capture records its literal target and
+the deletion of the directory's tracked children, including when the link forms a loop.
+Status compares HEAD, the index and the worktree. A deletion already committed between
+the selected base and HEAD appears in the base-to-HEAD diff. Staging a deletion and
+recreating the path reports both the deletion and the new working file. The reader can
+read the recreated bytes. When a directory replaces a file
+or a file replaces a directory, the reader gets the missing deletion records from the
+verified path manifest. They appear in `git_status` alongside the replacement files and
+grant no content access. An intent-to-add path removed before capture appears as an
+unstaged deletion even though neither tree contains a file. The same status-only records carry deletions when the live
+worktree array is full. Their allowance covers the union of deleted HEAD and index
+paths, up to twice the per-layer entry limit. Directory replacements are also recovered for previously sealed
+v1 artifacts.
+Worktree reads return literal submitted bytes, including CRLF. For status and diffs,
+capture applies Git's built-in text line-ending rules from attributes and
+`core.autocrlf`. When normalization changes bytes, the artifact also seals a
+comparison tree. Like Git porcelain, status can report a modified file whose size
+differs from the nonzero size cached in the index, even when its normalized diff
+is empty. Both trees obey the same sensitive-path and storage limits.
+Capture never runs repository filters or textconv to produce status. An unmerged
+index has no single tree and fails capture.
+
+Before reading the index or history, capture verifies where Git stores the checkout's
+metadata. A linked worktree needs its own registration under the common directory and
+a backlink to its `.git` file. Other separate Git directories need a local
+`core.worktree` setting naming the submitted checkout. Capture holds the validated
+directories open while reading and opens the object store relative to the common
+directory handle. Replacing a directory invalidates capture even when all Git
+contents match. Directory identities travel only in the local stability fingerprint.
+
+History starts at HEAD and visits all parents breadth-first in recorded order. The service
+stops before the first revision that would exceed 2,048 commits or 512 MiB of additional
+unique allowed blob bytes. It counts objects already required by base, HEAD, index or
+worktree once, outside the history budget. Capture also caps additional unique commit
+and tree payloads at 64 MiB. A history-only blob over the single-object limit ends the
+prefix before that revision. Before copying a revision, capture checks the sizes of the
+commit and its new trees. If they would exceed this budget, the preceding revision
+remains the end of the retained prefix. A shallow checkout contributes its declared
+boundary commits to the same breadth-first prefix. Traversal stops before the first
+omitted parent, including at a merge, and records the original parent IDs in the frontier.
+Missing objects inside the selected prefix fail sealing. Changing the source's shallow
+boundary also changes the stable capture fingerprint.
+
+The queue holds only distinct revisions that can enter the prefix. The v1 descriptor
+records up to 100 parents per revision. An older merge above that limit ends the prefix,
+and its original commit can still serve as a diff-only base. A HEAD above the limit
+fails capture because its complete parent list is required in the descriptor.
+
+Each tree walk can expand up to 200,000 entries and 64 MiB of raw path names. A
+streamed index and untracked listing enforces the same limits before opening working
+files. The listing counts implicit directories, sensitive names and unaddressable names.
+A subtree mounted at two paths contributes both sets of names. When another revision
+reuses a subtree at the same path, its cached descendant count and path bytes still
+count toward that revision's limits. Across history the same
+limits apply to newly retained leaf paths and tree locations. Editing a known file
+can reuse its path. An oversized HEAD or selected base fails capture. An oversized
+historical revision ends the retained prefix before any of its new paths are published.
+
+During traversal the daemon retains revision metadata and tree IDs. It writes accepted
+commit payloads to the candidate and rereads newly selected trees by ID, verifying their
+bytes before storage. Earlier commit messages and tree payloads can be freed while
+later revisions are still being considered.
+
+`promote` publishes a verified candidate under its digest and attaches a provisional claim
+after capture guards pass. Verification syncs the manifest and every object file before
+opening the claim transaction. The service flushes the recovery intent and syncs the
+directories that name the candidate and published digest before SQLite commits the claim.
+A sync failure leaves the submission able to retry. `WorkflowStore.commitRepositoryCaptureActivation` makes the
+claim active and the submission running in the same transaction that persists the
+captured context, evidence, both fingerprints and readiness result. Multiple submissions can
+independently own the same bytes. Verification marks a missing or corrupt digest as failed
+for all its claims, including when materialization discovers the damage. A transient source
+read error or a failure writing a private lease leaves the digest ready so any holder can retry.
+If the shared digest directory is missing or invalid, every ready digest in the store
+becomes unavailable. Affected submissions can still resume or retry.
+Promoting a fresh, verified copy of the same digest can repair its existing claims. The
+service replaces only a digest directory it owns and whose contents match the flat file
+layout. It checks that layout before recording an intent. A rejected candidate can
+be discarded while foreign entries stay in place. If publication is interrupted, reconciliation replays the recorded intent for
+existing holders. It verifies the published copy or, if the directory is still missing,
+verifies and installs the pending copy. The interrupted submission acquires a claim only
+through a successful promotion transaction.
+Each lease reconstructs a private loose Git object store
+from verified files, along with the layer descriptor used by the MCP. This works after both
+the checkout and its Git common directory have disappeared.
+
+Failed capture, submission deletion and evidence retention release claims. The digest row
+itself holds cleanup intent and any retryable deletion error. Cleanup syncs the
+digest parent before deleting the ownership row, including on retry when the digest
+directory is already gone. Publication and release commit
+their final row states atomically, so neither operation needs a separately committed
+intermediate state. Startup releases provisional
+claims and reclaims marked pending and lease directories. A submission still capturing
+after restart can replace its released claim in a new promotion transaction, even when
+another active submission holds the original digest. A publication intent beside the
+candidate identifies a rename interrupted before database commit. If installing an owner
+marker fails, the allocator removes the temporary directory it just created. Before
+sealing or writing a lease, it flushes the marker and syncs the allocation directory
+and its parents through the directory containing the artifact root. Failed seal and
+materialization attempts relinquish their temporary directories even if removal fails.
+Once the payload is gone, a durable link to the owner marker survives outside the
+directory until removal completes. Recovery checks the directory device and inode
+before retrying a removal interrupted by daemon exit.
+Maintenance can then retry cleanup using their ownership markers. Periodic maintenance
+skips live candidates and leases. Reconciliation inspects existing directories and leaves
+unused artifact storage absent. Its failures log `repository_reconcile_failed` independently
+of Workflow retention results. Artifact operation logs record the underlying error code
+or class, including failures to clean up a digest or an abandoned candidate or lease.
+Callers receive `artifact_unavailable`. Unknown filesystem entries are counted for investigation.
+The cleanup transaction rechecks ownership before removing digest files.
 
 For truncated history, the materializer supplies a `shallow` file containing exactly the
 frontier commit ids, one per line. Blame checks this boundary before walking. A merge at the

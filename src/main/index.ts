@@ -33,7 +33,8 @@ import { startForeman, type ForemanController } from "./foreman.ts";
 import { foremanLogPath } from "../server/foreman/decision-log.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
-import { createTray, destroyTray } from "./tray.ts";
+import { createTray, destroyTray, setTrayVoice } from "./tray.ts";
+import { startShellVoice } from "./voice-state.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
@@ -120,6 +121,7 @@ const paths = {
   trayIcon: join(appRoot, "build", "trayTemplate.png"),
 };
 
+let voice: ReturnType<typeof startShellVoice> | null = null;
 let backgroundStart: BackgroundStartOwnership<DaemonController, ForemanController> | null = null;
 let updater: UpdateController | null = null;
 let stopUpdateSubscription: (() => void) | null = null;
@@ -227,6 +229,13 @@ function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
 }
 
 function registerIpc(updateController: UpdateController): void {
+  ipcMain.handle("mission:voice-microphone", (event, action?: string) => {
+    if (event.sender === getMainWindow()?.webContents && event.senderFrame === event.sender.mainFrame) {
+      if (!voice) return "unavailable";
+      return action === "check" ? voice.checkMicrophone() : voice.fixMicrophone();
+    }
+    return "unavailable";
+  });
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("mission:install-integrations", () => {
@@ -320,8 +329,8 @@ function stopShell(): void {
  * where workflow checks are torn down. `holdQuitUntilDrained` (`quit-drain.ts`) says why every
  * quit must wait for it.
  */
-function drainBackground(): Promise<void> {
-  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS).then((result) => {
+async function drainBackground(): Promise<void> {
+  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS, voice).then((result) => {
     if (result === "timed-out") logMain(`background processes did not exit within ${BACKGROUND_DRAIN_TIMEOUT_MS}ms of quitting; leaving them to Electron`);
   });
 }
@@ -456,7 +465,8 @@ app.whenReady().then(async () => {
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
-  createTray(paths.trayIcon, {
+  createTray(paths.trayIcon, join(appRoot, "dist", "main"), {
+    setMuted: async muted => voice?.mute(muted) ?? false,
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,
     onInstallIntegrations: () => {
@@ -472,6 +482,9 @@ app.whenReady().then(async () => {
       app.quit();
     },
   });
+  if (process.platform === "darwin" && !isQuitting()) {
+    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice);
+  }
   void updaterStart;
 
   // Retain startup failure handling and process ownership; the window owns health polling.

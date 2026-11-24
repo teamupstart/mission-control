@@ -60,6 +60,11 @@ The daemon checks the open file's size before allocating its read buffer and ret
 capture if the file grows or shrinks during the read. For Git objects, it requests the
 type and size before requesting any payload, including objects needed only by the index,
 HEAD or source base. An oversized required payload fails the whole capture.
+Loose Git objects are opened under a held descriptor for the source object directory
+and inflated from that file. The private Git process reads packs and indexes through
+inherited file descriptors. It has no source object directory or alternates to follow.
+Capture can pin up to 256 pack/index pairs. This bounds the file descriptors held for
+a single capture, including when the checkout and artifact are on different volumes.
 All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
 storage allowance, including their Git headers. Capture checks the combined blob sizes
 before copying any blob. Pending candidates and private reader leases share a 2 GiB
@@ -152,6 +157,9 @@ another active submission holds the original digest. A publication intent beside
 candidate identifies a rename interrupted before database commit. If installing an owner
 marker fails, the allocator removes the temporary directory it just created. Failed seal and
 materialization attempts relinquish their temporary directories even if removal fails.
+Once the payload is gone, a durable link to the owner marker survives outside the
+directory until removal completes. Recovery checks the directory device and inode
+before retrying a removal interrupted by daemon exit.
 Maintenance can then retry cleanup using their ownership markers. Periodic maintenance
 skips live candidates and leases. Reconciliation inspects existing directories and leaves
 unused artifact storage absent. Its failures log `repository_reconcile_failed` independently

@@ -1,7 +1,9 @@
 import { spawn, execFile } from "node:child_process";
+import { closeSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MAX_CAPTURE_OBJECT_BYTES, oid, unavailable } from "./format.ts";
+import { oid, unavailable } from "./format.ts";
+import { checkedObjectSize, looseMatches, openObjectRoot, pinPacks, readLoose } from "./object-source.ts";
 import { expansionExceeded } from "./path-budget.ts";
 
 const env = {
@@ -106,8 +108,9 @@ export async function openObjectReader(
   wrapper: string,
   objects: string,
   sha256: boolean,
-  signal: AbortSignal,
+  captureSignal: AbortSignal,
 ) {
+  const signal = AbortSignal.any([captureSignal, AbortSignal.timeout(10 * 60_000)]);
   await mkdir(join(wrapper, "refs"), { recursive: true });
   await mkdir(join(wrapper, "objects"));
   await writeFile(join(wrapper, "HEAD"), "ref: refs/heads/unborn\n");
@@ -116,16 +119,21 @@ export async function openObjectReader(
       join(wrapper, "config"),
       "[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectFormat = sha256\n",
     );
-  const child = spawn(executable, [...flags, "--git-dir", wrapper, "cat-file", "--batch-command"], {
-    cwd: wrapper,
-    env: { ...env, GIT_OBJECT_DIRECTORY: objects },
-    signal,
-    timeout: 10 * 60_000,
-    stdio: ["pipe", "pipe", "ignore"],
-  });
-  child.on("error", () => child.stdout.destroy());
-  child.stdin.on("error", () => child.stdout.destroy());
-  const iterator = child.stdout[Symbol.asyncIterator]();
+  const root = openObjectRoot(objects);
+  const start = async () => {
+    const packs = await pinPacks(root, wrapper, signal);
+    try {
+      return spawn(executable, [...flags, "--git-dir", wrapper, "cat-file", "--batch-command"], {
+        cwd: wrapper, env, signal, stdio: ["pipe", "pipe", "ignore", ...packs],
+      });
+    } finally { for (const fd of packs) closeSync(fd); }
+  };
+  const child = await start().catch(error => { closeSync(root); throw error; });
+  // The variable-length tail carries pack handles. The first two slots are always pipes.
+  const stdin = child.stdin!, stdout = child.stdout!;
+  child.on("error", () => stdout.destroy());
+  stdin.on("error", () => stdout.destroy());
+  const iterator = stdout[Symbol.asyncIterator]();
   let rest = Buffer.alloc(0);
   async function fill() {
     if (!rest.length) {
@@ -134,9 +142,9 @@ export async function openObjectReader(
       rest = chunk.value;
     }
   }
-  async function readHeader(command: "info" | "contents", id: string, type: string) {
+  async function query(command: "info" | "contents", id: string) {
     signal.throwIfAborted();
-    child.stdin.write(`${command} ${id}\n`);
+    stdin.write(`${command} ${id}\n`);
     let header = "";
     for (;;) {
       await fill();
@@ -147,18 +155,33 @@ export async function openObjectReader(
       if (header.length > 150) unavailable();
       if (nl >= 0) break;
     }
-    const [got, kind, length] = header.split(" ");
+    return header;
+  }
+  async function readHeader(command: "info" | "contents", id: string, type: string) {
+    const [got, kind, length] = (await query(command, id)).split(" ");
     const size = Number(length);
     if (got !== id || kind !== type || !Number.isSafeInteger(size) || size < 0) unavailable();
     return size;
   }
   return {
+    async resolvePrefix(prefix: string) {
+      const matches = new Set(await looseMatches(root, prefix, sha256 ? 64 : 40));
+      const header = await query("info", prefix);
+      if (header !== prefix + " missing") {
+        const id = oid.parse(header.split(" ")[0]);
+        if (!id.startsWith(prefix)) unavailable();
+        matches.add(id);
+      }
+      if (matches.size !== 1) return unavailable();
+      return [...matches][0]!;
+    },
     async get(id: string, type: string, info = false) {
       oid.parse(id);
+      const loose = await readLoose(root, id, type, info, signal);
+      if (loose) return loose;
       const size = await readHeader("info", id, type);
       if (info) return { size, data: Buffer.alloc(0) };
-      if (size > MAX_CAPTURE_OBJECT_BYTES)
-        throw Object.assign(new Error("Git object exceeds capture limit"), { code: "git_object_too_large" });
+      checkedObjectSize(size);
       if (await readHeader("contents", id, type) !== size) unavailable();
       const data = Buffer.allocUnsafe(size);
       for (let offset = 0; offset < size;) {
@@ -173,7 +196,8 @@ export async function openObjectReader(
       return { size, data };
     },
     close() {
-      child.stdin.end();
+      closeSync(root);
+      stdin.end();
       child.kill();
     },
   };

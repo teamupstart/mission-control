@@ -5,6 +5,7 @@ import {
   existsSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -77,24 +78,47 @@ function publishedFiles(path: string) {
   return files;
 }
 
+const cleanupTicket = /^([a-f0-9-]{36})\.(\d+)\.(\d+)\.cleanup$/;
+
+function finishRemoval(parent: string, ticket: string) {
+  const match = cleanupTicket.exec(ticket) ?? unavailable();
+  const id = z.uuid().parse(match[1]);
+  const proof = join(parent, ticket);
+  const linked = lstatSync(proof, { bigint: true });
+  if (!linked.isFile()) unavailable();
+  const marker = markerSchema.parse(JSON.parse(readFileSync(proof, "utf8")));
+  if (marker.id !== id || marker.kind !== basename(parent)) unavailable();
+  const path = join(parent, id);
+  const dir = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (dir) {
+    if (!dir.isDirectory() || String(dir.dev) !== match[2] || String(dir.ino) !== match[3]) unavailable();
+    const owner = join(path, "owner.json");
+    const inside = lstatSync(owner, { bigint: true, throwIfNoEntry: false });
+    if (inside) {
+      if (inside.dev !== linked.dev || inside.ino !== linked.ino) unavailable();
+      syncDirectory(parent);
+      unlinkSync(owner);
+    }
+    rmdirSync(path);
+  }
+  syncDirectory(parent);
+  unlinkSync(proof);
+  return path;
+}
+
 function removeMarkedDirectory(path: string) {
   const owner = join(path, "owner.json");
   for (const name of readdirSync(path)) {
     if (name !== "owner.json") rmSync(join(path, name), { recursive: true });
   }
-  // Keep the ownership proof until every payload entry is gone. If final removal
-  // fails, leave the same directory marked for the next reconciliation.
-  const directory = lstatSync(path);
-  const marker = readFileSync(owner);
-  unlinkSync(owner);
-  try {
-    rmdirSync(path);
-  } catch (error) {
-    const current = lstatSync(path, { throwIfNoEntry: false });
-    if (current?.dev === directory.dev && current.ino === directory.ino)
-      writeFileSync(owner, marker, { flag: "wx", mode: 0o600 });
-    throw error;
-  }
+  // Keep a durable link to the marker outside the directory until its removal
+  // is durable. The directory identity prevents a replay from removing a replacement.
+  const dir = lstatSync(path, { bigint: true });
+  const parent = dirname(path);
+  const ticket = basename(path) + "." + dir.dev + "." + dir.ino + ".cleanup";
+  syncDirectory(path);
+  linkSync(owner, join(parent, ticket));
+  finishRemoval(parent, ticket);
 }
 
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
@@ -427,8 +451,24 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       for (const kind of ["pending", "leases"] as const) {
         const directory = this.namespace(kind, false);
         if (!directory) continue;
-        for (const id of readdirSync(directory)) {
-          if (this.live.has(id)) continue;
+        const names = readdirSync(directory);
+        const removing = new Set<string>();
+        for (const name of names) {
+          const ticket = cleanupTicket.exec(name);
+          if (!ticket) continue;
+          removing.add(ticket[1]!);
+          try {
+            if (this.live.has(ticket[1]!)) unavailable();
+            const path = finishRemoval(directory, name);
+            this.storage.release(path);
+            deleted++;
+          } catch (error) {
+            workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });
+            orphans++;
+          }
+        }
+        for (const id of names) {
+          if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id)) continue;
           try {
             const path = this.marked(kind, id);
             if (kind === "pending") await this.recoverPromotion(path);

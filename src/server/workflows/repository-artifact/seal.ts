@@ -1,7 +1,7 @@
 import { locateExecutable } from "../../executables/locator.ts";
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdir, lstat, realpath } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   enqueueHistoryParents,
@@ -17,7 +17,7 @@ import {
   workingFile,
   type Layer,
 } from "./checkout.ts";
-import { checkoutGit, openObjectReader } from "./git.ts";
+import { openObjectReader } from "./git.ts";
 import { RepositoryArtifactStorage } from "./storage.ts";
 import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import {
@@ -89,19 +89,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   const git = await locateExecutable("git");
   if (!git) return unavailable();
   const state = await sample(git.path, input.checkout, signal, limits);
-  const { index, head, format, root, common } = state;
+  const { index, head, format, common } = state;
   // Workflow displays an abbreviated id. Expand that exact selection while the checkout
   // is still sampled, refusing ambiguous prefixes and never resolving a moving branch.
   let base = input.sourceBase ?? head;
   if (base !== null) {
     const width = format === "sha1" ? 40 : 64;
     if (!/^[0-9a-f]{4,64}$/.test(base) || base.length > width) unavailable();
-    if (base.length < width) {
-      // --disambiguate searches object ids only. A same-named ref cannot redirect a
-      // short display id, and multiple matches are refused by the single-id parser.
-      const matches = await checkoutGit(git.path, root, ["rev-parse", "--disambiguate=" + base], signal);
-      base = oid.parse(matches.toString().trim());
-    }
   }
   const pathPolicy = new Map<string, boolean>();
   const allowed = (key: string) => {
@@ -111,16 +105,6 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   const output = join(pending, "artifact");
   await mkdir(output);
   const objects = join(common, "objects");
-  if ((await realpath(objects)) !== objects) unavailable();
-  for (const file of ["info/alternates", "info/http-alternates"]) {
-    if (
-      await lstat(join(objects, file)).catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-        return null;
-      })
-    )
-      unavailable();
-  }
   const reader = await openObjectReader(
     git.path,
     join(pending, "wrapper"),
@@ -288,6 +272,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
   }
 
   try {
+    if (base && base.length < state.emptyBlob.length) base = await reader.resolvePrefix(base);
     let headLayer: Layer = new Map();
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;

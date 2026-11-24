@@ -747,12 +747,69 @@ for (const kind of ["pending", "leases"] as const) {
     ]);
     const dir = join(f.root, kind);
     const leftovers = readdirSync(dir);
-    assert.equal(leftovers.length, 1);
-    assert.ok(existsSync(join(dir, leftovers[0]!, "owner.json")));
+    if (kind === "pending") {
+      assert.equal(leftovers.length, 1);
+      assert.ok(existsSync(join(dir, leftovers[0]!, "owner.json")));
+    } else {
+      assert.equal(leftovers.length, 2);
+      assert.ok(leftovers.some(name => name.endsWith(".cleanup")));
+    }
     assert.deepEqual(await f.service.reconcile(), { deleted: 1, orphans: 0 });
     assert.deepEqual(readdirSync(dir), []);
     const lease = await f.service.materialize(f.request(snapshot), signal);
     await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
+
+for (const kind of ["pending", "leases"] as const) {
+  test(`cleanup ownership survives process exit ${kind === "pending" ? "before" : "after"} removing a ${kind} directory`, async (t) => {
+    const f = fixture(t);
+    f.write("file", "submitted");
+    const snapshot = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    const request = f.request(snapshot);
+    assert.throws(() => execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { join } from "node:path";
+      import { syncBuiltinESMExports } from "node:module";
+      import { WorkflowStore } from "./src/server/workflows/store.ts";
+      import { WorkflowRepositoryArtifactService } from "./src/server/workflows/repository-artifact/service.ts";
+      const [root, checkout, kind, json] = process.argv.slice(1);
+      const request = JSON.parse(json), signal = new AbortController().signal;
+      const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+      service.setActiveRequestLookup(() => request);
+      const allocation = kind === "pending" ? await service.prepare({ checkout, sourceBase: null }, signal)
+        : await service.materialize(request, signal);
+      const path = kind === "pending" ? join(fs.realpathSync(root), kind, allocation.id) : allocation.objectDirectory;
+      const remove = fs.rmdirSync;
+      fs.rmdirSync = (...args) => {
+        if (args[0] !== path) return remove(...args);
+        if (kind === "leases") remove(...args);
+        process.exit(71);
+      };
+      syncBuiltinESMExports();
+      if (kind === "pending") await service.discard(allocation);
+      else await allocation.release();
+    `, f.root, f.checkout, kind, JSON.stringify(request)]), { status: 71 });
+    const parent = join(f.root, kind);
+    const ticket = readdirSync(parent).find(name => name.endsWith(".cleanup"));
+    assert.ok(ticket);
+    const path = join(parent, ticket.split(".")[0]!);
+    if (kind === "pending") {
+      assert.deepEqual(readdirSync(path), []);
+      const original = join(f.checkout, "..", "interrupted-removal");
+      renameSync(path, original);
+      mkdirSync(path);
+      assert.equal((await f.service.reconcile()).orphans, 1);
+      assert.deepEqual(readdirSync(path), []);
+      assert.ok(existsSync(join(parent, ticket)));
+      rmSync(path, { recursive: true });
+      renameSync(original, path);
+    } else assert.equal(existsSync(path), false);
+    assert.deepEqual(await f.service.reconcile(), { deleted: 1, orphans: 0 });
+    assert.deepEqual(readdirSync(parent), []);
     await f.service.release(snapshot.submissionId);
     await f.service.reconcile();
   });
@@ -1267,6 +1324,50 @@ function objects(checkout: string) {
     },
   };
 }
+
+test("object reads refuse linked loose files, fanout directories, pack files, indexes and alternates", async (t) => {
+  const f = fixture(t);
+  f.write("a", "fixture bytes");
+  f.git("add", "a");
+  f.git("commit", "-qm", "contained object");
+  const head = f.git("rev-parse", "HEAD");
+  const objects = join(f.checkout, ".git", "objects");
+  async function requiresOrdinary(path: string) {
+    const held = join(f.checkout, "..", "held");
+    renameSync(path, held);
+    symlinkSync(held, path);
+    try {
+      await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+      assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+    } finally {
+      rmSync(path);
+      renameSync(held, path);
+    }
+  }
+  const fanout = join(objects, head.slice(0, 2));
+  await requiresOrdinary(join(fanout, head.slice(2)));
+  await requiresOrdinary(fanout);
+  await f.service.discard(await f.prepare(head.slice(0, 9)));
+  f.git("repack", "-ad");
+  const pack = join(objects, "pack");
+  for (const ext of [".idx", ".pack"]) await requiresOrdinary(join(pack, readdirSync(pack).find(s => s.endsWith(ext))!));
+  for (const name of ["alternates", "http-alternates"]) {
+    const path = join(objects, "info", name);
+    writeFileSync(path, "");
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    rmSync(path);
+  }
+  const packed = await f.prepare(head.slice(0, 9));
+  const snapshot = await f.service.promote(packed, f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(f.checkout, { recursive: true });
+  const lease = await f.service.materialize(f.request(snapshot), signal);
+  assert.deepEqual(lease.descriptor.retainedRevisions.map(e => e.id), [head]);
+  assert.equal(lease.descriptor.base, head);
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
 
 test("a depth-two clone seals its declared frontier, rejects a missing undeclared parent and reads after deletion", async (t) => {
   const f = fixture(t);

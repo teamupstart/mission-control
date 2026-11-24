@@ -28,8 +28,12 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   `, {mode: 0o755});
   let events: ServerResponse | undefined;
   let connects = 0;
+  let reconnectSnapshot: string | undefined;
   const requests: boolean[] = [];
+  let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
+  let holdReport = false;
+  let heldReport: ServerResponse | undefined;
   const server = createServer(async (req, res) => {
     if (req.url === "/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -37,12 +41,24 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       connects++;
       res.flushHeaders();
       if (connects === 1) res.write('data: {"type":"snapshot"}\n\n');
+      else if (reconnectSnapshot) res.write("data: " + reconnectSnapshot + "\n\n");
       return;
     }
     let body = "";
     for await (const chunk of req) body += chunk;
-    if (req.url === "/api/voice/mute") requests.push(JSON.parse(body).muted);
-    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === "fixture") reports.push(JSON.parse(body));
+    if (req.url === "/api/voice/mute") {
+      requests.push(JSON.parse(body).muted);
+      if (muteResponse === "timeout") return;
+      if (muteResponse === "refused") res.statusCode = 503;
+    }
+    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === "fixture") {
+      reports.push(JSON.parse(body));
+      if (holdReport) {
+        holdReport = false;
+        heldReport = res;
+        return;
+      }
+    }
     res.end(JSON.stringify({ counts: { needsYou: 2 } }));
   });
   server.listen(0, "127.0.0.1");
@@ -82,9 +98,10 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
           setImage(image);
         };
         let labels = [];
-        tray.popUpContextMenu = menu => { labels = menu.items.map(item => item.label); };
+        let lastMenu;
+        tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice);
-        global.fixture = { tray, voice, captures, calls, configurePermission, get labels() { return labels; }, get opens() { return opens; } };
+        global.fixture = { tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -96,7 +113,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<void>}; calls: string[]; configurePermission(status: string, answer: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -105,8 +122,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   const click = (event: string) => app.evaluate((_, name) => {
     (globalThis as unknown as {fixture: Fixture}).fixture.tray.emit(name);
   }, event);
-  async function until(predicate: () => boolean | Promise<boolean>) {
-    const deadline = Date.now() + 10_000;
+  async function until(predicate: () => boolean | Promise<boolean>, timeout = 10_000) {
+    const deadline = Date.now() + timeout;
     while (!(await predicate())) {
       assert.ok(Date.now() < deadline, "timed out waiting for shell state");
       await new Promise(resolve => setTimeout(resolve, 40));
@@ -135,6 +152,50 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assert.equal(new Set(images).size, 4);
   await click("click");
   assert.equal((await read()).opens, 2);
+  assert.equal(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.fixMicrophone()), "unavailable");
+  await t.test("rapid tray clicks send one request until the published mute state changes", async () => {
+    const publish = (mode: VoiceMode) => events!.write("data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n");
+    publish("listening");
+    await until(async () => (await read()).mode === "listening");
+    const since = requests.length;
+    await click("click");
+    await click("click");
+    await until(() => requests.length > since);
+    // The fixture has accepted the POST and deliberately withholds its state event.
+    await click("click");
+    await click("right-click");
+    await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.clickMenu("Mute Voice"));
+    publish("muted");
+    await until(async () => (await read()).mode === "muted");
+    await click("click");
+    await until(() => requests.at(-1) === false);
+    assert.deepEqual(requests.slice(since), [true, false]);
+    publish("off");
+    await until(async () => (await read()).mode === "off");
+  });
+  await t.test("the tray opens with feedback on a refused mute or timeout and supports a menu retry", async () => {
+    for (const response of ["refused", "timeout"] as const) {
+      muteResponse = response;
+      const mode = response === "refused" ? "listening" : "muted";
+      events!.write("data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n");
+      await until(async () => (await read()).mode === mode);
+      await click("click");
+      const action = mode === "listening" ? "Mute" : "Unmute";
+      const error = action + " not confirmed. Try again.";
+      await until(async () => (await read()).labels.includes(error));
+      assert.equal((await read()).mode, mode);
+      muteResponse = "ok";
+      const since = requests.length;
+      await app.evaluate((_, label) => (globalThis as unknown as {fixture: Fixture}).fixture.clickMenu(label), action + " Voice");
+      await until(() => requests.length > since);
+      assert.equal(requests.at(-1), mode === "listening");
+      await until(async () => { await click("right-click"); return !(await read()).labels.includes(error); });
+      if (mode === "listening") {
+        // A successful POST without its confirmation event eventually offers retry, too.
+        await until(async () => (await read()).labels.includes(error));
+      }
+    }
+  });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode: "unavailable" } }) + "\n\n");
   await until(async () => (await read()).mode === "unavailable");
   await t.test("microphone repair retries a rejected prompt, reports denial, opens Privacy settings and reports a grant", async () => {
@@ -158,6 +219,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     since = reports.length;
     await fix();
     await expectReport(since, "denied");
+    // Check again reports the OS change immediately and never opens Settings or asks for access.
+    await configure("granted", "reject");
+    since = reports.length;
+    assert.equal(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone()), "checked");
+    assert.equal(reports.slice(since).at(-1)?.microphone, "granted");
     await configure("not-determined", "granted");
     since = reports.length;
     await fix();
@@ -165,25 +231,60 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.deepEqual(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.calls), [
       "microphone", "microphone", "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone", "microphone",
     ]);
-    await configure("not-determined", "granted"); // Exercise automatic permission at model readiness too.
+    await configure("not-determined", "reject");
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
   await until(async () => (await read()).mode === "off");
+  await t.test("a delayed shell report coalesces queued updates and samples current permission before the next POST", async t => {
+    const event = (mode: VoiceMode) => "data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n";
+    t.after(async () => {
+      holdReport = false;
+      if (heldReport && !heldReport.writableEnded) heldReport.end();
+      events!.write(event("off"));
+      await until(async () => (await read()).mode === "off");
+      await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.configurePermission("not-determined", "reject"));
+    });
+    const since = reports.length;
+    holdReport = true;
+    events!.write(event("unavailable"));
+    await until(() => !!heldReport);
+    events!.write(event("listening") + event("muted"));
+    await until(async () => (await read()).mode === "muted");
+    // Permission changes after the queued state events and before the first POST completes.
+    await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.configurePermission("granted", "granted"));
+    assert.equal(reports.length, since + 1, "queued reports wait for the outstanding POST");
+    heldReport!.end();
+    await until(() => reports.length >= since + 2);
+    assert.deepEqual(reports.slice(since, since + 2).map(report => report.microphone), ["not-determined", "granted"]);
+  });
   const ready = { ...voiceStateOff(), mode: "unavailable", model: {
     ...voiceStateOff().model, status: "ready", backend: "fluidaudio", directory: "/verified-model",
   } };
   assert.equal(existsSync(join(root, "started")), false);
-  events!.write("data: " + JSON.stringify({type: "voice_state", state: ready}) + "\n\n");
-  await until(() => existsSync(join(root, "started")));
+  await t.test("an automatic prompt rejection backs off and retries on a heartbeat while permission remains undetermined", async () => {
+    const calls = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.calls.length);
+    const before = await calls();
+    const update = "data: " + JSON.stringify({type: "voice_state", state: ready}) + "\n\n";
+    events!.write(update);
+    await until(async () => (await calls()) === before + 1);
+    await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.configurePermission("not-determined", "granted"));
+    const reportCount = reports.length;
+    events!.write(update);
+    await until(() => reports.length > reportCount);
+    assert.equal(await calls(), before + 1);
+    assert.equal(existsSync(join(root, "started")), false);
+    await until(() => existsSync(join(root, "started")), 15_000);
+    assert.equal(await calls(), before + 2);
+  });
   assert.deepEqual(JSON.parse(readFileSync(join(root, "started"), "utf8")),
     ["/verified-model", join(root, "token"), `http://127.0.0.1:${address.port}`]);
+  const pids = () => readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number);
+  const exited = (pid: number) => {
+    try { process.kill(pid, 0); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+  };
   await t.test("a broken stream terminates the active listener before a reconnect snapshot starts its replacement", async () => {
-    const pids = () => readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number);
     const [first] = pids();
-    const exited = (pid: number) => {
-      try { process.kill(pid, 0); return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
-    };
     assert.equal(exited(first!), false);
     events!.destroy();
     await until(() => exited(first!));
@@ -197,6 +298,35 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(exited(second), false);
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
+  });
+  await t.test("malformed events stop the active child and reconnect for a fresh snapshot without another state change", async () => {
+    const snapshot = JSON.stringify({type: "snapshot", voice: ready});
+    const send = (data: string) => events!.write("data: " + data + "\n\n");
+    const initialChildren = pids().length;
+    reconnectSnapshot = snapshot;
+    send(snapshot);
+    await until(() => pids().length === initialChildren + 1);
+    for (const invalid of [
+      "{", "null", JSON.stringify({type: "voice_state"}),
+      JSON.stringify({type: "voice_state", state: {...ready, mode: "unexpected"}}),
+      JSON.stringify({type: "snapshot", voice: {...ready, model: null}}),
+      JSON.stringify({type: "snapshot", voice: {...ready, model: {...ready.model, directory: "/bad\0path"}}}),
+    ]) {
+      const count = pids().length;
+      const streamCount = connects;
+      const pid = pids().at(-1)!;
+      send(invalid);
+      await until(async () => (await read()).mode === "off");
+      await until(() => exited(pid));
+      await until(() => pids().length === count + 1);
+      assert.equal(connects, streamCount + 1);
+    }
+    // A snapshot without voice is valid. It should stay off on the same connection.
+    const streamCount = connects;
+    send(JSON.stringify({type: "snapshot"}));
+    await until(async () => (await read()).mode === "off");
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal(connects, streamCount);
   });
   if (process.env.MC_EVIDENCE_DIR) {
     mkdirSync(process.env.MC_EVIDENCE_DIR, {recursive: true});

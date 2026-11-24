@@ -9,12 +9,13 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const models: string[] = [];
   const signals: string[] = [];
+  const diagnostics: string[] = [];
   let child = new EventEmitter();
   const listener = new VoiceListener(directory => {
     models.push(directory);
     child = new EventEmitter();
     return Object.assign(child, { kill: (signal: string) => signals.push(signal) }) as unknown as ChildProcess;
-  });
+  }, line => diagnostics.push(line));
   const state: VoiceState = voiceStateOff();
   listener.update(state, true);
   state.mode = "unavailable";
@@ -26,6 +27,7 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   state.mode = "muted";
   listener.update(state, true);
   assert.deepEqual(models, ["/model/a"]);
+  child.emit("error", Object.assign(new Error("spawn path should stay private"), {code: "EACCES"}));
   child.emit("close", 1);
   t.mock.timers.tick(499);
   assert.equal(models.length, 1);
@@ -50,6 +52,7 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   assert.equal(signals.at(-1), "SIGKILL");
   child.emit("close", 0);
   await stopped;
+  assert.deepEqual(diagnostics, ["Voice listener failed to launch (EACCES)", "Voice listener exited (1)"]);
   assert.ok(drained);
   listener.update(state, true);
   t.mock.timers.tick(5000);

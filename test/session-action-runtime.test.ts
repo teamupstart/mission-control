@@ -165,6 +165,7 @@ interface HarnessOptions {
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
   probeEvidence?: boolean;
+  publicationCheckoutRevision?: WorkflowManagerOptions["publicationCheckoutRevision"];
   readEvidenceProbe?: WorkflowManagerOptions["readEvidenceProbe"];
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
@@ -223,6 +224,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const managerOptions: WorkflowManagerOptions = {
     trackCiFailures: options.trackCiFailures,
+    publicationCheckoutRevision: options.publicationCheckoutRevision ?? (() => contentTree.oid),
     resumptionSettleMs: options.resumptionSettleMs,
     ...(options.probeEvidence ? { readEvidenceProbe: async (_registry, binding) => ({
       stagedImageGeneration: store.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""),
@@ -1765,61 +1767,71 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
   });
 }
 
-test("a checkout edited while its sibling publication probe is pending earns a fresh review", async () => {
-  const sibling = "/second-probed-publication";
-  let releaseSibling!: () => void;
-  const held = new Promise<void>(resolve => { releaseSibling = resolve; });
-  const probes: string[] = [];
-  let primaryEdited = false;
-  const h = await harness("two-published-checkouts", {
-    pullRequest: true, readEvidenceProbe: async (_registry, binding) => {
-      const cwd = binding.sessionCwd!;
-      probes.push(cwd);
-      if (cwd === sibling) await held;
-      return { headSha: h.head.sha, workingTreeStatus: [], diffFingerprint: `diff-${h.head.sha}`,
-        contentTreeOid: cwd === "/repo" && primaryEdited ? h.full("late-edit") : h.contentTree.oid };
-    },
+for (const timing of ["during the sibling probe", "immediately before the claim"] as const) {
+  test(`a checkout edited ${timing} earns a fresh review`, async t => {
+    const sibling = "/second-probed-publication";
+    let releaseSibling!: () => void;
+    const held = new Promise<void>(resolve => { releaseSibling = resolve; });
+    const probes: string[] = [];
+    let primaryEdited = false;
+    const h = await harness(`two-published-checkouts-${timing.replaceAll(" ", "-")}`, {
+      publicationCheckoutRevision: cwd => cwd === "/repo" && primaryEdited ? "edited" : "published",
+      pullRequest: true, readEvidenceProbe: async (_registry, binding) => {
+        const cwd = binding.sessionCwd!;
+        probes.push(cwd);
+        if (cwd === sibling) await held;
+        return { headSha: h.head.sha, workingTreeStatus: [], diffFingerprint: `diff-${h.head.sha}`,
+          contentTreeOid: cwd === "/repo" && primaryEdited ? h.full("late-edit") : h.contentTree.oid };
+      },
+    });
+    try {
+      const base = h.full("base");
+      const task = mkTask({
+        id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+        branch: "feature", baseSha: base, provider: "git",
+        extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+          worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+      });
+      h.registry.upsertTask(task);
+      h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+      h.registry.recordWorktreeHeads(new Map([["/repo", h.full("one")], [sibling, h.full("two")]]));
+      const primaryId = await runToAction(h, true);
+      const note = h.store.getBinding(h.store.getRun(primaryId)!.bindingId)!.noteKey;
+      const siblingBinding = h.store.activeBindingForNoteRepo(note, sibling)!;
+      const siblingId = h.store.latestRunForBinding(siblingBinding.id)!.id;
+      for (const [id, root] of [[primaryId, "/repo"], [siblingId, sibling]] as const) {
+        h.repository.root = root;
+        await waitFor(() => h.store.listDeliveries(id).some(d => d.state === "delivered"), "no publication packet for " + root);
+        h.adoptPr({ repositoryRoot: root, key: root === sibling ? "owner/second#8" : "owner/repo#7",
+          number: root === sibling ? 8 : 7, url: root === sibling ? "https://github.com/owner/second/pull/8" : "https://github.com/owner/repo/pull/7" });
+        h.runActionTurn();
+        await h.manager.sweepSessionActions(SETTLED());
+        await waitFor(() => h.store.getRun(id)?.status === "completed", "publication did not complete for " + root);
+      }
+      const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      if (timing === "immediately before the claim") {
+        const reserve = h.store.claimForemanCompletions.bind(h.store);
+        t.mock.method(h.store, "claimForemanCompletions", (inputs: Parameters<typeof reserve>[0]) => {
+          primaryEdited = true;
+          return reserve(inputs);
+        });
+      }
+      const result = h.manager.claimCompletion(h.sessionId, {
+        completionKind: "prompted", marker: "b".repeat(64), summary: "Finished publication",
+        expectedWorkCycle: { logicalKey, generation }, evidenceFingerprint: "final-idle",
+        expectedIntent: { objective: "Publish the reviewed plan", objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
+      });
+      await waitFor(() => probes.includes(sibling) && probes.includes("/repo"), "both checkouts must be probed");
+      if (timing === "during the sibling probe") primaryEdited = true;
+      releaseSibling();
+      const claimed = await result;
+      assert.ok(claimed.claimed);
+      assert.notEqual(claimed.runId, primaryId);
+      assert.equal(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
+      assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
+    } finally { releaseSibling(); await h.stop(); }
   });
-  try {
-    const base = h.full("base");
-    const task = mkTask({
-      id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
-      branch: "feature", baseSha: base, provider: "git",
-      extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
-        worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
-    });
-    h.registry.upsertTask(task);
-    h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
-    h.registry.recordWorktreeHeads(new Map([["/repo", h.full("one")], [sibling, h.full("two")]]));
-    const primaryId = await runToAction(h, true);
-    const note = h.store.getBinding(h.store.getRun(primaryId)!.bindingId)!.noteKey;
-    const siblingBinding = h.store.activeBindingForNoteRepo(note, sibling)!;
-    const siblingId = h.store.latestRunForBinding(siblingBinding.id)!.id;
-    for (const [id, root] of [[primaryId, "/repo"], [siblingId, sibling]] as const) {
-      h.repository.root = root;
-      await waitFor(() => h.store.listDeliveries(id).some(d => d.state === "delivered"), "no publication packet for " + root);
-      h.adoptPr({ repositoryRoot: root, key: root === sibling ? "owner/second#8" : "owner/repo#7",
-        number: root === sibling ? 8 : 7, url: root === sibling ? "https://github.com/owner/second/pull/8" : "https://github.com/owner/repo/pull/7" });
-      h.runActionTurn();
-      await h.manager.sweepSessionActions(SETTLED());
-      await waitFor(() => h.store.getRun(id)?.status === "completed", "publication did not complete for " + root);
-    }
-    const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
-    const result = h.manager.claimCompletion(h.sessionId, {
-      completionKind: "prompted", marker: "b".repeat(64), summary: "Finished publication",
-      expectedWorkCycle: { logicalKey, generation }, evidenceFingerprint: "final-idle",
-      expectedIntent: { objective: "Publish the reviewed plan", objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
-    });
-    await waitFor(() => probes.includes(sibling) && probes.includes("/repo"), "both checkouts must be probed");
-    primaryEdited = true;
-    releaseSibling();
-    const claimed = await result;
-    assert.ok(claimed.claimed);
-    assert.notEqual(claimed.runId, primaryId);
-    assert.equal(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
-    assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
-  } finally { releaseSibling(); await h.stop(); }
-});
+}
 
 for (const change of ["session awaits CI", "repository binding becomes manual", "newer run is active", "newer run is cancelled",
   "sibling rerun supersedes matching checkout", "sibling rerun supersedes changed checkout"] as const) {
@@ -1949,6 +1961,8 @@ test("a transcript first observed during delivery retains post-send attribution 
     const throughDelivery = readFileSync(path, "utf8");
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
     assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery) }]);
+    const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
+    assert.ok(!workflowDeliveryLedger.rows(binding.noteKey).some(row => row.deliveryId === h.store.listDeliveries(runId)[0]!.id));
     forgetInjections(h.sessionId);
     writeFileSync(path, throughDelivery + turn("human-repeat", packet));
     for (const deliveries of [anchors, anchors.map(anchor => ({ ...anchor, receiptId: "unusable-prior-receipt" }))]) {
@@ -2004,6 +2018,9 @@ test("a delivered PR packet binds across an intervening human turn and preserves
     forgetDeliveryBindingState();
     assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.messageId, "workflow-packet");
     assert.deepEqual(decisions(), ["initial-ask", "intervening-human", "human-repeat"]);
+    writeFileSync(otherPath, original + turn("workflow-packet", packet, start + 2));
+    h.reportIdle(otherPath);
+    assert.deepEqual(decisions(), ["initial-ask", "workflow-packet"], "even the same native ID is scoped to the receipt's file");
   } finally { await h.stop(); }
 });
 

@@ -247,8 +247,9 @@ function openRows(noteKey: string, fingerprint: string, transcript?: SessionMess
 }
 
 /** Every turn of this conversation some ledger has already bound. */
-function claimedTurns(noteKey: string): Set<string> {
-  return new Set(ledgers.flatMap((ledger) => ledger.rows(noteKey).flatMap((row) => row.messageId === null ? [] : [row.messageId])));
+function claimedTurns(noteKey: string, transcript: SessionMessages | null): Set<string> {
+  return new Set(ledgers.flatMap(ledger => ledger.rows(noteKey).flatMap(row =>
+    row.messageId && ledger.acceptsTranscript(row, transcript) ? [row.messageId] : [])));
 }
 
 function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
@@ -257,12 +258,12 @@ function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
 
 type SpokenCandidate = (row: BindableDelivery) => boolean;
 
-function visibleSpokenCandidate(key: string, messages: readonly TranscriptMessage[]): SpokenCandidate {
+function visibleSpokenCandidate(key: string, messages: readonly TranscriptMessage[], transcript: SessionMessages | null): SpokenCandidate {
   let times: Map<string, number[]> | undefined;
   return row => {
     if (!times) {
       times = new Map();
-      const claimed = claimedTurns(key);
+      const claimed = claimedTurns(key, transcript);
       for (const m of messages) {
         if (m.role !== "user" || !m.text || isClaimed(m, claimed)) continue;
         const fingerprint = injectionFingerprint(m.text);
@@ -626,7 +627,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const fallbacks = new Set<string>();
     if (!version) return fallbacks;
     const now = Date.now();
-    const candidate = messages ? visibleSpokenCandidate(key, messages) : (row: Row) => this.deferredBindings.has(row.id);
+    const candidate = messages ? visibleSpokenCandidate(key, messages, transcript) : (row: Row) => this.deferredBindings.has(row.id);
     const pending = this.rows(key).filter(row => row.messageId === null && !row.contested && candidate(row));
     for (const row of pending) {
       while (current() && !this.bindLanded(key, transcript, now, { pagedRow: row.id })) await yieldToDaemon();
@@ -713,7 +714,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // A contested delivery's turn may already be among the matches below, and nothing says
     // which one it is, so no landed turn can be credited to the other sends: still in flight.
     if (openRows(conversation.key, fingerprint, conversation.transcript).some(({ row }) => row.contested || row.transcriptOffset === null)) return true;
-    const claimed = claimedTurns(conversation.key);
+    const claimed = claimedTurns(conversation.key, transcript);
     if (sends.some(send => send.spokenBoundary)) return settledSendInFlight(transcript, fingerprint, sends, claimed);
     let from = Math.min(...sends.map((send) => send.offset!));
     let landed = 0;
@@ -741,7 +742,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
-    const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
+    const claimed = rows.length ? claimedTurns(rows[0]!.noteKey, transcript) : new Set<string>();
     nextRow: for (const row of rows) {
       if (row.messageId !== null || row.contested || this.expired.has(row.id)) {
         this.deferredBindings.delete(row.id);
@@ -924,14 +925,14 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    */
   bound(conversation: DeliveryConversation | null | undefined, messages: readonly TranscriptMessage[], now = Date.now()): BoundTurns<Row> {
     const result: BoundTurns<Row> = { rows: new Map(), matched: new Set(), ambiguous: new Set() };
-    if (!conversation) return result;
-    const rows = this.rows(conversation.key);
+    if (!conversation || (this.store.acceptsTranscript && !conversation.transcript)) return result;
+    const rows = this.rows(conversation.key).filter(row => this.acceptsTranscript(row, conversation.transcript));
     if (!rows.length) return result;
     // Projection only needs spoken receipts that could own a turn on this page. A
     // candidate still searches forward from handoff, so a later visible copy cannot
     // steal an earlier native turn off screen. Reservations and pruning reconcile all rows.
     bindAll(conversation, now, this.store.textBoundary && !conversation.preparedSpokenFallbacks
-      ? visibleSpokenCandidate(conversation.key, messages) : undefined);
+      ? visibleSpokenCandidate(conversation.key, messages, conversation.transcript) : undefined);
     const fingerprints = new Set(rows.map((row) => row.fingerprint));
     // Deliveries that cannot be bound - contested, or sent without a known boundary. A turn with
     // their words written inside one's window could be that delivery, so no sender may be named

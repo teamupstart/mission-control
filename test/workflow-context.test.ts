@@ -44,6 +44,34 @@ const { forgetInjections, recordInjection } = await import("../src/server/inject
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { evaluateWorkflowEvidenceReadiness, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 
+test("a publication checkout revision detects content, inventory, index and HEAD changes", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "publication-revision");
+  seedGitRepo(dir);
+  const stamp = () => publicationCheckoutRevision(dir, []);
+  const clean = stamp();
+  assert.ok(clean);
+  assert.equal(stamp(), clean);
+  writeFileSync(join(dir, "keep.txt"), "edit\n");
+  const edited = stamp();
+  assert.ok(edited && edited !== clean);
+  writeFileSync(join(dir, "keep.txt"), "next\n");
+  assert.notEqual(stamp(), edited, "same-size tracked edit");
+  const unstaged = stamp();
+  execFileSync("git", ["-C", dir, "add", "keep.txt"]);
+  assert.notEqual(stamp(), unstaged, "staging changes the index identity");
+  const staged = stamp();
+  writeFileSync(join(dir, "untracked"), "one");
+  const added = stamp();
+  assert.ok(added && added !== staged);
+  writeFileSync(join(dir, "untracked"), "two");
+  assert.notEqual(stamp(), added, "same-size untracked edit");
+  const beforeCommit = stamp();
+  execFileSync("git", ["-C", dir, "commit", "-qm", "edit"]);
+  assert.notEqual(stamp(), beforeCommit);
+  assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
+});
+
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
   humanDecisions: [{

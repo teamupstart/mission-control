@@ -2880,7 +2880,7 @@ export type WorkflowContinuationReservation =
 
 export interface ForemanCompletionStoreInput {
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
-  publicationComparison?: { runId: string; unchanged: boolean };
+  publicationComparison?: { runId: string; stillMatches: () => boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -7336,7 +7336,7 @@ export class WorkflowStore {
           throw new Error("Workflow publication changed during completion comparison");
         }
       }
-      if (comparison?.unchanged) {
+      if (comparison?.stillMatches()) {
         // One follow-through per repository. Clearing the pin and consuming the shared
         // generation commit together. An identical retry is answered by duplicateEvent.
         const spent = this.db.prepare(
@@ -9449,6 +9449,11 @@ export class WorkflowStore {
     }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
+  private discardDeliveryReceipt(deliveryId: string, receiptId: string, now: number): void {
+    this.db.prepare("UPDATE workflow_delivery_turns SET discarded_at = ? WHERE id = ? AND delivery_id = ?")
+      .run(now, receiptId, deliveryId);
+  }
+
   finishDeliverySend(
     id: string,
     state: Extract<WorkflowDelivery["state"], "prepared" | "refused" | "uncertain">,
@@ -9457,10 +9462,7 @@ export class WorkflowStore {
     unsentReceiptId?: string,
   ): WorkflowDelivery | null {
     return this.mutate(() => {
-      if (unsentReceiptId) {
-        this.db.prepare("UPDATE workflow_delivery_turns SET discarded_at = ? WHERE id = ? AND delivery_id = ?")
-          .run(now, unsentReceiptId, id);
-      }
+      if (unsentReceiptId) this.discardDeliveryReceipt(id, unsentReceiptId, now);
       const result = this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = ?, error = ?, updated_at = ?
@@ -9478,8 +9480,10 @@ export class WorkflowStore {
     now = Date.now(),
     transcriptStart: number | null = null,
     receiptId?: string,
+    unusableReceiptId?: string,
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
+      if (unusableReceiptId) this.discardDeliveryReceipt(id, unusableReceiptId, now);
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);

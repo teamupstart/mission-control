@@ -1,3 +1,4 @@
+import { publicationCheckoutRevision } from "./publication-revision.ts";
 import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -382,6 +383,7 @@ export interface WorkflowManagerOptions {
    * checkout, and a workflow test must be able to drive the observer without one.
    */
   readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
+  publicationCheckoutRevision?: typeof publicationCheckoutRevision;
   /**
    * The three reads a completion adapter's proof is built from, injectable for the reason
    * every seam above is: two of them shell out to git in the session's checkout and the third
@@ -3931,16 +3933,7 @@ export class WorkflowManager {
     // independently, then revalidate ownership before spending the shared generation.
     const primaryCheckout = workflowCheckoutPath(anchor, session);
     const probes = targets.flatMap(target => this.publicationComparison(target, session, claim) ?? []);
-    const comparisons = probes.length ? await Promise.all(probes.map(async probe => ({
-      bindingId: probe.bindingId, runId: probe.runId, unchanged: await probe.matches(),
-    }))) : [];
-    // A fast checkout may change while a slower sibling is being read. Verify each
-    // proposed reuse against the accepted evidence once all initial probes have settled.
-    if (probes.length > 1) {
-      await Promise.all(comparisons.map(async (comparison, index) => {
-        if (comparison.unchanged) comparison.unchanged = await probes[index]!.matches();
-      }));
-    }
+    const comparisons = probes.length ? await Promise.all(probes) : [];
     if (probes.length) {
       session = this.currentCompletionSession(sessionId, claim);
       if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
@@ -4048,7 +4041,7 @@ export class WorkflowManager {
     binding: WorkflowBinding,
     session: Session,
     claim: WorkflowCompletionClaim,
-  ): { bindingId: string; runId: string; matches: () => Promise<boolean> } | null {
+  ): Promise<{ bindingId: string; runId: string; stillMatches: () => boolean }> | null {
     if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
     const run = this.store.latestRunForBinding(binding.id);
     const source = run?.intent?.intentSource;
@@ -4071,13 +4064,19 @@ export class WorkflowManager {
       : evidence.workingTreeDirty;
     if (unpublished) return null;
     // Missing repository proof cannot retire a new review opportunity.
-    return {
-      bindingId: binding.id, runId: run.id,
-      matches: () => this.probeRepository(binding, submission).then(
-        probe => Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence),
-        () => false,
-      ),
-    };
+    const checkout = context.data.session.cwd;
+    if (!checkout) return null;
+    const retained = publication?.localArtifacts ?? [];
+    const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
+    const before = revision(checkout, retained);
+    const owner = { bindingId: binding.id, runId: run.id };
+    return this.probeRepository(binding, submission).then(
+      probe => {
+        const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
+        return { ...owner, stillMatches: () => matches && revision(checkout, retained) === before };
+      },
+      () => ({ ...owner, stillMatches: () => false }),
+    );
   }
 
   /**
@@ -7127,7 +7126,9 @@ export class WorkflowManager {
       Date.now(),
       usableReceipt?.transcriptOffset ?? null,
       usableReceipt?.id,
+      usableReceipt ? undefined : receipt?.id,
     );
+    if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;
     // Settles the reservation above rather than adding to it: recording afresh would owe a
     // second echo for one delivery, and the surplus would be spent silencing a later human turn.

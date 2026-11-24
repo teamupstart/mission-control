@@ -72,25 +72,45 @@ test("YAML true needs no catalog override and defaults to ten runs and 45 minute
  const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--deep","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
 });
-test("CodeRabbit reuse requires an exact comparison and respects --fresh", async () => {
+test("CodeRabbit reuse requires an exact comparison and respects --fresh", async (t) => {
   const fresh = { ...comparison, command: ["coderabbit", "review", "--fresh"] };
   const cases = [
-    { prior: comparison, current: { ...comparison }, probes: 0 },
-    { prior: comparison, current: { ...comparison, head: "d".repeat(40) }, probes: 1 },
-    { prior: comparison, current: { ...comparison, severity: "minor" as const }, probes: 1 },
-    { prior: fresh, current: fresh, probes: 1 },
+    { name: "identical comparison reuses the pass", prior: comparison, current: { ...comparison }, runs: 0 },
+    { name: "changed head executes a fresh review", prior: comparison, current: { ...comparison, head: "d".repeat(40) }, runs: 1 },
+    { name: "changed severity executes a fresh review", prior: comparison, current: { ...comparison, severity: "minor" as const }, runs: 1 },
+    { name: "--fresh executes even on an identical comparison", prior: fresh, current: fresh, runs: 1 },
   ];
-  for (const { prior, current, probes } of cases) {
-    const i = input();
-    i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...cleanReview, comparison: prior } };
-    i.coderabbit!.comparison = async () => current;
-    let called = 0;
-    const d = deps();
-    const probe = d.codeRabbitProbe!;
-    d.codeRabbitProbe = () => { called++; return probe(); };
-    const result = await runCheck(i, d);
-    assert.equal(result.kind, "outcome");
-    assert.equal(called, probes);
+  for (const { name, prior, current, runs } of cases) {
+    await t.test(name, async (caseTest) => {
+      const i = input();
+      i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...cleanReview, comparison: prior } };
+      i.coderabbit!.comparison = async () => current;
+      const probe = caseTest.mock.fn(deps().codeRabbitProbe!);
+      const review = {
+        ...summary,
+        comparison: current,
+        counts: { ...cleanReview.counts, major: 1 },
+        titles: ["Fresh major finding"],
+      };
+      const execute = caseTest.mock.fn<NonNullable<CheckRunDeps["execute"]>>(async () => ({
+        kind: "exited", exitCode: 2, output: "fresh review output", truncatedBytes: 0, review,
+      }));
+      const result = await runCheck(i, { codeRabbitProbe: probe, execute });
+
+      assert.equal(result.kind, "outcome");
+      assert.equal(probe.mock.callCount(), runs);
+      assert.equal(execute.mock.callCount(), runs);
+      if (runs === 0) {
+        assert.equal(result.outcome.status, "passed");
+        assert.match(result.outcome.note, /Reused complete CodeRabbit review/);
+      } else {
+        assert.deepEqual(execute.mock.calls[0]?.arguments[0].coderabbit, current);
+        assert.equal(result.outcome.status, "failed");
+        assert.equal(result.outcome.exitCode, 2);
+        assert.equal(result.outcome.output, "fresh review output");
+        assert.deepEqual(result.outcome.review, { ...review, remainingRuns: 9 });
+      }
+    });
   }
 });
 const reuseFailures: Array<{

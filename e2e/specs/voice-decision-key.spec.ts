@@ -674,8 +674,11 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     ["openai", "write", "31-newer-provider-switch"],
     ["off", "write", "36-observed-off-then-jev"],
     ["off", "reservation", "38-observed-off-before-reservation"],
+    ["openai", "both reservations", "39-both-provider-reservations"],
   ] as const) {
-    test(`a later Jev ${heldAt} takes effect after the observed ${earlier} selection commits`, async ({ dashboard: page, context, daemon, decisions }) => {
+    const title = heldAt === "both reservations" ? "a later Jev click survives an OpenAI commit when both reservations were held"
+      : `a later Jev ${heldAt} takes effect after the observed ${earlier} selection commits`;
+    test(title, async ({ dashboard: page, context, daemon, decisions }) => {
       await turnVoiceOn(daemon);
       await codexAgents(daemon);
       await openVoiceSettings(page, daemon);
@@ -683,19 +686,19 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       const other = await context.newPage();
       await openVoiceSettings(other, daemon);
       await expect(providerMenu(other)).toHaveValue("auto");
-      const firstPut = await holdProviderRequest(page);
-      const jev = await holdProviderRequest(other, heldAt);
+      const first = await holdProviderRequest(page, heldAt === "both reservations" ? "reservation" : "write");
+      const jev = await holdProviderRequest(other, heldAt === "write" ? "write" : "reservation");
       try {
         await providerMenu(page).selectOption(earlier);
-        await firstPut.held;
+        await first.held;
         await providerMenu(other).selectOption("jev");
         await jev.held;
         const committed = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
-        firstPut.release();
+        first.release();
         expect((await committed).status()).toBe(200);
         await expect(line(page)).toHaveText(earlier === "off" ? NOT_SET : using("OpenAI Decisions"));
       } finally {
-        firstPut.release();
+        first.release();
         jev.release();
       }
       // The other window was already showing Jev while its PUT was pending.

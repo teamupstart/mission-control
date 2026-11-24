@@ -79,12 +79,12 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
   if (reservation && reservation.order > applied && !unchangedSince && !observedLatest && !followsGesture && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
     if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
   }
-  if (!canApply(writer, base)) {
+  if (!canApply(writer, base) && !followsGesture) {
     // The click saw the pending selection at its old revision. That same
     // selection committing before the request arrives keeps their order intact.
     const sawCommit = observedLatest && reservation?.order === applied && applied === issued &&
       base === reservation.appliedAtReservation;
-    if (!sawCommit && !(optOut && (followsGesture || (unchangedSince && observedLatest)))) return null;
+    if (!sawCommit && !(optOut && unchangedSince && observedLatest)) return null;
   }
   // A receipt establishes that this gesture followed the observed reservation,
   // even if that reservation's PUT has not updated the config yet.

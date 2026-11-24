@@ -242,6 +242,21 @@ test("shared browser click order survives delayed reservations in either arrival
   }
 });
 
+test("a later browser provider switch can cross its earlier commit but cannot cross a foreign commit", async () => {
+  for (const sameBrowser of [true, false]) {
+    const observedRevision = await readProviderRevision();
+    const group = randomUUID();
+    const reserve = (group: string, order: number) => json("/api/voice/config/provider-intent", "POST", {
+      writer: randomUUID(), observedRevision, gesture: { group, order }, edit: 1,
+    });
+    const first = await reserve(group, 1);
+    assert.equal((await choose("openai", (await first.json()).ticket)).status, 200);
+    const second = await reserve(sameBrowser ? group : randomUUID(), 2);
+    assert.equal(second.status, sameBrowser ? 200 : 409);
+    if (sameBrowser) assert.equal((await choose("jev", (await second.json()).ticket)).status, 200);
+  }
+});
+
 test("a browser counter cannot order an intervening reservation from another storage group", async () => {
   const observedRevision = await readProviderRevision();
   const group = randomUUID();

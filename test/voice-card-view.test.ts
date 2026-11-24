@@ -18,7 +18,7 @@ for (const state of Object.keys(copy) as VoiceCard["state"][]) {
     const card: VoiceCard = { id: "one", state, reason: "exact", deadline: Date.now() + 4000,
       parts: [{ target, text: "check CI" }], candidates: [{ kind: "agent", title: target.name, detail: target.role, id: target.key }], openQuestions: 3 };
     const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions: {
-      sessions: [], roster: [target], reviews: [], openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
+      sessions: [], roster: [target], reviews: [], setVoiceCardInUse() {}, openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
     } }));
     assert.ok(html.includes(copy[state]));
     assert.equal(allocate.mock.callCount(), 0);

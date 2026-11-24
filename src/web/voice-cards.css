@@ -24,6 +24,7 @@
 .vc-unsure .vc-icon { color: var(--attention); }
 .vc-held .vc-icon { color: var(--paused); }
 .voice-card .btn { padding: 3px 9px; font-size: 11.5px; white-space: nowrap; }
+.vc-multiple .btn-send { max-width: 50%; white-space: normal; }
 .vc-meta { color: var(--muted); font-size: 12px; }
 .vc-role,.vc-state,.vc-hint { font-size: 11.5px; color: var(--dim); }
 .vc-hint q { color: var(--muted); }

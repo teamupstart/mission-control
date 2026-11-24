@@ -8,12 +8,17 @@ The daemon accepts text captures from a token-authenticated listener. It resolve
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On Apple silicon, the standalone listener captures and
 recognizes speech locally. The corner confirmation card names the recipient and shows the spoken words. Its bar and
-seconds count down together. Click Cancel, say “cancel”, or click Send now. With the cancel
+seconds count down together. Click Cancel, say “cancel”, or click Send now. A split offers
+“Send both now” when both messages are waiting. With a mention or an already-issued stop,
+the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count.
 The Sound preference controls the pending chime. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
 notifications.
+
+A settled card stays visible while one of its controls has focus or its action is in
+progress. Once both end, the card gives you another eight seconds to read the result or retry.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three

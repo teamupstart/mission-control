@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
@@ -13,6 +13,7 @@ export interface VoiceCardActions {
   sessions: readonly Session[];
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
+  setVoiceCardInUse(id: string, inUse: boolean): void;
   openQuestion(sessionId: string): void;
   followUp(taskId: string): ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
@@ -57,7 +58,18 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
   const [now, setNow] = useState(Date.now);
   const launchIds = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
+  const article = useRef<HTMLElement>(null);
+  const [focused, setFocused] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const settled = voiceCardCanExpire(card);
+  const { setVoiceCardInUse } = actions;
+  useLayoutEffect(() => {
+    // Replacing or disabling a focused button can remove it without a blur event.
+    if (focused && !article.current?.contains(document.activeElement)) setFocused(false);
+    if (!settled || (!focused && !busy)) return;
+    setVoiceCardInUse(card.id, true);
+    return () => setVoiceCardInUse(card.id, false);
+  }, [card, settled, focused, busy, setVoiceCardInUse]);
   useEffect(() => {
     if (!card.deadline) return;
     const timer = setInterval(() => setNow(Date.now()), 100);
@@ -141,6 +153,13 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
       break;
     case "pending": {
       const mention = !!card.mentions?.length;
+      const remainingParts = card.parts.filter(part => !part.immediateStop);
+      const recipient = remainingParts[0]?.target?.name;
+      let sendLabel = "Send now";
+      if (split && remainingParts.length > 1) sendLabel = "Send both now";
+      else if ((split || mention) && recipient) sendLabel = "Send to " + recipient + " now";
+      const sendHint = split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
+        : "Deliver this message before the countdown ends";
       body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
         {card.deadline !== null && <span className="vc-seconds" aria-hidden="true">{Math.ceil(Math.min(remaining, card.windowMs ?? remaining) / 1000)}s</span>}</div>
         {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
@@ -149,7 +168,7 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
         {card.deadline === null ? <span className="vc-meta">Sending…</span> : <>
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
-            {cancel}{!split && !mention && button("Send now", "Deliver this message before the countdown ends", () => void run(() => api.voiceCardAction(card.id, "send-now")), "btn-send")}</div></>}</>;
+            {cancel}{button(sendLabel, sendHint, () => void run(() => api.voiceCardAction(card.id, "send-now")), "btn-send")}</div></>}</>;
       break;
     }
     default:
@@ -158,7 +177,9 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article role="status" data-settled={voiceCardCanExpire(card) || undefined} className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
+  return <article ref={article} role="status" data-settled={(settled && !focused && !busy) || undefined}
+    onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
+    className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>
     {body}{feedback && <span className="vc-meta">{feedback}</span>}
   </article>;

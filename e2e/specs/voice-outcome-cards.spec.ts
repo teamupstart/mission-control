@@ -27,6 +27,30 @@ test("resolve roster rows by click and speech, cancel a split and identify a men
   }
 });
 
+test("Send now releases both split messages or only the addressed message for a mention", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  for (const name of ["Steve", "Will"]) await runningAgent(page, daemon, name);
+  for (const split of [false, true]) {
+    const id = split ? "early-split" : "early-mention";
+    await say(daemon, "Steven ask Will about the deployment", { id });
+    const unsure = page.getByRole("status").filter({ hasText: "Who is this for?" });
+    await unsure.getByRole("button", { name: split ? /Will/ : /Steve/ }).click();
+    const card = page.getByRole("status").filter({ hasText: split ? "Two messages" : "Will is mentioned" });
+    const send = card.getByRole("button", { name: split ? "Send both now" : "Send to Steve now" });
+    await expect(send).toBeVisible({ timeout: 3000 });
+    await captureCard(card, id);
+    const released = page.waitForResponse(response => response.url() === daemon.baseURL + "/api/voice/cards/" + id + "/send-now");
+    await send.click();
+    expect((await released).ok()).toBe(true);
+    const outcome = page.getByRole("status").filter({ hasText: "Sent to Steve" });
+    if (split) await expect(outcome.filter({ hasText: "Sent to Will" })).toBeVisible();
+    else {
+      await expect(outcome).toBeVisible();
+      await expect(outcome).not.toContainText("Will");
+    }
+  }
+});
+
 test("cancelling a split shows the executed stop and cancels only the remaining message", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await runningAgent(page, daemon, "Steve");
@@ -35,6 +59,7 @@ test("cancelling a split shows the executed stop and cancels only the remaining 
   const card = page.getByRole("status").filter({ hasText: "Steve" });
   await card.filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
   await expect(card).toContainText("the remaining message");
+  await expect(card.getByRole("button", { name: "Send to Steve now" })).toBeVisible();
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(card).toContainText("Steve · Cancelled");
   await expect(card).toContainText("Stop sent to Will");
@@ -108,6 +133,44 @@ test("without randomUUID a pending card can cancel and a stopped resident can re
   expect(launches[1]).toBe(launches[0]);
 });
 
+test("a stopped resident stays visible through keyboard focus and a slow relaunch", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/residents/profiles/*/launch", async route => {
+    await release.promise;
+    await route.fulfill({ status: 503, json: { error: "Try the launch again" } });
+  });
+  await page.clock.install();
+  await say(daemon, "Marlowe, check the build");
+  const card = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
+  const launch = card.getByRole("button", { name: "Relaunch Marlowe" });
+  await launch.focus();
+  await page.clock.fastForward(9000);
+  await expect(launch).toBeFocused({ timeout: 3000 });
+  await expect(card).toHaveCSS("opacity", "1");
+  await launch.press("Enter");
+  await expect(launch).toBeDisabled();
+  await page.getByRole("button", { name: "Dispatch", exact: true }).focus();
+  await page.clock.fastForward(9000);
+  try {
+    await expect(launch).toBeVisible();
+    await expect(card).toHaveCSS("opacity", "1");
+  } finally {
+    release.resolve();
+  }
+  await expect(card).toContainText("Try the launch again");
+  await expect(launch).toBeEnabled();
+  await page.clock.fastForward(6000);
+  await expect(card).toContainText("Try the launch again");
+  await captureCard(card, "slow-relaunch-retry");
+  await page.clock.fastForward(3000);
+  await expect(card).toHaveCount(0);
+});
+
 test("a finished task opens a separate follow-up draft and preserves the regular dispatch", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
@@ -123,10 +186,16 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(dialog).toHaveCount(0);
   const session = await runningAgent(page, daemon, "Steve");
   expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+  await page.clock.install();
   await say(daemon, "Steve, check again");
   const done = page.getByRole("status").filter({ hasText: "Steve has finished" });
   await captureCard(done, "finished");
-  await done.getByRole("button", { name: "Start a follow-up task" }).click();
+  const followUp = done.getByRole("button", { name: "Start a follow-up task" });
+  await followUp.focus();
+  await page.clock.fastForward(9000);
+  await expect(followUp).toBeFocused({ timeout: 3000 });
+  await expect(done).toHaveCSS("opacity", "1");
+  await followUp.press("Enter");
   await expectContentClearsBorder(dialog);
   await expect(repo).toHaveValue(daemon.repo);
   await expect(intent).toHaveValue("");

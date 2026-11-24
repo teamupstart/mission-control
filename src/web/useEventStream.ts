@@ -215,6 +215,7 @@ export interface MissionState {
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
   voiceCards: Map<string, VoiceCard>;
+  setVoiceCardInUse: (id: string, inUse: boolean) => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -345,6 +346,27 @@ export function useEventStream(): MissionState {
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
   const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
+  // A null timer holds an outcome while the operator is using it.
+  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null }>()).current;
+  const scheduleVoiceExpiry = useCallback((card: VoiceCard, inUse = voiceExpiry.get(card.id)?.timer === null) => {
+    window.clearTimeout(voiceExpiry.get(card.id)?.timer ?? undefined);
+    voiceExpiry.delete(card.id);
+    if (!voiceCardCanExpire(card)) return;
+    const timer = inUse ? null : window.setTimeout(() => {
+      voiceExpiry.delete(card.id);
+      setVoiceCards(current => {
+        if (current.get(card.id) !== card) return current;
+        const next = new Map(current);
+        next.delete(card.id);
+        return next;
+      });
+    }, 8000);
+    voiceExpiry.set(card.id, { card, timer });
+  }, [voiceExpiry]);
+  const setVoiceCardInUse = useCallback((id: string, inUse: boolean) => {
+    const expiry = voiceExpiry.get(id);
+    if (expiry && (expiry.timer === null) !== inUse) scheduleVoiceExpiry(expiry.card, inUse);
+  }, [scheduleVoiceExpiry, voiceExpiry]);
   const [voice, setVoice] = useState<VoiceState | null>(null);
   const acknowledgeVoiceMode = useCallback((ack: VoiceState) => setVoice(current => withNewerVoiceMode(current, ack)), []);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
@@ -371,24 +393,9 @@ export function useEventStream(): MissionState {
   useEffect(() => {
     const es = new EventSource("/events");
     esRef.current = es;
-    const voiceTimers = new Map<string, ReturnType<typeof setTimeout>>();
     function clearVoiceTimers() {
-      for (const timer of voiceTimers.values()) clearTimeout(timer);
-      voiceTimers.clear();
-    }
-    function scheduleVoiceExpiry(card: VoiceCard) {
-      clearTimeout(voiceTimers.get(card.id));
-      voiceTimers.delete(card.id);
-      if (!voiceCardCanExpire(card)) return;
-      voiceTimers.set(card.id, setTimeout(() => {
-        voiceTimers.delete(card.id);
-        setVoiceCards(current => {
-          if (current.get(card.id) !== card) return current;
-          const next = new Map(current);
-          next.delete(card.id);
-          return next;
-        });
-      }, 8000));
+      for (const { timer } of voiceExpiry.values()) window.clearTimeout(timer ?? undefined);
+      voiceExpiry.clear();
     }
 
     es.onopen = () => {
@@ -516,7 +523,7 @@ export function useEventStream(): MissionState {
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Absent while the flag is off, which reads as off.
           clearVoiceTimers();
-          msg.voiceCards?.forEach(scheduleVoiceExpiry);
+          msg.voiceCards?.forEach(card => scheduleVoiceExpiry(card));
           setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
           if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
@@ -793,7 +800,7 @@ export function useEventStream(): MissionState {
             const next = new Map(prev);
             next.delete(msg.card.id);
             next.set(msg.card.id, msg.card);
-            const completed = [...next.values()].filter(voiceCardCanExpire);
+            const completed = [...next.values()].filter(card => voiceCardCanExpire(card) && voiceExpiry.get(card.id)?.timer !== null);
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;
           });
@@ -881,7 +888,7 @@ export function useEventStream(): MissionState {
       es.close();
       esRef.current = null;
     };
-  }, []);
+  }, [scheduleVoiceExpiry, voiceExpiry]);
 
   // Every Map above is replaced wholesale only when ITS OWN events change it - `setSessions`
   // on a `session_upsert`, `setTasks` on a task event, and so on. Spreading each one straight
@@ -973,6 +980,7 @@ export function useEventStream(): MissionState {
     voice,
     acknowledgeVoiceMode,
     voiceCards,
+    setVoiceCardInUse,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

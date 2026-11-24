@@ -411,6 +411,7 @@ export function App(): React.JSX.Element {
     subscribeShaping,
     voice,
     voiceCards,
+    setVoiceCardInUse,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -5008,7 +5009,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews,
+    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
       openQuestion: id => { navigate({ page: "fleet" }); setReviewSessionId(id); },
       followUp: taskId => {
         const task = tasks.find(t => t.id === taskId);

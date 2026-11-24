@@ -58,6 +58,9 @@ export type VoiceHelloResult =
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
+  private readonly source = randomUUID();
+  private lastMode: VoiceState["mode"] = "off";
+  private modeRevision = 0;
   private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
@@ -136,7 +139,10 @@ export class VoiceStateStore {
 
   /** The state now. Lapsed readings are dropped here, so a read never returns a stale mode. */
   state(): VoiceState {
-    if (!this.deps.enabled(VOICE_FLAG)) return voiceStateOff();
+    if (!this.deps.enabled(VOICE_FLAG)) {
+      this.lastMode = "off";
+      return voiceStateOff();
+    }
     const now = this.deps.now();
     const config = this.deps.config();
     const hello = this.liveHello()?.hello ?? null;
@@ -155,17 +161,25 @@ export class VoiceStateStore {
     delete capabilities.listener;
     if (hello) capabilities.listener = { available: true, reason: null };
     else if (refused) capabilities.listener = { available: false, reason: refused.reason };
+    const mode = voiceMode({
+      enabled: true,
+      reasons,
+      muted: config.muted,
+      callActive: report?.callActive ?? false,
+      autoMuteDuringCalls: config.autoMuteDuringCalls,
+      pushToTalk: report?.pushToTalk ?? false,
+    });
+    if (mode !== this.lastMode) {
+      this.lastMode = mode;
+      this.modeRevision++;
+    }
     return {
-      mode: voiceMode({
-        enabled: true,
-        reasons,
-        muted: config.muted,
-        callActive: report?.callActive ?? false,
-        autoMuteDuringCalls: config.autoMuteDuringCalls,
-        pushToTalk: report?.pushToTalk ?? false,
-      }),
+      mode,
+      modeVersion: { source: this.source, revision: this.modeRevision },
       reasons,
       capabilities,
+      configuredHotkey: config.hotkey,
+      registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
       roster: [...(this.rosterSource?.() ?? [])],

@@ -53,7 +53,7 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
-import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
+import { VOICE_UI_DEFAULTS, VoiceRevisionSchema, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
 import { SpokenNameSchema } from "./voice-names.ts";
 import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
@@ -5054,6 +5054,7 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
+  voiceIndicatorVersion: VoiceRevisionSchema.optional(),
   /**
    * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
    * voice surface, so the response is the one an install without voice gave.

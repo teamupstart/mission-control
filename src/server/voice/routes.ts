@@ -14,6 +14,7 @@ import {
   VOICE_RELEASE_TIME_HEADER,
   VOICE_SPEECH_START_HEADER,
   VoiceConfigPatchSchema,
+  VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
   VoiceShellReportSchema,
@@ -21,6 +22,7 @@ import {
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
+import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -87,6 +89,14 @@ export function registerVoiceRoutes(
   const authed = (header: string | undefined): boolean => checkToken(header);
 
   app.get("/api/voice/config", gate, (c) => c.json({ config: getVoiceConfig() }));
+  app.put("/api/voice/indicators", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const indicators = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
+    return indicators === null
+      ? c.json({ error: "The indicator selection is full." }, 409)
+      : c.json({ indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+  });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;

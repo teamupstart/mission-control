@@ -30,13 +30,19 @@ test("background settings preserve sibling overrides and accept a reset to provi
 
 test("Inspector effort resolves live against its selected provider and model", () => {
   setInspectorConfig({ runner: "codex", model: "gpt-5.6-test", effort: "max" });
-  assert.equal(inspectorExecution().effort, undefined);
+  // Preview off: the saved level is not read, so a review takes its shipped default and a
+  // reply keeps the provider's.
+  assert.equal(inspectorExecution().effort, "xhigh");
+  assert.equal(inspectorExecution(undefined, "reply").effort, undefined);
   assert.equal(Object.hasOwn(llmStatus(), "backgroundReasoningEffort"), false);
   applyFeatureFlagIntent({ kind: "flag", id: BACKGROUND_REASONING_EFFORT_FLAG_ID, enabled: true });
   assert.equal(llmStatus().backgroundReasoningEffort, true);
   assert.equal(inspectorExecution().effort, undefined);
   setInspectorConfig({ model: "gpt-6-sol" });
   assert.equal(inspectorExecution().effort, "max");
+  assert.equal(inspectorExecution(undefined, "reply").effort, "max");
+  // Provider default is a choice, and it turns the review default off.
   setInspectorConfig({ effort: null });
   assert.equal(inspectorExecution().effort, undefined);
+  assert.equal(inspectorExecution(undefined, "reply").effort, undefined);
 });

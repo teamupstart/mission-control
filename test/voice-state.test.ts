@@ -137,6 +137,26 @@ test("with the flag off the state is off, whatever was heard", () => {
   assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
 });
 
+test("mute replies and published modes share a revision ordered within one daemon", () => {
+  const h = harness();
+  h.store.acceptHello(listenerId, HELLO);
+  const initial = h.store.state().modeVersion;
+  assert.ok(initial);
+  h.store.acceptHello(listenerId, HELLO);
+  assert.deepEqual(h.store.state().modeVersion, initial);
+  for (const [index, muted] of [true, false].entries()) {
+    h.setConfig({ muted });
+    h.store.publish();
+    const state = h.store.state();
+    assert.equal(state.mode, muted ? "muted" : "listening");
+    assert.deepEqual(state.modeVersion, { source: initial.source, revision: initial.revision + index + 1 });
+    assert.deepEqual(state.modeVersion, h.published.at(-1)?.modeVersion);
+  }
+  const restarted = harness();
+  restarted.store.acceptHello(listenerId, HELLO);
+  assert.notEqual(restarted.store.state().modeVersion?.source, initial.source);
+});
+
 test("unavailable until a listener says hello; then listening; then unavailable once it lapses", () => {
   const h = harness();
   assert.deepEqual(h.store.state().reasons, ["listener"]);
@@ -226,6 +246,7 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);
   assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null } });
+  assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   h.store.acceptShellReport({
     ...REPORT,
@@ -235,10 +256,17 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
       // A capability this build does not know is dropped, not refused.
       "teleport": { available: true, reason: null },
     },
+    registeredHotkey: "ctrl+alt+m",
     hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" },
   });
   const state = h.store.state();
   assert.ok(voiceCapable(state, "hotkey"));
+  assert.equal(state.registeredHotkey, "ctrl+alt+m");
+  assert.equal(state.configuredHotkey, "ctrl+alt+m");
+  h.setConfig({ hotkey: "ctrl+alt+k" });
+  assert.equal(h.store.state().configuredHotkey, "ctrl+alt+k");
+  assert.equal(h.store.state().registeredHotkey, "ctrl+alt+m");
+  assert.notEqual(canonicalVoiceState(state), canonicalVoiceState(h.store.state()));
   assert.ok(!voiceCapable(state, "call-detection"));
   assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
   assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);
@@ -246,6 +274,7 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
 
   h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
   assert.equal(h.published.at(-1)?.capabilities.hotkey, undefined, "the lapse is published");
+  assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   assert.equal(h.store.state().mode, "listening", "the hello has not lapsed yet");
 });

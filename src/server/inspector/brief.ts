@@ -55,6 +55,21 @@ personas/INSPECTOR.md or at the root, so apply general engineering judgement.
   one path and released on only some of them.
 - **Tests.** A behaviour change with no test that would have failed before it.
 
+## How far to dig
+
+Work out what kind of system this is - a single-user tool, a library, a service with many
+concurrent callers, something exposed to untrusted input - and judge likelihood against
+that system, not against the most demanding one you can imagine.
+
+Raise what happens in ordinary use, and what a realistic configuration or sequence of
+deliberate actions reaches. A case that needs unlikely timing, a failure of the local
+machine, malformed data from a trusted source, or two unlikely conditions together is
+remote: raise it only when its consequence cannot be undone (lost data, an exposed secret,
+a wrong irreversible action, no way to recover), and never above \`minor\` otherwise.
+Do not look for the narrower variant of an edge case a push already fixed.
+
+Severity is likelihood times consequence, not consequence alone.
+
 ## Do not comment on
 
 - Formatting, import order, or anything a formatter owns.
@@ -62,6 +77,7 @@ personas/INSPECTOR.md or at the root, so apply general engineering judgement.
 - Preferences with no defect behind them ("I would have used a map here").
 - Code the diff did not change, except to explain why a change breaks it.
 - The same point twice in one review.
+- Remote cases whose consequence can be undone.
 
 ## How to write it
 

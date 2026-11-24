@@ -11,8 +11,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
 [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`),
-[Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`) and
-[Voice addressing](voice.md) (`voice`) as previews.
+[Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`),
+[Voice addressing](voice.md) (`voice`) and
+[Markdown questions](sessions.md#markdown-questions-preview) (`markdown-questions`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 **File plan decisions** (`filed-plan-decisions`) files a `request_plan_decisions` form instead of
@@ -192,6 +193,7 @@ gates, not by resolving an unknown id as on.
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
 | `idle-stalled` | preview | Idle's Stalled section on the Board and the Console rail, its head count, the card's fact sheet and fixes, and removing the two idle stall rules from the inbox's Stuck section. It also opens `POST /api/sessions/:id/inbox-message`, which the `inbox` flag opens too. Switching it off returns those stalls to the inbox's Stuck section while the `inbox` preview is on (with `inbox` off there is no Stuck section, so they appear in neither); dismissals carry over | [Stuck rows](attention-and-alerts.md#stuck-rows), [UI](ui.md) |
 | `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state` and `voice_roster` events and snapshot field, the speech model manager, the Settings > Voice category with its roster, the **Call sign** field under Dispatch > Advanced, the **Reference name** field on a resident profile, and the Setup panel's Voice family. A call sign or reference name already saved is kept while the flag is off, and the task and profile routes accept one either way, but it names an agent (in the inbox, cards, alerts, the Away digest and report authors) only while the flag is on. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
+| `markdown-questions` | preview | Markdown rendering of a `request_input` question's body on the review card, in the attention inbox and in the conversation's question entries. The agent-facing rule asking for Markdown `context` is not gated | [Sessions](sessions.md#markdown-questions-preview) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
@@ -201,12 +203,15 @@ a toggle reaches a second window without a reload, and the `/api/shaping` gate f
 and reaches a second window without a reload, and that the panel's filter finds it.
 `e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
 modal header, the question card, an alert's title, and a resident's board colour.
+`e2e/specs/markdown-questions.spec.ts` checks that a bulleted context renders as list items on the
+review card, in the inbox and in the conversation, that a path inside it still opens Files, and that
+switching the flag off brings back the plain paragraph.
 `e2e/specs/reports-inbox.spec.ts` checks agent reports: a report posted on the tool's channel
 reaches the inbox and the to read figure, opening it changes no figure, Mark read clears it, a
 replacement shows once with its note, the session never turns amber, and nothing shows with the
 flag off.
 `e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
-**to answer**, Continue reaching the agent, Mark done, the row leaving when the session works,
+**to answer**, Continue reaching the agent, Mark done opening the Complete dialog, the row leaving when the session works,
 Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.

@@ -110,8 +110,9 @@ struct SpeechGate {
     init(held: Bool = false) { self.held = held }
 
     mutating func interrupt() {
+        let interruptedSpeech = discarding || !samples.isEmpty
         self = SpeechGate(held: held)
-        discarding = true
+        discarding = interruptedSpeech
     }
 
     // Key-up is an explicit end of speech. Silence alone or a discarded prefix

@@ -93,6 +93,7 @@ also receives the release time for its queried revision. An ordinary capture sto
 The native helper dates the samples from the input tap's audio timestamp on the shared host
 clock, so a delayed callback still includes speech recorded before key-up. A gap in
 the input timeline discards the interrupted utterance through the next silence boundary.
+If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
 
 The shell timestamps every snapshot, including idle heartbeats, at observation time with
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared

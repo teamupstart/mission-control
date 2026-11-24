@@ -409,6 +409,12 @@ final class ListenerTests: XCTestCase {
             XCTAssertEqual(fresh.count, 1)
             let captured = try XCTUnwrap(fresh.first)
             XCTAssertGreaterThanOrEqual(captured.startedAtHostMs, Int64(freshStart / 16) - 150)
+
+            // After a complete phrase and quiet boundary, a gap has no phrase to discard.
+            let afterIdleGap = freshStart + speech.count + silence.count + gap
+            let next = try callback(speech + silence, start: afterIdleGap)
+            XCTAssertEqual(next.count, 1)
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(next.first).startNs, Int64(afterIdleGap) * Segment.sampleNs)
         }
     }
 

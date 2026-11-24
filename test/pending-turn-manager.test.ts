@@ -786,6 +786,37 @@ for (const runtime of ["sdk", "terminal"] as const) test(runtime + " refusal ret
   assert.equal(listPendingTurns(f.key)[0]?.state, "queued");
 });
 
+test("a spoken refusal before the handoff retries only the requeue after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  let boundaries = 0;
+  const f = terminalFixture("spoken-before-handoff", async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++boundaries !== 1) return;
+    db.openDb().exec(`CREATE TEMP TRIGGER block_unreserved_requeue BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'busy'); END`);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  t.after(() => {
+    f.manager.stop();
+    db.openDb().exec("DROP TRIGGER IF EXISTS block_unreserved_requeue");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  const spoken = f.manager.submitSpoken(f.id, "do not send", "before-guard").pendingTurn!;
+  await until(() => boundaries === 1, "transport guard refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  assert.deepEqual(db.loadSpokenTurns(f.key), []);
+  db.openDb().exec("DROP TRIGGER block_unreserved_requeue");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "claim requeued without restart", 5000);
+  assert.equal(boundaries, 1);
+  assert.deepEqual(f.injected, []);
+  const released = listPendingTurns(f.key)[0]!;
+  assert.equal(released.id, spoken.id);
+  assert.ok(f.manager.recall(f.id, released.id, released.revision));
+  f.manager.submit(f.id, "next typed message");
+  await until(() => f.injected.length > 0, "typed message following the recalled speech");
+  assert.deepEqual(f.injected, ["next typed message"]);
+});
+
 test("a spoken paste retries a changed transcript boundary and sends once against the fresh file", async t => {
   const name = "spoken-boundary-retry";
   const path = join(home, name + ".jsonl");

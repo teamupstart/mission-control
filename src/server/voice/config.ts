@@ -25,7 +25,10 @@ let receiptNonce = randomUUID();
 let latestIntentAt = performance.now();
 let applied = 0;
 let lastOptOut = 0;
-let reservation: { order: number; writer: string; edit: number; otherWriterOrder: number; optOut: boolean } | undefined;
+let reservation: {
+  order: number; writer: string; edit: number; otherWriterOrder: number; optOut: boolean;
+  gesture: VoiceProviderIntent["gesture"]; otherGroupOrder: number;
+} | undefined;
 let lastWriter: string | undefined;
 let writerBase = 0;
 
@@ -61,27 +64,33 @@ function signTicket(payload: string): string {
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
 export function reserveProviderWrite(intent: VoiceProviderIntent): string | null {
-  const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent } = intent;
-  const observedLatest = observedIntent === providerIntentReceipt();
-  if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token && !(optOut && observedLatest)) return null;
-  if (reservation && reservation.order > applied && !unchangedSince && !observedLatest && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
-    // A delayed gesture can cross an uncommitted selection without changing the
-    // applied revision. Only this window's own edit sequence establishes order here.
-    if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
-  }
+  const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent, gesture } = intent;
   let base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || base < 0 || base > applied) return null;
+  const previous = reservation?.gesture;
+  const sameGroup = gesture && previous && gesture.group === previous.group;
+  if (sameGroup && gesture.order <= previous.order) return null;
+  // Browser order only compares gestures sharing one local counter. An intervening
+  // selection from another browser or a direct config write still needs to be observed.
+  const otherGroupOrder = sameGroup && reservation?.order === issued ? reservation.otherGroupOrder : issued;
+  const followsGesture = sameGroup && otherGroupOrder <= base;
+  const observedLatest = observedIntent === providerIntentReceipt();
+  if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token && !(optOut && observedLatest)) return null;
+  if (reservation && reservation.order > applied && !unchangedSince && !observedLatest && !followsGesture && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
+    if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
+  }
   if (!canApply(writer, base)) {
-    if (!optOut || !unchangedSince || !observedLatest) return null;
+    if (!optOut || !(followsGesture || (unchangedSince && observedLatest))) return null;
     base = applied;
   }
   // A receipt establishes that this gesture followed the observed reservation,
   // even if that reservation's PUT has not updated the config yet.
-  const observedOrder = observedLatest ? issued : base;
+  const observedOrder = observedLatest || followsGesture ? issued : base;
   const order = issueProviderOrder();
-  reservation = reservation?.writer === writer
-    ? { ...reservation, order, edit: Math.max(reservation.edit, edit), optOut }
-    : { order, writer, edit, otherWriterOrder: reservation?.order ?? 0, optOut };
+  const own = reservation?.writer === writer ? reservation : undefined;
+  reservation = { order, writer, optOut, gesture, otherGroupOrder,
+    edit: Math.max(own?.edit ?? 0, edit),
+    otherWriterOrder: own?.otherWriterOrder ?? reservation?.order ?? 0 };
   const payload = `${order}:${writer}:${observedOrder}:${optOut ? "off" : "switch"}`;
   return `${payload}:${signTicket(payload)}`;
 }

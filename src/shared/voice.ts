@@ -118,11 +118,13 @@ export const VoiceConfigPatchSchema = z.object({
 }).partial().strict().refine((patch) => Object.keys(patch).length > 0, { message: "empty voice config update" });
 export type VoiceConfigPatch = z.infer<typeof VoiceConfigPatchSchema>;
 
+export const VoiceProviderGestureSchema = z.object({ group: z.uuid(), order: z.int().positive() }).strict();
 export const VoiceProviderIntentSchema = z.object({
   writer: z.uuid(),
   observedRevision: z.string().min(1).max(80),
   optOut: z.boolean().optional(),
   edit: z.int().positive().optional(),
+  gesture: VoiceProviderGestureSchema.optional(),
   observedIntent: z.string().min(1).max(128).optional(),
   unchangedSince: z.string().min(1).max(80).optional(),
 }).strict();

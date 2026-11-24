@@ -322,14 +322,11 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(line(page)).toHaveText(using("Jev"));
   });
 
-  test("one explicit Off selection from a stale window stops decision-provider routing", async ({ dashboard: page, context, daemon, decisions }) => {
+  test("one explicit Off selection from a stale window stops decision-provider routing", async ({ dashboard: page, browser, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);
     await openVoiceSettings(page, daemon);
     await expect(line(page)).toHaveText(using("OpenAI Decisions"));
-    const other = await context.newPage();
-    await openVoiceSettings(other, daemon);
-    await expect(providerMenu(other)).toHaveValue("auto");
     // Hold the polling window's view at its original revision.
     await page.route("**/api/voice/config", route => route.request().method() === "GET" ? route.abort() : route.continue());
     const releaseReport = Promise.withResolvers<void>();
@@ -337,9 +334,17 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await releaseReport.promise;
       await route.continue();
     });
-    await saveKey(other, "Jev", SAVED_JEV);
-    await providerMenu(other).selectOption("jev");
-    await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(daemon, "/api/voice/config")).config.decisionProvider).toBe("jev");
+    // Separate browser storage exercises the fallback when the tabs cannot order their clicks together.
+    const other = await browser.newPage();
+    try {
+      await openVoiceSettings(other, daemon);
+      await expect(providerMenu(other)).toHaveValue("auto");
+      await saveKey(other, "Jev", SAVED_JEV);
+      await providerMenu(other).selectOption("jev");
+      await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(daemon, "/api/voice/config")).config.decisionProvider).toBe("jev");
+    } finally {
+      await other.close();
+    }
     const conflict = page.waitForResponse(r => r.url().endsWith("/api/voice/config/provider-intent") && r.status() === 409);
     try {
       await providerMenu(page).selectOption("off");
@@ -430,6 +435,60 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), screenshot);
     });
   }
+
+  test("a later Off wins when both windows click before either reservation reaches the daemon", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const other = await context.newPage();
+    await openVoiceSettings(other, daemon);
+    const firstReply = Promise.withResolvers<void>();
+    const releaseReply = Promise.withResolvers<void>();
+    const hold = async (tab: Page) => {
+      const held = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      await tab.route("**/api/voice/config/provider-intent", async route => {
+        held.resolve();
+        await release.promise;
+        if (tab === page) {
+          const response = await route.fetch();
+          firstReply.resolve();
+          await releaseReply.promise;
+          await route.fulfill({ response });
+        } else {
+          await route.continue();
+        }
+      }, { times: 1 });
+      return { held: held.promise, release: release.resolve };
+    };
+    const first = await hold(page);
+    const second = await hold(other);
+    try {
+      await providerMenu(page).selectOption("jev");
+      await first.held;
+      await providerMenu(other).selectOption("off");
+      await second.held;
+      first.release();
+      await firstReply.promise;
+      const saved = other.waitForResponse(r => r.url().endsWith("/provider-intent"));
+      second.release();
+      expect((await saved).status()).toBe(200);
+      await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(
+        daemon, "/api/voice/config")).config.decisionProvider).toBe("off");
+    } finally {
+      first.release();
+      second.release();
+      releaseReply.resolve();
+    }
+    await expect(providerMenu(page)).toHaveValue("off");
+    await expect(line(other)).toHaveText(NOT_SET);
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+    expect(decisions.requests).toHaveLength(0);
+    await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "37-both-clicks-before-reservation");
+  });
 
   test("an Off reservation delayed before reaching the daemon yields to a later Jev selection", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);

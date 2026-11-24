@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
+import { applyVoiceConfigPatch, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
 import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices } from "./lib/api.ts";
 
@@ -22,6 +22,24 @@ function rememberIntentReceipt(receipt?: string): void {
   const [previous, lastOrder] = observedIntentReceipt()?.split(":") ?? [];
   if (daemon === previous && Number(order) <= Number(lastOrder)) return;
   try { localStorage.setItem(RECEIPT_KEY, receipt); } catch { /* Storage may be unavailable. */ }
+}
+
+// Order clicks across same-origin windows before either reservation reaches the daemon.
+// The lock covers the local counter only. A slow HTTP request cannot hold up another click.
+async function nextProviderGesture(): Promise<VoiceProviderIntent["gesture"]> {
+  const key = "mission.voice.providerGesture";
+  try {
+    return await navigator.locks.request(key, () => {
+      const previous = localStorage.getItem(key);
+      const [group, value] = previous?.split(":") ?? [];
+      const parsed = VoiceProviderGestureSchema.safeParse({ group, order: Number(value) + 1 });
+      const next = parsed.success ? parsed.data : { group: crypto.randomUUID(), order: 1 };
+      localStorage.setItem(key, `${next.group}:${next.order}`);
+      return next;
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 function whyItFailed(error: string | undefined): string {
@@ -143,9 +161,12 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const selectedAt = performance.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const intent = { writer, observedRevision: observed, optOut, edit: edit.id,
+    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id,
       observedIntent: changesProvider ? observedIntentReceipt() : undefined };
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(intent) : undefined;
+    const reservation = changesProvider ? nextProviderGesture().then(gesture => {
+      intent.gesture = gesture;
+      return api.reserveVoiceProviderWrite(intent);
+    }) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       rememberIntentReceipt(order?.intentReceipt);

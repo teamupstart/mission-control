@@ -216,6 +216,43 @@ test("a provider ticket that observed a pending Off survives its commit", async 
   assert.equal((await choose("jev", ticket)).status, 200);
 });
 
+test("shared browser click order survives delayed reservations in either arrival order", async () => {
+  for (const laterArrivesFirst of [false, true]) {
+    const observedRevision = await readProviderRevision();
+    const group = randomUUID();
+    const reserve = (order: number) => json("/api/voice/config/provider-intent", "POST", {
+      writer: randomUUID(), observedRevision, gesture: { group, order }, edit: 1, optOut: order === 2,
+    });
+    if (laterArrivesFirst) {
+      const later = await reserve(2);
+      assert.equal(later.status, 200);
+      assert.equal((await reserve(1)).status, 409);
+      assert.equal((await choose("off", (await later.json()).ticket)).status, 200);
+    } else {
+      const earlier = await reserve(1);
+      assert.equal(earlier.status, 200);
+      const later = await reserve(2);
+      assert.equal(later.status, 200);
+      assert.equal((await choose("off", (await later.json()).ticket)).status, 200);
+      assert.equal((await choose("jev", (await earlier.json()).ticket)).status, 409);
+    }
+  }
+});
+
+test("a browser counter cannot order an intervening reservation from another storage group", async () => {
+  const observedRevision = await readProviderRevision();
+  const group = randomUUID();
+  const reserve = (group: string, order: number, observedIntent?: string) => json("/api/voice/config/provider-intent", "POST", {
+    writer: randomUUID(), observedRevision, edit: 1, gesture: { group, order }, observedIntent,
+  });
+  const first = await (await reserve(group, 1)).json();
+  const foreign = await (await reserve(randomUUID(), 1, first.intentReceipt)).json();
+  const following = await reserve(group, 2, foreign.intentReceipt);
+  assert.equal(following.status, 200);
+  assert.equal((await reserve(group, 3)).status, 409);
+  assert.equal((await choose("jev", (await following.json()).ticket)).status, 200);
+});
+
 test("a window can supersede only its own earlier pending Off", async () => {
   const a = randomUUID(), b = randomUUID(), revision = await readProviderRevision();
   const reserve = (writer: string, edit: number, optOut: boolean, unchangedSince?: string) => json("/api/voice/config/provider-intent", "POST", {

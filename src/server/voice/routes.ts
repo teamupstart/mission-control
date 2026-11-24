@@ -129,6 +129,15 @@ export function registerVoiceRoutes(
     return disabledFeatureResponse(c, VOICE_FLAG);
   };
   const drainGate = allowDrain();
+  const directiveRefusal = (c: Context) => {
+    if (store.speech.speak(c.req.header(VOICE_INSTANCE_HEADER))) return;
+    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+    if (disabled) return disabled;
+    if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) {
+      const held = store.speech.held;
+      return c.json({ error: "not_listener_owner", ...(held && { capture: false, speak: null }) }, 409);
+    }
+  };
 
   let snapshotOrder = 0;
   const dashboardSnapshot = () => ({
@@ -313,21 +322,18 @@ export function registerVoiceRoutes(
   app.get("/voice/listener/directive", drainGate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
-    const id = c.req.header(VOICE_LISTENER_ID_HEADER);
-    if (!store.ownsCapture(id) && !store.speech.held) return c.json({ error: "not_listener_owner" }, 409);
+    const refusal = directiveRefusal(c);
+    if (refusal) return refusal;
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
-    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled && !store.speech.speak(instance)) return disabled;
     const current = store.directiveFor(instance);
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal, instance);
     await next();
   }, drainGate, (c) => {
-    if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) && !store.speech.held) return c.json({ error: "not_listener_owner" }, 409);
     const state = store.state();
+    const refusal = directiveRefusal(c);
+    if (refusal) return refusal;
     const next = store.directiveFor(c.req.header(VOICE_INSTANCE_HEADER), state);
-    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled && !next.speak) return disabled;
     if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);
     const draining = store.drainingRevisions();
     if (draining.length) c.header(VOICE_DRAINING_REVISIONS_HEADER, draining.join(","));

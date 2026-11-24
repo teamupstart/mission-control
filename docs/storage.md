@@ -228,7 +228,9 @@ pending. The child can read the voice models and write to its own owner-only
 `voice-retirements/scratch-announced-<digest>/` directory. The digest comes
 from the recorded launch instance. On normal close the launcher removes its
 scratch. After a launcher crash, retirement removes the same directory after
-confirmed exit and retains the record until cleanup succeeds. The child cannot read the other voice records or
+confirmed exit and retains the record until cleanup succeeds. Scratch cleanup
+retries independently while the supervisor delivers other players' exits.
+The child cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
 The macOS launcher uses `/usr/bin/sandbox-exec` and forbids spawning descendants.
 Both macOS playback engines run inside the listener, so a child player cannot

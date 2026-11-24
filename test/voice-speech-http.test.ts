@@ -9,6 +9,7 @@ import { once } from "node:events";
 import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
 import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -159,6 +160,33 @@ test("speech hello selects its holder from the header alone", async () => {
   assert.equal((await other.poll()).speak, null);
   assert.equal((await other.event(id, "ended")).status, 409);
   assert.equal((await sender.event(id, "ended")).status, 200);
+});
+
+test("a playback hold grants directive access only to the lease owner or job holder, including after a long poll", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  const deny = async (response: Response) => {
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "not_listener_owner", capture: false, speak: null });
+    assert.equal([...response.headers.keys()].some(header => header.startsWith("x-voice-")), false);
+  };
+  await deny(await peer.request("/voice/listener/directive"));
+  await deny(await app.request("/voice/listener/directive", { headers: { "x-harness-token": token } }));
+  const leaseOnly = await holder.poll(null);
+  assert.ok(Array.isArray(leaseOnly.roster));
+  assert.equal(leaseOnly.speak, null);
+  const pending = holder.request("/voice/listener/directive?revision=" + leaseOnly.revision, undefined, null);
+  await new Promise(resolve => setImmediate(resolve));
+  await holder.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION,
+    backend: "fluidaudio", devices: [], modelLoaded: true, microphone: "denied" });
+  await peer.hello();
+  await deny(await pending);
+  assert.equal((await holder.poll()).speak.id, id);
+  assert.equal((await peer.poll()).capture, false);
+  assert.equal((await peer.poll()).speak, null);
+  await holder.event(id, "ended");
+  assert.equal((await peer.poll()).capture, true);
 });
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
@@ -1196,6 +1224,53 @@ test("a stalled exit times out, lets the next retirement finish, and ignores lat
   assert.deepEqual(attempts, [attempts[0], attempts[1], attempts[0]]);
   await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
   assert.equal((await peer.poll()).capture, true);
+});
+
+test("a stalled scratch removal and its retry cannot block another launch's signed exit", { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  const peer = player();
+  const started: string[] = [], exited: string[] = [];
+  let cleanupAttempts = 0, unblock!: () => void;
+  const stalled = new Promise<void>(resolve => { unblock = resolve; });
+  const rm = fsPromises.rm;
+  const hook = t.mock.method(fsPromises, "rm", async (...args: Parameters<typeof rm>) => {
+    if (started[0] && args[0] === playerScratchDirectory(home, started[0]) && ++cleanupAttempts === 1) {
+      await stalled;
+      throw new Error("Scratch temporarily busy");
+    }
+    return rm(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    unblock(); signer.pauseExitRetries(); hook.mock.restore(); syncBuiltinESMExports();
+    Object.assign(process.env, fixtureSupervisorEnv);
+  });
+  const launch = () => signer.launch(home, process.execPath, [], {}, async (instance, state, proof) => {
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+    if (state === "exited") { exited.push(instance); return; }
+    started.push(instance);
+    mkdirSync(playerScratchDirectory(home, instance), { mode: 0o700 });
+    throw new Error("Lost start acknowledgement");
+  });
+  await assert.rejects(launch(), /Lost start acknowledgement/);
+  await t.waitFor(() => assert.equal(exited.length, 1));
+  assert.equal(cleanupAttempts, 1);
+  await assert.rejects(launch(), /Lost start acknowledgement/);
+  const firstFile = join(retirementDirectory(home), "shell-" + announcementName(started[0]!) + ".json");
+  const secondFile = join(retirementDirectory(home), "shell-" + announcementName(started[1]!) + ".json");
+  await t.waitFor(() => assert.throws(() => statSync(secondFile), { code: "ENOENT" }));
+  assert.deepEqual(exited, started);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  assert.ok(statSync(firstFile).isFile());
+  assert.equal(cleanupAttempts, 1);
+  unblock();
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(5000); // Even the longest retry interval has elapsed.
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
+  assert.equal(cleanupAttempts, 2);
+  assert.deepEqual(exited, started);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

@@ -1017,7 +1017,10 @@ starts the next waiting job. Cancelling active preparation aborts its request an
 stops the synthesizer before another job starts. Capture is held only after audio
 is ready for handoff.
 
-All listeners pause capture before the daemon offers the job. Only its holder
+All listeners pause capture before the daemon offers the job. The directive
+poll checks the capture lease or playback holder both on arrival and after
+waiting for a change. A non-owner polling during a hold receives 409 with
+`capture: false` and `speak: null`, without the roster or revision. Only the job's holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
 duration triggers a stop request. After 5 seconds without confirmation, the

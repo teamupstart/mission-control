@@ -9,6 +9,7 @@ const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().
 type PendingExit = z.infer<typeof signedExit>;
 const watchedLaunch = signedExit.extend({ pid: z.number().int().positive() });
 type WatchedLaunch = z.infer<typeof watchedLaunch>;
+type RetirementProgress = { delivered: boolean; cleaned: boolean; cleaning: boolean };
 const queuedRecord = z.union([signedExit, watchedLaunch]);
 const REPORT_TIMEOUT_MS = 5000;
 
@@ -45,6 +46,7 @@ function processGone(pid: number) {
 /** Only the originating supervisor can convert a watched launch into a signed exit. */
 export class SupervisorRetirements {
   private readonly pending = new Map<string, PendingExit>();
+  private readonly progress = new Map<string, RetirementProgress>();
   private timer?: NodeJS.Timeout;
   private active?: AbortController;
   private reporter?: SupervisorReporter;
@@ -126,6 +128,33 @@ export class SupervisorRetirements {
     });
   }
 
+  private finish(file: string, progress: RetirementProgress): boolean {
+    if (!progress.cleaned || !progress.delivered) return false;
+    try { removeVoiceRecord(this.home, join(this.directory(), file)); }
+    catch { return false; }
+    this.pending.delete(file);
+    this.progress.delete(file);
+    return true;
+  }
+
+  private clean(file: string, instance: string): RetirementProgress {
+    let progress = this.progress.get(file);
+    if (!progress) {
+      progress = { delivered: false, cleaned: false, cleaning: false };
+      this.progress.set(file, progress);
+    }
+    if (!progress.cleaned && !progress.cleaning) {
+      const entry = progress;
+      entry.cleaning = true;
+      void removePlayerScratch(this.home, instance).then(() => {
+        entry.cleaned = true;
+        this.finish(file, entry);
+      }, () => { /* The durable record schedules another attempt. */ })
+        .finally(() => { entry.cleaning = false; });
+    }
+    return progress;
+  }
+
   private async deliver(report: SupervisorReporter, signal: AbortSignal): Promise<boolean> {
     const records = new Map(this.pending);
     let retry = false;
@@ -153,16 +182,13 @@ export class SupervisorRetirements {
       if (signal.aborted) return false;
       if (this.pending.has(file)) this.persist(file, exit);
       try {
-        // Both operations have the same proof of exit. An offline daemon must not strand scratch,
-        // and a slow cleanup must not delay the daemon's silence confirmation.
-        const [delivery, cleanup] = await Promise.allSettled([
-          reportBeforeDeadline(report, exit.instance, "exited", exit.proof, signal),
-          removePlayerScratch(this.home, exit.instance),
-        ]);
-        if (signal.aborted) return false;
-        if (delivery.status === "rejected" || cleanup.status === "rejected") { retry = true; continue; }
-        removeVoiceRecord(this.home, join(this.directory(), file));
-        this.pending.delete(file);
+        const progress = this.clean(file, exit.instance);
+        if (!progress.delivered) {
+          await reportBeforeDeadline(report, exit.instance, "exited", exit.proof, signal);
+          if (signal.aborted) return false;
+          progress.delivered = true;
+        }
+        if (!this.finish(file, progress)) retry = true;
       } catch { retry = true; }
     }
     return retry || this.pending.size > 0;

@@ -814,3 +814,24 @@ test("the mod-calls scan treats a regex literal inside ${} as one unit, so its b
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the mod-calls scan judges a plain quoted string whole: ${ is only an interpolation in a template", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-plain-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // Static literals containing `${`: the whole path is judged, not the prefix before it.
+    assert.deepEqual(scan("fetch(\"/dispatch/a${b}/c\");\n"), []);
+    assert.deepEqual(scan("fetch(\"/api/health${b}/secret\");\n"), ["/api/health${b}/secret"]);
+    assert.deepEqual(scan("fetch('/api/foo${bar}/secret');\n"), ["/api/foo${bar}/secret"]);
+    // The same text in a template is dynamic, so its static prefix is judged.
+    assert.deepEqual(scan("fetch(`/api/health${b}/secret`);\n"), []);
+    assert.deepEqual(scan("fetch(`/api/foo${bar}/secret`);\n"), ["/api/foo"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

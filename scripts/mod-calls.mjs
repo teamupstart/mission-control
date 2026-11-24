@@ -140,13 +140,20 @@ export function findDisallowedModCalls(root) {
   const found = [];
   for (const file of sourceFiles(join(root, "src/mod"))) {
     const text = stripComments(readFileSync(file, "utf8"));
-    // A quoted or template literal that begins with `/api` or `/dispatch`: its whole text up to the
-    // closing quote, or its static prefix up to a `${` (the rest is built at run time, so the prefix is
-    // what can be judged: `/dispatch/drafts/${id}` is `/dispatch/drafts/`, and `/api/${x}` is `/api/`).
-    // A `$` is an ordinary character in a quoted string (`"/api/$x"`); only `${` ends the static text.
-    for (const match of text.matchAll(/["'`](\/(?:api|dispatch)(?:[^"'`\s$]|\$(?!\{))*)(?:["'`]|\$\{)/g)) {
-      const path = match[1];
-      if (!isAllowedModCall(path, allowed)) found.push({ file, path });
+    // A literal that begins with `/api` or `/dispatch`. A plain `"` or `'` string is static: its whole
+    // text up to the closing quote is judged, `${` and all (`"/api/a${b}/c"` is that exact path). A
+    // template literal is judged by its static prefix up to a `${`, since the rest is built at run
+    // time (`/dispatch/drafts/${id}` is `/dispatch/drafts/`, and `/api/${x}` is `/api/`). In a
+    // template a lone `$` is an ordinary character; only `${` ends the static text.
+    const literals = [
+      /(["'])(\/(?:api|dispatch)(?:(?!\1)\S)*)\1/g,
+      /`(\/(?:api|dispatch)(?:[^`\s$]|\$(?!\{))*)(?:`|\$\{)/g,
+    ];
+    for (const pattern of literals) {
+      for (const match of text.matchAll(pattern)) {
+        const path = match[2] ?? match[1];
+        if (!isAllowedModCall(path, allowed)) found.push({ file, path });
+      }
     }
   }
   return found;

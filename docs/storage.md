@@ -170,3 +170,22 @@ again.
 
 The limits and the idle-cache budget are the `storage.limits` setting, saved with
 `PUT /api/storage/limits` and carried by settings snapshots in the `storage-limits` domain.
+
+The daemon atomically replaces `voice/speech-holds.json` in the state home with
+an owner-only (0600) ledger before offering speech to a listener. Its entries
+hold the job ID, purpose and private listener instance. Confirmation removes
+the entry. Restart recovery may also record a supervisor name and job ID while
+its process record under `voice/supervised/` is unreadable. This runtime file
+contains no text or audio and stays outside settings exports.
+
+Each voice supervisor provisions its own random 32-byte binary signing key in
+`voice/supervisor-keys/shell.key` or `voice/supervisor-keys/dev.key` before
+its first announcement. Use an owner-only directory (0700) and file (0600).
+Reuse the key across launches and restarts so exits can be confirmed for
+older processes. The daemon reads the key to verify supervisor reports.
+The launcher keeps it out of child environments, arguments and HTTP payloads.
+These files are local runtime credentials outside the settings backup.
+
+Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
+
+The daemon also atomically updates an owner-only `voice/supervised-instances.json` on each accepted supervisor report. It lists outstanding private instance IDs and can retain an unresolved record name during recovery. Keeping the inventory outside `voice/supervised/` lets the daemon ask every possible holder to stop if the directory disappears while the speech ledger is unreadable. A new directory cannot replace a missing inventory during that recovery.

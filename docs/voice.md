@@ -647,8 +647,7 @@ after the dashboard has reported the timeout.
 Decisions key. Both operations return the updated report.
 
 The settings are one `app_config` entry, `voice`, read with defaults so a field an older build
-never wrote needs no migration. It holds every field the later phases read, so none of them
-changes the schema:
+never wrote needs no migration.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -657,6 +656,7 @@ changes the schema:
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
+| `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
@@ -825,7 +825,7 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+The state also carries `speech`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
 Every window receives the saved chord and current shell registration together when either changes.
 The dashboard shows a shortcut only when the shell confirms the exact configured chord,
 reports the hotkey capability and has no registration error. Until then the indicator shows its
@@ -833,7 +833,8 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
-absent otherwise; a shell report's `listener` entry is dropped.
+absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
+An unconfirmed stop can make the listener unavailable even while its hello is live.
 `model` is the speech model manager's reading (see [The speech model](#the-speech-model)), and
 `roster` is [who can be addressed](#who-can-be-addressed).
 
@@ -841,6 +842,8 @@ absent otherwise; a shell report's `listener` entry is dropped.
 
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
+- `POST /api/voice/speech/audition` queues a sample or returns 409 with the unavailable reason.
+- `POST /api/voice/speech/stop` requests a stop. A card includes its job ID to avoid stopping a later job.
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
   Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
   The dashboard uses the request and response times of daemon snapshots to estimate expiry.
@@ -860,7 +863,7 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   The dashboard gives a provider change 75 seconds, including its reservation, write and any
   retry. If the change times out, it reads the current configuration and provider from the daemon.
   The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
-  Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
+  Fields replace, `cancelWindow` and `speech` merge per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
   the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
   displays the newest confirmed mode whichever arrives first.
@@ -874,7 +877,9 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does:
 
-- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
+- `POST /voice/listener/supervised` records a supervisor’s start or confirmed exit.
+- `GET /voice/speech/jobs/:id/audio` and `POST /voice/speech/jobs/:id/events` serve the holder’s WAV and accept its playback reports. These routes, listener hellos and directive polls use the private `x-mission-voice-instance` header. The hello body lists playback capabilities. Only its header identifies a speech target. The capture lease still uses `x-voice-listener-id`.
+- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech? }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
@@ -966,3 +971,45 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   set** while the suite's fake Codex answers the routing job for split and mention.
   `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
   suite's daemon never inherits either variable, so no spec reaches a provider.
+
+### Ask aloud
+
+When routing is unsure, **Ask aloud** asks one question using the two or three
+candidate names. The card shows the question and a Stop button. Selecting a
+candidate, cancelling the card or muting also requests a stop. Asking requires
+listening mode and a supervised listener with a ready voice. The setting keeps
+its saved value when unavailable and the usual on-screen choices still work.
+A sample requested through the audition route can play while muted.
+
+All listeners pause capture before the daemon offers the job. Only its holder
+receives the job or its stop request. A start overdue by 2 seconds, a system
+voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
+duration triggers a stop request. After 5 seconds without confirmation, the
+daemon reports the listener unavailable. Capture resumes only after the holder
+reports playback ended or its supervisor confirms process exit. Recently heard
+identifies utterances captured during playback as heard while speaking.
+
+After a restart, the daemon asks each recorded holder to stop. If the speech
+ledger is missing or unreadable, it checks the launch inventory and supervisor
+records. Capture resumes once each outstanding listener confirms playback ended
+or its supervisor confirms exit. A fresh state home with no launch history can
+capture immediately. Changing settings or starting another listener cannot
+confirm silence.
+
+The supervisor authenticates both reports to `POST /voice/listener/supervised`.
+Before starting a child it chooses an instance of the form `shell_<nonce>` or
+`dev_<nonce>`, using 32 random bytes encoded in lowercase hexadecimal for each
+new process. It passes only the instance and ordinary listener credentials to
+the child. The report body remains `{ instance, state }`. In addition to the
+harness token, the supervisor sends `x-mission-voice-supervisor-proof`, the
+lowercase hex HMAC-SHA256 of the UTF-8 string
+`mission-voice-supervised/v1\n<state>\n<instance>` (LF separators, no trailing
+newline), using its own persistent 32-byte key. The instance prefix selects the
+verification key. A supervisor signs an exit only after observing process exit.
+Missing keys and invalid proofs return 403 and leave capture and the ledger as
+they were. The same proof works when a confirmed exit must be retried after
+the daemon restarts.
+
+The daemon acknowledges a signed start after it records the instance on disk. A signed exit removes that launch record. A storage error returns 503 so the supervisor can retry.
+
+Deleting an unidentified process record leaves capture paused. Once recovery identifies the listener, it requests a stop and waits for that listener’s end report or its supervisor’s signed exit. If the whole process-record directory disappears, the daemon uses its separately stored launch inventory. If both sources are unavailable, capture stays paused and supervisor updates return 503 until the inventory can be recovered.

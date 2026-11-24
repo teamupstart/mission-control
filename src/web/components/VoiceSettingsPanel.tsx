@@ -45,8 +45,8 @@ import { Tooltip } from "./Tooltip.tsx";
 const CANCEL_WINDOW_CHOICES = [2, 3, 4, 5, 6, 8, 10, 15, 20, 30] as const;
 
 const UNSURE_CHOICES: readonly { id: VoiceWhenUnsure; label: string; description: string }[] = [
-  { id: "show", label: "Show on screen", description: "Show the agents it could have been, and say or click one." },
   { id: "ask", label: "Ask aloud", description: "Ask aloud which agent you meant, and answer by name." },
+  { id: "show", label: "Show on screen", description: "Show the agents it could have been, and say or click one." },
 ];
 
 const FIXED_INPUTS: readonly { id: string; label: string }[] = [
@@ -376,6 +376,7 @@ export function VoiceSettingsPanel({
   const lengths = CANCEL_WINDOW_CHOICES.includes(seconds as (typeof CANCEL_WINDOW_CHOICES)[number])
     ? CANCEL_WINDOW_CHOICES
     : [...CANCEL_WINDOW_CHOICES, seconds].sort((a, b) => a - b);
+  const askReason = voice?.capabilities["speech-output"]?.available ? null : voice?.capabilities["speech-output"]?.reason ?? "No listener is running.";
   const unsure = config?.whenUnsure ?? "show";
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
@@ -483,20 +484,21 @@ export function VoiceSettingsPanel({
           <div className="kb-row-text">
             <span className="kb-row-label">When routing is unsure</span>
             <span className="kb-row-desc">
-              What happens when Mission Control cannot tell which agent you addressed.
+              {askReason ?? "What happens when Mission Control cannot tell which agent you addressed."}
             </span>
           </div>
           <div className="kb-row-controls">
             <div className="display-choice-options" role="radiogroup" aria-label="When routing is unsure">
               {UNSURE_CHOICES.map((choice) => (
-                <Tooltip key={choice.id} label={choice.description}>
+                <Tooltip key={choice.id} label={choice.id === "ask" ? askReason ?? choice.description : choice.description}>
                   <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
                     <input
                       type="radio"
                       name="voice-when-unsure"
                       value={choice.id}
                       checked={unsure === choice.id}
-                      disabled={!config}
+                      aria-description={choice.id === "ask" ? askReason ?? undefined : undefined}
+                      disabled={!config || (choice.id === "ask" && !!askReason)}
                       onChange={() => void update({ whenUnsure: choice.id })}
                     />
                     {choice.label}

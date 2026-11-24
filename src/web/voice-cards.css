@@ -63,3 +63,14 @@ html:has(.voice-standalone), body:has(.voice-standalone), #root:has(.voice-stand
 @media (prefers-reduced-motion: no-preference) {
   .voice-card[data-settled] { animation: voice-card-fade .3s ease-in 7.7s both; }
 }
+
+.vc-ask {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+  border: 1px solid color-mix(in oklab, var(--working) 30%, var(--border));
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+.vc-ask .vc-icon { color: var(--working); }

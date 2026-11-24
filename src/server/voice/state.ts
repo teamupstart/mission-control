@@ -1,3 +1,7 @@
+import { join } from "node:path";
+import { stateDir } from "../../shared/harness-runtime.mjs";
+import { askAloudPossible, resolveSpeechVoice, type VoiceSpeechCatalog } from "@shared/voice-speech.ts";
+import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
 import { randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
@@ -36,6 +40,9 @@ import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 export interface VoiceStateDeps {
   now(): number;
   hostNowUs?(): number;
+  speechDirectory?: string;
+  wallNow?(): number;
+  speechBackend?: { neural(): VoiceSpeechCatalog["neural"]; model(): VoiceModelState; synthesizer: VoiceSynthesizer };
   enabled(id: FeatureFlagId): boolean;
   config(): VoiceConfig;
   /** The speech model's state (contract H's manager). Absent, the model reads as nothing known. */
@@ -61,7 +68,7 @@ export class VoiceStateStore {
   private readonly source = randomUUID();
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
-  private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
+  private hello: { at: number; ownerId: string | null; speechInstance?: string; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; keyChangedHostUs: number | null; report: VoiceShellReport } | null = null;
@@ -74,12 +81,29 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private lastDirective?: { holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
   private releases = new Map<string, { pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
+
+  private manager?: VoiceSpeechManager;
+  private muted = false;
+  get speech(): VoiceSpeechManager {
+    return this.manager ??= new VoiceSpeechManager({
+      directory: this.deps.speechDirectory ?? join(stateDir(), "voice"),
+      now: this.deps.wallNow ?? (() => Date.now()), setTimer: this.deps.setTimer, clearTimer: this.deps.clearTimer,
+      synthesizer: this.deps.speechBackend?.synthesizer,
+      target: purpose => {
+        const state = this.state();
+        const instance = this.liveHello()?.speechInstance;
+        if (!instance || !state.speech.voice || (purpose === "ask" && !askAloudPossible(this.deps.config(), state))) return null;
+        return { instance, voice: state.speech.voice };
+      },
+      changed: () => this.publish(),
+    });
+  }
 
   constructor(private readonly deps: VoiceStateDeps) {}
 
@@ -101,24 +125,32 @@ export class VoiceStateStore {
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
     const granted = this.liveHello()?.hello.microphone === "granted";
-    const capture = voiceCaptures(state.mode) && granted;
+    const speechKey = this.manager?.directiveKey ?? "";
+    const capture = voiceCaptures(state.mode) && granted && !this.manager?.held;
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
     const inputDevice = this.deps.config().inputDevice;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
-    if (last && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
+    if (last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
       last.recipients === recipients && last.press === press) return last.directive;
-    const directive = { capture, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
+    const directive = { capture, speak: null, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
     // Only successive key presses and releases share pending delivery rights.
     const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
       (last?.mode === "push-to-talk" && state.mode === "auto-muted");
-    if (!keyTransition || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
+    if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { directive, recipients, mode: state.mode, granted, press };
+    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
     return directive;
+  }
+
+  /** Only the holder sees the playback command, so its long-poll revision is distinct too. */
+  directiveFor(instance?: string, state = this.state()): VoiceListenerDirective {
+    const base = this.directive(state);
+    const speak = this.manager?.speak(instance);
+    return speak ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
@@ -145,10 +177,14 @@ export class VoiceStateStore {
     }
     const now = this.deps.now();
     const config = this.deps.config();
-    const hello = this.liveHello()?.hello ?? null;
+    const listener = this.liveHello();
+    const hello = listener?.hello ?? null;
     const refused = this.refused && now - this.refused.at < VOICE_HELLO_LAPSE_MS ? this.refused : null;
     const report = this.report && now - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? this.report.report : null;
+    const manager = this.speech;
+    const failure = manager.listenerFailure;
     const reasons = voiceUnavailableReasons({
+      listenerFailure: !!failure,
       requiredFlagsOn: VOICE_REQUIRED_FLAGS.every((id) => this.deps.enabled(id)),
       hello,
       shellMicrophone: report?.microphone ?? null,
@@ -161,6 +197,21 @@ export class VoiceStateStore {
     delete capabilities.listener;
     if (hello) capabilities.listener = { available: true, reason: null };
     else if (refused) capabilities.listener = { available: false, reason: refused.reason };
+    if (failure) capabilities.listener = { available: false, reason: failure };
+    const output = hello?.speech;
+    const model = this.deps.speechBackend?.model() ?? { ...VOICE_MODEL_STATE_NONE };
+    const catalog: VoiceSpeechCatalog = {
+      neural: output?.audio && model.status === "ready" ? this.deps.speechBackend?.neural() ?? [] : [],
+      system: (output?.systemVoices ?? []).filter(v => /^en(?:[-_]|$)/iu.test(v.language))
+        .map(({ id, name, quality }) => ({ id, name, detail: quality })),
+    };
+    const unavailable = failure ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
+      : !listener?.speechInstance || !manager.announced.has(listener.speechInstance) ? "this listener was not started by a supervisor"
+      : !output.audio && !catalog.system.length ? "This listener cannot play speech." : null);
+    const resolved = unavailable ? { reason: unavailable, voice: null } : resolveSpeechVoice(config, catalog);
+    capabilities["speech-output"] = { available: !!resolved.voice, reason: resolved.reason };
+    const live = manager.live;
+    const job = live ? { id: live.id, purpose: live.purpose, state: live.state, cardId: live.cardId } : null;
     const mode = voiceMode({
       enabled: true,
       reasons,
@@ -176,6 +227,7 @@ export class VoiceStateStore {
     return {
       muted: config.muted,
       mode,
+      speech: { ...resolved, job, catalog, model },
       modeVersion: { source: this.source, revision: this.modeRevision },
       reasons,
       capabilities,
@@ -224,7 +276,7 @@ export class VoiceStateStore {
    * A granted listener can replace a helper still waiting for access. Once granted, only
    * that process can renew its lease until it reports denial or its heartbeat lapses.
    */
-  acceptHello(id: string | undefined, hello: VoiceListenerHello): VoiceHelloResult {
+  acceptHello(id: string | undefined, hello: VoiceListenerHello, speechInstance?: string): VoiceHelloResult {
     const at = this.deps.now();
     const live = this.liveHello();
     const ownerId = live?.ownerId;
@@ -256,7 +308,7 @@ export class VoiceStateStore {
       this.releases.clear();
       this.latestRelease = undefined;
     }
-    this.hello = { at, ownerId: nextOwnerId, hello };
+    this.hello = { at, ownerId: nextOwnerId, speechInstance, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
     this.publish();
@@ -318,6 +370,14 @@ export class VoiceStateStore {
       this.hello = null;
       this.lastDirective = undefined;
     }
+    const enabled = this.deps.enabled(VOICE_FLAG);
+    this.manager?.setEnabled(enabled);
+    const muted = enabled && this.deps.config().muted;
+    const becomingMuted = muted && !this.muted;
+    this.muted = muted;
+    if (becomingMuted) this.manager?.stopAll();
+    else if (enabled && this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS &&
+        this.deps.config().autoMuteDuringCalls) this.manager?.stopAll("ask");
     const state = this.state();
     if (this.lastDirective) this.directive(state);
     for (const listener of Array.from(this.listeners)) {
@@ -335,6 +395,9 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.manager?.dispose();
+    this.manager = undefined;
+    this.muted = false;
     this.lastReportHostUs = -1;
     this.lastPhysicalKeyHostUs = -1;
     this.releases.clear();

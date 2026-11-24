@@ -30,7 +30,7 @@ test("token-gated directives reflect capture, device and spoken roster changes, 
   assert.ok((await listener.hello()).ok);
   setVoiceConfig({ muted: false });
   const initial = await listener.poll();
-  assert.deepEqual(initial, { revision: initial.revision, capture: true, inputDevice: "built-in", roster: [], pauseMs: null });
+  assert.deepEqual(initial, { revision: initial.revision, speak: null, capture: true, inputDevice: "built-in", roster: [], pauseMs: null });
   const words = [{ text: "hello", startMs: 0, endMs: 320 }];
   assert.deepEqual(await (await listener.utterance("hello", words, initial.revision)).json(), { accepted: true });
   const pending = listener.poll(initial.revision);

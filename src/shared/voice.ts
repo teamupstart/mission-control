@@ -4,10 +4,10 @@
 // Browser-safe: no `node:` import may reach this module. The daemon stores the config and
 // computes the state with these schemas and `voiceMode`, the dashboard draws both, the shell
 // follows the state, and a listener sends the hello, so none of them can disagree about what a
-// field means or which mode a set of facts produces. Later phases read and write the config
-// fields declared here and add none; a phase that needs a new capability id adds it to
+// field means or which mode a set of facts produces. A phase that needs a new capability id adds it to
 // `VOICE_CAPABILITY_IDS` below.
 
+import { SpeechVoiceSchema, SpeechHelloSchema, type VoiceSpeechState, type SpeakDirective } from "./voice-speech.ts";
 import { z } from "zod";
 import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
@@ -85,6 +85,7 @@ export const VoiceConfigSchema = z.object({
   autoMuteDuringCalls: z.boolean().default(true),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
+  speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
   planFormsByVoice: z.boolean().default(true),
@@ -110,6 +111,7 @@ export const VoiceConfigPatchSchema = z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
   }).partial().strict(),
+  speech: z.object({ voice: SpeechVoiceSchema.nullable() }).partial().strict(),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE),
   planFormsByVoice: z.boolean(),
   inputDevice: z.string().trim().min(1).max(VOICE_LIMITS.deviceIdChars),
@@ -138,6 +140,7 @@ export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPat
   return VoiceConfigSchema.parse({
     ...config,
     ...patch,
+    speech: { ...config.speech, ...patch.speech },
     cancelWindow: { ...config.cancelWindow, ...patch.cancelWindow },
   });
 }
@@ -198,6 +201,7 @@ export function voiceCaptures(mode: VoiceMode): boolean {
 }
 
 export interface VoiceListenerDirective {
+  speak: SpeakDirective | null;
   capture: boolean;
   roster: string[];
   inputDevice: string;
@@ -294,6 +298,7 @@ export interface VoiceHotkeyError {
 export interface VoiceState {
   /** Manual mute can also be set while the mode reads unavailable. */
   muted?: boolean;
+  speech: VoiceSpeechState;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
    * Absent on the off state and on snapshots from older daemons. */
@@ -359,6 +364,8 @@ export function voiceMode(inputs: VoiceModeInputs): VoiceMode {
 export interface VoiceReasonInputs {
   /** Whether each required flag is on. */
   requiredFlagsOn: boolean;
+  /** An unresolved playback failure makes even a live listener unavailable. */
+  listenerFailure?: boolean;
   /** The latest accepted hello, if it has not lapsed. */
   hello: Pick<VoiceListenerHello, "modelLoaded" | "microphone"> | null;
   /** The latest shell report's microphone permission, if the report has not lapsed. */
@@ -369,8 +376,8 @@ export interface VoiceReasonInputs {
 export function voiceUnavailableReasons(inputs: VoiceReasonInputs): VoiceUnavailableReason[] {
   const reasons: VoiceUnavailableReason[] = [];
   if (!inputs.requiredFlagsOn) reasons.push("flags");
-  if (!inputs.hello) reasons.push("listener");
-  else if (!inputs.hello.modelLoaded) reasons.push("model");
+  if (!inputs.hello || inputs.listenerFailure) reasons.push("listener");
+  if (inputs.hello && !inputs.hello.modelLoaded) reasons.push("model");
   if (inputs.hello?.microphone === "denied" || inputs.shellMicrophone === "denied") reasons.push("microphone");
   return reasons;
 }
@@ -407,6 +414,8 @@ export function canonicalVoiceState(state: VoiceState): string {
     const entry = state.capabilities[id];
     if (entry) capabilities[id] = { available: entry.available, reason: entry.reason };
   }
+  const { voice, reason, catalog, model, job } = state.speech;
+  const entries = (voices: typeof catalog.system) => voices.map(v => [v.id, v.name, v.detail]);
   return JSON.stringify([
     state.mode,
     state.modeVersion?.source,
@@ -418,6 +427,8 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     canonicalVoiceModel(state.model),
+    voice && [voice.engine, voice.id], reason, job && [job.id, job.purpose, job.state, job.cardId],
+    entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model),
   ]);
 }
 
@@ -446,7 +457,7 @@ export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
 
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
+  return { mode: "off", speech: { voice: null, reason: "Voice is off.", job: null, catalog: { neural: [], system: [] }, model: { ...VOICE_MODEL_STATE_NONE } }, reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----
@@ -482,6 +493,7 @@ export type VoiceInputDevice = z.infer<typeof VoiceInputDeviceSchema>;
  * the listener protocol version, `major.minor`; only its major is compared.
  */
 export const VoiceListenerHelloSchema = z.object({
+  speech: SpeechHelloSchema.optional(),
   backend: z.enum(VOICE_BACKENDS),
   version: z.string().regex(/^\d+(\.\d+){0,2}$/).max(VOICE_LIMITS.versionChars),
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),

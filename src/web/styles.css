@@ -36616,6 +36616,11 @@ span.line-run-prov {
   border-left: 1px solid var(--border);
   cursor: pointer;
 }
+.voice-settings .display-choice-option:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: .65;
+}
 .display-choice-option:first-child {
   border-left: 0;
 }

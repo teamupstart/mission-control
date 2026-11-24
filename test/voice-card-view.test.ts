@@ -39,3 +39,20 @@ test("a failed immediate stop shows its reason alongside the pending message con
   assert.match(html, /Send to Steve now/);
   assert.match(html, />Cancel</);
 });
+
+test("only the ready or speaking ask for this unsure card shows the question and Stop", () => {
+  const card: VoiceCard = { id: "one", state: "unsure", reason: "", parts: [{ target, text: "check CI" }],
+    candidates: ["Steve", "Will"].map(name => ({ kind: "agent", id: name, title: name, detail: "" })), openQuestions: 0, deadline: null };
+  for (const state of ["ready", "speaking", "stopping"] as const) {
+    for (const cardId of ["one", "other"]) {
+      const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions: {
+        ...actions,
+        speechJob: { id: "job", purpose: "ask", state, cardId },
+      } }));
+      const asking = cardId === card.id && state !== "stopping";
+      assert.equal(html.includes("Asking aloud"), asking);
+      assert.equal(html.includes(">Stop</button>"), asking);
+      assert.equal(html.includes("Steve or Will?"), asking);
+    }
+  }
+});

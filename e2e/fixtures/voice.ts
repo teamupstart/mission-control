@@ -1,7 +1,10 @@
+import { fixtureVoiceSupervisor } from "../../test/helpers/voice-supervisor.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
+import { VOICE_INSTANCE_HEADER } from "../../src/shared/voice-speech.ts";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -309,4 +312,91 @@ export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
     });
     if (!response.ok) throw new Error(`Could not enable ${id}: ${response.status}`);
   }
+}
+
+/** A supervised player that follows the same long poll as a real listener. */
+export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean } = {}) {
+  const supervisor = fixtureVoiceSupervisor(join(daemon.home, "voice"), "dev");
+  const { instance } = supervisor;
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
+    [VOICE_LISTENER_ID_HEADER]: crypto.randomUUID(), [VOICE_INSTANCE_HEADER]: instance };
+  const post = (path: string, body: unknown) => fetch(daemon.baseURL + path, { method: "POST", headers, body: JSON.stringify(body) });
+  const supervise = (state: "started" | "exited") => fetch(daemon.baseURL + "/voice/listener/supervised", {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), ...supervisor.headers(state) },
+    body: JSON.stringify({ instance, state }),
+  });
+  const hello = () => post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: true,
+    systemVoices: [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } });
+  if (!(await supervise("started")).ok) throw new Error("Fixture supervisor could not announce the listener.");
+  await hello();
+  const heartbeat = setInterval(() => void hello().catch(() => {}), HELLO_EVERY_MS);
+  const controller = new AbortController();
+  const read = (revision?: string) => fetch(daemon.baseURL + "/voice/listener/directive" +
+    (revision ? "?revision=" + encodeURIComponent(revision) : ""), { headers, signal: controller.signal });
+  const poll = async () => {
+    const response = await read();
+    if (!response.ok) throw new Error("Directive status " + response.status);
+    return await response.json() as VoiceListenerDirective;
+  };
+  let current: string | null = null;
+  let playing = false;
+  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped") => {
+    if (!current) throw new Error("Fixture has no speech job.");
+    if (!(await post("/voice/speech/jobs/" + current + "/events", { type, outcome })).ok) throw new Error("Speech report refused.");
+  };
+  const start = async () => { await event("started"); playing = true; };
+  const end = async (outcome: "finished" | "stopped" = "finished") => {
+    playing = false;
+    await event("ended", outcome);
+    current = null;
+  };
+  async function follow() {
+    let revision: string | undefined;
+    while (!controller.signal.aborted) {
+      const response = await read(revision);
+      if (response.status === 404 || response.status === 409) {
+        // With voice off or another process holding the capture lease there is no long poll.
+        await response.body?.cancel();
+        revision = undefined;
+        await delay(100, undefined, { signal: controller.signal });
+        continue;
+      }
+      if (!response.ok) throw new Error("Directive status " + response.status);
+      const directive = await response.json() as VoiceListenerDirective;
+      revision = directive.revision;
+      const speak = directive.speak;
+      if (!speak) continue;
+      current = speak.id;
+      if ("stop" in speak) {
+        if (!options.ignoreStop) await end("stopped");
+      } else if (!playing && !options.delayStart) {
+        if (speak.kind === "audio") {
+          const audio = await fetch(daemon.baseURL + "/voice/speech/jobs/" + speak.id + "/audio", { headers });
+          if (!audio.ok) continue; // Stop may have raced the audio fetch.
+          await audio.arrayBuffer();
+        }
+        await start();
+        if (!options.holdPlayback) await end();
+      }
+    }
+  }
+  let failure: unknown;
+  const following = follow().catch(error => { if (!controller.signal.aborted) failure = error; });
+  return {
+    poll, start, end, get playing() { return playing; },
+    async say(text: string) {
+      const { revision } = await poll();
+      return post("/voice/utterances?revision=" + encodeURIComponent(revision), {
+        id: crypto.randomUUID(), text, backend: LISTENER_HELLO.backend, capturedAt: Date.now(),
+      });
+    },
+    async exit() {
+      clearInterval(heartbeat);
+      controller.abort();
+      await following;
+      playing = false;
+      if (!(await supervise("exited")).ok) throw new Error("Fixture supervisor could not confirm exit.");
+      if (failure) throw failure;
+    },
+  };
 }

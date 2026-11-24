@@ -5089,7 +5089,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
       openQuestion: id => { navigate({ page: "fleet" }); setReviewSessionId(id); },
       followUp: taskId => {
         const task = tasks.find(t => t.id === taskId);

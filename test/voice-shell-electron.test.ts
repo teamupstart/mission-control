@@ -232,8 +232,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await click("click");
   assert.equal((await read()).opens, 1);
   await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async t => {
-    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening") => events!.write("data: " + JSON.stringify({
-      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey },
+    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening", pendingHotkey?: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey, pendingHotkey },
     }) + "\n\n");
     const chord = "cmd+ctrl+shift+F9";
     const startUs = voiceHostTimeUs();
@@ -252,9 +252,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       assert.equal(reports.at(-1)?.registeredHotkey, chord);
     }
     const reserved = "cmd+ctrl+shift+F10";
-    publish(reserved);
+    publish(chord, "listening", reserved);
     await until(() => reports.at(-1)?.hotkeyError?.reason.includes("another app already owns it.") === true);
     assert.equal(reports.at(-1)?.registeredHotkey, chord);
+    const beforeRestore = reports.length;
+    publish(chord);
+    await until(() => reports.length > beforeRestore);
+    assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, chord);
     for (const down of [true, false]) {
       await app.evaluate((_, pressed) => (globalThis as unknown as { fixture: Fixture }).fixture.post(pressed), down);
     }
@@ -372,6 +376,20 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         muteResponse = "ok";
         publish(reserved);
       }
+    });
+    await t.test("fresh desktop hardware reserves the durable shortcut before trying a refused replacement", async () => {
+      publish(chord, "off");
+      await until(async () => (await read()).mode === "off");
+      const start = reports.length;
+      publish(chord, "listening", reserved);
+      await until(() => reports.slice(start).some(r => r.hotkeyError?.chordInForce === chord));
+      assert.equal(reports.at(-1)?.registeredHotkey, chord);
+      assert.equal(await app.evaluate(({ globalShortcut }) => {
+        const key = "Command+Control+Shift+F9";
+        if (!globalShortcut.register(key, () => {})) return false;
+        globalShortcut.unregister(key);
+        return true;
+      }), false, "Carbon still reserves the saved binding for Voice after restarting");
     });
     await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.freeKeyAndNotify());
     await until(() => reports.at(-1)?.registeredHotkey === reserved && reports.at(-1)?.hotkeyError === null);

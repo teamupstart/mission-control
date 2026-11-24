@@ -163,7 +163,12 @@ export function registerVoiceRoutes(
       return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
     }
     const ticket = c.req.header("x-voice-provider-ticket");
-    const config = setVoiceConfig(parsed.data, ticket);
+    const { hotkey, ...settings } = parsed.data;
+    // Removing a shortcut needs no OS reservation. A replacement is committed only
+    // when a fresh shell report confirms that exact chord.
+    const patch = hotkey === null ? parsed.data : settings;
+    const config = Object.keys(patch).length || ticket ? setVoiceConfig(patch, ticket) : getVoiceConfig();
+    if (config && hotkey !== undefined) store.proposeHotkey(hotkey);
     return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);
   });
   // The browser owns the reservation only while this request is open. Closing the

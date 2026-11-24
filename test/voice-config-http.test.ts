@@ -125,6 +125,50 @@ test("a recorder owns the shortcut only until disconnect and cannot be opened by
   assert.equal(voiceStateStore.state().muted, true);
 });
 
+test("only a confirmed replacement becomes the saved hotkey, including across a restart after refusal", async t => {
+  let nowUs = 1_000_000;
+  t.mock.method(voiceStateStore, "hostNowUs", () => nowUs);
+  const propose = (hotkey: string | null) => json("/api/voice/config", "PUT", { hotkey });
+  const snapshot = (registeredHotkey: string, reason?: string, reportedAtHostUs = ++nowUs) =>
+    report({ capabilities: { hotkey: { available: true } }, registeredHotkey, reportedAtHostUs,
+      hotkeyError: reason ? { reason, chordInForce: registeredHotkey } : null });
+  const saved = async () => (await (await json("/api/voice/config")).json()).config.hotkey;
+  await propose("ctrl+k");
+  assert.equal(await saved(), VOICE_CONFIG_DEFAULTS.hotkey);
+  assert.equal(voiceStateStore.state().pendingHotkey, "ctrl+k");
+  await snapshot("ctrl+k");
+  assert.equal(await saved(), "ctrl+k");
+  assert.equal(voiceStateStore.state().pendingHotkey, undefined);
+
+  const beforeEdit = ++nowUs;
+  nowUs++;
+  await propose("alt+Space");
+  await snapshot("alt+Space", undefined, beforeEdit);
+  assert.equal(await saved(), "ctrl+k", "a snapshot taken before the edit cannot approve it");
+  await snapshot("ctrl+k", "Reserved.");
+  assert.equal(voiceStateStore.state().pendingHotkey, undefined);
+  assert.equal(voiceStateStore.state().hotkeyError?.chordInForce, "ctrl+k");
+  const reopened = new DatabaseSync(join(home, "harness.db"), { readOnly: true });
+  try {
+    const row = reopened.prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.voice.key);
+    assert.equal(JSON.parse(String(row?.value)).hotkey, "ctrl+k");
+  } finally { reopened.close(); }
+  voiceStateStore.reset();
+  assert.equal(voiceStateStore.state().configuredHotkey, "ctrl+k");
+  assert.equal(await saved(), "ctrl+k");
+
+  await propose("ctrl+p");
+  await propose("ctrl+j");
+  await snapshot("ctrl+p");
+  assert.equal(await saved(), "ctrl+k", "a superseded proposal cannot commit");
+  await snapshot("ctrl+j");
+  assert.equal(await saved(), "ctrl+j");
+  await propose("alt+Space");
+  await propose(null);
+  await snapshot("alt+Space");
+  assert.equal(await saved(), null);
+});
+
 test("the schema upgrade replaces only the stored legacy default and preserves later explicit selections", t => {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());

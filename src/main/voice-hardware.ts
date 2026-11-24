@@ -37,7 +37,8 @@ export class VoiceHardware {
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
-  update(chord: string | null, mode: VoiceMode, recording = false) {
+  update(saved: string | null, mode: VoiceMode, recording = false, pending?: string) {
+    const chord = pending ?? saved;
     this.mode = mode;
     if (mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
     if (this.activity.value && !this.poll) {
@@ -51,12 +52,16 @@ export class VoiceHardware {
       }
       return;
     }
-    if (this.suspended !== undefined) {
-      // Reinstate the previous owner first in case the recorded replacement is refused.
-      if (chord && this.suspended && chord !== this.suspended) this.bind(this.suspended);
-      this.suspended = undefined;
-    } else if (this.desired === chord) return;
+    if (this.suspended === undefined && this.desired === chord) return;
+    // A fresh desktop can first see an in-flight edit. Establish its saved fallback
+    // before trying the replacement, just as when resuming from the recorder.
+    const fallback = pending ? saved : this.suspended;
+    this.suspended = undefined;
+    if (chord && fallback !== undefined && fallback !== chord && fallback !== this.registeredHotkey) this.bind(fallback);
+    const retained = !pending && this.hotkeyError && chord === this.registeredHotkey;
     this.desired = chord;
+    // Ending a refused trial keeps its warning while this binding remains in force.
+    if (retained) return;
     this.bind(chord);
   }
 

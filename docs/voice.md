@@ -919,7 +919,9 @@ Choose **Settings > Voice > Mute hotkey**, then press a chord. Escape cancels re
 A tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
 the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
 to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
-the warning names the chord still registered, or says when none is in force.
+the warning names the chord still registered, or says when none is in force. Settings saves a
+replacement only after the desktop confirms registration. Restarting the desktop after a refusal
+restores the saved shortcut.
 Voice releases the current shortcut while Settings records, so recording it again keeps the
 same binding without muting. Typing and navigation keys require Command, Control, or Option.
 On upgrade, the stored Phase 1 default Control+Option+M moves to Control+Command+Option+V.

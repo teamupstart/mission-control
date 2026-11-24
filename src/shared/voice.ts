@@ -311,6 +311,8 @@ export interface VoiceState {
   capabilities: VoiceCapabilities;
   /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
   configuredHotkey: string | null;
+  /** A replacement to try while the persisted shortcut remains the fallback. */
+  pendingHotkey?: string;
   /** A focused Settings recorder is waiting for the desktop to release its reservation. */
   recordingHotkey?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
@@ -424,6 +426,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.reasons,
     capabilities,
     state.configuredHotkey,
+    state.pendingHotkey,
     state.recordingHotkey,
     state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,

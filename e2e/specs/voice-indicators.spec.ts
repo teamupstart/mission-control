@@ -202,7 +202,7 @@ test("a changed voice shortcut stays hidden in both windows until the shell conf
   const keycap = status.locator("kbd");
   const report = (registeredHotkey?: string) => page.request.post(daemon.baseURL + "/voice/shell-report", {
     headers: { "x-harness-token": voiceToken(daemon) },
-    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey },
+    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey, reportedAtHostUs: voiceHostTimeUs() },
   });
   try {
     expect((await report()).ok()).toBe(true);

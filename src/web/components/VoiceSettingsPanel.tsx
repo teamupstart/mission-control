@@ -363,7 +363,7 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
   const [leaseGranted, setLeaseGranted] = useState(false);
   const available = !!voice?.capabilities.hotkey?.available && !!state.config;
   const error = voice?.hotkeyError;
-  const chord = error ? error.chordInForce : state.config?.hotkey;
+  const chord = error ? error.chordInForce : voice ? voice.configuredHotkey : state.config?.hotkey;
   const label = chord ? formatChord(chord) : "Unset";
   const requested = recordingLabel !== null;
   const recording = requested && leaseGranted && voice?.recordingHotkey && voice.registeredHotkey === null;

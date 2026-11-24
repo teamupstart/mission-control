@@ -1,5 +1,6 @@
 import type { Locator } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -23,11 +24,14 @@ test("Voice settings records a chord, explains refusal, and follows call and key
       });
       expect(response.ok()).toBe(true);
     };
+    let captureDir: string | undefined;
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-hardware/recorder");
+      mkdirSync(root, { recursive: true });
+      captureDir = mkdtempSync(join(root, "run-"));
+    }
     const screenshot = async (name: string) => {
-      if (!process.env.MC_E2E_EVIDENCE) return;
-      const dir = artifactsDir("voice-hardware/recorder");
-      mkdirSync(dir, { recursive: true });
-      await controls.screenshot({ path: dir + name + ".png" });
+      if (captureDir) await controls.screenshot({ path: join(captureDir, name + ".png") });
     };
     await expect(row).toContainText("Needs the desktop app");
     await report({ registeredHotkey: "cmd+ctrl+alt+v" });
@@ -37,7 +41,7 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await openSetupFamily(page, "voice");
     const mic = setupRow(page, "dependency-voice-microphone");
     await expect(mic).toContainText("Tap ⌘⌃⌥V to mute voice from any app.");
-    if (process.env.MC_E2E_EVIDENCE) await mic.screenshot({ path: artifactsDir("voice-hardware/recorder") + "setup.png" });
+    if (captureDir) await mic.screenshot({ path: join(captureDir, "setup.png") });
     await page.goto(daemon.baseURL + "/#/settings/voice");
     const mock = await context.newPage();
     await mock.goto(new URL("../../docs/plans/voice-addressing-for-agents/mockup-voice-settings.html", import.meta.url).href);
@@ -68,6 +72,15 @@ test("Voice settings records a chord, explains refusal, and follows call and key
       await report({ registeredHotkey: null });
       await expect(capture).toHaveAttribute("aria-pressed", "true");
     };
+    const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
+    const recordReplacement = async (keys: string, chord: string) => {
+      await beginRecording();
+      await page.keyboard.press(keys);
+      await expect.poll(async () => {
+        const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+        return !state.recordingHotkey && state.pendingHotkey;
+      }).toBe(chord);
+    };
     await capture.focus();
     await expect(page.locator(".tooltip")).toHaveText("Record a system-wide mute shortcut");
     await beginRecording();
@@ -76,36 +89,40 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await screenshot("capture");
     await page.keyboard.press("Escape");
     await expect(capture).toHaveAttribute("aria-pressed", "false");
-    await beginRecording();
-    await page.keyboard.press("Control+k");
-    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.hotkey).toBe("ctrl+k");
+    await recordReplacement("Control+k", "ctrl+k");
+    expect((await saved()).hotkey).toBe("cmd+ctrl+alt+v");
+    await report({ registeredHotkey: "ctrl+k" });
+    await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+k");
     await expect(capture).toHaveText("⌃K");
     await screenshot("configured");
-    await report({ registeredHotkey: "ctrl+k" });
     await beginRecording();
     await page.keyboard.press("Control+k");
     await expect(capture).toHaveAttribute("aria-pressed", "false");
     await expect(capture).toHaveText("⌃K");
     await expect(mode).toContainText("Listening");
-    await beginRecording();
-    await page.keyboard.press("Control+Shift+Space");
-    const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
+    await recordReplacement("Control+Shift+Space", "ctrl+shift+Space");
+    await report({ registeredHotkey: "ctrl+shift+Space" });
     await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+shift+Space");
-    await beginRecording();
-    await page.keyboard.press("Control+Shift+Equal");
+    await recordReplacement("Control+Shift+Equal", "ctrl+shift++");
+    await report({ registeredHotkey: "ctrl+shift++" });
     await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+shift++");
-    await beginRecording();
-    await page.keyboard.press("Alt+Space");
-    await expect.poll(async () => (await saved()).hotkey).toBe("alt+Space");
+    await recordReplacement("Control+k", "ctrl+k");
+    await report({ registeredHotkey: "ctrl+k" });
+    await recordReplacement("Alt+Space", "alt+Space");
+    expect((await saved()).hotkey).toBe("ctrl+k");
     await report({ hotkeyError: { reason: "macOS refused ⌥Space: another app already owns it.", chordInForce: "ctrl+k" } });
     await expect(row.getByRole("alert")).toHaveText("macOS refused ⌥Space: another app already owns it. ⌃K is still your hotkey.");
     await expect(capture).toHaveText("⌃K");
     await screenshot("refused");
-    await beginRecording();
-    await page.keyboard.press("v");
-    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.hotkey).toBe("v");
+    await page.reload();
+    await expect(capture).toHaveText("⌃K");
+    await expect(row.getByRole("alert")).toContainText("⌃K is still your hotkey.");
+    expect((await saved()).hotkey).toBe("ctrl+k");
+    await screenshot("refused-after-reload");
+    await recordReplacement("v", "v");
     await report({ hotkeyError: { reason: "macOS refused v: Use Command, Control, or Option with a typing key.", chordInForce: "ctrl+k" } });
     await expect(row.getByRole("alert")).toContainText("Use Command, Control, or Option with a typing key. ⌃K is still your hotkey.");
+    expect((await saved()).hotkey).toBe("ctrl+k");
     await expect(capture).toHaveText("⌃K");
     await beginRecording();
     await page.keyboard.press("Control+k");

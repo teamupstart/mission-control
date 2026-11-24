@@ -26,3 +26,8 @@ test("the launcher names the explicit build command when the listener is missing
   assert.equal(launch.status, 1);
   assert.match(launch.stderr, /npm run build:voice-listener/);
 });
+
+test("a clean desktop build includes the voice helper before packaging dist", async () => {
+  const { scripts } = (await import("../package.json", { with: { type: "json" } })).default;
+  assert.ok(scripts.build.split(" && ").includes("npm run build:voice-listener"));
+});

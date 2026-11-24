@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
   showVoiceCardNotice: (input: { id: string; title: string; body: string; deadline: number }) => ipcRenderer.invoke("mission:voice-card-notice", input),
   dismissVoiceCardNotice: (id: string) => ipcRenderer.send("mission:voice-card-dismiss", id),
+  ...(process.platform === "darwin" && {
+    fixVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone"),
+    checkVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone", "check"),
+  }),
   version: (): Promise<string> => ipcRenderer.invoke("mission:version"),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("mission:open-external", url),
   installIntegrations: (): Promise<{ ok: boolean; message: string }> =>

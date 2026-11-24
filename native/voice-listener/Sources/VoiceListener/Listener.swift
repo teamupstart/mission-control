@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 enum CaptureError: Error { case device, format, listenerInUse }
 
@@ -23,6 +24,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     typealias CaptureTimes = (startUs: Int64, speechStartUs: Int64, endMs: Int64)
     struct Acknowledgement: Decodable { let accepted: Bool }
     let base: URL
+    let pinnedCertificate: Data?
     let token: String
     let directory: URL
     private let listenerID = UUID().uuidString
@@ -30,7 +32,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     override init() {
         let env = ProcessInfo.processInfo.environment
-        guard let base = env["MISSION_VOICE_DAEMON_URL"].flatMap(URL.init(string:)), base.scheme == "http",
+        let pin = env["MISSION_VOICE_DAEMON_CERT"]
+        pinnedCertificate = pin.flatMap { Data(base64Encoded: $0) }
+        guard let base = env["MISSION_VOICE_DAEMON_URL"].flatMap(URL.init(string:)),
+              (pin == nil && base.scheme == "http") || (pinnedCertificate?.isEmpty == false && base.scheme == "https"),
               ["localhost", "127.0.0.1", "[::1]"].contains(base.host?.lowercased() ?? ""),
               let file = env["MISSION_VOICE_TOKEN_FILE"], let token = try? String(contentsOfFile: file, encoding: .utf8),
               let models = env["MISSION_VOICE_MODEL_DIR"] else {
@@ -40,6 +45,19 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         self.base = base
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         directory = URL(fileURLWithPath: models)
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let pin = pinnedCertificate,
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = certificates.first, SecCertificateCopyData(leaf) as Data == pin else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,

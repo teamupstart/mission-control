@@ -1,3 +1,6 @@
+/** An idle /events stream sends a named ping at this interval. */
+export const EVENT_STREAM_HEARTBEAT_MS = 15_000;
+
 /**
  * Capabilities that let independently updated clients prove the daemon speaks the wire
  * contract they are about to use. Keep values append-only: an older client may inspect a

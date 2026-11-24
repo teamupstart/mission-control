@@ -197,11 +197,11 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   assert.match(app, /querySelector<HTMLElement>\("\.cdetail \.file-preview-reader"\)/);
   assert.match(app, /\?\? document\.querySelector<HTMLElement>\("\.cdetail \.detail-body"\)/);
   assert.match(app, /target\?\.focus\(\{ preventScroll: true \}\)/);
-  // The selected rail row takes the keyboard back - or, while the rail is folded and draws no
-  // rows, the strip standing in for them, so Escape out of the reader still leaves it.
+  // Escape returns focus to the selected row, its section heading if collapsed, or the
+  // strip if the entire rail is folded.
   assert.match(
     app,
-    /\(sessionEls\.current\.get\(id\) \?\? document\.querySelector<HTMLElement>\("\.session-rail-strip"\)\)\s*\?\.focus\(\{ preventScroll: true \}\)/,
+    /const target = sessionEls\.current\.get\(id\)\s*\?\? document\.querySelector<HTMLElement>\("\.idle-rail-section-toggle\[data-contains-selection\]"\)\s*\?\? document\.querySelector<HTMLElement>\("\.session-rail-strip"\);\s*target\?\.focus\(\{ preventScroll: true \}\)/,
   );
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);

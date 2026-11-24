@@ -566,7 +566,19 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "coderabbit-auth": codeRabbitAuthStatus,
   "voice-previews": async (deps) => voicePreviewsStatus(deps.flagEnabled ?? featureEnabled),
   "voice-model": async (deps) => voiceModelSetupStatus((deps.voiceModel ?? (() => voiceModelManager.state()))()),
-  "voice-microphone": async (deps) => voiceMicrophoneSetupStatus((deps.voiceMicrophone ?? (() => voiceStateStore.microphoneReading()))()),
+  "voice-microphone": async (deps) => {
+    const reading = (deps.voiceMicrophone ?? (() => voiceStateStore.microphoneReading()))();
+    const status = voiceMicrophoneSetupStatus(reading);
+    const remedy = SETUP_DEPENDENCY_INFO["voice-microphone"].remedy;
+    if (remedy.kind !== "microphone-access") return status;
+    if (reading?.permission === "denied" || reading?.permission === "restricted") {
+      return { status, remedy: { ...remedy, action: "settings" } };
+    }
+    if (!reading || reading.permission === "not-determined") {
+      return { status, remedy: { ...remedy, action: "ask" } };
+    }
+    return status;
+  },
 };
 
 function reasonOf(error: unknown): string {

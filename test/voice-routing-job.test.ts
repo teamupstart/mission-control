@@ -150,6 +150,43 @@ test("a retest label cannot append or summarize results from different corpora",
   assert.match(retest("--summarize", "pooled").stderr, /mixed corpora/i);
 });
 
+test("invalid retest ranges fail before a previous label can be summarized or extended", () => {
+  const label = "invalid-ranges";
+  const args = ["--yes", "--transport", "print", "--label", label, "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json")];
+  assert.equal(retest(...args, "--limit", "1").status, 0);
+  const file = join(home, ".tmp/voice-spike", `retest-${label}.jsonl`);
+  const before = readFileSync(file, "utf8");
+  for (const range of [["--start", "all"], ["--limit", "0"], ["--start", "-1"], ["--start", "9000"],
+    ["--start", "1.5"], ["--limit"], ["--limit", "9007199254740992"]]) {
+    const result = retest(...args, ...range);
+    assert.equal(result.status, 1, range.join(" "));
+    assert.match(result.stderr, /--start|--limit/);
+    assert.equal(result.stdout, "");
+    assert.equal(readFileSync(file, "utf8"), before);
+  }
+});
+
+test("a retest records the model sent to the runner and rejects mixed or unrecorded model IDs", () => {
+  const label = "model-revision";
+  const run = (start: string) => retest("--yes", "--transport", "print", "--label", label,
+    "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json"), "--start", start, "--limit", "1");
+  assert.equal(run("0").status, 0);
+  const file = join(home, ".tmp/voice-spike", `retest-${label}.jsonl`);
+  const original = readFileSync(file, "utf8");
+  const row = JSON.parse(original);
+  const argv = readFileSync(record("claude-argv"), "utf8").split("\n");
+  assert.equal(row.model, argv[argv.indexOf("--model") + 1]);
+  assert.equal(JSON.parse(retest("--summarize", label).stdout).model, row.model);
+  for (const model of ["different-model", undefined]) {
+    const changed = JSON.stringify({ ...row, id: "another", model }) + "\n";
+    writeFileSync(file, changed);
+    assert.match(run("1").stderr, /mixed model/i);
+    assert.equal(readFileSync(file, "utf8"), changed);
+    writeFileSync(file, original + changed);
+    assert.match(retest("--summarize", label).stderr, /mixed model/i);
+  }
+});
+
 test("resuming or summarizing a retest refuses a different prompt and schema revision", () => {
   const label = "prompt-revision";
   const run = (start: string) => retest("--yes", "--transport", "print", "--label", label,

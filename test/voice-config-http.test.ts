@@ -155,6 +155,26 @@ test("a stale Off retry cannot reserve past an intervening uncommitted selection
   assert.equal((await choose("openai", next)).status, 200);
 });
 
+test("newer explicit provider tickets win across windows unless an intervening Off invalidated their view", async () => {
+  const a = randomUUID(), b = randomUUID();
+  for (const newerFirst of [false, true]) {
+    const base = await readProviderRevision();
+    const older = await reserveFor(a, base);
+    const newer = await reserveFor(b, base);
+    if (!newerFirst) assert.equal((await choose("openai", older)).status, 200);
+    assert.equal((await choose("jev", newer)).status, 200);
+    if (newerFirst) assert.equal((await choose("openai", older)).status, 409);
+    assert.equal((await (await json("/api/voice/config")).json()).config.decisionProvider, "jev");
+  }
+  const base = await readProviderRevision();
+  const off = await reserveFor(a, base);
+  const ownOptIn = await reserveFor(a, base);
+  const stale = await reserveFor(b, base);
+  assert.equal((await choose("off", off)).status, 200);
+  assert.equal((await choose("openai", ownOptIn)).status, 200);
+  assert.equal((await choose("jev", stale)).status, 409);
+});
+
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {
   let response = await json("/api/voice/config", "PUT", { cancelWindow: { seconds: 8 }, whenUnsure: "ask", planFormsByVoice: false });
   assert.equal(response.status, 200);

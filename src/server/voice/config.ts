@@ -21,6 +21,7 @@ const instance = randomUUID();
 let issued = 0;
 let latestIntentAt = performance.now();
 let applied = 0;
+let lastOptOut = 0;
 let lastWriter: string | undefined;
 let writerBase = 0;
 
@@ -81,9 +82,9 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     if (patch.decisionProvider === undefined || !Number.isSafeInteger(order) || order <= applied ||
         order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) || base < 0 || base > applied ||
         ticket !== `${instance}:${order}:${author}:${base}`) return null;
-    // A newer opt-out can stop an older writer's provider. Enabling a provider still
-    // requires a current observation, so an intervening Off cannot be undone by surprise.
-    if (patch.decisionProvider !== "off" && !canApply(author, base)) return null;
+    // Tickets order explicit switches across windows. Remember an intervening Off
+    // even if another opt-in has since changed the displayed provider.
+    if (patch.decisionProvider !== "off" && base < lastOptOut && !canApply(author, base)) return null;
     writer = author;
   }
   const next = applyVoiceConfigPatch(getVoiceConfig(), patch);
@@ -92,6 +93,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     if (writer !== lastWriter) writerBase = applied;
     lastWriter = writer;
     applied = order ?? issueProviderOrder();
+    if (patch.decisionProvider === "off") lastOptOut = applied;
   }
   notify(next);
   return next;

@@ -50,6 +50,8 @@ interface Row {
   ms: number;
   error: string | null;
   runner: string;
+  /** Resolved Voice job model ID. Historical rows did not record it. */
+  model?: string;
   /** Digest of the input corpus file. Historical rows have no recorded identity. */
   corpusSha256?: string;
   /** Digest of the system prompt and every corpus case's rendered user prompt and response schema. */
@@ -71,6 +73,16 @@ const flag = (name: string): string | undefined => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 };
+
+function rangeArgument(name: string, fallback: number, minimum: number): number {
+  if (!args.includes(name)) return fallback;
+  const raw = flag(name) ?? "";
+  const value = Number(raw);
+  if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${name} requires an integer of at least ${minimum}.`);
+  }
+  return value;
+}
 
 function toQuestion(corpus: Corpus, row: CorpusCase): VoiceQuestion {
   const agent = (name: string) => ({ id: name, label: name, detail: corpus.roster[name] ?? "" });
@@ -97,7 +109,7 @@ function readRows(path: string): Row[] {
   return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row);
 }
 
-function checkRun(rows: Pick<Row, "id" | "runner" | "transport" | "corpusSha256" | "promptSchemaSha256">[]): void {
+function checkRun(rows: Pick<Row, "id" | "runner" | "model" | "transport" | "corpusSha256" | "promptSchemaSha256">[]): void {
   if (new Set(rows.map(row => row.corpusSha256)).size > 1) {
     throw new Error("Mixed corpora: choose a separate label for each corpus.");
   }
@@ -108,6 +120,7 @@ function checkRun(rows: Pick<Row, "id" | "runner" | "transport" | "corpusSha256"
     throw new Error("Repeated case IDs: choose a fresh run label or summarize a single pass.");
   }
   if (new Set(rows.map(row => row.runner)).size > 1) throw new Error("Mixed runners: use a separate label for each runner.");
+  if (new Set(rows.map(row => row.model)).size > 1) throw new Error("Mixed model IDs: use a separate label for each model.");
   const transports = new Set(rows.map(row => row.transport ?? "unrecorded"));
   if (transports.size > 1) throw new Error("Mixed transports: use a separate label for each transport.");
 }
@@ -141,6 +154,7 @@ function summarize(label: string): void {
     label,
     n: rows.length,
     runner: [...new Set(rows.map((r) => r.runner))],
+    model: rows[0]?.model ?? "unrecorded",
     transport: rows[0]?.transport ?? "unrecorded",
     corpusSha256: rows[0]?.corpusSha256 ?? "unrecorded",
     promptSchemaSha256: rows[0]?.promptSchemaSha256 ?? "unrecorded",
@@ -182,6 +196,7 @@ async function run(): Promise<void> {
 
 async function runCorpus(runner: "claude" | "codex", casesPath: string, label: string): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
+  const { llmJobModel } = await import("../../src/server/llm/config.ts");
   const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
   const { DEFAULT_CLAUDE_TRANSPORT, DEFAULT_CODEX_TRANSPORT } = await import("../../src/shared/llm.ts");
   const requested = flag("--transport");
@@ -199,8 +214,9 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
   const input = readFileSync(casesPath);
   const corpusSha256 = createHash("sha256").update(input).digest("hex");
   const corpus = JSON.parse(input.toString("utf8")) as Corpus;
-  const start = Number(flag("--start") ?? 0);
-  const limit = Number(flag("--limit") ?? corpus.cases.length);
+  const start = rangeArgument("--start", 0, 0);
+  const limit = rangeArgument("--limit", corpus.cases.length, 1);
+  if (start >= corpus.cases.length) throw new Error(`--start ${start} selects no cases from a corpus of ${corpus.cases.length}.`);
   mkdirSync(OUT, { recursive: true });
   const dest = join(OUT, `retest-${label}.jsonl`);
   const cases = corpus.cases.map(row => ({ row, question: toQuestion(corpus, row) }));
@@ -209,7 +225,8 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
   for (const { question } of cases) {
     digest.update(JSON.stringify([buildVoiceRoutingPrompt([question]), voiceRoutingSchema([question])]));
   }
-  const runIdentity = { runner, transport, corpusSha256, promptSchemaSha256: digest.digest("hex") };
+  const model = llmJobModel("voice-routing", undefined, runner).id;
+  const runIdentity = { runner, model, transport, corpusSha256, promptSchemaSha256: digest.digest("hex") };
   const selected = cases.slice(start, start + limit);
   checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selected.map(({ row }) => ({ id: row.id, ...runIdentity }))]);
   for (const { row, question } of selected) {

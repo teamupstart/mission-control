@@ -52,6 +52,19 @@ beforeEach(() => {
   frames.length = 0;
 });
 
+test("config snapshots advance across a cancel-window edit at the same provider revision", async () => {
+  const snapshot = async () => {
+    const result = await json("/api/voice/config", "GET", undefined, { "x-voice-provider-revision": "read" });
+    return await result.json() as { config: { cancelWindow: { seconds: number } }; providerRevision: string; snapshotOrder: number };
+  };
+  const before = await snapshot();
+  assert.equal((await json("/api/voice/config", "PUT", { cancelWindow: { seconds: 8 } })).status, 200);
+  const after = await snapshot();
+  assert.equal(after.config.cancelWindow.seconds, 8);
+  assert.equal(before.providerRevision, after.providerRevision);
+  assert.ok(before.snapshotOrder < after.snapshotOrder);
+});
+
 test("with the flag off every route answers 404, writes nothing, and the snapshot has no voice", async () => {
   setFlag("voice", false);
   const disabled = { error: "This feature is disabled.", feature: "voice" };

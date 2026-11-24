@@ -75,13 +75,18 @@ export function registerVoiceRoutes(
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
 
+  let snapshotOrder = 0;
+  const dashboardSnapshot = () => ({
+    providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(), snapshotOrder: ++snapshotOrder,
+  });
+
   const providerConflict = () => ({
     error: "A newer provider choice took effect.", config: getVoiceConfig(), providerRevision: providerRevision(),
   });
-  app.get("/api/voice/config", gate, (c) => c.json({
-    config: getVoiceConfig(),
-    ...(c.req.header("x-voice-provider-revision") === "read" && { providerRevision: providerRevision(), intentReceipt: providerIntentReceipt() }),
-  }));
+  app.get("/api/voice/config", gate, (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
+  });
   app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceProviderIntentSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
@@ -114,7 +119,6 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
-  let keySnapshotOrder = 0;
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
@@ -125,8 +129,7 @@ export function registerVoiceRoutes(
       ...report,
       ...(saved === null && { savedKeysUnavailable: true }),
       ...(c.req.header("x-voice-provider-revision") === "read" && {
-        selection: config.decisionProvider, providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(),
-        snapshotOrder: ++keySnapshotOrder,
+        selection: config.decisionProvider, ...dashboardSnapshot(),
       }),
     });
   });

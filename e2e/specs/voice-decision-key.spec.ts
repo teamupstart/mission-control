@@ -1028,6 +1028,46 @@ test("the voice preview gates the routing controls and background job live", asy
   await expect(voice).toHaveCount(0);
 });
 
+test("a delayed config poll shows the newer cancel window when it reaches the daemon last", async ({ dashboard: page, context, daemon }) => {
+  await turnVoiceOn(daemon);
+  await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
+  const writer = await context.newPage();
+  await openVoiceSettings(writer, daemon);
+  await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
+  await openVoiceSettings(page, daemon);
+  const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window length" });
+  await expect(length(page)).toHaveValue("4");
+
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/config", async route => {
+    held.resolve();
+    await release.promise;
+    const response = await route.fetch();
+    await route.fulfill({ response, headers: { ...response.headers(), "x-e2e-delayed-config": "yes" } });
+  }, { times: 1 });
+  try {
+    await page.clock.fastForward(5_000);
+    await held.promise;
+    const second = page.waitForResponse(r => r.url().endsWith("/api/voice/config"));
+    await page.clock.fastForward(5_000);
+    expect((await (await second).json()).config.cancelWindow.seconds).toBe(4);
+    await page.clock.runFor(50);
+    const changed = writer.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
+    await length(writer).selectOption("8");
+    expect((await (await changed).json()).config.cancelWindow.seconds).toBe(8);
+    const delayed = page.waitForResponse(r => r.headers()["x-e2e-delayed-config"] === "yes");
+    release.resolve();
+    expect((await (await delayed).json()).config.cancelWindow.seconds).toBe(8);
+    await page.clock.runFor(50);
+    await expect(length(page)).toHaveValue("8", { timeout: 2_000 });
+    await capture(panel(page).locator('[data-anchor="voice/cancel-window"]'), "40-delayed-config-read");
+  } finally {
+    release.resolve();
+  }
+});
+
 test("an older poll cannot restore a provider removed in another window", async ({ dashboard: page, context, daemon }) => {
   await turnVoiceOn(daemon);
   const writer = await context.newPage();

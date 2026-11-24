@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
-import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices } from "./lib/api.ts";
+import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type VoiceDashboardSnapshot } from "./lib/api.ts";
 
 // Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
 // `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
@@ -67,6 +67,10 @@ export interface VoiceConfigState {
   error: string | null;
 }
 
+function isOlderSnapshot(read: VoiceDashboardSnapshot, previous?: VoiceDashboardSnapshot): boolean {
+  return previous?.providerRevision === read.providerRevision && read.snapshotOrder <= previous.snapshotOrder;
+}
+
 interface PendingEdit {
   id: number;
   patch: VoiceConfigPatch;
@@ -128,18 +132,17 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    let nextRead = 0;
-    let appliedRead = 0;
+    let snapshot: VoiceDashboardSnapshot | undefined;
     const tick = async (): Promise<void> => {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
       if (pendingRef.current.length > 0) return;
-      const id = ++nextRead;
       const at = nextEdit.current;
       const read = await fetchVoiceConfig();
-      if (alive && read && id > appliedRead && nextEdit.current === at && pendingRef.current.length === 0) {
-        appliedRead = id;
-        if (observeProvider(read.providerRevision, read.config.decisionProvider)) rememberIntentReceipt(read.intentReceipt);
-        setConfirmed({ ...read.config, decisionProvider: latestProvider.current!.selection });
+      if (alive && read && !isOlderSnapshot(read, snapshot) && nextEdit.current === at && pendingRef.current.length === 0) {
+        if (!observeProvider(read.providerRevision, read.config.decisionProvider)) return;
+        snapshot = read;
+        rememberIntentReceipt(read.intentReceipt);
+        setConfirmed(read.config);
       }
     };
     void tick();
@@ -306,7 +309,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
     let nextRead = 0;
     let appliedRead = 0;
     let failedRead = 0;
-    let snapshot: { providerRevision: string; snapshotOrder: number } | undefined;
+    let snapshot: VoiceDashboardSnapshot | undefined;
     const tick = async (): Promise<void> => {
       const id = ++nextRead;
       const at = writes.current;
@@ -314,8 +317,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       if (!alive || writes.current !== at) return;
       if (read) {
         // Requests may reach the daemon out of order even when they share a provider revision.
-        if (id < failedRead || (snapshot?.providerRevision === read.providerRevision &&
-          read.snapshotOrder <= snapshot.snapshotOrder)) return;
+        if (id < failedRead || isOlderSnapshot(read, snapshot)) return;
         if (!observeProvider(read.providerRevision, read.selection)) return;
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);

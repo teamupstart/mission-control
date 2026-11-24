@@ -497,14 +497,20 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+export interface VoiceDashboardSnapshot {
+  providerRevision: string;
+  snapshotOrder: number;
+  intentReceipt?: string;
+}
+
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
-export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig; providerRevision: string; intentReceipt?: string }>("/api/voice/config",
+export const fetchVoiceConfig = () => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { headers: { "x-voice-provider-revision": "read" } });
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
 export const fetchVoiceDecisionKey = () =>
-  fetchJson<VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; snapshotOrder: number; providerRevision: string; intentReceipt?: string }>("/api/voice/decision-key",
+  fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"] }>("/api/voice/decision-key",
     { headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */

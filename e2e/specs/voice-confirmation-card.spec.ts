@@ -41,6 +41,40 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
 });
 
+test("a stalled card action reports the unconfirmed request and permits a retry", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 8);
+  await runningAgent(page, daemon, "Steve");
+  for (const [action, label, outcome] of [["cancel", "Cancel", "Cancelled"], ["send-now", "Send now", "Sent to Steve"]]) {
+    const id = "stalled-" + action;
+    await say(daemon, "Steve, check " + id, { id });
+    const card = page.getByRole("status").filter({ hasText: id });
+    const button = card.getByRole("button", { name: label, exact: true });
+    await page.route("**/api/voice/cards/" + id + "/" + action, () => {}, { times: 1 });
+    await button.click();
+    await expect(button).toBeDisabled();
+    await expect(card).toContainText(label + " was not confirmed", { timeout: 4000 });
+    await expect(button).toBeEnabled();
+    await button.click();
+    await expect(page.getByRole("status").filter({ hasText: outcome })).toBeVisible();
+  }
+  expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all()
+    .map(row => row.spoken_words))).toEqual(["check stalled-send-now"]);
+});
+
+test("a lost Send now response cannot keep its delivered outcome busy", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await page.route("**/api/voice/cards/lost-reply/send-now", async route => { await route.fetch(); });
+  await say(daemon, "Steve, deliver once", { id: "lost-reply" });
+  await page.getByRole("status").filter({ hasText: "deliver once" }).getByRole("button", { name: "Send now" }).click();
+  const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
+  await expect(sent).toBeVisible();
+  // Wait for the bounded request to fail. The daemon's confirmed outcome stays authoritative.
+  await page.waitForTimeout(2500);
+  await expect(sent).not.toContainText("was not confirmed");
+  await expect(sent).toHaveCount(0, { timeout: 10000 });
+});
+
 for (const connection of ["first", "reconnected"] as const) {
   test(`a delayed ${connection} snapshot cannot extend the daemon cancel window`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon, 7);

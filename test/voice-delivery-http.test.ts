@@ -3,6 +3,7 @@ import test from "node:test";
 import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk } from "./helpers/voice-http.ts";
 import { HibernationManager } from "../src/server/hibernation/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { clearPendingTurns, listPendingTurns, openDb, recoverSendingPendingTurns } from "../src/server/db.ts";
 
 test("idle starts, busy queues and an addressed stop bypasses the enabled cancel window", async () => {
   registry.applyDriverEvent("sdk:Steve", { kind: "state", state: "idle", activity: null });
@@ -62,6 +63,45 @@ test("an SDK refusal after queue acceptance leaves the card and Recently heard q
   assert.equal(pending.dropQueued(sessionId), 1);
   assert.equal((await readHeard())[0]?.outcome, "cancelled");
 });
+
+for (const recovered of [false, true]) {
+  test(recovered
+    ? "a failed spoken retirement recovered as uncertain never publishes sent on the stale retry"
+    : "a failed spoken retirement publishes sent once when its retry commits, without resending", async t => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+    const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+      assert.equal(args[2]?.(), null);
+      return "started" as const;
+    });
+    const id = "retire-speech-" + recovered;
+    const sessionId = "sdk:Bill";
+    const key = registry.getSession(sessionId)!.agentSessionId!;
+    const d = openDb();
+    d.exec(`CREATE TEMP TRIGGER refuse_spoken_retire BEFORE DELETE ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL BEGIN SELECT RAISE(ABORT, 'injected retire failure'); END`);
+    t.after(() => {
+      d.exec("DROP TRIGGER IF EXISTS refuse_spoken_retire");
+      clearPendingTurns(key);
+      registry.refreshPendingTurns(key);
+    });
+    registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+    await say("Bill, inspect the build", id);
+    await act(id, "send-now");
+    t.mock.timers.tick(60_001);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(listPendingTurns(key)[0]?.state, "sending");
+    assert.equal(cards.at(-1)?.state, "queued");
+    assert.equal((await readHeard())[0]?.outcome, "queued");
+    d.exec("DROP TRIGGER refuse_spoken_retire");
+    if (recovered) recoverSendingPendingTurns(Date.now());
+    t.mock.timers.tick(1_001);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(listPendingTurns(key)[0]?.state, recovered ? "uncertain" : undefined);
+    assert.equal(cards.filter(card => card.id === id && card.state === "sent").length, recovered ? 0 : 1);
+    assert.equal((await readHeard())[0]?.outcome, recovered ? "queued" : "sent");
+    assert.equal(send.mock.callCount(), 1);
+  });
+}
 
 test("replaying a forgotten capture returns the same queued spoken row and tracks its receipt", async () => {
   const id = "replayed-capture";

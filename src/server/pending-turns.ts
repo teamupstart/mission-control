@@ -1329,7 +1329,9 @@ export class PendingTurnManager {
           });
         }
         const reservationId = outboxSend.kind === "spoken" ? outboxSend.reservationId : null;
-        if (!this.retireDelivered(turn, reservationId) && reservationId !== null) return;
+        const publish = () => this.journalDelivered(session.id, turn, generation);
+        const retirement = this.retireDelivered(turn, reservationId, turn.spokenWords !== undefined ? publish : undefined);
+        if (retirement === "stale" && reservationId !== null) return;
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1342,7 +1344,7 @@ export class PendingTurnManager {
           });
           this.watchSteerReceipt(turn.noteKey, receiptFrom);
         }
-        this.journalDelivered(session.id, turn, generation);
+        if (turn.spokenWords === undefined) publish();
       }
     } catch (err) {
       if (
@@ -1767,8 +1769,9 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    if (!this.retireDelivered(turn, candidate.spokenReservationId) && candidate.spokenReservationId !== null) return;
-    this.journalDelivered(sessionId, turn, candidate.generation);
+    const publish = () => this.journalDelivered(sessionId, turn, candidate.generation);
+    this.retireDelivered(turn, candidate.spokenReservationId, turn.spokenWords !== undefined ? publish : undefined);
+    if (turn.spokenWords === undefined) publish();
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
@@ -1781,20 +1784,26 @@ export class PendingTurnManager {
    * operator, never resending it. Marking that sent settles the prompt row too
    * (`resolveUncertainPendingTurn`).
    */
-  private retireDelivered(turn: PendingTurn, reservationId: string | null, failures = 0): boolean {
-    this.retireRetries.delete(turn.id);
+  private retireDelivered(turn: PendingTurn, reservationId: string | null, onCommit?: () => void,
+    failures = 0): "committed" | "retrying" | "stale" {
+    const retryKey = reservationId ?? turn.id;
+    this.retireRetries.delete(retryKey);
+    let retired: boolean;
     try {
-      return this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
+      retired = this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
     } catch (error) {
       console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
-      if (this.stopped) return false;
+      if (this.stopped) return "stale";
       const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
-      this.retireRetries.set(turn.id, unref(setTimeout(() => {
-        this.retireDelivered(turn, reservationId, failures + 1);
+      this.retireRetries.set(retryKey, unref(setTimeout(() => {
+        this.retireDelivered(turn, reservationId, onCommit, failures + 1);
         this.registry.refreshPendingTurns(turn.noteKey);
       }, delay)));
-      return true;
+      return "retrying";
     }
+    if (!retired) return "stale";
+    onCommit?.();
+    return "committed";
   }
 
   /**

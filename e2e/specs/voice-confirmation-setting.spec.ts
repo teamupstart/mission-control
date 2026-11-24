@@ -303,12 +303,19 @@ test("a standalone relaunch keeps its feedback and retry ID while another card o
   await expect(card).toContainText("Cancelled");
   await page.clock.fastForward(9000);
   await expect(card).toContainText("Try the launch again", { timeout: 3000 });
+  await page.clock.fastForward(7000);
   await expect(relaunch).toBeEnabled();
   await captureCard(card, "standalone-relaunch-returned");
   await relaunch.click();
   await expect(card).toContainText("Relaunch requested.");
   expect(launches).toHaveLength(2);
   expect(launches[1]).toBe(launches[0]);
+  // Leave the successful feedback behind a different card without returning to it.
+  await say(daemon, "Marlowe, check a different release");
+  await expect(card).toContainText("check a different release");
+  await page.clock.fastForward(61_000);
+  await expect(card).toContainText("Awaiting delivery confirmation");
+  await expect(page.getByRole("combobox", { name: "Voice message" })).toHaveCount(0, { timeout: 3000 });
 });
 
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {

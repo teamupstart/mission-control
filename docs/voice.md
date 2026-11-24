@@ -50,8 +50,9 @@ ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority, then
 the surface returns to your selection if the card is still available.
-If a countdown interrupts a relaunch, the standalone card keeps its result for you to read
-when it returns. Retrying uses the same launch request.
+If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
+while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
+the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect

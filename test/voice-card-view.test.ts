@@ -8,7 +8,7 @@ import { VoiceCardView } from "../src/web/components/VoiceCardView.tsx";
 
 const target: SpokenName = { name: "Steve", key: "resident:build", kind: "resident", sessionId: "s", taskId: "t", role: "Maintains CI", colorId: "cyan", agent: "claude", state: "running" };
 const actions = {
-  sessions: [], roster: [target], reviews: [], setVoiceCardInUse() {}, openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
+  sessions: [], roster: [target], reviews: [], setVoiceCardRetention() {}, openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
 };
 const operation = { busy: false, feedback: "", run: async () => {} };
 const copy = {

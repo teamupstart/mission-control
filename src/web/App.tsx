@@ -414,7 +414,7 @@ export function App(): React.JSX.Element {
     voice,
     voiceCards,
     fadingVoiceCards,
-    setVoiceCardInUse,
+    setVoiceCardRetention,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -5098,7 +5098,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
+    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
       openQuestion: id => { navigate({ page: "fleet" }, allowed => { if (allowed) setReviewSessionId(id); }); },
       followUp: async taskId => {
         const id = newRequestId();

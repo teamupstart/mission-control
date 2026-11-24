@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { BASE_URL, tokenPath } from "../shared/harness-runtime.mjs";
 import { logMain } from "./main-log.ts";
-import type { VoiceState } from "../shared/voice.ts";
+import type { ShellVoiceState } from "./voice-state.ts";
 
 /** An exited helper is replaced only while the same verified model is still wanted. */
 export class VoiceListener {
@@ -15,7 +15,7 @@ export class VoiceListener {
 
   constructor(private readonly launch: (directory: string) => ChildProcess, private readonly log = logMain) {}
 
-  update(state: VoiceState, permitted: boolean): void {
+  update(state: ShellVoiceState, permitted: boolean): void {
     const directory = state.mode !== "off" && state.model.status === "ready" &&
       state.model.backend === "fluidaudio" && permitted ? state.model.directory : null;
     if (this.closed || directory === this.directory) return;

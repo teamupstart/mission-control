@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
   ...(process.platform === "darwin" && {
     fixVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone"),
+    checkVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone", "check"),
   }),
   version: (): Promise<string> => ipcRenderer.invoke("mission:version"),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("mission:open-external", url),

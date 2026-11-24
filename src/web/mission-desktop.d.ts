@@ -12,6 +12,7 @@ declare global {
   interface MissionDesktop {
     isDesktop: boolean;
     fixVoiceMicrophone?(): Promise<"checked" | "unavailable">;
+    checkVoiceMicrophone?(): Promise<"checked" | "unavailable">;
     version(): Promise<string>;
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;

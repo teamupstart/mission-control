@@ -20,7 +20,8 @@ Enable Voice addressing and its required previews in Settings. In Setup, downloa
 model and choose **Ask macOS** to grant the microphone. The app also asks automatically when
 the verified model and listener are available. If the request fails while permission is still
 undetermined, the app retries with backoff. After a denial, **Open System Settings** opens
-the microphone privacy pane. Allow Mission Control, then choose **Check again**.
+the microphone privacy pane. Allow Mission Control, then choose **Check again**. The desktop
+app reads the current macOS permission and reports it to the daemon before Setup refreshes.
 
 You can minimize the window while speaking. The menu-bar microphone means listening, and a
 struck microphone means muted or unavailable. Right-click for the status and existing app

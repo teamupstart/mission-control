@@ -720,14 +720,14 @@ function MicrophoneRemedy({ label, note, action, onRepaired }: {
 }): React.JSX.Element {
   const desktop = typeof window !== "undefined" ? window.missionDesktop : undefined;
   const fix = desktop?.fixVoiceMicrophone;
+  const check = desktop?.checkVoiceMicrophone;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function apply() {
-    if (!fix) return;
+  async function apply(run: NonNullable<typeof fix>) {
     setBusy(true);
     setError("");
     try {
-      if (await fix() === "unavailable") setError("Desktop microphone controls are unavailable. Check that Voice is enabled.");
+      if (await run() === "unavailable") setError("Desktop microphone controls are unavailable. Check that Voice is enabled.");
       else onRepaired();
     }
     catch { setError("Could not access the macOS microphone controls."); }
@@ -739,13 +739,13 @@ function MicrophoneRemedy({ label, note, action, onRepaired }: {
       <div className="setup-run-controls">
         {fix && action && (
           <Tooltip label={action === "settings" ? "Open the macOS Microphone privacy pane" : "Ask macOS to allow Mission Control to use the microphone"}>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply()}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply(fix)}>
               {action === "settings" ? "Open System Settings" : "Ask macOS"}
             </button>
           </Tooltip>
         )}
         {(!fix || action !== "ask") && <Tooltip label="Read the microphone permission again">
-          <button type="button" className="btn btn-ghost" onClick={onRepaired}>{label}</button>
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={check ? () => void apply(check) : onRepaired}>{label}</button>
         </Tooltip>}
       </div>
       {error && <p role="alert">{error}</p>}

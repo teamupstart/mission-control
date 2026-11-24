@@ -111,7 +111,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -193,6 +193,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     since = reports.length;
     await fix();
     await expectReport(since, "denied");
+    // Check again reports the OS change immediately and never opens Settings or asks for access.
+    await configure("granted", "reject");
+    since = reports.length;
+    assert.equal(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone()), "checked");
+    assert.equal(reports.slice(since).at(-1)?.microphone, "granted");
     await configure("not-determined", "granted");
     since = reports.length;
     await fix();
@@ -247,13 +252,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   });
   assert.deepEqual(JSON.parse(readFileSync(join(root, "started"), "utf8")),
     ["/verified-model", join(root, "token"), `http://127.0.0.1:${address.port}`]);
+  const pids = () => readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number);
+  const exited = (pid: number) => {
+    try { process.kill(pid, 0); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+  };
   await t.test("a broken stream terminates the active listener before a reconnect snapshot starts its replacement", async () => {
-    const pids = () => readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number);
     const [first] = pids();
-    const exited = (pid: number) => {
-      try { process.kill(pid, 0); return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
-    };
     assert.equal(exited(first!), false);
     events!.destroy();
     await until(() => exited(first!));
@@ -267,6 +272,26 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(exited(second), false);
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
+  });
+  await t.test("malformed events stop the active child and valid snapshots restore capture on the same stream", async () => {
+    const snapshot = JSON.stringify({type: "snapshot", voice: ready});
+    const send = (data: string) => events!.write("data: " + data + "\n\n");
+    const streamCount = connects;
+    for (const invalid of [
+      "{", "null", JSON.stringify({type: "voice_state"}),
+      JSON.stringify({type: "voice_state", state: {...ready, mode: "unexpected"}}),
+      JSON.stringify({type: "snapshot", voice: {...ready, model: null}}),
+      JSON.stringify({type: "snapshot", voice: {...ready, model: {...ready.model, directory: "/bad\0path"}}}),
+    ]) {
+      const count = pids().length;
+      send(snapshot);
+      await until(() => pids().length === count + 1);
+      const pid = pids().at(-1)!;
+      send(invalid);
+      await until(async () => (await read()).mode === "off");
+      await until(() => exited(pid));
+    }
+    assert.equal(connects, streamCount);
   });
   if (process.env.MC_EVIDENCE_DIR) {
     mkdirSync(process.env.MC_EVIDENCE_DIR, {recursive: true});

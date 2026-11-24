@@ -35,7 +35,7 @@ let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
-export function setTrayVoice(state: VoiceState): void {
+export function setTrayVoice(state: Pick<VoiceState, "mode" | "muted">): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
   if (next?.nextMuted !== presentation?.nextMuted) {
     ++muteAttempt;

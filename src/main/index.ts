@@ -229,9 +229,10 @@ function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
 }
 
 function registerIpc(updateController: UpdateController): void {
-  ipcMain.handle("mission:voice-microphone", (event) => {
+  ipcMain.handle("mission:voice-microphone", (event, action?: string) => {
     if (event.sender === getMainWindow()?.webContents && event.senderFrame === event.sender.mainFrame) {
-      return voice?.fixMicrophone() ?? "unavailable";
+      if (!voice) return "unavailable";
+      return action === "check" ? voice.checkMicrophone() : voice.fixMicrophone();
     }
     return "unavailable";
   });

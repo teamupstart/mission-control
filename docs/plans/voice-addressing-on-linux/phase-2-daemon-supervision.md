@@ -1,0 +1,39 @@
+# Phase 2: Daemon supervision and restart recovery
+
+The approved source is `docs/plans/voice-addressing-on-linux/plan.md`. Read the implementation index `phased-plan.md` beside this file. Repository scope is mission-control.
+
+## Outcome
+
+A single daemon-owned Linux listener starts and recovers safely, including after a daemon crash with an unfinished speech job. This phase can be verified with a fake speaking holder before real Linux audio output exists.
+
+## Entry and direct dependencies
+
+Planning publication, Linux 1 and “Spoken Responses for Voice - Speech 1: The speech job and ask aloud”. Confirm the desktop reservation is still available. Inspect the merged supervised-instance and speech-hold recovery implementation.
+
+## Scope
+
+Own the Linux launch/reconcile path, record, shutdown and OS exit proof. The manager keeps sole ownership of speech jobs and the holds file. Preserve the macOS shell and development supervisors. No player or new desktop UI in this phase.
+
+## Implementation and compatibility
+
+Bind the Linux supervisor to daemon startup, feature/config/model changes and shutdown, using the existing voice preview and required flags. Acquire daemon state ownership before reconciliation. Use the actual bound local endpoint and protected token file. Reuse the verified backend selection, including explicit overrides. A missing model, unsupported selection, missing graphical session or inaccessible audio service gets a specific Setup reading. Avoid launching a file fixture or repeatedly launching a known-broken child. Keep the daemon and keyboard-only dashboard operable. Start at most one live child for the selected model, serialize reconciles and teardown, bound crash retries with backoff, cancel pending launches when settings change, and release device/session resources on flag-off, logout and shutdown. Speech holds survive those transitions. A user service without the desktop’s session bus, display or audio endpoint reports which connection is missing.
+
+Use src/server/index.ts’s actual daemon-ready and shutdown boundaries and the existing voice config/flags/model subscriptions. Keep a single serialized Linux reconciliation loop. Reuse lifecycle/backoff behavior where suitable from src/main/voice-listener.ts without importing Electron. Register desktop observations via the existing state path independently of the child’s listener polls. Expose enough launch metadata for the observer to exclude the live input stream. Bind announcements to the existing Speech 1 validation path.
+
+**Start and replace one process.** Give the Linux supervisor its own owner-only record under the existing supervised directory, e.g. `voice/supervised/linux.json`. Extend Speech 1’s recovery enumeration to recognize it alongside shell and dev, keeping the same record semantics. In its supervisor role the daemon alone writes this record. Generate a fresh secret instance (at least 128 random bits), atomically persist intent before launch, announce started through the same authenticated supervised-instance operation, pass the instance in MISSION_VOICE_LISTENER_INSTANCE, then atomically complete the record with OS PID and start identity. Use 0700 directory, 0600 file, durable write/rename and directory sync for each ownership transition. No secret in argv, URL, dashboard or logs. Preserve the record until exited has been accepted. Re-announce a still-running child and replay unaccepted exit reports idempotently. On an unconfirmed stop, retain capture suppression through the existing five-second confirmation limit, request termination and escalate against the identified process if necessary. Await OS-observed exit before reporting exited and launching any successor. Timers, signals sent, an expired hello or a new hello never prove silence.
+
+**Recover after daemon death.** Before the first directive poll or any replacement, load Speech 1’s owner-only `voice/speech-holds.json` and reconcile the Linux supervisor record under single-writer ownership. The job manager persists each holder before exposing a ready job. Restore each unfinished holder as stopping, suppress capture globally and give only that holder its stop. A matching ended or proven exit finalizes the recovered job as failed. Hold new jobs until recovery is complete. Preserve the contract’s guards on captured utterances, flag cycles, mute and delayed confirmations.
+
+For a recorded child, bind its identity to boot ID, OS process start ticks, uid and the launched listener program (Node executable plus exact sherpa entrypoint). Open a pidfd for the candidate, validate identity against the saved run, signal only the verified process through that handle, then poll the handle for exit. A fresh daemon cannot use the former parent’s child exit callback. A verified different boot, absent process or reused PID with a different start identity proves the *recorded* process has exited; never signal its successor. Treat access errors, unsupported identity probes or inconsistent evidence as unresolved. Keep the gate closed and show a recovery diagnostic. Validate this design on the target kernel. [Linux pidfd semantics](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
+
+Exercise crashes between intent, announcement, spawn, PID write, accepted exit and record deletion. For a PID-less record, reconcile with a complete OS scan of the listener launch signature, scoped to the correct user/namespace and covering any helper still starting. Use a launch barrier that prevents an unrecorded/unidentified child from touching audio and aborts it on loss of the parent before release. Stop positively identified remnants and wait for OS exit; report absence only with complete coverage. Ambiguity or inaccessible process state keeps capture off. For unreadable holds, follow L’s replacement entries for every outstanding supervisor, including unknown-instance entries for unreadable records. A corrupt supervisor record clears only after proven absence of possible listeners; recheck through the supervised operation. A readable hold with missing proof stays held. Test with an unrelated Node process, PID reuse, reboot, replacement hello, unreadable files and a restarted daemon while the original holder still plays.
+
+## Verification and merge criteria
+
+Run `node --test --import ./test/setup-state.mjs --import tsx test/voice-listener-supervisor.test.ts test/voice-listener-lifecycle.test.ts` plus the new Linux supervision and Speech 1 recovery cases. On Linux spawn an actual child, crash/restart its parent at every recorded boundary, use an unrelated process as a reused-PID stand-in and verify it survives. Exercise permission-denied scans, withheld stop acknowledgement, late matching ended, duplicate exit, failed record writes, no-PID intent and corrupt records. Assert zero capture in every listener and no replacement launch while the old process may still play. On desktop restart a daemon during live input and check one listener recovers with flags and selection respected.
+
+Run the repository typecheck and lint. Run build and smoke for runtime changes, the applicable unit suite, and browser E2E for visible changes. Use Node 24 or newer and the test-state preload. Keep hardware results and screenshots in PR/workflow evidence. Record measured limitations in the technical guide. Merge when the outcome works through the stated entry point and its failure cases pass.
+
+## Downstream handoff and cross-phase audit
+
+Linux 3 can attach one observer to the daemon lifecycle. Linux 4 can advertise a holder-qualified player using this process identity. The consumer must never generate its own instance or treat a fresh hello, time limit or signal delivery as OS exit.

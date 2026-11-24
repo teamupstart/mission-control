@@ -2835,7 +2835,8 @@ and GitHub timestamp bucket to the verified activity. Only that event is accepte
 in the final timeline. An additional rewrite blocks even in the same second. A return to the
 same SHA or a closure during the final read can therefore block the replacement
 even while the local ledger still shows the old open tip. A confirmed mismatch
-blocks immediately. An unavailable read leaves the round available for the next
+blocks immediately. A closed or merged PR also blocks if its source fork has been
+deleted. An open PR requires positive source and timeline evidence. An unavailable read leaves the round available for the next
 evaluation. The insertion transaction also checks for a conversation transfer hold.
 Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.
 [GitHub pull request timeline](https://docs.github.com/en/graphql/reference/pulls)

@@ -65,7 +65,7 @@ try {
         || !process.argv.some(arg => arg.startsWith("since="))) process.exit(1);
     process.stdout.write(JSON.stringify({ errors: pull.graphErrors, data: { repository: { nameWithOwner: pull.base.repo.full_name,
       pullRequest: { number: pull.number, state: pull.state.toUpperCase(), headRefName: pull.head.ref, headRefOid: pull.head.sha,
-        headRepository: { nameWithOwner: pull.head.repo.full_name }, timelineItems: { nodes: (pull.rewrites ?? []).slice(0, 1),
+        headRepository: pull.head.repo ? { nameWithOwner: pull.head.repo.full_name } : null, timelineItems: { nodes: (pull.rewrites ?? []).slice(0, 1),
           pageInfo: { hasNextPage: (pull.rewrites ?? []).length > 1 } } } } } }));
     return;
   }
@@ -3782,6 +3782,34 @@ test("a confirmed ref mismatch still blocks recovery when the final PR read is u
     assert.deepEqual(store.listSubmissions(ids.run), submissions);
   } finally { await manager.stop(); }
 });
+
+for (const remoteState of ["closed", "merged", "open"] as const) {
+  test(`recovery checks the PR state before requiring the fork repository: ${remoteState}`, async () => {
+    let deleteFork = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (deleteFork && head === "historical") {
+        deleteFork = false;
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: remoteState, head: { ...pull.head, repo: null } }));
+      }
+      return head;
+    } });
+    const { manager, store, ids, key } = seeded;
+    try {
+      await strandLegacyGrant(seeded, "current");
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      deleteFork = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(deleteFork, false);
+      assert.equal(getInspectorPr(key)?.observedState, "OPEN");
+      assert.equal(store.getRun(ids.run)?.status, remoteState === "open" ? "waiting_for_new_head" : "blocked");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally { await manager.stop(); }
+  });
+}
 
 for (const later of ["none", "same-bucket rewrite", "different event ID"] as const) {
   test(`legacy recovery recognizes only the verified pre-grant force push: ${later}`, async () => {

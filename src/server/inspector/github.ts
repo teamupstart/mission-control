@@ -321,12 +321,14 @@ const forcePushEvent = timelineEvent.extend({
   ref: z.object({ prefix: z.string(), name: z.string(), repository: z.object({ nameWithOwner: z.string() }) }),
 });
 const recoveryPullSnapshot = z.object({
-  errors: z.array(z.unknown()).length(0).optional(),
-  data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.object({
-    number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]), headRefName: z.string(), headRefOid: z.string(),
-    headRepository: z.object({ nameWithOwner: z.string() }),
-    timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
+  errors: z.array(z.unknown()).optional(),
+  data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.looseObject({
+    number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   }) }) }),
+});
+const openRecoverySource = z.object({
+  headRefName: z.string(), headRefOid: z.string(), headRepository: z.object({ nameWithOwner: z.string() }),
+  timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
 });
 
 async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl>>, changedAt: number) {
@@ -338,7 +340,12 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   if (!response.success) return null;
   const base = response.data.data.repository;
   if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase() || base.pullRequest.number !== pr.number) return false;
-  return base.pullRequest;
+  // A deleted fork can leave source fields null. A positively identified closed
+  // or merged PR is already conclusive, even if a dependent field has an error.
+  if (base.pullRequest.state !== "OPEN") return false;
+  if (response.data.errors?.length) return null;
+  const source = openRecoverySource.safeParse(base.pullRequest);
+  return source.success ? source.data : null;
 }
 
 /** Read the PR state, head and evidence of a ref rewrite together at final verification. */
@@ -356,7 +363,7 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
     const pull = await readRecoveryTimeline(pr, changedAt);
     if (pull === false) return false;
     if (!pull) return null;
-    if (pull.state !== "OPEN" || pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
+    if (pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
         || `refs/heads/${pull.headRefName}` !== ref || pull.headRefOid !== head || pull.timelineItems.pageInfo.hasNextPage) return false;
     const [event] = pull.timelineItems.nodes;
     if (event?.id !== saved.data.verifiedForcePushId || (event && event.__typename !== "HeadRefForcePushedEvent")) return false;
@@ -379,7 +386,7 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   let verifiedForcePushId: string | undefined;
   if (tip.activity_type === "force_push") {
     const snapshot = await readRecoveryTimeline(pr, tip.changedAt);
-    if (!snapshot || snapshot.state !== "OPEN" || snapshot.headRefOid !== expectedHead || snapshot.headRefName !== source.head.ref
+    if (!snapshot || snapshot.headRefOid !== expectedHead || snapshot.headRefName !== source.head.ref
         || snapshot.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
         || snapshot.timelineItems.pageInfo.hasNextPage) return null;
     const event = forcePushEvent.safeParse(snapshot.timelineItems.nodes[0]);

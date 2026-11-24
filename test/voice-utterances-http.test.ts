@@ -338,7 +338,7 @@ test("a quoted candidate leaves the unsure card and queue untouched until an unq
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const before = queued("Will");
   await say("Steven ask Will about the results", "choice");
-  for (const text of ["“Will”", '"Will"!', "'Will'"]) {
+  for (const text of ["“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.rule, "no-message");
     assert.deepEqual(queued("Will"), before);

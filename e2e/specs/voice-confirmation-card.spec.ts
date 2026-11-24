@@ -113,45 +113,52 @@ for (const connection of ["first", "reconnected"] as const) {
   });
 }
 
-test("a delayed stream acceptance leaves the last seconds available to cancel", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 8);
-  await runningAgent(page, daemon, "Steve");
-  const requested = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  await page.route("**/events", async route => {
-    requested.resolve();
-    await release.promise;
-    await route.continue();
+for (const probe of ["available", "unavailable"]) {
+  test(`a delayed stream acceptance leaves the last seconds available to cancel with the clock probe ${probe}`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon, 8);
+    await runningAgent(page, daemon, "Steve");
+    if (probe === "unavailable") await page.route("**/api/voice/config", route => route.fulfill({ status: 503, body: "Unavailable" }));
+    const requested = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/events", async route => {
+      requested.resolve();
+      await release.promise;
+      await route.continue();
+    });
+    await page.addInitScript(() => {
+      window.EventSource = class extends EventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          this.addEventListener("message", event => {
+            const frame = JSON.parse(event.data);
+            const card = frame.voiceCards?.find((card: { id: string }) => card.id === "slow-connect");
+            if (card) document.documentElement.dataset.daemonDeadline = String(card.deadline);
+          });
+        }
+      };
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await requested.promise;
+    try {
+      await page.waitForTimeout(3000);
+      await say(daemon, "Steve, check the connection", { id: "slow-connect" });
+    } finally {
+      release.resolve();
+    }
+    const card = page.getByRole("status").filter({ hasText: "check the connection" });
+    await expect(card).toBeVisible();
+    if (probe === "unavailable") {
+      await expect(card).toContainText(/≤\d+s/);
+      await captureCard(card, "unconfirmed-clock-window");
+    }
+    await expect(page.locator("html")).toHaveAttribute("data-daemon-deadline", /^\d+$/);
+    const deadline = Number(await page.locator("html").getAttribute("data-daemon-deadline"));
+    await page.waitForTimeout(Math.max(0, deadline - Date.now() - 1500));
+    await card.getByRole("button", { name: "Cancel" }).click({ timeout: 900 });
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+    expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
   });
-  await page.addInitScript(() => {
-    window.EventSource = class extends EventSource {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        this.addEventListener("message", event => {
-          const frame = JSON.parse(event.data);
-          const card = frame.voiceCards?.find((card: { id: string }) => card.id === "slow-connect");
-          if (card) document.documentElement.dataset.daemonDeadline = String(card.deadline);
-        });
-      }
-    };
-  });
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await requested.promise;
-  try {
-    await page.waitForTimeout(3000);
-    await say(daemon, "Steve, check the connection", { id: "slow-connect" });
-  } finally {
-    release.resolve();
-  }
-  const card = page.getByRole("status").filter({ hasText: "check the connection" });
-  await expect(card).toBeVisible();
-  await expect(page.locator("html")).toHaveAttribute("data-daemon-deadline", /^\d+$/);
-  const deadline = Number(await page.locator("html").getAttribute("data-daemon-deadline"));
-  await page.waitForTimeout(Math.max(0, deadline - Date.now() - 1500));
-  await card.getByRole("button", { name: "Cancel" }).click({ timeout: 900 });
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
-  expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
-});
+}
 
 test("leaving a focused dashboard during the countdown shows the desktop notice and applies its action", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);

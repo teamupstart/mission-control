@@ -96,6 +96,7 @@ import type {
   ShippingConfigPatch,
   SetNote,
   SkillsConfigPatch,
+  UiConfig,
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
@@ -498,6 +499,7 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+type VoiceUiWriteResult = ActionResult & Partial<UiConfig["voice"]> & { voiceIndicatorVersion?: VoiceRevision };
 export interface VoiceDashboardSnapshot {
   providerRevision: string;
   snapshotOrder: number;
@@ -2539,8 +2541,7 @@ export const api = {
   voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement) =>
-    put("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
-  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }),
+    put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
   voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null } = {}) => {
     const remaining = options.deadline == null ? Infinity : options.deadline - performance.now();
     if (remaining <= 0) return { ok: false, error: "The cancel window has closed." };
@@ -2553,7 +2554,7 @@ export const api = {
   },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
-    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+    put<VoiceUiWriteResult>("/api/voice/indicators", { id, enabled }, { signal }),
   setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
@@ -2561,6 +2562,7 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },

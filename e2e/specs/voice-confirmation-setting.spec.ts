@@ -32,6 +32,24 @@ test("three placement previews persist across reload, with a toast fallback and 
   await expect(page.locator(".app")).toHaveCount(0);
 });
 
+test("a confirmed placement stays selected without its stream update", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await allowStreamDisconnect(page);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await page.reload(); // Install the disconnect listener on this document before the stream opens.
+  const group = page.getByRole("group", { name: "Confirmation card" });
+  const pill = group.getByRole("radio", { name: /Floating pill/ });
+  await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
+  await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+  const saved = page.waitForResponse(response => response.url().endsWith("/api/voice/confirmation") && response.request().method() === "PUT");
+  await pill.click();
+  expect((await saved).ok()).toBe(true);
+  await expect(pill).toBeEnabled();
+  await expect(pill).toBeChecked({ timeout: 1000 });
+  const persisted = await (await page.request.get(daemon.baseURL + "/api/ui/config")).json();
+  expect(persisted.config.voice.confirmation).toBe("pill");
+});
+
 test("a stalled placement save releases the controls and can be retried", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");

@@ -181,7 +181,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       const sendHint = split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
         : "Deliver this message before the countdown ends";
       body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
-        {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{Math.ceil(Math.min(remaining, card.windowMs ?? remaining) / 1000)}s</span>}</div>
+        {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{Math.ceil(Math.min(remaining, card.windowMs ?? remaining) / 1000)}s</span>}</div>
         {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
           detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
           state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}

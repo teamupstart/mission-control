@@ -384,6 +384,50 @@ test("a companion identifies its destination and hands its calibrated countdown 
   }
 });
 
+test("a footer submit that overtakes the card’s close report leaves the answer pending", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const id = await file(page, daemon, steve.cwd, "When should the build start?");
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  await say(daemon, "Steve, answer: tomorrow");
+  const submit = inbox.getByRole("button", { name: "Submit now" });
+  await expect(submit).toBeEnabled();
+  const clicked = Promise.withResolvers<void>();
+  const closed = Promise.withResolvers<void>();
+  const send = Promise.withResolvers<void>();
+  const releaseReport = Promise.withResolvers<void>();
+  await page.route("**/api/voice/cards/*/send-now*", async route => {
+    clicked.resolve();
+    await send.promise;
+    await route.continue();
+  });
+  await page.route("**/api/voice/open-cards", async route => {
+    if (!route.request().postDataJSON().cards.length && !route.request().headers()["x-voice-confirm-focus"]) {
+      closed.resolve();
+      await releaseReport.promise;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await submit.click();
+    await clicked.promise;
+    await page.keyboard.press("Escape");
+    await closed.promise;
+    const rejected = page.waitForResponse(r => r.url().includes("/send-now"));
+    send.resolve();
+    expect((await rejected).status()).toBe(409);
+    const companion = page.getByRole("status").filter({ hasText: "Voice answer" });
+    await expect(companion).toContainText("tomorrow");
+    await companion.getByRole("button", { name: "Cancel" }).click();
+    expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
+  } finally {
+    send.resolve();
+    releaseReport.resolve();
+  }
+});
+
 test("switching the same stream to the standalone surface withdraws the footer and restores the companion", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
   const steve = await runningAgent(page, daemon, "Steve");

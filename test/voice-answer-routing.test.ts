@@ -526,6 +526,35 @@ test("only the dashboard currently showing the footer can send its inline answer
   assert.equal(registry.getReview(q.id)?.status, "answered");
 });
 
+test("a queued footer submit rechecks both the live window and the exact pending action", async t => {
+  const q = question();
+  const windowId = "voice-question-test";
+  await show([q.id]);
+  const publish = registry.emitQuestionEvent.bind(registry);
+  let sequence = 0;
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") sequence = event.sequence;
+    else publish(event);
+  });
+  const confirm = (focused: boolean) => put("/api/voice/open-cards", {
+    windowId, focused, cards: [{ kind: "question", id: q.id, focused: true }],
+  }, { "x-voice-confirm-focus": String(sequence) });
+  await say("Steve, option B", "inline");
+  const submit = () => registry.voiceRouter!.sendNow("inline", { companion: false, windowId });
+  const blurred = submit();
+  assert.ok(sequence > 0);
+  await confirm(false);
+  assert.equal(await blurred, false);
+  assert.equal(answers()[0]?.id, "inline");
+  await confirm(true);
+  const delayed = submit();
+  await say("no, A", "new-revision");
+  await confirm(true);
+  assert.equal(await delayed, false);
+  assert.equal(answers()[0]?.id, "new-revision");
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
 test("a late report from a timed-out request cannot reinstate a closed card on the same focus transition", async t => {
   const q = question();
   const windowId = "late-report";

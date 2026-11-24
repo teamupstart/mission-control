@@ -1091,7 +1091,7 @@ the revised choice and cancellation follows it. Your manual edit stays in the fi
 answer starts its own countdown, even while cancellation of the previous answer is in flight. A pending answer can still submit at its deadline.
 If the focused dashboard shows the question, its footer carries the countdown. When the
 question closes or its dashboard loses focus or disconnects, a companion card shows the same
-answer and deadline, along with the question title and the agent’s name when available. Returning to the question moves the controls back to its footer. Only the dashboard that owns that footer can submit from it.
+answer and deadline, along with the question title and the agent’s name when available. Returning to the question moves the controls back to its footer. Before accepting **Submit now** from the footer, the daemon checks that the dashboard still has focus and shows that question.
 Disabling the cancel window submits a matched answer immediately.
 
 The daemon keeps pending answers in memory, includes them in reconnect snapshots, and

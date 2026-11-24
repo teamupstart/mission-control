@@ -487,6 +487,12 @@ export class VoiceRouter {
     return this.openCards.captureTiming(time.openedAt, monotonic);
   }
 
+  private confirmQuestionFocus(windowId: string, signal?: AbortSignal): Promise<boolean> {
+    const signals = [this.lifetime.signal, AbortSignal.timeout(3000)];
+    if (signal) signals.push(signal);
+    return this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, AbortSignal.any(signals));
+  }
+
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
     const allowText = !choiceCommand && (review.id === open?.id || !review.decisions?.length);
     return this.prepareAnswer(item, review, words, allowText);
@@ -523,8 +529,7 @@ export class VoiceRouter {
     const drawn = this.openCards.target(candidates, !!target);
     const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
     this.reserveAnswer(item);
-    const signal = AbortSignal.any([item.modelStep!.signal, this.lifetime.signal, AbortSignal.timeout(3000)]);
-    const confirmed = await this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, signal);
+    const confirmed = await this.confirmQuestionFocus(windowId, item.modelStep!.signal);
     if (this.open.get(item.card.id) !== item) return;
     const pendingIds = new Set(this.questions!.pending().map(q => q.id));
     const pending = candidates.filter(q => pendingIds.has(q.id));
@@ -960,7 +965,13 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
     if (source?.companion && (!item.answer || item.answer.footerWindowId)) return false;
-    if (source && !source.companion && item.answer && (!source.windowId || source.windowId !== item.answer.footerWindowId)) return false;
+    if (source && !source.companion && item.answer) {
+      const { windowId } = source;
+      if (!windowId || windowId !== item.answer.footerWindowId) return false;
+      // The click may overtake a close or blur report. The existing countdown
+      // and its Cancel action stay live while the dashboard confirms the footer.
+      if (!await this.confirmQuestionFocus(windowId) || this.open.get(id) !== item || item.answer.footerWindowId !== windowId) return false;
+    }
     this.take(item);
     if (this.state().mode === "off") return false;
     if (item.answer) {

@@ -2847,8 +2847,9 @@ fields. On an open PR, a different valid head OID also blocks when the errors le
 that field intact. Missing or malformed head OIDs leave recovery pending, including
 when the GitHub CLI exits successfully. Confirming a match requires a successful read
 with complete source and timeline evidence. A response for another PR or an activity
-row for another ref supplies no evidence about the pinned identity. Recovery can retry
-with the same receipt.
+row for another ref supplies no evidence about the pinned identity. Replaying the
+original request retries verification while that receipt is pending. Concurrent
+replays share the original budget and receipt.
 An unavailable read leaves the round available for the next
 evaluation. The insertion transaction also checks for a conversation transfer hold.
 Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.

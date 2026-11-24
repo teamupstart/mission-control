@@ -3499,9 +3499,9 @@ export class WorkflowManager {
     }
     if (!recovered || "verifyPrUrl" in recovered) return { ok: false, reason: "conflict",
       message: "Recovery requires matching legacy grant evidence and a current branch tip continuously held since before the grant" };
-    if (!recovered.idempotent) {
-      this.publishRun(runId);
-      this.scheduleGateEvaluation(runId, null);
+    if (!recovered.idempotent) this.publishRun(runId);
+    if (this.gateState(recovered.run)?.grantObservation?.verifiedHeadSha === input.currentHeadSha) {
+      this.scheduleGateEvaluation(runId, null, { recoveryRequestId: requestId });
     }
     return { ok: true, value: recovered.run, idempotent: recovered.idempotent };
   }
@@ -3542,7 +3542,7 @@ export class WorkflowManager {
       };
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
-    this.scheduleGateEvaluation(run.id, null, refreshPreparedFeedback);
+    this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
     const prKey = this.gateState(run)?.prKey ?? null;
     if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
       void this.reobserveGatePullRequest(run.id, prKey);
@@ -4547,7 +4547,7 @@ export class WorkflowManager {
         const delivery = this.store.recoverableInspectorFeedback(run);
         const canResume = delivery !== null && !this.deliveryBlock(delivery)
           && !this.registry.getSession(delivery.sessionId)?.pause;
-        this.scheduleGateEvaluation(run.id, null, canResume);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: canResume });
       }
     }
   }
@@ -4555,7 +4555,9 @@ export class WorkflowManager {
   private scheduleGateEvaluation(
     runId: string,
     event: InspectionUpdated | null,
-    refreshPreparedFeedback = false,
+    { refreshPreparedFeedback = false, recoveryRequestId }: {
+      refreshPreparedFeedback?: boolean; recoveryRequestId?: string;
+    } = {},
   ): void {
     if (refreshPreparedFeedback) {
       if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
@@ -4569,6 +4571,13 @@ export class WorkflowManager {
     const task = this.withGateLock(runId, async () => {
       let keepRefreshHold = true;
       try {
+        if (recoveryRequestId !== undefined) {
+          // A queued replay may outlive the receipt that scheduled it.
+          const run = this.store.getRun(runId);
+          const head = run && this.gateState(run)?.grantObservation?.verifiedHeadSha;
+          const stranded = head && this.store.latestSubmission(runId);
+          if (!stranded || !this.store.recoveredInspectorBranchActivity(runId, stranded.id, head, recoveryRequestId)) return;
+        }
         if (refreshPreparedFeedback) {
           const run = this.store.getRun(runId);
           const delivery = run ? this.store.recoverableInspectorFeedback(run) : null;
@@ -5832,7 +5841,7 @@ export class WorkflowManager {
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
       if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
-        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: this.store.recoverableInspectorFeedback(run) !== null });
         continue;
       }
       if (delivery.kind === "evidence_capture_repair") {

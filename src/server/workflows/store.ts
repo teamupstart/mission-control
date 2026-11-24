@@ -8090,11 +8090,12 @@ export class WorkflowStore {
     });
   }
 
-  recoveredInspectorBranchActivity(runId: string, submissionId: string, head: string): WorkflowJson {
+  recoveredInspectorBranchActivity(runId: string, submissionId: string, head: string, requestId?: string): WorkflowJson {
     const event = this.listEvents(runId).findLast(row => row.kind === "inspector_stale_grant_recovered");
     if (!event) return null;
     const receipt = this.eventPayload(event);
-    if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation) return null;
+    if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation
+        || (requestId !== undefined && receipt.requestId !== requestId)) return null;
     return receipt.branchActivity ?? null;
   }
 

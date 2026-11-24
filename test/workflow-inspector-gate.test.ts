@@ -3565,9 +3565,9 @@ async function legacyRecoveryRoute({ registry, manager, ids }: Awaited<ReturnTyp
   const { QueueManager } = await import("../src/server/queue.ts");
   const app = buildApp({ registry, workflows: manager, reviews: new ReviewManager(registry),
     tasks: new TaskManager(registry), queues: new QueueManager(registry) });
-  return (currentHeadSha = verifiedRecoveryOid) => app.request(`/api/workflow-runs/${ids.run}/recheck-inspector`, {
+  return (currentHeadSha = verifiedRecoveryOid, requestId = "recover") => app.request(`/api/workflow-runs/${ids.run}/recheck-inspector`, {
     method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
-    body: JSON.stringify({ requestId: "recover", recoverStaleGrant: { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha } }),
+    body: JSON.stringify({ requestId, recoverStaleGrant: { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha } }),
   });
 }
 
@@ -3732,7 +3732,7 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
       }
       return head;
     } });
-    const { store, manager, ids, registry, key, now } = seeded;
+    const { store, manager, ids, key } = seeded;
     try {
       await strandLegacyGrant(seeded, verifiedRecoveryOid);
       const pull = readFileSync(recoveryPr);
@@ -3760,7 +3760,15 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
       } else {
         assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
         writeFileSync(recoveryPr, pull);
-        registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", now + 1013);
+        assert.equal((await recover(laterRefOid)).status, 409);
+        await manager.settleBackgroundWork();
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+        // No Inspector notification follows the outage. The original request retries
+        // the pending receipt even when its caller sends two copies together.
+        for (const replay of await Promise.all([recover(), recover()])) {
+          assert.equal(replay.status, 200);
+          assert.equal((await replay.json()).idempotent, true);
+        }
         await manager.settleBackgroundWork();
         assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
         assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
@@ -3773,6 +3781,46 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
     }
   });
 }
+
+test("an older recovery request cannot wake a different pending receipt for the same submission and head", async () => {
+  let change: "mismatch" | "outage" | undefined;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === priorRefOid && change) {
+      if (change === "mismatch") {
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, head: { ...pull.head, sha: laterRefOid } }));
+      } else rmSync(recoveryPr);
+      change = undefined;
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const recover = await legacyRecoveryRoute(seeded);
+    const pull = readFileSync(recoveryPr);
+    const submissions = store.listSubmissions(ids.run);
+    change = "mismatch";
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(phaseOf(seeded), "blocked/inspector_head_mismatch");
+    writeFileSync(recoveryPr, pull);
+    change = "outage";
+    assert.equal((await recover(verifiedRecoveryOid, "second")).status, 200);
+    await manager.settleBackgroundWork();
+    writeFileSync(recoveryPr, pull);
+
+    assert.equal((await (await recover()).json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal((await (await recover(verifiedRecoveryOid, "second")).json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+    assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 2);
+  } finally { await manager.stop(); }
+});
 
 for (const race of ["return to the verified SHA", "conversation transfer hold"] as const) {
   test(`legacy recovery preserves the round during the final PR read: ${race}`, async () => {

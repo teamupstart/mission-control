@@ -59,7 +59,7 @@ export class VoiceStateStore {
   private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
-  private report: { at: number; heldSince: number | null; report: VoiceShellReport } | null = null;
+  private report: { at: number; keyChangedAt: number | null; report: VoiceShellReport } | null = null;
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
    * allows the microphone does not change because a listener stopped, and the Setup row reads it.
@@ -67,7 +67,7 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean };
+  private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
   private releases = new Map<string, number>();
   private latestRelease?: string;
   private timer: unknown = null;
@@ -97,17 +97,18 @@ export class VoiceStateStore {
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
     const inputDevice = this.deps.config().inputDevice;
+    const press = state.mode === "push-to-talk" ? this.report?.keyChangedAt ?? null : null;
     const last = this.lastDirective;
     if (last && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
-      last.recipients === recipients) return last.directive;
+      last.recipients === recipients && last.press === press) return last.directive;
     const directive = { capture, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
     // Only successive key presses and releases share pending delivery rights.
-    const keyTransition = (last?.mode === "auto-muted" && state.mode === "push-to-talk") ||
+    const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
       (last?.mode === "push-to-talk" && state.mode === "auto-muted");
     if (!keyTransition || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { directive, recipients, mode: state.mode, granted };
+    this.lastDirective = { directive, recipients, mode: state.mode, granted, press };
     return directive;
   }
 
@@ -241,16 +242,22 @@ export class VoiceStateStore {
     return { ok: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION };
   }
 
-  /** A dated key-up from an earlier press cannot supersede the current shell snapshot. */
+  /** Apply dated key events in capture order, independently of heartbeat or request arrival time. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
     const keyUp = report.pushToTalkReleasedAt;
-    const heldSince = this.report && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? this.report.heldSince : null;
-    if (!report.pushToTalk && keyUp !== undefined && heldSince !== null && keyUp < heldSince) return;
+    const lastChange = this.report?.keyChangedAt ?? null;
+    const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
+    const stamp = report.pushToTalk ? report.pushToTalkPressedAt : keyUp;
+    const eventAt = stamp !== undefined && stamp <= at ? stamp : undefined;
+    if (eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
+        (eventAt === lastChange && report.pushToTalk && !this.report?.report.pushToTalk))) return;
     const held = !report.pushToTalk && this.report?.report.pushToTalk && this.state().mode === "push-to-talk"
       ? this.directive() : null;
-    const press = heldSince ?? Math.min(report.pushToTalkPressedAt ?? at, at);
-    this.report = { at, heldSince: report.pushToTalk ? press : null, report };
+    let keyChangedAt = lastChange;
+    if (eventAt !== undefined) keyChangedAt = eventAt;
+    else if (report.pushToTalk !== (heldSince !== null)) keyChangedAt = at;
+    this.report = { at, keyChangedAt, report };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && keyUp !== undefined && keyUp <= at && this.state().mode === "auto-muted") {
       this.directive();

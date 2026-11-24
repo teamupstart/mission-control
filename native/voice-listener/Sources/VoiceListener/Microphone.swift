@@ -245,6 +245,7 @@ final class InputSegmenter {
         converter.reset()
         converterDelay = 0
         segmenter.interrupt()
+        anchor = nil
         nextSample = nil
         nextHostSeconds = nil
         deliveredThrough = nil
@@ -277,6 +278,15 @@ final class InputSegmenter {
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock(), cutoff: Int64? = nil) -> [Segment] {
         if let cutoff, let deliveredThrough, deliveredThrough >= cutoff { return [] }
         let rate = buffer.format.sampleRate
+        let hostSeconds = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil
+        // Detect discontinuity before extrapolating. A reset position cannot use
+        // the old anchor, even if the first callback after reset has no host time.
+        if when.isSampleTimeValid, let nextSample {
+            if when.sampleTime != nextSample { interrupt() }
+        } else if let nextHostSeconds {
+            guard let hostSeconds else { interrupt(); return [] }
+            if abs(nextHostSeconds - hostSeconds) > 0.5 / rate { interrupt() }
+        }
         // Anchor each contiguous run once. The device's frame positions date
         // its audio even if an individual callback reports a jittered host time.
         if when.isSampleTimeValid, when.isHostTimeValid, anchor == nil || nextSample != when.sampleTime { anchor = when }
@@ -287,16 +297,8 @@ final class InputSegmenter {
             time = when.isHostTimeValid ? when : nil
         }
         guard let time, time.isHostTimeValid else { interrupt(); return [] }
-        let hostSeconds = AVAudioTime.seconds(forHostTime: when.isHostTimeValid ? when.hostTime : time.hostTime)
-        // Sample positions catch missing frames even if the device's host clock jitters.
-        // Host-only timestamps are compared to within half an input sample for tick rounding.
-        if when.isSampleTimeValid, let nextSample {
-            if when.sampleTime != nextSample { interrupt() }
-        } else if let nextHostSeconds, abs(nextHostSeconds - hostSeconds) > 0.5 / rate {
-            interrupt()
-        }
         nextSample = when.isSampleTimeValid ? when.sampleTime + Int64(buffer.frameLength) : nil
-        nextHostSeconds = hostSeconds + Double(buffer.frameLength) / rate
+        nextHostSeconds = (hostSeconds ?? AVAudioTime.seconds(forHostTime: time.hostTime)) + Double(buffer.frameLength) / rate
 
         let inputStart = clock.unixNanoseconds(at: time.hostTime)
         let inputDuration = Double(buffer.frameLength) / rate

@@ -345,6 +345,28 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testSampleClockResetWaitsForANewPairedAnchor() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let tap = try InputSegmenter(source: format, held: true)
+        func feed(_ time: AVAudioTime, frames: Int = 320, tone: Bool = false) throws {
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
+            frame.frameLength = frame.frameCapacity
+            for i in 0..<frames { frame.floatChannelData![0][i] = tone ? 0.3 * sin(Float(i) * 2 * .pi * 400 / 16_000) : 0 }
+            XCTAssertTrue(tap.consume(frame, at: time, clock: CaptureClock(hostTime: 0, unixTime: 100)).isEmpty)
+        }
+        try feed(AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 10), sampleTime: 32_000, atRate: 16_000), tone: true)
+        for position: Int64 in [0, 320] {
+            try feed(AVAudioTime(sampleTime: position, atRate: 16_000), tone: true)
+            XCTAssertNil(tap.deliveredThrough, "A reset counter alone cannot date audio")
+        }
+        // The first paired callback on the new timeline supplies the silence boundary.
+        try feed(AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 20), sampleTime: 640, atRate: 16_000), frames: 16_000)
+        try feed(AVAudioTime(sampleTime: 16_640, atRate: 16_000), frames: 3200, tone: true)
+        XCTAssertEqual(tap.deliveredThrough, 121_200)
+        let final = try XCTUnwrap(tap.finish(at: 121_150))
+        XCTAssertEqual(final.endedAt, 121_150)
+    }
+
     func testTapGapDiscardsInterruptedSpeechThroughSilenceAndKeepsTheNextCommand() throws {
         let (_, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))

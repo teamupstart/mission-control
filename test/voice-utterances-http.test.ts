@@ -256,6 +256,32 @@ test("a replayed key-up cannot stop a later hold and a heartbeat does not move i
   assert.deepEqual(voiceStateStore.releasedCapture(quick.revision), { revision: quick.revision, at: now + 75 });
 });
 
+test("a newer dated press supersedes a hold before the delayed key-up arrives", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const down = (stamp?: number) => post("/voice/shell-report", { callActive: true, pushToTalk: true, pushToTalkPressedAt: stamp }, token);
+  const up = (stamp: number) => post("/voice/shell-report", { callActive: true, pushToTalk: false, pushToTalkReleasedAt: stamp }, token);
+  await down(now);
+  const first = voiceStateStore.directive();
+  t.mock.timers.setTime(now + 60);
+  await down(now + 30);
+  const second = voiceStateStore.directive();
+  assert.equal(second.capture, true);
+  assert.notEqual(second.revision, first.revision);
+  assert.equal(voiceStateStore.releasedCapture(first.revision), undefined);
+  for (const stamp of [now + 30, undefined, now]) {
+    await down(stamp);
+    assert.equal(voiceStateStore.directive().revision, second.revision);
+  }
+  await up(now + 15);
+  assert.deepEqual(voiceStateStore.directive(), second);
+  await up(now + 50);
+  assert.equal(voiceStateStore.directive().capture, false);
+  assert.deepEqual(voiceStateStore.releasedCapture(second.revision), { revision: second.revision, at: now + 50 });
+  await down(now + 30);
+  assert.equal(voiceStateStore.directive().capture, false, "replaying the completed press cannot reopen the microphone");
+});
+
 test("a rapid second press preserves the first release, until a privacy or recipient change", async () => {
   const press = (down: boolean) => post("/voice/shell-report", {
     callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAt: Date.now() }),

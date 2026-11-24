@@ -97,7 +97,8 @@ Unix time in milliseconds on the shared host clock. Transport delay does not ext
 held interval. On key-down the shell can supply the key event's Unix milliseconds in
 `pushToTalkPressedAt`, so even a short tap can finish before the daemon receives the press.
 Otherwise the daemon dates the press on receipt. A dated key-up older than that press is
-ignored. Shell heartbeats preserve its start time. A missing, invalid or future key-up
+ignored. A newer dated press starts a fresh capture revision even if its predecessor's
+key-up is still in flight. Shell heartbeats preserve the press time. A missing, invalid or future key-up
 timestamp closes capture and discards the tail.
 
 The default-input audio engine runs with voice processing off. It converts input to mono

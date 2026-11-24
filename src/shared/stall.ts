@@ -56,6 +56,20 @@ export type StallKind =
   | "unfinished-work"
   | "workflow-parked";
 
+/**
+ * The stall kinds that fire only on an IDLE session: the two rules that read "went quiet with
+ * something still expected". With the `idle-stalled` flag on these leave the inbox for Idle's
+ * Stalled section, because the session is already drawn in Idle and its card is where the
+ * context and the fix belong. The other two stay inbox rows: a silent-working session is in
+ * Working, and an escalation is a decision handed to a person, whatever column it sits in.
+ */
+export const IDLE_STALL_KINDS: readonly StallKind[] = ["unfinished-work", "workflow-parked"];
+
+/** Whether a stall is one Idle's Stalled section draws (`IDLE_STALL_KINDS`). */
+export function isIdleStall(stall: Pick<Stall, "kind">): boolean {
+  return IDLE_STALL_KINDS.includes(stall.kind);
+}
+
 export interface StallThresholds {
   /** Instrumented + working, but no hook event for this long. */
   workingMs: number;
@@ -82,6 +96,8 @@ export interface Stall {
   kind: StallKind;
   /** How long it has been stuck, ms. */
   forMs: number;
+  /** Start of the episode measured by the daemon, in epoch ms. Older daemons omit it. */
+  since?: number;
   /** One line naming the stall, for the alert body and the digest. */
   reason: string;
   /**
@@ -155,7 +171,7 @@ export type StallFacts =
   };
 
 /** Open work that needs completion, rather than a resident's standing role. */
-function taskOpen(s: Session): boolean {
+export function hasOpenStallTask(s: Session): boolean {
   // A resident keeps its task running between iterations. That alone is not a stall;
   // explicit queue work and parked workflows still count in workOutstanding.
   if (s.task?.kind === "resident") return false;
@@ -217,12 +233,12 @@ type Outstanding =
 function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outstanding | null {
   const parked = parkedRunFor(s, runs);
   if (parked) return { kind: "workflow-parked", run: parked };
-  if (taskOpen(s)) return { kind: "unfinished-work" };
-  return queueOpen(s) > 0 ? { kind: "unfinished-work" } : null;
+  if (hasOpenStallTask(s)) return { kind: "unfinished-work" };
+  return openStallQueueCount(s) > 0 ? { kind: "unfinished-work" } : null;
 }
 
 /** Open queue items that still count as outstanding: none once the queue has drained. */
-function queueOpen(s: Session): number {
+export function openStallQueueCount(s: Session): number {
   const q = s.queue;
   return q && q.openCount > 0 && !q.drained ? q.openCount : 0;
 }
@@ -249,8 +265,8 @@ function factsFor(
     case "unfinished-work":
       return {
         kind,
-        task: taskOpen(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
-        queueOpen: queueOpen(s),
+        task: hasOpenStallTask(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
+        queueOpen: openStallQueueCount(s),
       };
     case "workflow-parked": {
       const observed = unpushed.get(run!.id);
@@ -284,9 +300,20 @@ export function stallFingerprint(facts: StallFacts, since: number): string {
   return JSON.stringify({ ...facts, since });
 }
 
+/** Mixed-version peers may omit the fingerprint. Use the session's episode start and the
+ * reported work identity so a changing elapsed minute never creates a new dismissal key. */
+export function legacyStallFingerprint(stall: Stall, session?: Session): string {
+  const since = stall.kind === "escalated" ? session?.note?.updatedAt : session?.lastActivity ?? session?.firstSeen;
+  return JSON.stringify([
+    stall.kind, since, stall.workflowRunId, stall.facts,
+    stall.kind === "unfinished-work" ? session?.task?.id : null,
+    stall.kind === "unfinished-work" ? session?.queue?.openCount : null,
+  ]);
+}
+
 /** A stall with its facts and fingerprint attached. */
 function withFacts(stall: Stall, facts: StallFacts, since: number): Stall {
-  return { ...stall, facts, fingerprint: stallFingerprint(facts, since) };
+  return { ...stall, facts, since, fingerprint: stallFingerprint(facts, since) };
 }
 
 /**

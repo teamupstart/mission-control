@@ -32,7 +32,8 @@ obligation:
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
 8. **Stuck** - with the `inbox` preview flag on, a session the daemon's
    [stuck rules](#stuck-sessions) flagged, with the fix on the row. See
-   [Stuck rows](#stuck-rows).
+   [Stuck rows](#stuck-rows). With the **Stalled section in Idle** preview on as well, idle stalls
+   are drawn in Idle instead of here.
 9. **Stuck finalizations** - a promotion that stopped on an error.
 10. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
    on. See [Agent reports](#agent-reports) below. They are read, not answered, so they are never
@@ -236,6 +237,17 @@ With the **Reports and inbox upgrades** preview flag (`inbox`) on, every session
 unchanged; the inbox reads the same list the `stuck` alert does, polled from the daemon every few
 seconds. With stall detection off in the alerts settings there are no Stuck rows.
 
+With the **Stalled section in Idle** preview (`idle-stalled`) also on, the two idle rules, **Idle
+with work open** and **Workflow run parked**, leave this section: their sessions are cards in
+[Idle's Stalled section](ui.md) instead, with the facts and the same fixes on the card, and they
+no longer count in **to answer**. A pinned resident's idle stall leaves too: the stall outranks the
+pin, and a declared wait, so its card moves to the Stalled section. Only a stall Idle cannot draw stays: a resident shown
+in the residents drawer is not on the fleet, so it keeps its Stuck row here. **Silent while working** and **Foreman escalation unanswered** stay
+here. Dismissing a stall on either surface is one dismissal, so a stall dismissed as a card
+stays hidden as a row when the preview is switched off, until its facts change. Either preview
+opens `POST /api/sessions/:id/inbox-message`, the route behind Nudge, Continue and Tell it to
+push; with both off it answers 403. The `stuck` desktop alert is unchanged by the preview.
+
 Each row names the agent, says which rule fired and the rule's own sentence ("idle 23m with work
 unfinished"), and offers the fix in place. Only controls whose target exists are drawn:
 
@@ -244,8 +256,13 @@ unfinished"), and offers the fix in place. Only controls whose target exists are
 | Silent while working | the last activity line | **Nudge**, **Interrupt** |
 | Idle with work open, a task open | the open task, and any open queue items | **Continue**, **Mark done** |
 | Idle with work open, only a queue open | how many queue items are open, and that a queue's items are handled in the session | **Continue** |
-| Workflow run parked | the missing step | **Resubmit** when a resubmission can move the run (a manual or Preview run waiting for the session), **Tell it to push** when the run waits for a pushed head and the branch holds commits the remote has not seen, **Continue** when neither applies and the step is the session's own next turn (a round that resumes itself, or new work to commit), and **Open run**. A run an ensemble started that is waiting for the session can only move when that ensemble submits again, so its row says so and offers Open run without Resubmit, Continue or a push |
+| Workflow run parked | the missing step | **Resubmit** when a resubmission can move the run (a manual or Preview run waiting for the session), **Tell it to push** when the run waits for a pushed head and the branch holds commits the remote has not seen, **Continue** when the session's next turn reopens the round, and **Open run**. A run an ensemble started that is waiting for the session can only move when that ensemble submits again, so its row says so and offers Open run without Resubmit, Continue or a push |
 | Foreman escalation unanswered | what Foreman escalated | a reply box, when the session can receive messages |
+
+With **Stalled section in Idle** switched off, the inbox applies the same pushed-head rule.
+When no unpushed commits are reported, the row offers **Open run** and explains that a new
+commit must reach the remote branch. Earlier versions offered **Continue** in this case.
+The message box remains available to ask the agent to prepare the change.
 
 Every row also has **Open session** and **Dismiss**, and a message box to the agent when the
 session can receive messages. A session that cannot, such as one driven by a pipeline engine or

@@ -120,6 +120,10 @@ test("a drain waits for the daemon's own shutdown, and a hung one is bounded rat
   const hung = ownElectronBackgroundStart(undefined, async () => ({ stop: () => new Promise<void>(() => {}) }), async () => ({ stop: noop }));
   await hung.ready;
   assert.equal(await drainBackgroundStart(hung, 20), "timed-out");
+  let daemonStopped = false;
+  const withListener = drainBackgroundStart({ async stop() { daemonStopped = true; } }, 20, hung);
+  assert.equal(daemonStopped, true, "the daemon drain starts while the voice helper is still closing");
+  assert.equal(await withListener, "timed-out");
   assert.equal(await drainBackgroundStart(null, 20), "drained", "development owns no background stack");
 });
 

@@ -160,9 +160,10 @@ import type {
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
+import { listSdkSessions } from "./sdk/store.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor, sessionMessages } from "./harness/index.ts";
+import { hooksFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -305,6 +306,8 @@ import {
   workEpisodeRepoPr,
   workEpisodeRepoPrsForTask,
   workCycleFor as dbWorkCycleFor,
+  hasDeliveredSpokenHold,
+  workCycleForBoundSession,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -380,6 +383,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { pruneExpiredSpokenTurns, spokenLedger } from "./delivery-ledgers.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
@@ -401,23 +405,19 @@ export interface PrOpened {
   repoRoot: string | null;
 }
 
-/**
- * One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`.
- *
- * It carries the turn's `id` rather than its text, because the only question a subscriber
- * asks of it is "was this the turn I am waiting on" - and the id is the correlation every
- * caller of `submit()` already holds. `pending_turns` gains no column for this.
- */
 /** A driver-run session's conversation was compacted. See `Registry.onCompacted`. */
 export interface SessionCompacted {
   sessionId: string;
 }
 
+/** One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`. */
 export interface TurnDelivered {
   sessionId: string;
   /** The `pending_turns` row id returned by `submit()`. */
   turnId: string;
   deliveredAt: number;
+  /** For a spoken message, the work-cycle generation observed at handoff. */
+  spoken?: { generation: number };
 }
 
 /** Daemon-minted authority for the interval before a managed Pipeline host is registered. */
@@ -1665,6 +1665,15 @@ export class Registry extends EventEmitter {
 
   voiceRouter?: VoiceRouter;
 
+  voiceHold(sessionId: string): boolean {
+    if (!featureEnabled(VOICE_FLAG)) return false;
+    const session = this.getSession(sessionId);
+    if (!session) return false;
+    if (this.voiceRouter?.holdsSession(sessionId, session.task?.id) ||
+        session.pendingTurns.some(turn => turn.spokenWords !== undefined)) return true;
+    return hasDeliveredSpokenHold(noteKeyFor(session));
+  }
+
   emitVoiceIndicators(indicators: string[]): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
   }
@@ -2279,6 +2288,7 @@ export class Registry extends EventEmitter {
 
   /** Announce a confirmed delivery. `PendingTurnManager.journalDelivered` is the only caller. */
   turnDelivered(e: TurnDelivered): void {
+    if (e.spoken) this.voiceRouter?.settleSpoken(e.turnId, "sent");
     this.emit("turn_delivered", e);
   }
 
@@ -3274,7 +3284,7 @@ export class Registry extends EventEmitter {
     base.workCycle =
       prev && noteKeyFor(prev) === noteKeyFor(base)
         ? prev.workCycle
-        : (dbWorkCycleFor(noteKeyFor(base)) ?? undefined);
+        : (workCycleForBoundSession(base.id, noteKeyFor(base)) ?? undefined);
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
     // been discovered yet has no live session to apply to, so it only ever reaches
@@ -3509,7 +3519,7 @@ export class Registry extends EventEmitter {
     s.pendingTurns = this.pendingTurnsFor(s);
     s.steeredTurns = this.steeredTurnsFor(s);
     s.steerReceipts = this.steerReceiptsFor(s);
-    s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
+    s.workCycle = workCycleForBoundSession(s.id, noteKeyFor(s)) ?? undefined;
     // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
     // the one that matters most: a driver session's questions are answered natively, so its
     // steering evidence exists ONLY as a review row.
@@ -3776,7 +3786,7 @@ export class Registry extends EventEmitter {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
     if (noteKeyFor(next) !== noteKeyFor(s)) {
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
     // than on some later event, exactly as `applyHook` does and for the same reason: until
@@ -4112,7 +4122,7 @@ export class Registry extends EventEmitter {
         gitBranch,
       };
       if (noteKeyFor(next) !== noteKeyFor(target)) {
-        next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+        next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
       }
       if (workCycleSignal) {
         next = this.withWorkCycleSignal(next, workCycleSignal, ts, now);
@@ -4341,7 +4351,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath: null,
-      workCycle: dbWorkCycleFor(agentSessionId) ?? undefined,
+      workCycle: workCycleForBoundSession(s.id, agentSessionId) ?? undefined,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -6799,7 +6809,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
@@ -6905,7 +6915,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(key) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
@@ -7513,6 +7523,23 @@ export class Registry extends EventEmitter {
     if (current) this.emit("session_exit", current);
   }
 
+  /** A voice resume can arrive while the hibernated SDK card still owns its id. */
+  async waitForPendingEviction(id: string): Promise<void> {
+    if (!this.exitTimers.has(id)) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        unsubscribe();
+        clearTimeout(timer);
+        resolve();
+      };
+      const unsubscribe = this.subscribe(event => {
+        if (event.type === "session_remove" && event.id === id) finish();
+      });
+      // A rediscovered session may cancel eviction. Resume rechecks ownership in either case.
+      const timer = setTimeout(finish, EXIT_LINGER_MS + 1000);
+    });
+  }
+
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
@@ -7559,7 +7586,10 @@ export class Registry extends EventEmitter {
     if (leaving) {
       const key = noteKeyFor(leaving);
       const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
-      if (!held) this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      if (!held) {
+        spokenLedger.forgetConversation(key);
+        this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      }
     }
   }
 
@@ -7757,8 +7787,20 @@ export class Registry extends EventEmitter {
     return this.outstandingReviews(session.id).some((review) => questionHoldsCompletion(review, flagOn));
   }
 
+  /** Make the whole committed batch visible before synchronous listeners can answer any member. */
+  upsertReviews(reviews: ReviewItem[]): void {
+    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) {
+      if (this.reviews.get(review.id) === review) this.publishReview(review);
+    }
+  }
+
   upsertReview(review: ReviewItem): void {
     this.reviews.set(review.id, review);
+    this.publishReview(review);
+  }
+
+  private publishReview(review: ReviewItem): void {
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
@@ -7822,6 +7864,12 @@ export class Registry extends EventEmitter {
       out.push(r);
     }
     return out;
+  }
+
+  /** A filed plan still gates completion, but its agent can receive an addressed message. */
+  hasPendingReviewCall(sessionId: string): boolean {
+    if (!this.sessions.get(sessionId)?.pendingReviews) return false;
+    return this.pendingReviews(sessionId).some(review => review.waitMode !== "message");
   }
 
   /**
@@ -9578,6 +9626,40 @@ export class Registry extends EventEmitter {
     return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
   }
 
+  async pruneExpiredSpokenTurns(now: number, unavailableBefore?: number, signal?: AbortSignal): Promise<number> {
+    if (!this.sweptSessions) return 0;
+    return pruneExpiredSpokenTurns(now, (key, locators) => {
+      // A runtime can move the native file and leave a readable copy behind. Look in every
+      // known location for this exact conversation before absence can retire an unseen UUID.
+      const sources = new Map<string | null, ReturnType<typeof sessionMessages>>();
+      const add = (source: ReturnType<typeof sessionMessages>) => sources.set(source?.path ?? null, source);
+      const addSessionPaths = (session: Parameters<typeof sessionMessages>[0]) => {
+        if (session.transcriptPath) {
+          const read = transcriptFor(session)?.messages;
+          // A concrete location is owed a read even while it is missing or unsupported.
+          add(read ? { path: session.transcriptPath, read } : null);
+        }
+        // Default-path discovery is an additional source when it succeeds. A miss does
+        // not invalidate a complete scan of the conversation's known concrete locations.
+        const located = sessionMessages({ ...session, transcriptPath: null });
+        if (located) add(located);
+      };
+      for (const session of this.sessions.values()) {
+        if (session.agentSessionId === key) addSessionPaths(session);
+      }
+      for (const row of listSdkSessions(key)) {
+        if (row.agent) addSessionPaths({ id: row.id, agent: row.agent, cwd: row.cwd,
+          agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
+      }
+      for (const locator of locators) {
+        if (locator.transcriptAgent) addSessionPaths({ id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
+          agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath });
+        else if (locator.transcriptPath) add(null);
+      }
+      return [...sources.values()];
+    }, unavailableBefore, signal);
+  }
+
   /**
    * Drop ordinary review-message deliveries that never bound and are past the delivery window,
    * once a binding walk has expired them. The tick walks every live conversation that has such a
@@ -10713,7 +10795,7 @@ export class Registry extends EventEmitter {
       // The echo is spent FIRST, whatever the capture then does: it has arrived, and an entry
       // still open to it would absorb the next identical send's echo instead.
       markHumanEchoSeen(claim.ticket, now);
-      if (this.captureAcceptedPrompt(s.id, prompt, noteKey, now)) {
+      if (this.captureAcceptedPrompt(s.id, claim.spokenWords ?? prompt, noteKey, now)) {
         markHumanEchoCaptured(claim.ticket, { echoed: true, now });
       }
       return;
@@ -10795,8 +10877,8 @@ export class Registry extends EventEmitter {
     prompt: string,
   ): boolean {
     const submitted = spec.submittedPromptText(evt);
-    const delivered = (submitted !== null && claimInjectionEcho(s.id, submitted) !== undefined)
-      || claimInjectionEcho(s.id, prompt) !== undefined;
+    const delivered = (submitted !== null && claimInjectionEcho(s.id, submitted, evt) !== undefined)
+      || claimInjectionEcho(s.id, prompt, evt) !== undefined;
     return delivered && !this.isRelayedWorkItemIntent(s, submitted, prompt);
   }
 
@@ -11390,9 +11472,11 @@ export class Registry extends EventEmitter {
   clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
     // A steer the discarded conversation accepted will never be read by the new one.
     this.forgetSteers(key);
-    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
-    if (changed) this.syncSessionsForPendingTurns(key);
-    return changed;
+    const removed = clearPendingTurnsDb(key, preserveIds);
+    if (removed.count === 0) return false;
+    for (const id of removed.spokenIds) this.voiceRouter?.settleSpoken(id, "cancelled");
+    this.syncSessionsForPendingTurns(key);
+    return true;
   }
 
   /**

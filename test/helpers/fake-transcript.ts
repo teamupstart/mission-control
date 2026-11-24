@@ -13,11 +13,17 @@ export function fakeTranscript() {
   const turns: TranscriptMessage[] = [];
   let sizeFails: boolean | "missing" = false;
   const read = {
+    boundary: (_path: string, offset = turns.length * TURN_BYTES) => sizeFails || offset > turns.length * TURN_BYTES
+      ? null : { offset, proof: JSON.stringify(turns.slice(0, offset / TURN_BYTES)) },
+    snapshot: () => sizeFails ? null : { size: turns.length * TURN_BYTES, version: String(turns.length) },
     size: () => {
       if (sizeFails === "missing") return null;
       if (sizeFails) throw new Error("transcript size unreadable");
       return turns.length * TURN_BYTES;
     },
+    appended: (_path: string, pos: number, through = turns.length * TURN_BYTES) => ({
+      messages: turns.slice(Math.ceil(pos / TURN_BYTES), Math.floor(through / TURN_BYTES)), pos: through,
+    }),
     after: (_path: string, after: number, want = 50) => {
       const first = Math.ceil(after / TURN_BYTES);
       const messages = turns.slice(first, first + want);

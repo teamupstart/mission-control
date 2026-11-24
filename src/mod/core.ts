@@ -2,7 +2,7 @@ import type { HomeDispatchInbox, HomeSessionRegistration, HomeSessionRegistratio
 import { bandFor, nextAttention, statusFor, type AttentionMemory } from "./attention.ts";
 import { bannerLines } from "./banner.ts";
 import { checkHealth, fetchInbox, registerSession, type DaemonResult } from "./client.ts";
-import { MOD_API, POLL_INTERVAL_MS } from "./constants.ts";
+import { LAUNCHER_ENABLED, MOD_API, POLL_INTERVAL_MS } from "./constants.ts";
 import type { CoreHost } from "./host.ts";
 
 /**
@@ -156,7 +156,8 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
       entrypoint: facts.entrypoint,
       interactive: facts.interactive,
       beforeFirstPrompt,
-      launcherDisabled: false,
+      // Told to the daemon so its answer and banner never promise a launcher the mod will not show.
+      launcherDisabled: !LAUNCHER_ENABLED,
     });
     if (stopped) return;
     if (answer.kind === "down") return notifyOnce("down");

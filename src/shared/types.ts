@@ -191,6 +191,7 @@ export type PendingTurnState = (typeof PENDING_TURN_STATES)[number];
  * handoff may have crossed its runtime boundary but its outcome cannot be proven.
  */
 export interface PendingTurn {
+  spokenWords?: string;
   id: string;
   /** Stable conversation key (`agentSessionId ?? session.id`), never a transient pane id. */
   noteKey: string;
@@ -3279,6 +3280,8 @@ export interface ReviewItem {
    * other review and every ask made with the flags off. Persisted (`reviews.wait_mode`).
    */
   waitMode?: "message";
+  /** A pending voice-filed ask replays its receipt to a convertible wait poll. */
+  filedByVoiceAt?: number;
   /**
    * The agent's own line on what it does while a message-mode question is open: the assumption
    * it proceeds on, or what it holds back. At most 300 characters. Persisted
@@ -3786,7 +3789,8 @@ export interface LlmStatus {
   claudeTransport: ClaudeTransport;
   /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
   codexTransport: CodexTransport;
-  models: Record<LlmJobId, ResolvedLlmJobModel>;
+  /** Every live job (`liveLlmJobIds`): a job behind a preview flag that is off is absent. */
+  models: Partial<Record<LlmJobId, ResolvedLlmJobModel>>;
   /**
    * Which provider each background job resolved to, and which layer chose it.
    *
@@ -3796,7 +3800,7 @@ export interface LlmStatus {
    * another process. This is the per-job axis, and a job with no override simply repeats
    * the app-wide value.
    */
-  jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
+  jobRunners: Partial<Record<LlmJobId, ResolvedLlmRunner>>;
   /** Foreman reads this live gate over HTTP. Present only while the preview is on. */
   backgroundReasoningEffort?: true;
   /** Every provider this build has, in declaration order. */
@@ -4389,6 +4393,8 @@ export interface ToolCall {
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */
 export interface TranscriptMessage {
+  /** Client-supplied user message identity when the runtime stores it separately from its native id. */
+  clientMessageId?: string;
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
   id: string;
   role: "user" | "assistant";
@@ -4482,6 +4488,7 @@ export interface TranscriptAdvisor {
  */
 export type TranscriptPresentation =
   | { kind: "launch" | "resident"; displayText: string | null }
+  | { kind: "spoken"; displayText: string; received: string }
   | { kind: "review-message"; envelope: "answer" | "remind-later"; reviewIds: string[] };
 
 /**
@@ -4519,10 +4526,16 @@ export interface TurnOriginSession {
  * A session that is actively working writes turns constantly, which made "you lost your
  * place" the normal outcome of a dropped connection rather than a rare one.
  */
-export type TranscriptStreamMsg =
+type NativeTranscriptFrame =
   | {
       type: "init";
       messages: TranscriptMessage[];
+      /** The latest confirmed text-only spoken handoff included in this reading. */
+      spokenReceipt?: string | null;
+      /** Identifies the native file and its bytes through pos for a spoken conversation. */
+      spokenCursor?: string;
+      /** Previously read bytes may have acquired a spoken disclosure. Refresh held pages too. */
+      refreshSpoken?: true;
       /** Byte offset of the first turn in `messages` - the back-paging anchor. */
       start: number;
       /** True when `start` is the top of the file, so nothing older exists. */
@@ -4541,8 +4554,15 @@ export type TranscriptStreamMsg =
       type: "resume";
       messages: TranscriptMessage[];
       pos: number;
+      spokenCursor?: string;
     }
-  | { type: "append"; messages: TranscriptMessage[]; pos: number }
+  | { type: "append"; messages: TranscriptMessage[]; pos: number; spokenCursor?: string };
+
+export type TranscriptStreamMsg =
+  | (NativeTranscriptFrame & {
+      /** Native turns are readable while the dashboard retries their spoken attribution. */
+      spokenDeferred?: true;
+    })
   | { type: "unavailable"; reason: string };
 
 // ---- session diff (changes vs the source branch) ----

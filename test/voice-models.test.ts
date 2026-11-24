@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   parsePinnedModelUrl,
-  resolveVoiceBackend,
+  VOICE_TEST_MODEL,
   VOICE_MODEL_ORIGIN,
   VOICE_MODELS,
   voiceModelBytes,
@@ -31,7 +31,7 @@ const fluidaudio = VOICE_MODELS.fluidaudio!;
 test("the manifest is keyed by every backend, and fluidaudio's entry parses under the schema", () => {
   assert.deepEqual(Object.keys(VOICE_MODELS).sort(), [...VOICE_BACKENDS].sort());
   assert.ok(fluidaudio, "Phase 8 fills the fluidaudio entry");
-  assert.equal(VOICE_MODELS["sherpa-onnx"], null, "Phase 16 fills sherpa-onnx");
+  VoiceModelManifestSchema.parse(VOICE_MODELS["sherpa-onnx"]);
   assert.deepEqual(VoiceModelManifestSchema.parse(fluidaudio), fluidaudio);
   assert.match(fluidaudio.revision, /^[a-z0-9][a-z0-9.-]*$/);
   assert.ok(fluidaudio.sources.every((source) => source.license === "CC-BY-4.0"));
@@ -127,10 +127,16 @@ test("a base URL replaces the origin and keeps the pinned path", () => {
     "a mirror's query stays a query and the path goes on the pathname");
 });
 
-test("auto picks FluidAudio on Apple silicon and sherpa-onnx elsewhere; an explicit choice stands", () => {
-  assert.equal(resolveVoiceBackend("auto", "darwin", "arm64"), "fluidaudio");
-  assert.equal(resolveVoiceBackend("auto", "darwin", "x64"), "sherpa-onnx");
-  assert.equal(resolveVoiceBackend("auto", "linux", "x64"), "sherpa-onnx");
-  assert.equal(resolveVoiceBackend("fluidaudio", "linux", "x64"), "fluidaudio");
-  assert.equal(resolveVoiceBackend("sherpa-onnx", "darwin", "arm64"), "sherpa-onnx");
+test("both sherpa manifests pin every measured recognizer file plus the same Silero detector", () => {
+  for (const [backend, manifest] of [["sherpa", VOICE_MODELS["sherpa-onnx"]!], ["small-tdt", VOICE_TEST_MODEL]] as const) {
+    const expected = spike.filter(entry => entry.backend === backend);
+    VoiceModelManifestSchema.parse(manifest);
+    assert.equal(manifest.files.length, expected.length + 1);
+    for (const entry of expected) {
+      const url = `${VOICE_MODEL_ORIGIN}/${entry.repository}/resolve/${entry.revision}/${entry.file}`;
+      assert.deepEqual(manifest.files.find(file => file.url === url),
+        { url, path: `${entry.repository.split("/")[1]}/${entry.file}`, bytes: entry.bytes, sha256: entry.sha256 });
+    }
+    assert.ok(manifest.files.some(file => file.path === "silero-vad/onnx/model.onnx"));
+  }
 });

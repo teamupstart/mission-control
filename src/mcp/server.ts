@@ -18,8 +18,10 @@ import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daem
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { ReviewItem, Task } from "@shared/types.ts";
+import type { ReviewWaitResponse } from "@shared/async-input.ts";
+import type { Task } from "@shared/types.ts";
 import {
   SESSION_AWAITING_LIMITS, SESSION_AWAITING_WAKE_SOURCES, SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS,
 } from "@shared/types.ts";
@@ -163,7 +165,7 @@ async function postReview(input: {
     decisions: input.decisions,
     managedPlan: input.managedPlan,
     ...(input.snoozable ? { snoozable: true } : {}),
-    ...(input.asyncCapable ? { asyncCapable: true } : {}),
+    ...(input.asyncCapable ? { asyncCapable: true, convertible: true } : {}),
     ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
     ...(input.revises ? { revises: input.revises } : {}),
   });
@@ -229,6 +231,9 @@ function heartbeat(call?: BlockingCall): () => void {
   };
 }
 
+/** A listening daemon can still be temporarily unavailable while it starts. */
+class WaitServiceUnavailable extends Error {}
+
 /**
  * Long-poll the daemon until the human resolves the review.
  *
@@ -238,14 +243,35 @@ function heartbeat(call?: BlockingCall): () => void {
  * away whatever it returns, so an abandoned ask left a poller hammering the daemon for the
  * rest of the session's life. Aborting the in-flight fetch ends it at the cancellation.
  */
-async function waitForResolution(id: string, call?: BlockingCall): Promise<ReviewItem> {
+async function waitForResolution(id: string, call?: BlockingCall, convertible = false): Promise<ReviewWaitResponse> {
   const beat = heartbeat(call);
+  const retryDelays = [250, 500, 1000, 2000, 4000, 8000];
+  let failures = 0;
   try {
     for (;;) {
       if (call?.signal.aborted) throw new Error("the client cancelled this request");
-      const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
-      if (!res.ok) throw new Error(`harness wait ${res.status}`);
-      const review = (await res.json()) as ReviewItem;
+      let review: ReviewWaitResponse;
+      try {
+        const query = convertible ? "?convertible=1" : "";
+        const res = await http(`/mcp/reviews/${id}/wait${query}`, "GET", undefined, false, call?.signal);
+        if (!res.ok) {
+          await res.body?.cancel();
+          if (res.status === 503) throw new WaitServiceUnavailable("harness wait 503");
+          throw new Error(`harness wait ${res.status}`);
+        }
+        review = await res.json() as ReviewWaitResponse;
+        failures = 0;
+      } catch (err) {
+        // The receipt can commit just before daemon shutdown. Allow time to bind the port again.
+        const backoff = retryDelays[failures];
+        const temporarilyUnavailable = err instanceof TypeError || err instanceof WaitServiceUnavailable;
+        if (!temporarilyUnavailable || !convertible || backoff === undefined || call?.signal.aborted) throw err;
+        failures++;
+        beat();
+        await delay(backoff, undefined, { signal: call?.signal });
+        continue;
+      }
+      if (convertible && review.converted && !call?.signal.aborted) return review;
       if (review.status !== "pending") {
         // The host can cancel after the daemon has answered the long poll but before this
         // result crosses the MCP response boundary. Recheck at the fast-path handoff so that
@@ -585,7 +611,8 @@ server.registerTool(
       // `message`, the plan is filed and the receipt is the whole result - nothing long-polls.
       const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true, revises });
       if (created.wait === "message") return textResult(created.receipt);
-      const review = await waitForResolution(created.id, extra);
+      const review = await waitForResolution(created.id, extra, true);
+      if (review.converted) return textResult(review.converted.receipt);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
@@ -1171,7 +1198,8 @@ server.registerTool(
         snoozable: true, asyncCapable: true, ...(meanwhile?.trim() ? { meanwhile } : {}),
       });
       if (created.wait === "message") return textResult(created.receipt);
-      const review = await waitForResolution(created.id, extra);
+      const review = await waitForResolution(created.id, extra, true);
+      if (review.converted) return textResult(review.converted.receipt);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {

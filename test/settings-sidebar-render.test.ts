@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import { SettingsPageFixture } from "./helpers/settings-page.ts";
 import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integration.ts";
 import {
   SETTINGS_CATEGORIES,
@@ -101,9 +101,8 @@ function render(
   } = {},
 ): string {
   return renderToStaticMarkup(
-    createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPage, {
+    createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPageFixture, {
       category,
-      voiceConfig: { config: null, error: null, update: async () => false },
       shapingSettings: opts.shaping ?? shapingSettings(),
       ...(opts.reportMutes ? { reportMutes: opts.reportMutes } : {}),
       onNavigate: () => {},

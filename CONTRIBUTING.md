@@ -32,7 +32,7 @@ Prerequisites:
   `ASDF_NODEJS_VERSION=24.18.0 npm test`. With Homebrew, run `brew install node@24` and put
   `$(brew --prefix node@24)/bin` first on `PATH`. Confirm with `node --version` before you
   run the suite.
-- To build the standalone voice listener on Apple silicon (macOS 14+), run
+- The complete desktop build includes the voice listener on Apple silicon (macOS 14+). To build it alone, run
   `npm run build:voice-listener` with Swift 6.2 or newer and the macOS SDK. SwiftPM resolves the pinned FluidAudio
   dependency on first build. Other platforms skip this target before invoking Swift.
   Run `swift test -c release --package-path native/voice-listener` for the native tests.

@@ -9,7 +9,12 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { ASYNC_INPUT_FLAG, asyncInputAnswer, filedPlanAnswer, isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion, withdrawnByItsAgent } from "@shared/async-input.ts";
+import {
+  ASYNC_INPUT_FLAG, asyncInputAnswer, asyncInputReceipt, filedPlanAnswer, filedPlanReceipt,
+  isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion,
+  type ReviewWaitResponse, withdrawnByItsAgent,
+} from "@shared/async-input.ts";
+import { isStandingFollowUp } from "./plans/publication.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -17,8 +22,11 @@ import {
   snoozedInstructionText,
   type ReviewSnoozeMeanwhile,
 } from "@shared/review-snooze.ts";
-import type { Registry } from "./registry.ts";
+import { noteKeyFor, type Registry } from "./registry.ts";
 import {
+  blockReviewVoiceConversion,
+  fileReviewByVoice,
+  hasQueuedSpeechForReview,
   inTransaction,
   insertReview,
   loadReview,
@@ -59,7 +67,18 @@ export const PARALLEL_ASK_WINDOW_MS = 30_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
-type Waiter = (r: ReviewItem) => void;
+type Waiter = { convertible: boolean; finish: (r: ReviewWaitResponse) => void };
+
+export function filedReviewReceipt(review: ReviewItem): string {
+  return isFiledGate(review)
+    ? filedPlanReceipt(review, { bundleApproved: isStandingFollowUp(review.id) })
+    : asyncInputReceipt(review);
+}
+
+function convertedResponse(review: ReviewItem): ReviewWaitResponse {
+  return { ...review, converted: { receipt: filedReviewReceipt(review) } };
+}
+
 /**
  * Which review message is being handed to the outbox: a human resolution that arrived after the
  * agent's wait ended, or a snoozed question's "carry on" instruction that the agent never got
@@ -68,7 +87,14 @@ type Waiter = (r: ReviewItem) => void;
 export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
+const voiceFilingVeto = Symbol("voice filing veto");
+
 export class ReviewResolutionError extends Error {}
+class VoiceFiledCallRefusal extends ReviewResolutionError {
+  constructor(id: string) {
+    super(`Review ${id} was already filed by voice. Its answer is delivered as a message in the conversation.`);
+  }
+}
 export class OpenQuestionLimitError extends Error {}
 
 /**
@@ -357,6 +383,8 @@ export class ReviewManager {
        * build, which never says `asyncCapable` and cannot read a receipt.
        */
       callerPolls?: boolean;
+      /** The caller can recover a receipt committed by spoken conversion. */
+      convertible?: boolean;
       /**
        * The review id of the filed plan form this one revises (`request_plan_decisions`). Checked
        * by `revisionFor`, which refuses with `RevisionRefusal` and writes nothing; an open target
@@ -379,6 +407,10 @@ export class ReviewManager {
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions)
         && (options.revises === undefined || r.revision?.previousId === options.revises));
     if (existing) {
+      if (existing.filedByVoiceAt != null) {
+        if (options.convertible !== true) throw new VoiceFiledCallRefusal(existing.id);
+        return existing;
+      }
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
       // poll arrives is that poll's result and is never also queued as a message.
@@ -569,6 +601,7 @@ export class ReviewManager {
    * a session blocked in that call would read as still working past its question.
    */
   private attachCall(review: ReviewItem): ReviewItem {
+    if (review.filedByVoiceAt != null) throw new VoiceFiledCallRefusal(review.id);
     if (!markReviewWaitAttached(review.id)) return review;
     const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
     this.registry.upsertReview(call);
@@ -862,41 +895,102 @@ export class ReviewManager {
     this.registry.recordRetroHumanReview(review.sessionId);
   }
 
+  /** Enqueue, compatible polls and the end of blocking calls recheck the durable association. A transient
+   * filing failure leaves the accepted speech in its outbox and the call available to retry. */
+  tryFileForQueuedSpeech(sessionId: string): void {
+    try {
+      if (!this.waiters.size || !featureEnabled("voice")) return;
+      const session = this.registry.getSession(sessionId);
+      if (!session) return;
+      const noteKey = noteKeyFor(session);
+      const blockers = this.registry.pendingReviews(sessionId).filter(review => review.waitMode !== "message");
+      if (blockers.length && blockers.every(review => hasQueuedSpeechForReview(review.id, noteKey))) {
+        this.convertToFiled(...blockers.map(review => review.id));
+      }
+    } catch (error) {
+      console.warn(`[reviews] could not file reviews for queued speech in ${sessionId}; retrying on the next compatible poll:`, error);
+    }
+  }
+
+  /** File the session's blocking calls together, or leave every answer on its original channel. */
+  convertToFiled(...reviewIds: string[]): boolean {
+    for (const id of reviewIds) {
+      const waiters = this.waiters.get(id);
+      if (!waiters?.size || [...waiters].some(waiter => !waiter.convertible)) return false;
+    }
+    if (!reviewIds.length) return false;
+    const at = Date.now();
+    try {
+      const results = inTransaction(() => reviewIds.map(id => {
+        const filed = fileReviewByVoice(id, at);
+        if (!filed) throw voiceFilingVeto;
+        return { filed, response: convertedResponse(filed) };
+      }));
+      for (const result of results) this.releaseWaiters(result.response);
+      this.registry.upsertReviews(results.map(result => result.filed));
+      return true;
+    } catch (error) {
+      if (error === voiceFilingVeto) return false;
+      throw error;
+    }
+  }
+
   /**
    * Resolve immediately if already decided; otherwise wait up to `timeoutMs`.
    * On timeout returns the still-pending item so the caller can long-poll again.
    * Returns null if the id is unknown. `signal` ends the wait early the same way a timeout does,
    * which is how the daemon's shutdown answers a long-poll instead of cutting it.
    */
-  wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<ReviewItem | null> {
+  wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
+    // Settled asks can be absent from the registry after restart. Their voice filing
+    // still owns both the receipt and the route by which the human answer is delivered.
+    const review = current ?? loadReview(id);
+    if (review?.waitMode === "message" && review.filedByVoiceAt != null) {
+      if (!convertible) return Promise.reject(new VoiceFiledCallRefusal(id));
+      return Promise.resolve(convertedResponse(review));
+    }
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    return new Promise<ReviewItem | null>((resolve) => {
+    return new Promise<ReviewWaitResponse | null>((resolve, reject) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
 
-      const finish = (r: ReviewItem | null): void => {
+      const cleanup = (): void => {
+        if (!set!.delete(waiter)) return;
         clearTimeout(timer);
-        set!.delete(waiter);
+        if (!set!.size) this.waiters.delete(id);
         signal?.removeEventListener("abort", early);
+      };
+      const finish = (r: ReviewWaitResponse | null): void => {
+        cleanup();
         resolve(r);
       };
-      const waiter: Waiter = (r) => finish(r);
+      const waiter: Waiter = { finish, convertible };
       const early = (): void => finish(this.registry.getReview(id) ?? null);
       const timer = unref(setTimeout(early, timeoutMs));
 
       set.add(waiter);
-      if (signal?.aborted) early();
-      else signal?.addEventListener("abort", early, { once: true });
-      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
-      // older build re-asked it word for word, was handed the open row, and long-polls it because
-      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
-      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
-      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
-      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
-      // closure that event triggers must be able to release this very call.
-      if (current.waitMode === "message") this.attachCall(current);
+      if (signal?.aborted) return early();
+      signal?.addEventListener("abort", early, { once: true });
+      try {
+        if (!convertible) blockReviewVoiceConversion(id);
+        // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+        // older build re-asked it word for word, was handed the open row, and long-polls it because
+        // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+        // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+        // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+        // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+        // closure that event triggers must be able to release this very call.
+        if (current.waitMode === "message") {
+          this.attachCall(current);
+        } else if (convertible) {
+          this.tryFileForQueuedSpeech(current.sessionId);
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
     });
   }
 
@@ -1111,11 +1205,15 @@ export class ReviewManager {
     return updated;
   }
 
-  private releaseWaiters(review: ReviewItem): void {
+  private releaseWaiters(review: ReviewWaitResponse): void {
     const set = this.waiters.get(review.id);
     if (set) {
-      for (const w of Array.from(set)) w(review);
+      for (const w of Array.from(set)) w.finish(review);
       this.waiters.delete(review.id);
+    }
+    if (review.status !== "pending" && review.waitMode !== "message" && this.waiters.size) {
+      // A settle can publish a whole batch. Reconsider the remaining calls after all its rows are visible.
+      queueMicrotask(() => this.tryFileForQueuedSpeech(review.sessionId));
     }
   }
 }

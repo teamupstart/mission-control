@@ -10,6 +10,7 @@ export const BASE_URL: string;
 export const STATE_DIRS: readonly string[];
 export function stateDir(): string;
 export function migrateStateDir(): { from: string; to: string } | null;
+export function desktopVoiceEndpointPath(home?: string, port?: number): string;
 export function tokenPath(): string;
 export const MISSION_API_TOKEN_ENV: string;
 export const MISSION_API_TOKEN_FILE_ENV: string;

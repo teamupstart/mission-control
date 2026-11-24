@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { describe, it, before, after, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { getRequestListener } from "@hono/node-server";
+import { Hono } from "hono";
+
+import { nativeVoiceListener } from "../src/main/voice-listener.ts";
+import { ensureToken } from "../src/server/auth.ts";
+import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
+import { setVoiceConfig } from "../src/server/voice/config.ts";
+import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
+import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
+import { VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
 
 async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -17,7 +27,7 @@ async function until(condition: () => boolean, description: string, timeoutMs = 
   }
 }
 
-describe("Swift listener microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
+describe("voice listener subprocess protocol and Swift microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
   let dir: string;
   before(() => {
     dir = mkdtempSync(join(tmpdir(), "listener-lifecycle-"));
@@ -28,7 +38,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
@@ -81,7 +91,9 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await once(server, "listening");
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const child = spawn(join(dir, "listener"), [], { env: {
+    const executable = sherpa ? process.execPath : join(dir, "listener");
+    const args = sherpa ? ["--import", "tsx", "test/helpers/sherpa-protocol-fixture.ts"] : [];
+    const child = spawn(executable, args, { env: {
       ...process.env, VOICE_FIXTURE_PERMISSION: microphone, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
       MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: modelDir,
     } });
@@ -108,9 +120,100 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     }
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
-    apply(initial, "first", true);
+    apply(initial, "first", initialCapture);
     return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
   }
+
+  for (const backend of ["fluidaudio", "sherpa-onnx"]) {
+    it(backend + " waits through mute, primes the resumed roster and posts under the new capture revision", async t => {
+      const { nextPoll, apply, events, posted, hellos, instanceIds } = await launch(t, {
+        sherpa: backend === "sherpa-onnx", initialCapture: false, inputDevice: "two-utterances",
+      });
+      const muted = await nextPoll("first");
+      assert.deepEqual(posted, []);
+      apply(muted, "resumed", true, ["Steve"]);
+      await until(() => posted.length > 0, "fixture transcription to reach the daemon");
+      assert.ok(events.includes('prime ["Steve"]'));
+      assert.deepEqual(posted[0], { text: "first", revision: "resumed" });
+      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.0"));
+      assert.equal(instanceIds.size, 1);
+      assert.ok([...instanceIds][0]);
+    });
+  }
+
+  it("the managed Swift listener authenticates its daemon before delivering its first hello", async t => {
+    const endpointFile = join(dir, "desktop.json");
+    const tokenFile = join(dir, "desktop-token");
+    writeFileSync(tokenFile, ensureToken());
+    const previous = new AbortController();
+    await serveDesktopVoice(() => assert.fail("unused endpoint"), endpointFile, previous.signal);
+    const staleCertificate = JSON.parse(readFileSync(endpointFile, "utf8")).certificate;
+    previous.abort();
+
+    const received: string[] = [];
+    const current = new AbortController();
+    t.after(() => current.abort());
+    await serveDesktopVoice((req, res) => {
+      received.push(req.url!);
+      res.end("{}");
+    }, endpointFile, current.signal);
+    const endpoint = JSON.parse(readFileSync(endpointFile, "utf8"));
+    const run = async (certificate: string) => {
+      // A denial lets the real helper send its hello and exit without touching audio hardware.
+      const child = spawn(join(dir, "listener"), [], { env: {
+        ...process.env, VOICE_FIXTURE_PERMISSION: "denied", MISSION_VOICE_MODEL_DIR: dir,
+        MISSION_VOICE_TOKEN_FILE: tokenFile, MISSION_VOICE_DAEMON_CERT: certificate,
+        MISSION_VOICE_DAEMON_URL: "https://127.0.0.1:" + endpoint.port,
+      } });
+      await once(child, "close");
+    };
+    await run(staleCertificate);
+    assert.deepEqual(received, []);
+    await run(endpoint.certificate);
+    assert.deepEqual(received, ["/voice/listener/hello"]);
+  });
+
+  it("a reconnecting desktop supervisor reclaims its live lease only for its own replacement helper", async t => {
+    ensureToken();
+    for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
+    setVoiceConfig({ backend: "fluidaudio", muted: false });
+    const app = new Hono();
+    const starts: { id: string | undefined; status: number }[] = [];
+    let captures = 0;
+    app.use("/voice/listener/hello", async (c, next) => {
+      const { modelLoaded } = await c.req.raw.clone().json();
+      await next();
+      if (!modelLoaded) starts.push({ id: c.req.header("x-voice-listener-id"), status: c.res.status });
+    });
+    app.use("/voice/listener/directive", async (c, next) => {
+      await next();
+      if (!c.req.query("revision") && (await c.res.clone().json()).capture) captures++;
+    });
+    registerVoiceRoutes(app);
+    const endpointFile = join(dir, "reconnect.json");
+    const lifetime = new AbortController();
+    await serveDesktopVoice(getRequestListener(app.fetch), endpointFile, lifetime.signal);
+    const { port, certificate } = JSON.parse(readFileSync(endpointFile, "utf8"));
+    const endpoint = () => ({ origin: "https://127.0.0.1:" + port, certificate });
+    const desktop = nativeVoiceListener(join(dir, "listener"), endpoint);
+    const other = nativeVoiceListener(join(dir, "listener"), endpoint);
+    t.after(async () => { await Promise.all([desktop.stop(), other.stop()]); lifetime.abort(); });
+    const off = voiceStateOff();
+    const ready = { ...off, mode: "listening", model: { ...off.model, status: "ready", backend: "fluidaudio", directory: dir } } as const;
+    desktop.update(ready, true);
+    await until(() => captures === 1, "first Swift helper to acquire capture");
+    other.update(ready, true);
+    await until(() => starts.length >= 2, "competing helper's hello");
+    await other.stop();
+    assert.equal(starts[1]!.status, 409);
+    assert.notEqual(starts[1]!.id, starts[0]!.id);
+    desktop.update(off, false); // The shell stops its child on event stream loss.
+    desktop.update(ready, true); // A fresh snapshot from the same daemon restores it.
+    await until(() => starts.length >= 3, "replacement helper's hello");
+    assert.deepEqual(starts[2], starts[0]);
+    assert.equal(starts[2]!.status, 200);
+    await until(() => captures === 2, "replacement to acquire capture before lease expiry");
+  });
 
   it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {
     const { nextPoll, hellos, events, diagnostics, posted, child, closed } = await launch(t, { microphone: "not-determined" });

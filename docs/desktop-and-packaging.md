@@ -1019,3 +1019,16 @@ Electron's embedded Node runs shipped Mission hooks, MCP, statusline wrappers, P
 checks and resume guards. **Settings > Setup > Runtime** reports the serving daemon rather than
 inferring ownership from the connected window. External Node is an optional source/tool check.
 See the [consumer inventory, repair behavior and R2 checklist](owned-runtimes.md).
+
+## Desktop voice
+
+On macOS, Electron main follows the daemon's voice events across dashboard minimize, hide and
+reload. With the voice preview enabled, it reports the microphone permission and tray capability
+every five seconds. A verified FluidAudio model, permission to use the microphone and the
+packaged helper let the shell start one listener. A crash retries with increasing delays up to
+five seconds. Switching voice off, losing the model or quitting stops the owned process. On
+quit the shell waits for the listener before draining the daemon.
+
+The native tray retains the need-you count. While voice is on, left click toggles manual mute
+and right click opens the existing menu with voice status and a mute action. Switching voice
+off restores the standard image and click behavior. See [Voice addressing](voice.md).

@@ -118,6 +118,21 @@ export const VoiceConfigPatchSchema = z.object({
 }).partial().strict().refine((patch) => Object.keys(patch).length > 0, { message: "empty voice config update" });
 export type VoiceConfigPatch = z.infer<typeof VoiceConfigPatchSchema>;
 
+// Allow the existing one-minute delayed reservation to complete within a single edit.
+export const VOICE_PROVIDER_EDIT_TIMEOUT_MS = 75_000;
+export const VoiceProviderGestureSchema = z.object({ group: z.uuid(), order: z.int().positive() }).strict();
+export const VoiceProviderIntentSchema = z.object({
+  writer: z.uuid(),
+  observedRevision: z.string().min(1).max(80),
+  expiresAt: z.int().positive().optional(),
+  optOut: z.boolean().optional(),
+  edit: z.int().positive().optional(),
+  gesture: VoiceProviderGestureSchema.optional(),
+  observedIntent: z.string().min(1).max(128).optional(),
+  unchangedSince: z.string().min(1).max(80).optional(),
+}).strict();
+export type VoiceProviderIntent = z.infer<typeof VoiceProviderIntentSchema>;
+
 /** Apply a patch over a config: fields replace, and `cancelWindow` merges per key. */
 export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPatch): VoiceConfig {
   return VoiceConfigSchema.parse({
@@ -182,13 +197,14 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
-export interface VoiceListenerDirective {
-  capture: boolean;
-  roster: string[];
-  inputDevice: string;
-  pauseMs?: number | null;
-  revision: string;
-}
+export const VoiceListenerDirectiveSchema = z.object({
+  capture: z.boolean(),
+  roster: z.array(z.string()),
+  inputDevice: z.string(),
+  pauseMs: z.number().nullable().optional(),
+  revision: z.string().min(1),
+});
+export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
 
 /**
  * Why voice is unavailable, in the order they are reported.
@@ -277,6 +293,8 @@ export interface VoiceHotkeyError {
  * follow it.
  */
 export interface VoiceState {
+  /** Manual mute can also be set while the mode reads unavailable. */
+  muted?: boolean;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
    * Absent on the off state and on snapshots from older daemons. */
@@ -394,6 +412,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.mode,
     state.modeVersion?.source,
     state.modeVersion?.revision,
+    state.muted ?? false,
     state.reasons,
     capabilities,
     state.configuredHotkey,

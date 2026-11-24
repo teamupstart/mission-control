@@ -41,7 +41,7 @@ const daemon = createServer((req: IncomingMessage, res) => {
       if (mode === "call") return json({ id: "rev-c", sessionId: "s", wait: "call" });
       return json({ id: "rev-l", sessionId: "s" });
     }
-    if (path.startsWith("/mcp/reviews/") && path.endsWith("/wait")) {
+    if (path.startsWith("/mcp/reviews/") && path.endsWith("/wait?convertible=1")) {
       return json({
         id: path.split("/")[3], sessionId: "s", kind: "input", title: "Q", body: "Q", status: "answered",
         response: "Answered: eslint", createdAt: 1, resolvedAt: 2,
@@ -111,7 +111,7 @@ test("told call, or told nothing by an older daemon, request_input long-polls fo
     const outcome = await ask({ question: "Which linter?" });
     assert.equal(outcome.text, "Answered: eslint", told);
     assert.deepEqual(outcome.requests.map((r) => `${r.method} ${r.path.replace(/rev-[a-z]/, "ID")}`), [
-      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait",
+      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait?convertible=1",
     ], told);
     assert.equal(outcome.requests[0]!.body.meanwhile, undefined, "no meanwhile line was given");
   }
@@ -139,7 +139,7 @@ test("request_plan_decisions says it can take a receipt, returns it when told me
     const waited = await plan();
     assert.equal(waited.text, "Answered: eslint", told);
     assert.deepEqual(waited.requests.map((r) => `${r.method} ${r.path.replace(/rev-[a-z]/, "ID")}`), [
-      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait",
+      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait?convertible=1",
     ], told);
   }
   const { tools } = await client.listTools();

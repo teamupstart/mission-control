@@ -1,5 +1,5 @@
 import { settleReviewDeliverySteerEcho, type ReviewDeliveryRow } from "./db.ts";
-import type { DeliveryConversation, DeliveryLedger } from "./delivery-binding.ts";
+import { finishWalk, type DeliveryConversation, type DeliveryLedger } from "./delivery-binding.ts";
 import { injectionFingerprint } from "./injections.ts";
 
 /**
@@ -41,7 +41,12 @@ export function steerEchoOf(
   transcript: NonNullable<DeliveryConversation["transcript"]>,
 ): string | null | typeof STEER_ECHO_PENDING | typeof STEER_ECHO_UNREADABLE {
   if (row.steerEcho !== null) return row.steerEcho || null;
-  const settle = (echo: string | null): string | null => settleSteerEcho(row, echo);
+  const echo = finishWalk(readSteerEcho(row, transcript));
+  return typeof echo === "symbol" ? echo : settleSteerEcho(row, echo);
+}
+
+export function* readSteerEcho(row: ReviewDeliveryRow, transcript: NonNullable<DeliveryConversation["transcript"]>):
+Generator<void, string | null | typeof STEER_ECHO_PENDING | typeof STEER_ECHO_UNREADABLE> {
   let from = row.transcriptOffset ?? 0;
   let seen = false;
   try {
@@ -50,22 +55,23 @@ export function steerEchoOf(
       for (const m of page.messages) {
         if (!seen) {
           if (m.id !== row.messageId) continue;
-          if (!m.takenMidTurn) return settle(null);
+          if (!m.takenMidTurn) return null;
           seen = true;
           continue;
         }
-        if (m.role !== "user" || m.takenMidTurn || !m.text) return settle(null);
-        return settle(injectionFingerprint(m.text) === row.fingerprint ? m.id : null);
+        if (m.role !== "user" || m.takenMidTurn || !m.text) return null;
+        return injectionFingerprint(m.text) === row.fingerprint ? m.id : null;
       }
       if (page.atEnd || page.end <= from) break;
       from = page.end;
+      yield;
     }
   } catch {
     return STEER_ECHO_UNREADABLE;
   }
   // The bound turn was not found under its id (a parser that re-synthesizes ids): no echo is
   // credited on a guess. Found and last in the file: its echo may not be written yet.
-  return seen ? STEER_ECHO_PENDING : settle(null);
+  return seen ? STEER_ECHO_PENDING : null;
 }
 
 /**
@@ -84,6 +90,14 @@ export function settleSteerEchoesBeforeSend(
     if (!conversation.transcript) return;
     // A delivery whose turn has landed but that no reader has bound yet is bound first, so its
     // echo is decided too.
+    if (conversation.preparedHandoff) {
+      for (const row of ledger.rows(conversation.key)) {
+        if (row.steerEcho === null && conversation.preparedHandoff.reviewEchoes.has(row.id)) {
+          settleSteerEcho(row, conversation.preparedHandoff.reviewEchoes.get(row.id) ?? null);
+        }
+      }
+      return;
+    }
     ledger.bindLanded(conversation.key, conversation.transcript, Date.now());
     for (const row of ledger.rows(conversation.key)) {
       if (row.messageId === null || row.fingerprint !== fingerprint || row.steerEcho !== null) continue;

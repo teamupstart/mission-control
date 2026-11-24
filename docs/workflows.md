@@ -2844,7 +2844,9 @@ or merged PR also blocks if its source fork has been deleted.
 If the GitHub CLI returns partial GraphQL data with a field error, a matching
 PR's closed or merged state still blocks when the errors affect only source or timeline
 fields. On an open PR, a different valid head OID also blocks when the errors leave
-that field intact. Confirming a match requires a successful read with complete source and timeline evidence.
+that field intact. Missing or malformed head OIDs leave recovery pending, including
+when the GitHub CLI exits successfully. Confirming a match requires a successful read
+with complete source and timeline evidence.
 An unavailable read leaves the round available for the next
 evaluation. The insertion transaction also checks for a conversation transfer hold.
 Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.

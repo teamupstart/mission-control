@@ -237,15 +237,18 @@ export interface InspectorBranchActivity {
   refHistory: { prCreatedAt: number; anchorActivityId: number; anchorChangedAt: number; updatesChecked: number };
 }
 
+const refOid = z.string().regex(GIT_OBJECT_ID);
+const recoveryHeadOid = refOid.refine(oid => !/^0+$/.test(oid));
+
 const recoveryPullRequest = z.object({
   number: z.number().int(), state: z.enum(["open", "closed"]), created_at: z.iso.datetime(),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
-  head: z.object({ ref: z.string().min(1), sha: z.string().min(1),
+  head: z.object({ ref: z.string().min(1), sha: recoveryHeadOid,
     repo: z.object({ full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }) }),
 });
 
 const refUpdate = z.object({
-  id: z.number().int().positive(), ref: z.string(), before: z.string().min(1), after: z.string().min(1),
+  id: z.number().int().positive(), ref: z.string(), before: refOid, after: refOid,
   timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(), activity_type: z.string().optional(),
 }).transform((row, ctx) => {
   const timestamp = row.timestamp ?? row.pushed_at;
@@ -333,7 +336,7 @@ const recoveryPullSnapshot = z.object({
   }) }) }),
 });
 const openRecoverySource = z.object({
-  headRefName: z.string(), headRefOid: z.string(), headRepository: z.object({ nameWithOwner: z.string() }),
+  headRefName: z.string().min(1), headRepository: z.object({ nameWithOwner: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }),
   timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
 });
 
@@ -358,9 +361,9 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   }
   if (!matchesIdentity || base.pullRequest.state !== "OPEN") return false;
   // An identified PR can disprove the receipt even if its timeline or fork is unavailable.
-  const oid = base.pullRequest.headRefOid;
-  if (typeof oid === "string" && GIT_OBJECT_ID.test(oid) && oid !== expectedHead
-      && !errors?.some(({ path }) => path?.[2] === "headRefOid")) return false;
+  const oid = recoveryHeadOid.safeParse(base.pullRequest.headRefOid);
+  if (!oid.success || errors?.some(({ path }) => path?.[2] === "headRefOid")) return null;
+  if (oid.data !== expectedHead) return false;
   if (partial) return null;
   const source = openRecoverySource.safeParse(base.pullRequest);
   return source.success ? source.data : null;
@@ -382,7 +385,7 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
     if (pull === false) return false;
     if (!pull) return null;
     if (pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
-        || `refs/heads/${pull.headRefName}` !== ref || pull.headRefOid !== head || pull.timelineItems.pageInfo.hasNextPage) return false;
+        || `refs/heads/${pull.headRefName}` !== ref || pull.timelineItems.pageInfo.hasNextPage) return false;
     const [event] = pull.timelineItems.nodes;
     if (event?.id !== saved.data.verifiedForcePushId || (event && event.__typename !== "HeadRefForcePushedEvent")) return false;
     if (!tip.success) return null;
@@ -404,7 +407,7 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   let verifiedForcePushId: string | undefined;
   if (tip.activity_type === "force_push") {
     const snapshot = await readRecoveryTimeline(pr, tip.changedAt, expectedHead);
-    if (!snapshot || snapshot.headRefOid !== expectedHead || snapshot.headRefName !== source.head.ref
+    if (!snapshot || snapshot.headRefName !== source.head.ref
         || snapshot.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
         || snapshot.timelineItems.pageInfo.hasNextPage) return null;
     const event = forcePushEvent.safeParse(snapshot.timelineItems.nodes[0]);

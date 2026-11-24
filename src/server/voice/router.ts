@@ -1,6 +1,6 @@
 import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import { voiceCaptures, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
+import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
 
@@ -17,6 +17,7 @@ export interface PendingVoiceAction {
 
 const HISTORY_LIMIT = 50;
 const MAX_UNSURE_CARDS = 5;
+const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
@@ -47,7 +48,7 @@ export class VoiceRouter {
   private readonly recentIds = new Set<string>();
 
   constructor(
-    private readonly state: () => VoiceState,
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly publish: (card: VoiceCard) => void,
@@ -65,17 +66,21 @@ export class VoiceRouter {
   }
 
   async accept(utterance: VoiceUtterance): Promise<boolean> {
-    const { mode, roster } = this.state();
-    if (!voiceCaptures(mode)) return false;
+    const { mode, roster, backend } = this.state();
+    if (!voiceCaptures(mode) || backend !== utterance.backend) return false;
+    const now = Date.now();
+    if (utterance.capturedAt > now + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    // A small clock difference must not put an open action in the future of its own controls.
+    const capturedAt = Math.min(utterance.capturedAt, now);
     const { id } = utterance;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
     const unsureCards = Array.from(this.open.values())
-      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= utterance.capturedAt)
+      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= capturedAt)
       .map(({ card }) => card);
     const decision = routeUtterance(utterance, { roster, unsureCards });
-    const entry: HeardEntry = { id, time: utterance.capturedAt, text: utterance.text, outcome: "ignored",
+    const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (decision.kind === "ignored") {
@@ -87,10 +92,10 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const action = this.latestActionAt(utterance.capturedAt);
+        const action = this.latestActionAt(capturedAt);
         if (action) { entry.detail = action.id; action.cancel(); }
         else entry.rule = "nothing-pending";
-      } else if (!await this.pick(decision.cardId, decision.candidateId, utterance.capturedAt)) {
+      } else if (!await this.pick(decision.cardId, decision.candidateId, capturedAt)) {
         entry.outcome = "ignored";
         entry.rule = "candidate-unavailable";
       }
@@ -105,21 +110,23 @@ export class VoiceRouter {
       parts: [{ target: addressed ? { ...decision.target } : null, text: addressed ? decision.text : utterance.text }],
       candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
     };
-    await this.openCard({ card, entry, message: decision.text, command: decision.command }, utterance.capturedAt);
+    await this.openCard({ card, entry, message: decision.text, command: decision.command }, capturedAt);
     return true;
   }
 
   private async openCard(item: OpenCard, openedAt: number): Promise<void> {
     const { card, entry } = item;
-    if (card.state === "unsure") {
-      const unsure = this.activeCards().filter((open) => open.state === "unsure");
-      if (unsure.length >= MAX_UNSURE_CARDS) {
-        this.cancel(unsure[0]!.id, "Replaced by a newer unsure card.");
-      }
-    }
     this.open.set(card.id, item);
     this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt, cancel: () => this.cancel(card.id) });
     entry.outcome = card.state;
+    if (card.state === "unsure") {
+      const unsure = Array.from(this.open.values()).filter((item) => item.card.state === "unsure");
+      if (unsure.length > MAX_UNSURE_CARDS) {
+        const oldest = unsure.reduce((first, next) => next.entry.time < first.entry.time ? next : first);
+        this.cancel(oldest.card.id, "Replaced by a newer unsure card.");
+        if (oldest === item) return;
+      }
+    }
     if (card.state === "pending") {
       const window = this.window();
       if (!window.enabled) { await this.sendNow(card.id); return; }

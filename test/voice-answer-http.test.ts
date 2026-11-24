@@ -24,7 +24,7 @@ test("the deadline resolves through the human click path, correction restarts it
 
 test("a wall-clock jump during the countdown preserves a correction until its monotonic deadline", async t => {
   let wall = Date.now();
-  let elapsed = performance.now();
+  let elapsed = Math.floor(performance.now());
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.method(Date, "now", () => wall);
   t.mock.method(performance, "now", () => elapsed);
@@ -48,13 +48,15 @@ test("a wall-clock jump during the countdown preserves a correction until its mo
   assert.deepEqual(registry.getReview(q.id)?.selections?.[0]?.selected, ["sqlite"]);
 });
 
-test("window off resolves immediately, a competing human answer survives a late send", async () => {
+test("window off resolves immediately, a competing human answer survives a late send", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const first = question();
   await say("Steve, option B", "late");
   await post("/api/reviews/" + first.id + "/resolve", { action: "answer", response: "by click" });
   await act("late", "send-now");
   assert.equal(registry.getReview(first.id)?.response, "by click");
   assert.deepEqual(answers(), []);
+  t.mock.timers.tick(1);
   const next = question();
   await put("/api/voice/config", { cancelWindow: { enabled: false } });
   await say("Steve, option A");

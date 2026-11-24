@@ -99,6 +99,35 @@ test("answer and companion share a cancel slot, correction keeps its place even 
   assert.equal(registry.getReview(q.id)?.status, "answered");
 });
 
+test("a named answer captured before its question settles cannot target the remaining question", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const first = question();
+  const remaining = question("Which cache?");
+  await show([first.id, remaining.id], first.id);
+  t.mock.timers.tick(10);
+  const capturedAt = Date.now();
+  t.mock.timers.tick(10);
+  reviews.resolve(first.id, "dismiss", null);
+  const router = registry.voiceRouter!;
+  await router.accept({ id: "delayed-name", capturedAt, text: "Steve, option B", backend: "fluidaudio", words: [] });
+  assert.deepEqual(answers(), []);
+  const picker = router.activeCards().find(card => card.id === "delayed-name");
+  assert.deepEqual(picker?.candidates.map(candidate => candidate.id), [remaining.id]);
+  assert.equal(picker?.deadline, null);
+  t.mock.timers.tick(2000);
+  assert.equal(registry.getReview(remaining.id)?.status, "pending");
+  assert.deepEqual(queued("Steve"), []);
+  assert.equal((await act("delayed-name", "pick", { id: remaining.id })).status, 200);
+  await router.resolution("delayed-name");
+  assert.equal(answers()[0]?.reviewId, remaining.id);
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
+  await say("cancel");
+  await show([]);
+  await say("Steve, option A");
+  assert.equal(answers()[0]?.reviewId, remaining.id);
+});
+
 test("speech captured before the card opened and ordinary instructions about answering stay messages", async t => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
@@ -1014,6 +1043,7 @@ test("named choice and Other dictation use the focus confirmed for that utteranc
   assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
   await say("cancel");
   reviews.resolve(first.id, "dismiss", null);
+  t.mock.timers.tick(1); // This dictation starts after the original question closed.
   const dictation = speak("named-closed", "Steve, answer: a different database");
   await confirm([]);
   await dictation;

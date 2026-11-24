@@ -6,6 +6,7 @@ import type { VoiceDecider } from "./decide.ts";
 
 export interface VoiceQuestions {
   pending(): ReviewItem[];
+  closedSince(sessionId: string, capturedAt: number): ReviewItem[];
   resolve(answer: VoiceAnswer): Promise<boolean>;
   publish(reviewId: string, answer: VoiceAnswer | null): void;
   removeCompanion(id: string): void;

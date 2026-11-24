@@ -124,6 +124,34 @@ test("a prefilled picker choice is acknowledged and its answer appears in the co
   expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).status).toBe("pending");
 });
 
+test("a delayed named reply asks which question survived before showing its countdown", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const first = await file(page, daemon, steve.cwd, "When should the build start?");
+  const second = await file(page, daemon, steve.cwd, "When should the report run?");
+  await say(daemon, "Steve, answer");
+  await page.getByRole("status").getByRole("button", { name: /When should the build start/ }).click();
+  const modal = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(modal);
+  const original = modal.locator(".review").filter({ hasText: "When should the build start?" });
+  await expect(original).toBeFocused();
+  const capturedAt = Date.now();
+  await original.getByRole("textbox").fill("today");
+  await original.getByRole("button", { name: "Send answer" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + first)).json()).response).toBe("today");
+  if (await modal.isVisible()) await modal.getByRole("button", { name: /Close \(esc\)/ }).click();
+  await say(daemon, "Steve, answer: tomorrow", { capturedAt });
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await expect(picker).toBeVisible();
+  await expect(page.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).status).toBe("pending");
+  await picker.getByRole("button", { name: /When should the report run/ }).click();
+  const countdown = page.getByRole("status").filter({ hasText: "When should the report run?" });
+  await expect(countdown).toContainText("tomorrow");
+  await countdown.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).response).toBe("tomorrow");
+});
+
 for (const slowAgain of [false, true]) {
   test(slowAgain ? "overlapping clock bounds visibly request a repeat before starting a countdown"
     : "a slow outbound clock sample does not discard speech after the card opens", async ({ dashboard: page, daemon }) => {

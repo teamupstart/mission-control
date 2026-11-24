@@ -471,7 +471,10 @@ export class VoiceRouter {
       this.offerQuestions(item, pending, target, content, choiceCommand);
       return true;
     }
-    return this.routeAnswerContent(item, pending, content, choiceCommand, target).then(() => true);
+    // A question that closed during transcription still counts when interpreting
+    // whom the operator addressed. Only a live question can be picked or answered.
+    const candidates = target?.sessionId ? pending.concat(this.questions!.closedSince(target.sessionId, time.openedAt)) : pending;
+    return this.routeAnswerContent(item, candidates, content, choiceCommand, target).then(() => true);
   }
 
   private offerQuestions(item: OpenCard, pending: ReviewItem[], target: SpokenName, words: string, choiceCommand: boolean): void {
@@ -524,7 +527,7 @@ export class VoiceRouter {
       return;
     }
     if (!windows.length) {
-      if (target) this.offerQuestions(item, candidates, target, words, choiceCommand);
+      if (target) this.offerQuestions(item, candidates.filter(q => q.status === "pending"), target, words, choiceCommand);
       return;
     }
     const drawn = this.openCards.target(candidates, !!target);

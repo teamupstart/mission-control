@@ -25,7 +25,9 @@ export function RepositoryQueryHistory({ runId, review }: { runId: string; revie
     <header className="wf-run-section-head"><h4>Repository queries</h4><strong>{count} recorded</strong></header>
     {snapshot && <p>Latest submission snapshot <code>{snapshot.digest.slice(0, 12)}</code> · {snapshot.state} · {snapshot.retainedCommits} retained commits{snapshot.bounded && " · retained history boundary"}</p>}
     <p>{review.bytes} bytes · {count - review.denied - review.failed - review.cancelled} allowed · {review.denied} denied · {review.truncated} truncated · {review.failed} failed · {review.cancelled} cancelled</p>
-    {error && <p role="alert">{error} <button className="btn" onClick={() => setRetry(n => n + 1)}>Retry loading queries</button></p>}
+    {error && <p role="alert">{error} <Tooltip label="Load the requested page of repository queries again">
+      <button className="btn" onClick={() => setRetry(n => n + 1)}>Retry loading queries</button>
+    </Tooltip></p>}
     {page?.items.map(({ id, audit }) => <details key={id}>
       <Tooltip label="Inspect the snapshot, query timing and returned ranges"><summary>{audit.operation} · {audit.code ?? audit.status} · {audit.items} {audit.items === 1 ? "item" : "items"}{audit.truncated && " · truncated"} · snapshot <code>{audit.snapshotDigest.slice(0, 12)}</code></summary></Tooltip>
       <p>Snapshot <code style={{ overflowWrap: "anywhere" }}>{audit.snapshotDigest}</code></p>

@@ -8396,6 +8396,15 @@ export class WorkflowStore {
       .all(runId, nodeId)) as { id: string; generation: number }[];
   }
 
+  terminalRunRepositoryCancellations() {
+    return this.db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_llm_calls l ON l.id=w.id
+      JOIN workflow_runs r ON r.id=l.run_id
+      WHERE r.status IN ('completed','cancelled','failed') AND w.state IN ('cancellation_pending','interrupted')
+        AND NOT EXISTS (SELECT 1 FROM workflow_repository_local_owners o WHERE o.workload_id=w.id)`)
+      .all() as { id: string; generation: number }[];
+  }
+
   repositoryLocalOwner(id: string) {
     return this.db.prepare("SELECT * FROM workflow_repository_local_owners WHERE workload_id=?").get(id);
   }

@@ -549,6 +549,10 @@ export class WorkflowEngine {
     queueMicrotask(() => void this.pump());
   }
 
+  reconcileTerminalRepositoryWorkloads() {
+    return this.repositoryReview.reconcileTerminalRuns();
+  }
+
   /** Activate all structurally ready nodes from durable receipts before any provider call. */
   activateSubmission(submissionId: string): void {
     const submission = this.store.getSubmission(submissionId);

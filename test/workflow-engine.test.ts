@@ -3186,7 +3186,7 @@ test("recovery capture replays the inherited parent digest before and after star
   store.cancelRun(runId, "test complete", Date.now());
 });
 
-for (const restartState of ["cancellation_pending", "running", "interrupted"] as const)
+for (const restartState of ["cancellation_pending", "running", "interrupted", "cancelled run"] as const)
 test(`external repository workload left ${restartState} blocks retries across restart until confirmed terminal`, async (t) => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
@@ -3231,6 +3231,17 @@ test(`external repository workload left ${restartState} blocks retries across re
   assert.match(store.latestAttemptForNode(submissionId, "p")!.error!, /failed to confirm cancellation.*Provider cleanup offline/);
   assert.equal(prior()?.state, "cancellation_pending");
   assert.equal(launches.length, 1);
+  if (restartState === "cancelled run") {
+    store.cancelRun(runId, "Operator cancelled");
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "cancellation_pending");
+    oldState = "terminal";
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "failed");
+    assert.equal(store.getRun(runId)?.status, "cancelled");
+    assert.equal(launches.length, 1);
+    return;
+  }
   await engine.stop();
   // The same external job can survive an abrupt crash before cancellation, or a
   // previous daemon that classified it as interrupted without contacting the executor.

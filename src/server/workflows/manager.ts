@@ -169,6 +169,7 @@ import type { CheckAttemptRef } from "./check-runtime.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
+  discardWorkflowCandidate,
   compactWorkflowContext,
   classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
@@ -8317,10 +8318,7 @@ export class WorkflowManager {
         message: `Workflow evidence capture failed: ${message}`,
       };
     } finally {
-      if (candidate) {
-        try { await this.repositoryArtifacts.discard(candidate); }
-        catch (error) { workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) }); }
-      }
+      if (candidate) await discardWorkflowCandidate(this.repositoryArtifacts, candidate);
       if (releaseClaim) await this.repositoryArtifacts.release(submission.id);
     }
   }
@@ -8616,6 +8614,8 @@ export class WorkflowManager {
     if (this.retentionRunning) return;
     this.retentionRunning = true;
     try {
+      const cleanup = this.engine.reconcileTerminalRepositoryWorkloads();
+      if (cleanup) await cleanup;
       const result = (this.options.runRetention ?? runWorkflowRetention)(
         this.store,
         getWorkflowPolicy().retention,

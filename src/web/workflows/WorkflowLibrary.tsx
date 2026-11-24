@@ -1106,7 +1106,7 @@ export function WorkflowLibrary({
                   <button className="btn" ref={tourPublishRef} disabled={transitioning || workflowPublishBlocked({
                     dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict),
                     valid: retryingPublish || Boolean(validation?.valid), alreadyPublished: alreadyPublished && !retryingPublish,
-                    archived: workflow.archivedAt !== null, builtin: workflow.builtin,
+                    archived: workflow.archivedAt !== null && !retryingPublish, builtin: workflow.builtin,
                   })} onClick={() => void runTransition(async () => { await draft.publish(); })}>
                     {retryingPublish ? `Retry publish (revision ${draft.publishRetryRevision})` : "Publish"}
                   </button>

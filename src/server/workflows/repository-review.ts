@@ -41,7 +41,6 @@ type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "
   & { persona: import("@shared/workflow.ts").PersonaSnapshot };
 
 export class RepositoryReview {
-  private readonly cleanupExecutors = new Map<string, PersonaWorkloadExecutor>();
   private readonly recoveringLocal = new Map<string, Promise<void>>();
   private readonly local: LocalRepositoryWorkloadOwnership;
   constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {
@@ -58,19 +57,38 @@ export class RepositoryReview {
         await this.recoverLocal(id);
         continue;
       }
-      const executor = this.cleanupExecutors.get(id) ?? this.injected;
-      if (!executor) throw new Error(`Repository workload ${id} has not confirmed cleanup`);
-      const timeout = AbortSignal.timeout(cleanupTimeoutMs);
-      let status = await untilAbort(executor.reconcile(id, 0), timeout);
-      if (status?.workloadId === id && status.state === "running") {
-        await untilAbort(executor.cancel(id, generation), timeout);
-        status = await untilAbort(executor.reconcile(id, 0), timeout);
-      }
-      if (status?.workloadId !== id || status.state !== "terminal")
-        throw new Error(`Repository workload ${id} has not confirmed cleanup`);
-      this.store.confirmRepositoryCancellation(id, generation);
-      this.cleanupExecutors.delete(id);
+      await this.confirmExternalCancellation(id, generation);
     }
+  }
+
+  reconcileTerminalRuns(): Promise<void> | undefined {
+    if (!this.injected) return;
+    const pending = this.store.terminalRunRepositoryCancellations();
+    if (pending.length) return this.reconcileExternalCancellations(pending);
+  }
+
+  private async reconcileExternalCancellations(pending: { id: string; generation: number }[]) {
+    for (const { id, generation } of pending) {
+      try {
+        await this.confirmExternalCancellation(id, generation);
+      } catch {
+        workflowLog("warn", { event: "repository_workload_cleanup_pending", call: id });
+      }
+    }
+  }
+
+  private async confirmExternalCancellation(id: string, generation: number) {
+    const executor = this.injected;
+    if (!executor) throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+    const timeout = AbortSignal.timeout(cleanupTimeoutMs);
+    let status = await untilAbort(executor.reconcile(id, 0), timeout);
+    if (status.workloadId === id && status.state === "running") {
+      await untilAbort(executor.cancel(id, generation), timeout);
+      status = await untilAbort(executor.reconcile(id, 0), timeout);
+    }
+    if (status.workloadId !== id || status.state !== "terminal")
+      throw new Error(`Repository workload ${id} has not confirmed cleanup`);
+    this.store.confirmRepositoryCancellation(id, generation);
   }
 
   private recoverLocal(id: string): Promise<void> {
@@ -78,7 +96,6 @@ export class RepositoryReview {
     if (active) return active;
     const recovery = this.local.confirmClosed(id, WorkflowRepositoryArtifactService.forRoot(this.store)).then(() => {
       this.store.confirmLocalRepositoryCleanup(id);
-      this.cleanupExecutors.delete(id);
     }).finally(() => this.recoveringLocal.delete(id));
     this.recoveringLocal.set(id, recovery);
     return recovery;
@@ -228,7 +245,7 @@ export class RepositoryReview {
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
       if (!streamFinished || !terminal) cancel.abort();
       signal.removeEventListener("abort", stop);
-      await this.closeDispatch(id, executor, streamFinished ? undefined : events, stopping);
+      await this.closeDispatch(streamFinished ? undefined : events, stopping);
       if (!this.injected) await this.finishLocal(id, service);
       const accepted = this.store.finishRepositoryWorkload(id, generation, errorCode, !this.injected, () =>
         verdictJson !== undefined && !signal.aborted && Date.now() < input.deadline && Boolean(this.current(id)));
@@ -238,14 +255,13 @@ export class RepositoryReview {
     return verdictJson;
   }
 
-  private async closeDispatch(id: string, executor: PersonaWorkloadExecutor, events: AsyncIterator<PersonaWorkloadEvent> | undefined, stopping: Promise<void> | undefined) {
+  private async closeDispatch(events: AsyncIterator<PersonaWorkloadEvent> | undefined, stopping: Promise<void> | undefined) {
     const close = async () => {
       if (events?.return) await untilAbort(events.return(), AbortSignal.timeout(cleanupTimeoutMs));
     };
     const cleanup = await Promise.allSettled([stopping, close()]);
     for (const result of cleanup) {
       if (result.status === "rejected") {
-        this.cleanupExecutors.set(id, executor);
         throw result.reason;
       }
     }

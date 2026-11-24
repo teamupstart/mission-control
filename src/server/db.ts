@@ -329,7 +329,8 @@ let db: DatabaseSync | undefined;
 // 54: content-addressed repository artifacts, durable cleanup intent and submission claims.
 //     Historical submissions acquire no claim. Readiness is checked on first activation.
 // 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 55;
+// 56: unique identities for spoken outbox claims before runtime handoff.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 56;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3903,6 +3904,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_claim_id", "TEXT");
   addColumn(d, "pending_turns", "spoken_requires_guard", "INTEGER");
   addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
@@ -15511,13 +15513,15 @@ export function createPendingTurn(input: {
   }
 }
 
+export type ClaimedPendingTurn = PendingTurn & { spokenClaimId: string | null };
+
 /** Claim the FIFO head or an explicitly selected row, never past an unresolved delivery. */
 export function claimNextPendingTurn(
   noteKey: string,
   now: number,
   selected?: { id: string; revision: number },
   composeSpoken?: (words: string) => string,
-): PendingTurn | null {
+): ClaimedPendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
@@ -15548,16 +15552,17 @@ export function claimNextPendingTurn(
       row.text = composeSpoken(row.spoken_words);
       row.composed_at = now;
     }
+    const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d
       .prepare(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
-                claimed_at = ?, last_error = NULL, text = ?, composed_at = ?,
+                claimed_at = ?, spoken_claim_id = ?, last_error = NULL, text = ?, composed_at = ?,
                 spoken_requires_guard = CASE WHEN spoken_words IS NOT NULL THEN 1 END,
                 spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_handoff_at = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
-      .run(now, now, row.text, row.composed_at, row.id, row.revision).changes;
+      .run(now, now, spokenClaimId, row.text, row.composed_at, row.id, row.revision).changes;
     if (changed !== 1) {
       d.exec("ROLLBACK");
       return null;
@@ -15569,6 +15574,7 @@ export function claimNextPendingTurn(
       revision: row.revision + 1,
       updatedAt: now,
       claimedAt: now,
+      spokenClaimId,
       lastError: null,
     };
   } catch (err) {
@@ -15712,16 +15718,16 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
   );
 }
 
-type SpokenClaim = Pick<PendingTurn, "id" | "revision" | "createdAt" | "claimedAt">;
+type SpokenClaim = Pick<ClaimedPendingTurn, "id" | "revision" | "spokenClaimId">;
 // A capture can be replayed with the same id and revision. A refusal before the guard
 // applies only to the sending row originally claimed, while it still has no handoff.
-const unreservedSpokenClaim = `id = ? AND state = 'sending' AND revision = ? AND created_at = ? AND claimed_at IS ?
+const unreservedSpokenClaim = `id = ? AND state = 'sending' AND revision = ? AND spoken_claim_id = ?
   AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`;
 
 export function releaseUnreservedSpokenClaim(turn: SpokenClaim, error: string, now: number): PendingTurn | null {
   return inTransaction(() => {
-    const { id, revision, createdAt, claimedAt } = turn;
-    if (!openDb().prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, createdAt, claimedAt)) return null;
+    const { id, revision, spokenClaimId } = turn;
+    if (!openDb().prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) return null;
     const row = releasePendingTurn(id, revision, error, now);
     if (!row) throw new Error("The spoken refusal was not saved");
     return row;
@@ -15732,13 +15738,13 @@ export function releaseUnreservedSpokenClaim(turn: SpokenClaim, error: string, n
 export function failSpokenPreparation(turn: SpokenClaim, now: number, retryDetail: string):
   { noteKey: string; exhausted: boolean } | null {
   return inTransaction(() => {
-    const { id, revision, createdAt, claimedAt } = turn;
+    const { id, revision, spokenClaimId } = turn;
     const d = openDb();
     const row = d.prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
-      WHERE ${unreservedSpokenClaim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, createdAt, claimedAt) as
+      WHERE ${unreservedSpokenClaim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, spokenClaimId) as
       { noteKey: string; failures: number } | undefined;
     if (!row) {
-      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, createdAt, claimedAt)) {
+      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) {
         throw new Error("Could not record the failed spoken preparation");
       }
       return null;

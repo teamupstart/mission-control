@@ -16,6 +16,7 @@ import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
+  type ClaimedPendingTurn,
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
@@ -1067,7 +1068,7 @@ export class PendingTurnManager {
       return;
     }
     this.draining.add(key);
-    let turn: PendingTurn | null = null;
+    let turn: ClaimedPendingTurn | null = null;
     try {
       turn = claimNextPendingTurn(key, this.deps.now(), next.turn, words => spokenMessageText(words, {
         openQuestions: openQuestionsNote(this.registry.outstandingReviews(session.id).filter(isAgentAsk)),
@@ -1132,14 +1133,14 @@ export class PendingTurnManager {
     }
   }
 
-  private spokenPreparationFailed(turn: PendingTurn, settlementFailures = 0): void {
+  private spokenPreparationFailed(turn: ClaimedPendingTurn, settlementFailures = 0): void {
     const now = this.deps.now();
     let result: ReturnType<typeof failSpokenPreparation>;
     try {
       result = failSpokenPreparation(turn, now, SPOKEN_PROOF_RETRY);
     } catch (error) {
       console.warn(`[pending-turns] could not settle failed spoken preparation for ${turn.id}:`, errorMessage(error));
-      if (!this.stopped) this.retrySettlement(`preparation:${turn.id}:${turn.claimedAt}:${turn.revision}`, settlementFailures,
+      if (!this.stopped) this.retrySettlement(`preparation:${turn.spokenClaimId}`, settlementFailures,
         () => this.spokenPreparationFailed(turn, settlementFailures + 1));
       return;
     }
@@ -1239,7 +1240,7 @@ export class PendingTurnManager {
    */
   private announceTurn(
     session: Session,
-    turn: PendingTurn,
+    turn: ClaimedPendingTurn,
     author: TurnOrigin | null,
   ): { personSend: PersonDelivery | null } | null {
     try {
@@ -1256,7 +1257,7 @@ export class PendingTurnManager {
     }
   }
 
-  private async deliverSdk(session: Session, turn: PendingTurn, steer: boolean, prepared?: PreparedSpokenTranscript): Promise<void> {
+  private async deliverSdk(session: Session, turn: ClaimedPendingTurn, steer: boolean, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said BEFORE the send, because the prompt hook can report them back
     // while the send is still in flight (see `reserveInjection`). First of all, so one refused
     // for its attribution leaves nothing else to undo. The operator's own words are always the
@@ -1440,7 +1441,7 @@ export class PendingTurnManager {
     }
   }
 
-  private async deliverTerminal(session: Session, turn: PendingTurn, prepared?: PreparedSpokenTranscript): Promise<void> {
+  private async deliverTerminal(session: Session, turn: ClaimedPendingTurn, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said first and withdrawn as `deliverSdk` does.
     const author = daemonAuthorOf(turn);
     const announced = this.announceTurn(session, turn, author);
@@ -1825,7 +1826,7 @@ export class PendingTurnManager {
   }
 
   /** Retry only the bookkeeping for a known refusal. The handoff UUID or original unreserved claim fences a replay. */
-  private releaseRefused(turn: PendingTurn, send: OutboxSend | null, detail: string, failures = 0): void {
+  private releaseRefused(turn: ClaimedPendingTurn, send: OutboxSend | null, detail: string, failures = 0): void {
     const reservationId = send?.kind === "spoken" ? send.reservationId : null;
     let released: PendingTurn | null;
     try {
@@ -1835,7 +1836,7 @@ export class PendingTurnManager {
     } catch (error) {
       if (turn.spokenWords === undefined) throw error;
       console.warn(`[pending-turns] could not record spoken refusal for ${turn.id}:`, errorMessage(error));
-      const key = reservationId ?? `refusal:${turn.id}:${turn.createdAt}:${turn.claimedAt}:${turn.revision}`;
+      const key = reservationId ?? `refusal:${turn.spokenClaimId}`;
       if (!this.stopped) this.retrySettlement(key, failures, () => this.releaseRefused(turn, send, detail, failures + 1));
       return;
     }

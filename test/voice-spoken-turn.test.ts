@@ -743,6 +743,49 @@ test("a rewritten terminal record that reuses a native ID cannot present an earl
   assert.deepEqual(original?.presentation, { kind: "spoken", displayText: "second instruction", received: "second instruction" });
 });
 
+test("unrelated appends do not rescan the suffix of an unmatched spoken receipt", async t => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-unmatched-appends-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "unmatched-append-cost";
+  const path = join(dir, key + ".jsonl");
+  const now = Date.now();
+  const words = "inspect the build";
+  const line = (uuid: string, text: string, ts = now) => JSON.stringify({ type: "user", uuid,
+    timestamp: new Date(ts).toISOString(), message: { role: "user", content: text } }) + "\n";
+  writeFileSync(path, line("prefix", "handoff boundary", now - 1));
+  const read = claudeTranscript.messages!;
+  const conversation = { key, transcript: { path, read } };
+  const attempt = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(conversation, words, words, false, attempt, now);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+  const history = Array.from({ length: 500 }, (_, i) => line("history-" + i, "x".repeat(4096))).join("");
+  appendFileSync(path, history);
+  const nativeAfter = read.after.bind(read);
+  let scanBytes = 0;
+  t.mock.method(read, "after", (...args: Parameters<typeof read.after>) => {
+    const page = nativeAfter(...args);
+    scanBytes += page.end - page.start;
+    return page;
+  });
+  for (let i = 0; i < 4; i++) {
+    const from = statSync(path).size;
+    appendFileSync(path, i === 2 ? line("old-words", words, now - 1) : line("new-" + i, "unrelated progress"));
+    const frame = nativeAfter(path, from);
+    spokenLedger.retryDeferredBindings(conversation);
+    assert.equal(spokenLedger.bound(conversation, frame.messages).rows.size, 0);
+  }
+  t.diagnostic(`Unmatched suffix: ${Buffer.byteLength(history)} bytes. Receipt scan across four unrelated appends: ${scanBytes} bytes.`);
+  assert.equal(scanBytes, 0);
+  // A visible later repeat still requires the first eligible record, including one outside the page.
+  appendFileSync(path, line("first-match", words));
+  const beforeRepeat = statSync(path).size;
+  appendFileSync(path, line("later-repeat", words));
+  assert.equal(spokenLedger.bound(conversation, nativeAfter(path, beforeRepeat).messages).rows.size, 0);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "first-match");
+});
+
 test("a rewritten transcript suffix is searched again from the confirmed spoken handoff", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");

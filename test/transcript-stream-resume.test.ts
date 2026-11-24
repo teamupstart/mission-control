@@ -280,7 +280,7 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const { sessionMessages } = await import("../src/server/harness/index.ts");
   const { noteKeyFor } = await import("../src/server/registry.ts");
-  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
   const db = await import("../src/server/db.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
   t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
@@ -291,6 +291,15 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   const claim = db.claimNextPendingTurn(key, now, queued, () => words)!;
   const receipt = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, true, 0, now)!;
   assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+
+  // The byte cursor and an independently unbound text receipt share this live feed.
+  const native = sessionMessages(session)!;
+  const missing = "an instruction the runtime has not written";
+  const outbox = db.createPendingTurn({ id: "stream-unmatched-terminal", noteKey: key, spokenWords: missing, text: missing, now });
+  const textClaim = db.claimNextPendingTurn(key, now, outbox, s => s)!;
+  const prepared = await prepareSpokenTranscript(key, native);
+  const waiting = reserveSpokenHandoff({ key, session, transcript: native }, textClaim, missing, false, 0, now, prepared)!;
+  assert.ok(db.retireDeliveredPendingTurn(textClaim.id, textClaim.revision, now, waiting.id));
 
   const padding = JSON.stringify({ padding: "x".repeat(2 * 1024 * 1024) }) + "\n";
   writeFileSync(path, padding + turn("original", "ORIGINAL"));
@@ -325,6 +334,7 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   const prototype: FileHandle = Object.getPrototypeOf(handle);
   await handle.close();
   const reads = t.mock.method(prototype, "read");
+  const scans = t.mock.method(native.read, "after");
   const second = turn("two", "SECOND");
   const writes = [turn("one", "FIRST") + second.slice(0, -2), second.slice(-2), turn("three", "THIRD")];
   for (const [i, write] of writes.entries()) {
@@ -336,6 +346,7 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   }
   const bytesRead = (await Promise.all(reads.mock.calls.map(call => call.result))).reduce((n, r) => n + r!.bytesRead, 0);
   t.diagnostic(`Historical transcript ${opening.pos} bytes; three appends ${writes.join("").length} bytes; cursor file reads ${bytesRead} bytes`);
+  assert.equal(scans.mock.callCount(), 0, "the unmatched spoken receipt starts no suffix scans on append frames");
   assert.ok(bytesRead < 64 * 1024, "three small appends have a bounded cursor read budget");
 
   // An unchanged length with a new revision and a larger replacement inode both reseed immediately.

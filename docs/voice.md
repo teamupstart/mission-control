@@ -127,7 +127,9 @@ unreadable, or changes during the scan, cleanup tries again on a later sweep.
 A terminal delivery records the native file identity and a digest of the bytes through its delivery
 offset. A worker hashes the history before the paste. The daemon checks the file revision and
 the outbox claim at handoff. A matching native turn must have a timestamp at or after handoff,
-and the saved prefix must still belong to the file. SDKs that accept client message IDs use that receipt.
+and the saved prefix must still belong to the file. Opening or updating a conversation searches
+for an unbound receipt only when the displayed records could contain it. A later copy still
+checks the history from handoff so the first eligible turn keeps its disclosure. SDKs that accept client message IDs use that receipt.
 
 A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
 one final binding pass and deletes the payload if it still has no match. If the transcript stays

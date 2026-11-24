@@ -214,10 +214,12 @@ function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
   return claimed.has(message.id) || (message.clientMessageId !== undefined && claimed.has(message.clientMessageId));
 }
 
+type SpokenCandidate = (row: BindableDelivery) => boolean;
+
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
-function bindAll(conversation: DeliveryConversation, now: number, requireReadable = false): void {
+function bindAll(conversation: DeliveryConversation, now: number, requireReadable = false, candidate?: SpokenCandidate): void {
   if (!conversation.transcript) return;
-  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, requireReadable);
+  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, requireReadable, candidate);
 }
 
 /** What `withdrawOtherSend` needs to take one send back. */
@@ -459,7 +461,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   }
 
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
-  bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false): void {
+  bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false, candidate?: SpokenCandidate): void {
     const rows = this.rows(noteKey);
     let version: string | undefined;
     if (rows.length && this.store.textBoundary) {
@@ -467,14 +469,20 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       if (!version || this.scanVersions.get(noteKey) !== version) {
         // Native files can rewrite a suffix without changing size. Offsets, expiry and
         // timestamp uniqueness were all observed in the previous revision.
-        for (const row of rows) this.forgetScan(row.id);
+        for (const row of rows) {
+          // A visible candidate awaiting a failed write is still owed on a quiet feed.
+          this.scanned.delete(row.id);
+          this.verifiedTextRows.delete(row.id);
+          this.expired.delete(row.id);
+          this.twins.delete(row.id);
+        }
         if (version) this.scanVersions.set(noteKey, version);
         else this.scanVersions.delete(noteKey);
       }
     }
-    if (rows.some((row) => row.messageId === null && !row.contested && (row.transcriptOffset !== null || this.store.newTranscriptAfter))) {
-      this.bindPending(rows, transcript, now, requireReadable, version);
-    }
+    const pending = rows.filter(row => row.messageId === null && !row.contested &&
+      (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !candidate || candidate(row)));
+    if (pending.length) this.bindPending(pending, transcript, now, requireReadable, version);
   }
 
   /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
@@ -486,9 +494,11 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
   retryDeferredBindings(conversation: DeliveryConversation): void {
     this.flushClientObservations(conversation.key);
-    const cached = this.cache.get(conversation.key);
-    if (!cached || (this.deferredBindings.size && cached.some(row => this.deferredBindings.has(row.id)))) {
-      bindAll(conversation, Date.now());
+    if (!this.deferredBindings.size) return;
+    const pending = this.rows(conversation.key).filter(row => this.deferredBindings.has(row.id));
+    if (pending.length) {
+      const fingerprints = new Set(pending.map(row => row.fingerprint));
+      bindAll(conversation, Date.now(), false, row => fingerprints.has(row.fingerprint));
     }
   }
 
@@ -688,7 +698,24 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     if (!conversation) return result;
     const rows = this.rows(conversation.key);
     if (!rows.length) return result;
-    bindAll(conversation, now);
+    // Projection only needs spoken receipts that could own a turn on this page. A
+    // candidate still searches forward from handoff, so a later visible copy cannot
+    // steal an earlier native turn off screen. Reservations and pruning reconcile all rows.
+    let times: Map<string, number[]> | undefined;
+    bindAll(conversation, now, false, row => {
+      if (!times) {
+        times = new Map();
+        const claimed = claimedTurns(conversation.key);
+        for (const m of messages) {
+          if (m.role !== "user" || !m.text || isClaimed(m, claimed)) continue;
+          const fingerprint = injectionFingerprint(m.text);
+          const seen = times.get(fingerprint);
+          if (seen) seen.push(m.ts);
+          else times.set(fingerprint, [m.ts]);
+        }
+      }
+      return times.get(row.fingerprint)?.some(ts => ts >= row.deliveredAt && ts - row.deliveredAt <= DELIVERY_LAG_MS) ?? false;
+    });
     const fingerprints = new Set(rows.map((row) => row.fingerprint));
     // Deliveries that cannot be bound - contested, or sent without a known boundary. A turn with
     // their words written inside one's window could be that delivery, so no sender may be named

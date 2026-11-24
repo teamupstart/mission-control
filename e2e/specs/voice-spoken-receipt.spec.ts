@@ -112,6 +112,30 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     } finally {
       clearInterval(writer);
     }
+    // The runtime has already confirmed this turn. A later binding must change the
+    // existing frame even if the file never changes again and no one reopens the view.
+    withDaemonDb(daemon, db => db.exec(`CREATE TRIGGER delay_native_binding BEFORE UPDATE OF message_id ON session_spoken_turns
+      WHEN NEW.message_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'native binding delayed'); END`));
+    const lateWords = "inspect the final build";
+    expect(await (await say(daemon, "Steve, " + lateWords)).json()).toEqual({ accepted: true });
+    await expect.poll(() => pane.turns().find(text => text.startsWith(lateWords)), { timeout: 30_000 }).toContain("post a report");
+    const latePayload = pane.turns().find(text => text.startsWith(lateWords))!;
+    await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
+      "SELECT runtime_confirmed_at FROM session_spoken_turns WHERE spoken_words = ?").get(lateWords)?.runtime_confirmed_at)).toBeTruthy();
+    appendFileSync(path, line("late-native-binding", latePayload));
+    const late = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: lateWords });
+    await expect(late).toContainText("When you have finished this, post a report.");
+    await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
+    withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_native_binding"));
+    await expect(late.getByText("Spoken", { exact: true })).toBeVisible();
+    await late.getByText("What the agent received", { exact: true }).click();
+    await expect(late.locator(".review-received-text")).toHaveText(latePayload);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = artifactsDir("voice-spoken-late-binding");
+      mkdirSync(dir, { recursive: true });
+      await dashboard.mouse.move(0, 0);
+      await late.screenshot({ path: join(dir, "bound.png") });
+    }
   } finally {
     pane.cleanup();
   }

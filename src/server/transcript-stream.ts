@@ -18,6 +18,7 @@ import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
 import { spokenTranscriptState } from "./db.ts";
+import { spokenLedger } from "./delivery-ledgers.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import type { TranscriptStreamRead } from "./harness/types.ts";
 
@@ -175,17 +176,23 @@ export function transcriptStreamHandler(registry: Registry) {
       const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
         const captured = await capture(state, null, end => read.initial(path, end));
         const init = captured.frame;
+        const project = () => titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation()));
+        const messages = project();
+        // Any ledger consulted during projection can finish a binding. When the token advances,
+        // project again against that token before promising it to the reader.
+        const decorated = state ? spokenState() : state;
+        const changed = decorated?.receipt !== state?.receipt;
         await send({
           type: "init",
-          messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
+          messages: changed ? project() : messages,
           start: init.start, atStart: init.atStart, pos: init.pos,
-          ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(captured.cursor && { spokenCursor: captured.cursor }),
-          ...(refreshSpoken && { refreshSpoken: true }),
+          ...(voice && { spokenReceipt: decorated?.receipt ?? null }), ...(captured.cursor && { spokenCursor: captured.cursor }),
+          ...((refreshSpoken || changed) && { refreshSpoken: true }),
         });
         pos = init.pos;
         cursor = captured.cursor;
         revision = captured.revision;
-        spoken = state;
+        spoken = decorated;
       };
       try {
         const from = resumeFrom();
@@ -225,6 +232,8 @@ export function transcriptStreamHandler(registry: Registry) {
           sinceHeartbeat = 0;
         }
         try {
+          const target = spoken && conversation();
+          if (target) spokenLedger.retryDeferredBindings(target);
           const current = spokenState();
           if (current?.receipt !== spoken?.receipt) {
             await sendWindow(current, true);

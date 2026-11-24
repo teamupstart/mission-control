@@ -496,6 +496,37 @@ test("confirmed text-only payloads expire after the binding window while native 
   assert.ok(surviving.every(row => row.received.includes("One unseen report.")));
 });
 
+test("a late native binding advances attribution past a newer receipt after the writer goes quiet", async t => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const key = "deferred-native-binding";
+  const fake = fakeTranscript();
+  const convo = fake.conversation(key);
+  const native = convo.transcript!;
+  const now = Date.now();
+  for (const words of ["first instruction", "newer instruction"]) {
+    const attempt = claimSpoken(key, words, words);
+    const reservation = reserveSpokenTurn(convo, words, words, false, attempt, now);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, reservation.id));
+  }
+  const confirmed = db.spokenTranscriptState(key)?.receipt;
+  const first = fake.append("native-first", "first instruction", now);
+  const after = native.read.after.bind(native.read);
+  t.mock.method(native.read, "after", (...args: Parameters<typeof after>) => {
+    const page = after(...args);
+    fake.append("growth", "concurrent output", now + 1);
+    return page;
+  }, { times: 1 });
+  spokenLedger.bindLanded(key, native, now);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+  assert.equal(db.spokenTranscriptState(key)?.receipt, confirmed);
+  spokenLedger.retryDeferredBindings(convo);
+  const bound = db.spokenTranscriptState(key)?.receipt;
+  assert.ok(bound && bound !== confirmed);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, first.id);
+  db.closeDb();
+  assert.equal(db.spokenTranscriptState(key)?.receipt, bound);
+});
+
 test("cleanup retries an unreadable prefix before deciding whether a matching terminal turn owns its disclosure", async () => {
   const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");

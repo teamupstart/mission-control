@@ -13386,10 +13386,15 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
     WHERE id = ? AND message_id = id AND message_ts IS NULL`).run(messageTs, id);
 }
 
-/** A stream cursor covers file bytes. This receipt identifies changes to attribution behind that cursor. */
+// Runtime confirmation and native text binding can land in different transactions, in any
+// turn order. Each change gets a new position in the conversation's durable attribution history.
+const nextSpokenAttributionOrder = `(SELECT COALESCE(MAX(other.text_receipt_order), 0) + 1
+  FROM session_spoken_turns other WHERE other.note_key = session_spoken_turns.note_key AND other.text_receipt_order IS NOT NULL)`;
+
+/** A stream cursor covers file bytes. This opaque receipt also changes when a native turn binds. */
 export function spokenTranscriptState(noteKey: string): { receipt: string | null } | null {
   // A reserved SDK UUID can already be displayed before a text-only handoff ever occurs.
-  const row = openDb().prepare(`SELECT (SELECT id FROM session_spoken_turns WHERE note_key = ?
+  const row = openDb().prepare(`SELECT (SELECT id || ':' || text_receipt_order FROM session_spoken_turns WHERE note_key = ?
     AND text_receipt_order IS NOT NULL ORDER BY text_receipt_order DESC, rowid DESC LIMIT 1) AS receipt
     FROM session_spoken_turns WHERE note_key = ? LIMIT 1`).get(noteKey, noteKey);
   return row ? { receipt: row.receipt as string | null } : null;
@@ -13435,7 +13440,7 @@ export function bindSpokenTurn(id: string, messageId: string, messageTs: number)
   // A text-only match needs a positive runtime receipt for this attempt. Check it on the write
   // as well as the read: a cached reservation can outlive a retry, discard, or manual settlement.
   const result = openDb().prepare(
-    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?
+    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?, text_receipt_order = ${nextSpokenAttributionOrder}
       WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NOT NULL`,
   ).run(messageId, messageTs, id);
   return Number(result.changes) > 0;
@@ -15618,8 +15623,7 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
       if (reservationId !== null) {
         // Only a text-only reservation needs a receipt before its already-streamed native turn can bind.
         d.prepare(`UPDATE session_spoken_turns SET runtime_confirmed_at = ?, text_receipt_order = CASE WHEN message_id IS NULL THEN
-          (SELECT COALESCE(MAX(other.text_receipt_order), 0) + 1 FROM session_spoken_turns other
-           WHERE other.note_key = session_spoken_turns.note_key AND other.text_receipt_order IS NOT NULL) END
+          ${nextSpokenAttributionOrder} END
           WHERE id = ?`).run(deliveredAt, reservationId);
       }
       // If the receiving cycle completed before acknowledgement (or during a retire retry),

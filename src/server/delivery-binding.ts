@@ -308,6 +308,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   private readonly scanned = new Map<string, number>();
   /** Spoken scan progress is reusable only in the file revision that supplied its bytes. */
   private readonly scanVersions = new Map<string, string>();
+  /** A native candidate was visible, but its read or binding could not finish on this revision. */
+  private readonly deferredBindings = new Set<string>();
   /** Rows whose window closed with no turn of theirs: never scanned again this process. */
   private readonly expired = new Set<string>();
   /**
@@ -347,6 +349,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   private forgetScan(id: string): void {
     this.scanned.delete(id);
+    this.deferredBindings.delete(id);
     this.expired.delete(id);
     this.twins.delete(id);
   }
@@ -357,6 +360,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     this.cache.clear();
     this.scanned.clear();
     this.scanVersions.clear();
+    this.deferredBindings.clear();
     this.expired.clear();
     this.twins.clear();
   }
@@ -472,6 +476,14 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     bindAll({ key: noteKey, transcript }, now, true);
   }
 
+  /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
+  retryDeferredBindings(conversation: DeliveryConversation): void {
+    const cached = this.cache.get(conversation.key);
+    if (!cached || (this.deferredBindings.size && cached.some(row => this.deferredBindings.has(row.id)))) {
+      bindAll(conversation, Date.now());
+    }
+  }
+
   private contest(row: Row, contested = true): void {
     this.store.contest(row.id, contested);
     row.contested = contested;
@@ -519,6 +531,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // count, so a turn another table already bound is never bound again here.
     const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
     for (const row of rows) {
+      this.deferredBindings.delete(row.id);
       if (row.messageId !== null || row.contested || this.expired.has(row.id)) continue;
       if (row.transcriptOffset === null) {
         const createdAfter = this.store.newTranscriptAfter?.(transcript, row.deliveredAt);
@@ -546,6 +559,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           from = page.end;
         }
       } catch (err) {
+        if (this.store.textBoundaryIntact) this.deferredBindings.add(row.id);
         if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
@@ -560,11 +574,13 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         if (this.store.textBoundaryIntact) {
           const intact = this.store.textBoundaryIntact(row, transcript);
           const stable = version && transcript.read.snapshot?.(transcript.path)?.version === version;
+          if (intact === null || !stable) this.deferredBindings.add(row.id);
           if (requireReadable && (intact === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
           if (!stable || !intact) continue;
         }
         if (!this.store.bind(row.id, found.id, found.ts)) continue;
       } catch (err) {
+        if (this.store.textBoundaryIntact) this.deferredBindings.add(row.id);
         if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;

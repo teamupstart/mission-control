@@ -215,8 +215,8 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   const refreshed = await firstFrame("?from=" + early.pos);
   assert.ok(refreshed.type === "init" && refreshed.refreshSpoken);
   assert.deepEqual(refreshed.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
-  assert.equal(refreshed.spokenReceipt, reservation.id);
-  const cursorQuery = "?from=" + early.pos + "&spokenReceipt=" + reservation.id + "&spokenCursor=" + refreshed.spokenCursor;
+  assert.equal(refreshed.spokenReceipt, db.spokenTranscriptState(key)?.receipt);
+  const cursorQuery = "?from=" + early.pos + "&spokenReceipt=" + refreshed.spokenReceipt + "&spokenCursor=" + refreshed.spokenCursor;
   const current = await firstFrame(cursorQuery);
   assert.ok(current.type === "resume");
   assert.deepEqual(current.messages, []);

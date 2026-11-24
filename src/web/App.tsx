@@ -1075,8 +1075,22 @@ export function App(): React.JSX.Element {
   const topbarRef = useRef<HTMLElement>(null);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
-    if (el) sessionEls.current.set(id, el);
-    else sessionEls.current.delete(id);
+    if (el) {
+      sessionEls.current.set(id, el);
+      return;
+    }
+    const previous = sessionEls.current.get(id);
+    sessionEls.current.delete(id);
+    const idleSectionRow = ".has-idle-sections .rail-row";
+    if (previous !== document.activeElement || !previous?.matches(idleSectionRow)) return;
+    // A status update can remount a session under a different heading. Let React attach
+    // the replacement ref and keep any focus the operator has already moved elsewhere.
+    queueMicrotask(() => {
+      const replacement = sessionEls.current.get(id);
+      if (document.activeElement === document.body && replacement?.matches(idleSectionRow)) {
+        replacement.focus({ preventScroll: true });
+      }
+    });
   }, []);
 
   const registerWorkflowDisclosure = useCallback(

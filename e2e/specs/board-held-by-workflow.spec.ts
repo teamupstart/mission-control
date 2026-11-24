@@ -473,10 +473,12 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await expect(heldRow).toHaveAttribute("aria-current", "true");
 
   // A real workflow update moves the held session into Free over SSE.
+  await heldRow.focus();
   await api(daemon, `/api/workflow-runs/${runId}/cancel`, { requestId: "section-counts-release" });
   await expect(rail.getByRole("button", { name: "free 2", exact: true })).toBeVisible();
   await expect(heldSection).toHaveCount(0);
   await expect(rail.locator(".rail-row")).toHaveCount(2);
+  await expect(heldRow).toBeFocused();
 
   await setSectionCounts(false);
   await expect(header.getByText("2 sessions", { exact: true })).toHaveCount(0);

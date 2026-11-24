@@ -94,18 +94,21 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   label: "a spoken message",
   // Reads include archived sessions and hourly cleanup, which can outlive Registry eviction.
   maxCachedConversations: 32,
+  requireExactFingerprint: true,
   takeInvalidatedKeys: takeDiscardedSpokenKeys,
   textBoundaryIntact(row, transcript) {
     // A file first created after handoff is checked separately by newTranscriptAfter.
     if (row.transcriptOffset === null) return row.messageId === null && row.transcriptBoundary === "missing";
-    return row.transcriptBoundary !== null && transcript.read.boundary?.(transcript.path, row.transcriptOffset)?.proof === row.transcriptBoundary;
+    if (row.transcriptBoundary === null) return false;
+    const boundary = transcript.read.boundary?.(transcript.path, row.transcriptOffset);
+    return boundary ? boundary.proof === row.transcriptBoundary : null;
   },
   newTranscriptAfter(transcript, deliveredAt) {
     try {
       const created = statSync(transcript.path).birthtimeMs;
       return created > 0 && Math.floor(created) > deliveredAt;
     } catch {
-      return false;
+      return null;
     }
   },
   load: loadSpokenTurns,

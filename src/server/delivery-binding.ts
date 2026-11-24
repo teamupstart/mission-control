@@ -56,12 +56,14 @@ export interface DeliveryConversation {
 /** One table's persistence, and who its rows would be credited to. */
 export interface DeliveryStore<Row extends BindableDelivery> {
   maxCachedConversations?: number;
-  /** Validate an append-only boundary before committing a match by text. */
-  textBoundaryIntact?(row: Row, transcript: SessionMessages): boolean;
+  /** Native IDs in a rewritten transcript may now identify different words. */
+  requireExactFingerprint?: boolean;
+  /** Null means the saved prefix could not be checked. Cleanup must retry. */
+  textBoundaryIntact?(row: Row, transcript: SessionMessages): boolean | null;
   /** Conversations whose rows an outbox transaction removed outside this ledger. */
   takeInvalidatedKeys?(): readonly string[] | undefined;
   /** Optional byte boundary for a transcript proven to have been created after reservation. */
-  newTranscriptAfter?(transcript: SessionMessages, deliveredAt: number): boolean;
+  newTranscriptAfter?(transcript: SessionMessages, deliveredAt: number): boolean | null;
   /** For log lines: "a delegated turn". */
   label: string;
   /** A conversation's rows, in reservation (rowid) order. */
@@ -501,7 +503,11 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
     for (const row of rows) {
       if (row.messageId !== null || row.contested || this.expired.has(row.id)) continue;
-      if (row.transcriptOffset === null && !this.store.newTranscriptAfter?.(transcript, row.deliveredAt)) continue;
+      if (row.transcriptOffset === null) {
+        const createdAfter = this.store.newTranscriptAfter?.(transcript, row.deliveredAt);
+        if (requireReadable && createdAfter === null) throw new Error("Could not check transcript creation time");
+        if (!createdAfter) continue;
+      }
       const version = this.store.textBoundaryIntact && transcript.read.snapshot?.(transcript.path)?.version;
       let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
@@ -535,8 +541,12 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         continue;
       }
       try {
-        if (this.store.textBoundaryIntact && (!version || !this.store.textBoundaryIntact(row, transcript)
-            || transcript.read.snapshot?.(transcript.path)?.version !== version)) continue;
+        if (this.store.textBoundaryIntact) {
+          const intact = this.store.textBoundaryIntact(row, transcript);
+          const stable = version && transcript.read.snapshot?.(transcript.path)?.version === version;
+          if (requireReadable && (intact === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
+          if (!stable || !intact) continue;
+        }
         if (!this.store.bind(row.id, found.id, found.ts)) continue;
       } catch (err) {
         if (requireReadable) throw err;
@@ -643,6 +653,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       // Some runtimes store the caller's receipt alongside their own native id.
       const exact = byId.get(m.id) ??
         (clientReceipt && clientReceipt.id === clientReceipt.messageId ? clientReceipt : undefined);
+      if (exact && this.store.requireExactFingerprint && exact.fingerprint !== fingerprint) continue;
       if (exact && (exact.messageId !== exact.id || exact.fingerprint === fingerprint)) {
         if (exact.messageId === exact.id && exact.messageTs === null && this.store.observeClientReceipt) {
           this.store.observeClientReceipt(exact.id, m.ts);

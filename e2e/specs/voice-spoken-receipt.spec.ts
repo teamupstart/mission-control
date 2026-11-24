@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, Task } from "../../src/shared/types.ts";
 import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
@@ -57,6 +57,28 @@ test("an open terminal conversation restores Spoken when its delivery receipt co
       await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
       await actual.screenshot({ path: join(dir, "confirmed.png") });
+    }
+
+    const second = "inspect the green build";
+    expect(await (await say(daemon, "Steve, " + second)).json()).toEqual({ accepted: true });
+    await expect.poll(() => pane.turns().find(text => text.startsWith(second)), { timeout: 30_000 }).toContain("post a report");
+    const secondPayload = pane.turns().find(text => text.startsWith(second))!;
+    appendFileSync(path, line("second-native", secondPayload));
+    const green = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: second });
+    await expect(green.getByText("Spoken", { exact: true })).toBeVisible();
+    // Rewrite the first native record in place, preserving its UUID and changing its words
+    // to another recorded payload. Reopen the transcript to inspect those actual bytes.
+    writeFileSync(path, readFileSync(path, "utf8").replace(words, second));
+    await dashboard.reload();
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session.name }).first().click();
+    await expect(green).toHaveCount(2);
+    await expect(green.first()).toContainText("When you have finished this, post a report.");
+    await expect(green.first().getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(green.last().getByText("Spoken", { exact: true })).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = artifactsDir("voice-spoken-rewritten-native");
+      mkdirSync(dir, { recursive: true });
+      await green.first().screenshot({ path: join(dir, "rewritten.png") });
     }
   } finally {
     pane.cleanup();

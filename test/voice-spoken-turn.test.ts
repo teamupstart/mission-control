@@ -496,6 +496,52 @@ test("confirmed text-only payloads expire after the binding window while native 
   assert.ok(surviving.every(row => row.received.includes("One unseen report.")));
 });
 
+test("cleanup retries an unreadable prefix before deciding whether a matching terminal turn owns its disclosure", async () => {
+  const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const now = Date.now();
+  const key = "cleanup-prefix-io";
+  const fake = fakeTranscript();
+  fake.append("prefix", "older words", now - 1);
+  const conversation = fake.conversation(key);
+  const words = "inspect the boundary";
+  const attempt = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(conversation, words, words, false, attempt, now);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+  const message = fake.append("native", words, now + 1);
+  const native = conversation.transcript!;
+  const unavailable = { ...native, read: { ...native.read, boundary: () => null } };
+  const expiry = now + 8 * DELIVERY_LAG_MS;
+  pruneExpiredSpokenTurns(expiry, k => k === key ? unavailable : null, now + 1);
+  assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+  pruneExpiredSpokenTurns(expiry, k => k === key ? native : null, now + 1);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, message.id);
+});
+
+test("a rewritten terminal record that reuses a native ID cannot present an earlier spoken payload", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  const fake = fakeTranscript();
+  const key = "rewrite-native-id";
+  const conversation = fake.conversation(key);
+  const now = Date.now();
+  for (const [i, words] of ["first instruction", "second instruction"].entries()) {
+    const attempt = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn(conversation, words, words, false, attempt, now + i);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now + i, row.id));
+    const message = fake.append("native-" + i, words, now + i);
+    assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.id, row.id);
+  }
+  fake.turns[0]!.text = fake.turns[1]!.text;
+  const [edited, original] = attributeTranscript(key, fake.turns, null, undefined, conversation);
+  assert.equal(edited?.text, "second instruction");
+  assert.equal(edited?.presentation, undefined);
+  assert.deepEqual(original?.presentation, { kind: "spoken", displayText: "second instruction", received: "second instruction" });
+});
+
 test("confirmed text-only payloads in unavailable transcripts expire at the orphan cutoff without erasing SDK receipts", async () => {
   const { pruneExpiredSpokenTurns, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");

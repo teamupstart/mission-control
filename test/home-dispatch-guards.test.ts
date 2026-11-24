@@ -74,9 +74,8 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // as do GET /voice/listener/directive and the dashboard's PUT /api/voice/indicators.
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
-  // The confirmation card placement route, PUT /api/voice/confirmation, returns 404 with Voice off.
+  // PUT /api/voice/confirmation and GET /api/voice/tasks/:id/follow-up both return 404 with Voice off.
   // The five speech routes for supervision, audio, playback events, Stop and audition also return 404 with Voice off.
-  // GET /api/voice/tasks/:id/follow-up gates the confirmation card's repository lookup.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 478);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),

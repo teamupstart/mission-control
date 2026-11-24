@@ -63,6 +63,40 @@ test("an SDK refusal after queue acceptance leaves the card and Recently heard q
   assert.equal((await readHeard())[0]?.outcome, "cancelled");
 });
 
+test("replaying a forgotten capture returns the same queued spoken row and tracks its receipt", async () => {
+  const id = "replayed-capture";
+  registry.applyDriverEvent("sdk:Steve", { kind: "state", state: "working", activity: null });
+  await say("Steve, inspect the build", id);
+  await act(id, "send-now");
+  const [original] = registry.getSession("sdk:Steve")!.pendingTurns;
+  assert.ok(original);
+  registry.voiceRouter!.reset();
+  await say("Steve, inspect the build", id);
+  await act(id, "send-now");
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+  assert.deepEqual(registry.getSession("sdk:Steve")!.pendingTurns, [original]);
+  registry.turnDelivered({ sessionId: "sdk:Steve", turnId: original.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+  assert.equal((await readHeard())[0]?.outcome, "sent");
+});
+
+test("resuming a session with a blocking review reports held on its card and in Recently heard", async t => {
+  const sleeping = { ...name("Ada"), state: "hibernated" as const, sessionId: null };
+  roster.push(sleeping);
+  t.after(() => { roster.splice(roster.indexOf(sleeping), 1); });
+  const sessionId = "sdk:Bill";
+  const ask = reviews.create(sessionId, "input", "Which target?", "Choose one.", null, { snoozable: true });
+  t.after(async () => { assert.equal((await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" })).status, 200); });
+  t.mock.method(HibernationManager.prototype, "resume", async (id: string) => ({
+    ok: true as const, task: mkTask({ id, sessionId, status: "running" }),
+  }));
+  await say("Ada, inspect the build", "resume-held");
+  await act("resume-held", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.equal((await readHeard())[0]?.outcome, "held");
+  assert.deepEqual(queued("Bill"), ["inspect the build"]);
+});
+
 test("hibernated task queues on the resumed binding and stopped agents get their own hint", async t => {
   const sleeping = { ...name("Alice"), state: "hibernated" as const, sessionId: null };
   const resident = { ...name("Rex"), kind: "resident" as const, state: "not-running" as const, sessionId: null };

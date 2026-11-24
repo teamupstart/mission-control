@@ -15248,6 +15248,16 @@ export function createPendingTurn(input: {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
+    if (input.spokenWords !== undefined) {
+      const existing = d.prepare("SELECT * FROM pending_turns WHERE id = ?").get(input.id) as PendingTurnRow | undefined;
+      if (existing) {
+        if (existing.note_key !== input.noteKey || existing.spoken_words !== input.spokenWords) {
+          throw new Error("This capture ID already belongs to a different outbox message.");
+        }
+        d.exec("COMMIT");
+        return rowToPendingTurn(existing);
+      }
+    }
     const row = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
       .get(input.noteKey) as unknown as { seq: number };

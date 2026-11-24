@@ -9336,7 +9336,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId);
       if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = target.state !== "hibernated" && (session.pendingReviews > 0 || session.state === "awaiting_review");
+      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
     },
   }, (card) => registry.emitVoiceCard(card));

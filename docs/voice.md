@@ -103,8 +103,10 @@ actually submitted to the operator queue follows the queue’s normal durable de
 An idle agent starts a turn. A busy agent receives the message after its current turn ends.
 A blocking question holds delivery until it is answered. A hibernated task resumes its
 conversation before the daemon queues the message. Recently heard and the card show `queued` (or
-`held` for a blocking question) until the outbox confirms the handoff. Confirmation changes the
-outcome to `sent`. Recalling an unsent message changes it to `cancelled`. A stopped agent receives nothing. The
+`held` for a blocking question, including after resume) until the outbox confirms the handoff.
+Replaying a capture while its outbox row exists reuses that row for the same conversation and spoken words.
+Confirmation changes the outcome to `sent`. Recalling an unsent message changes it to `cancelled`.
+A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
 follow-up task.
 

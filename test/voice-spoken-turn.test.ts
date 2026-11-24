@@ -43,6 +43,11 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
   const claimed = db.claimNextPendingTurn(key, 5, queued, compose)!;
   assert.equal(claimed.text, compose(words));
   assert.equal(claimed.spokenWords, words);
+  db.closeDb();
+  const replay = { id: queued.id, noteKey: key, spokenWords: words, text: words, now: 6 };
+  assert.deepEqual(db.createPendingTurn(replay), claimed);
+  assert.throws(() => db.createPendingTurn({ ...replay, noteKey: "other" }), /different outbox message/);
+  assert.throws(() => db.createPendingTurn({ ...replay, spokenWords: "different" }), /different outbox message/);
   const released = db.releasePendingTurn(claimed.id, claimed.revision, "transport refused", 6)!;
   db.closeDb();
   const retry = db.claimNextPendingTurn(key, 7, released, () => assert.fail("retry composed twice"))!;

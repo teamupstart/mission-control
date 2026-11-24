@@ -526,6 +526,49 @@ test("optional transcript reads return the target's opening turns and bounded re
   assert.equal(transcript.headCount, 12);
 });
 
+test("read-only history pages recover turns displaced during an outage and identify unavailable session listings and ended sessions", async () => {
+  const f = fixture();
+  f.registry.setSessionControlEnabled(f.caller.id, true, "read");
+  const t = realTranscript(f);
+  const text = "x".repeat(1024);
+  for (let i = 0; i < 1200; i++) t.append(`outage-${i}`, text, 1000 * (i + 1));
+  const read = (args: object) => f.request("/mcp/session-control/read", args);
+  const list = await (await read({ history: "latest" })).json();
+  assert.equal(list.history.reason, "historical_session_list_unavailable");
+  assert.ok(list.sessions.some((session: { id: string }) => session.id === f.target.id));
+
+  const ids: string[] = [];
+  let history: unknown = "latest";
+  let pages = 0;
+  do {
+    const response = await read({ sessionId: f.target.id, history });
+    assert.equal(response.status, 200);
+    const page = (await response.json()).history;
+    assert.equal(page.status, "page");
+    assert.ok(page.messages.length <= 20);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 26 * 1024);
+    ids.unshift(...page.messages.map((m: { id: string }) => m.id));
+    history = page.next;
+    pages++;
+    assert.ok(pages <= 1200, "every page advances");
+  } while (history !== null);
+  assert.ok(pages >= 60);
+  assert.deepEqual(ids, Array.from({ length: 1200 }, (_, i) => `outage-${i}`));
+
+  t.append("oversized", "x".repeat(65_536), 1_300_000);
+  const current = await (await read({ sessionId: f.target.id, history: "latest" })).json();
+  assert.equal(current.history.messages[0].truncated, true);
+  assert.ok(current.history.next);
+  const stale = await read({ sessionId: f.target.id, history: { ...current.history.next, conversationId: "previous-conversation" } });
+  assert.deepEqual((await stale.json()).history, { status: "unavailable", reason: "transcript_replaced" });
+  f.registry.applyDriverEvent(f.target.id, { kind: "exited", reason: "finished", resumable: false });
+  const ended = await read({ sessionId: f.target.id, history: current.history.next });
+  assert.equal(ended.status, 404);
+  assert.deepEqual(await ended.json(), { history: { status: "unavailable", reason: "no_live_session" } });
+  await f.grant(false);
+  assert.equal((await read({ sessionId: f.other.id, history: "latest" })).status, 403);
+});
+
 test("review answers preserve delegation, ownership, structured choices and continuation delivery", async () => {
   const f = fixture(); await f.grant(true);
   const review = f.reviews.create(f.target.id, "input", "Pick", "Choose a path", [{ id: "path", question: "Path?", options: [{ id: "safe", label: "Safe" }] }]);

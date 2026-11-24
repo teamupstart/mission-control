@@ -106,7 +106,7 @@ test("launcher chords focus directly or reveal Conversation for a chooser", () =
   assert.ok(focus < reveal);
   assert.match(launcherBlock.slice(focus, reveal), /api\.focus\(sel\.id\)/);
   assert.match(launcherBlock.slice(focus, reveal), /if \(!result\.ok\)/);
-  assert.match(launcherBlock.slice(focus, reveal), /showLauncherFocusError/);
+  assert.match(launcherBlock.slice(focus, reveal), /showFleetActionError/);
   assert.match(launcherBlock.slice(focus, reveal), /return;/);
   assert.match(
     launcherBlock,
@@ -114,7 +114,7 @@ test("launcher chords focus directly or reveal Conversation for a chooser", () =
   );
   assert.match(app, /handle\[pending\.run\]\(\)/);
   // The flash is drawn by the topbar, which `App` hands the error it holds.
-  assert.match(app, /launcherFocusError=\{launcherFocusError\}/);
+  assert.match(app, /fleetActionError=\{fleetActionError\}/);
   assert.match(src("components/Topbar.tsx"), /className="launch-flash is-error" role="status"/);
 });
 

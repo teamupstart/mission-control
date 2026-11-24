@@ -4086,6 +4086,8 @@ export type ServerEvent =
       voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
+      /** Daemon wall time at transmission, used to translate cancel windows into local time. */
+      voiceServerTime?: number;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4267,7 +4269,7 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
-  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**

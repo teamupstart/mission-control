@@ -606,7 +606,8 @@ export class PendingTurnManager {
     const session = this.registry.getSession(sessionId);
     if (!session) return null;
     const key = noteKeyFor(session);
-    const recalled = recallPendingTurn(key, id, revision);
+    const heldVoiceTurn = this.registry.voiceRouter?.isHeldTurn(id) && featureEnabled("voice");
+    const recalled = recallPendingTurn(key, id, revision, heldVoiceTurn);
     if (recalled) {
       if (recalled.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(recalled.id, "cancelled");
       this.registry.refreshPendingTurns(key);

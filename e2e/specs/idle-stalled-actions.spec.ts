@@ -69,6 +69,15 @@ function parked(sessionId: string, facts: Partial<Extract<StallFacts, { kind: "w
   };
 }
 
+async function expectDismissalRefusal(page: Page, dismiss: Locator, name: string): Promise<void> {
+  await page.route("**/api/attention/dismissals", route => route.request().method() === "POST"
+    ? route.fulfill({ status: 503, json: { error: "Dismissal storage unavailable" } }) : route.fallback());
+  await dismiss.click();
+  await expect(page.getByRole("status").filter({ hasText: name })).toContainText("Could not dismiss: Dismissal storage unavailable");
+  await expect(dismiss).toBeEnabled();
+  await page.unroute("**/api/attention/dismissals");
+}
+
 test("each parked-run fix on a Stalled card sends its request and lands its effect, and a failure shows on the card", async ({ dashboard: page, daemon }) => {
   test.setTimeout(240_000);
   const flags = await api<{ config: { overrides: Record<string, boolean> } }>(
@@ -129,6 +138,7 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect(card().getByRole("button", { name: "Message…" })).toBeVisible();
   await expect(card().getByRole("button", { name: "Open run" })).toBeVisible();
 
+  await expectDismissalRefusal(page, card().getByRole("button", { name: `Dismiss ${session.name} from Stalled` }), session.name);
   await card().getByRole("button", { name: `Dismiss ${session.name} from Stalled` }).click();
   await expect(card()).toHaveCount(0);
   served = [{ ...served[0]!, reason: "Waiting on the review for 2m", forMs: 120_000 }];
@@ -343,6 +353,7 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(band).toBeVisible({ timeout: 15_000 });
 
   // Dismiss returns the row to the rest of Idle: the mark and the band go, and nothing reaches the inbox.
+  await expectDismissalRefusal(page, band.getByRole("button", { name: `Dismiss ${name} from Stalled` }), name);
   await page.getByRole("region", { name: "Session stalled" })
     .getByRole("button", { name: `Dismiss ${name} from Stalled` }).click({ timeout: 15_000 });
   await expect(page.getByRole("region", { name: "Session stalled" })).toHaveCount(0);

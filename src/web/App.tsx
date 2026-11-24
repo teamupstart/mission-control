@@ -837,8 +837,8 @@ export function App(): React.JSX.Element {
     toggleSurface: (): void => {},
     openDetail: (_sessionId: string): void => {},
   });
-  const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
-  const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [fleetActionError, setFleetActionError] = useState<string | null>(null);
+  const fleetActionErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
@@ -2646,17 +2646,17 @@ export function App(): React.JSX.Element {
       residentsTourReachedEnd.current = true;
     },
   }), [navigate]);
-  const showLauncherFocusError = useCallback((message: string) => {
-    if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
-    setLauncherFocusError(message);
-    launcherFocusErrorTimer.current = setTimeout(() => {
-      launcherFocusErrorTimer.current = null;
-      setLauncherFocusError(null);
+  const showFleetActionError = useCallback((message: string) => {
+    if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
+    setFleetActionError(message);
+    fleetActionErrorTimer.current = setTimeout(() => {
+      fleetActionErrorTimer.current = null;
+      setFleetActionError(null);
     }, 6000);
   }, []);
   useEffect(
     () => () => {
-      if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+      if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
     },
     [],
   );
@@ -2909,10 +2909,12 @@ export function App(): React.JSX.Element {
     () => stalledSessions(stalls, idleStalledEnabled, attentionDismissals.dismissed),
     [stalls, idleStalledEnabled, attentionDismissals.dismissed],
   );
-  const dismissStall = useCallback(
-    (sessionId: string, stall: Stall) => void attentionDismissals.dismiss([stallDismissalKey(sessionId, stall)]),
-    [attentionDismissals.dismiss],
-  );
+  const dismissAttention = attentionDismissals.dismiss;
+  const dismissStall = useCallback(async (sessionId: string, stall: Stall) => {
+    const name = sessionsRef.current.find(session => session.id === sessionId)?.name;
+    const error = await dismissAttention([stallDismissalKey(sessionId, stall)]);
+    if (error) showFleetActionError(name ? `${name} · ${error}` : error);
+  }, [dismissAttention, showFleetActionError]);
   // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
   // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
   // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
@@ -4676,7 +4678,7 @@ export function App(): React.JSX.Element {
           if (action === "focus") {
             void api.focus(sel.id).then((result) => {
               if (!result.ok) {
-                showLauncherFocusError(result.error ?? "could not focus");
+                showFleetActionError(result.error ?? "could not focus");
               }
             });
             return;
@@ -4762,7 +4764,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showFleetActionError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -5014,7 +5016,7 @@ export function App(): React.JSX.Element {
             closeLineDrawer();
             setReportOpen(true);
           }}
-          launcherFocusError={launcherFocusError}
+          fleetActionError={fleetActionError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
           onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}

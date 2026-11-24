@@ -355,7 +355,7 @@ test("built-in repository access has its own CAS revision and leaves shipped gra
   }
 });
 
-for (const priorVersion of [54, 55, 59])
+for (const priorVersion of [54, 55, 59, 60, 61])
 test(`the v${priorVersion} upgrade fingerprints historical graph bytes and gives existing Personas no access`, async () => {
   const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
   seed();

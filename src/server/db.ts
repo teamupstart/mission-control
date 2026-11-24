@@ -334,8 +334,10 @@ let db: DatabaseSync | undefined;
 // 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
 // 58: index retained workflow deliveries that have an active native receipt.
 // 59: seek unresolved workflow receipts by delivery state and age on cold reads.
-// 60: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 60;
+// 60: durable receipt replay for a blocking question filed by voice.
+// 61: remember accepted spoken outbox IDs after retirement.
+// 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 62;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -497,7 +499,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     // Earlier artifact previews installed a broader running-status guard. Replace it atomically
     // with the current definition below, preserving existing claims and submissions.
     if (databaseSchemaVersion(d) < 54) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
-    if (databaseSchemaVersion(d) < 60) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
+    if (databaseSchemaVersion(d) < 62) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
     createSchemaObjects(d);
     d.exec("COMMIT;");
   } catch (error) {
@@ -542,6 +544,8 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at             INTEGER NOT NULL,
       resolved_at            INTEGER,
       mcp_wait_detached_at   INTEGER,
+      filed_by_voice_at      INTEGER,
+      voice_conversion_blocked INTEGER NOT NULL DEFAULT 1,
       continuation_queued_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews(session_id);
@@ -2359,6 +2363,17 @@ function createSchemaObjects(d: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
       ON pending_turns(note_key) WHERE state = 'sending';
 
+    CREATE TABLE IF NOT EXISTS spoken_outbox_ids (
+      turn_id TEXT PRIMARY KEY NOT NULL
+    ) WITHOUT ROWID;
+
+    CREATE TABLE IF NOT EXISTS spoken_turn_review_waits (
+      review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL REFERENCES pending_turns(id) ON DELETE CASCADE,
+      PRIMARY KEY (review_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_spoken_turn_review_waits_turn ON spoken_turn_review_waits(turn_id);
+
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
       cwd             TEXT,               -- + branch: the re-attach hint when the key dies
@@ -4003,6 +4018,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
+  if (databaseSchemaVersion(d) < 61) {
+    d.exec(`INSERT OR IGNORE INTO spoken_outbox_ids SELECT id FROM pending_turns WHERE spoken_words IS NOT NULL;
+      INSERT OR IGNORE INTO spoken_outbox_ids SELECT outbox_turn_id FROM session_spoken_turns WHERE outbox_turn_id IS NOT NULL;`);
+  }
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
   addColumn(d, "session_spoken_turns", "transcript_agent", "TEXT");
@@ -4821,6 +4840,9 @@ function migrate(d: DatabaseSync): void {
   // All nullable with no default: an existing row is a call-mode question with no meanwhile line
   // that no merge closed, which is exactly what every row written before this was.
   addColumn(d, "reviews", "wait_mode", "TEXT");
+  addColumn(d, "reviews", "filed_by_voice_at", "INTEGER");
+  // Existing rows may already have a legacy call. New reviews start without one in insertReview.
+  addColumn(d, "reviews", "voice_conversion_blocked", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "reviews", "meanwhile", "TEXT");
   addColumn(d, "reviews", "closed_reason", "TEXT");
 
@@ -5882,6 +5904,7 @@ interface ReviewRow {
   snooze_reminded_at?: number | null;
   snooze_instruction_owed_at?: number | null;
   snooze_instruction_queued_at?: number | null;
+  filed_by_voice_at?: number | null;
   wait_mode?: string | null;
   meanwhile?: string | null;
   closed_reason?: string | null;
@@ -5915,6 +5938,7 @@ function rowToReview(r: ReviewRow): ReviewItem {
     ...(snooze ? { snooze } : {}),
     // Spread only when set, like the snooze, so a call-mode row decodes exactly as it always did.
     // An unknown wait mode reads as call mode: the conservative reading holds and delivers less.
+    ...(r.filed_by_voice_at != null ? { filedByVoiceAt: r.filed_by_voice_at } : {}),
     ...(r.wait_mode === "message" ? { waitMode: "message" as const } : {}),
     ...(r.meanwhile ? { meanwhile: r.meanwhile } : {}),
     ...(closedReason ? { closedReason } : {}),
@@ -5978,8 +6002,8 @@ export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
       `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at,
-                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision, voice_conversion_blocked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
     .run(
       r.id,
@@ -6168,6 +6192,30 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
   return row ? rowToReview(row) : null;
 }
 
+/** A legacy call has no per-caller identity to release its hold, even between polls or across restart. */
+export function blockReviewVoiceConversion(id: string): void {
+  openDb().prepare(`UPDATE reviews SET voice_conversion_blocked = 1
+    WHERE id = ? AND status = 'pending' AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(id);
+}
+
+/** Speech queued for this conversation while this call was open, still awaiting delivery. */
+export function hasQueuedSpeechForReview(reviewId: string, noteKey: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM spoken_turn_review_waits w
+    JOIN pending_turns t ON t.id = w.turn_id
+    WHERE w.review_id = ? AND t.note_key = ? AND t.state = 'queued' LIMIT 1`).get(reviewId, noteKey));
+}
+
+/** File the pending ask and route its eventual answer through the outbox in the same write. */
+export function fileReviewByVoice(id: string, at: number): ReviewItem | null {
+  const row = openDb().prepare(`UPDATE reviews
+    SET wait_mode = 'message', filed_by_voice_at = ?, mcp_wait_detached_at = ?
+    WHERE id = ? AND status = 'pending' AND wait_mode IS NULL AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))
+    RETURNING *`).get(at, at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
+}
+
 /**
  * A call has started waiting on a message-mode question: an MCP child from an older build
  * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
@@ -6181,7 +6229,7 @@ export function markReviewWaitAttached(id: string): boolean {
   const result = openDb()
     .prepare(
       `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
-        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
+        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL AND filed_by_voice_at IS NULL`,
     )
     .run(id);
   return Number(result.changes) > 0;
@@ -6262,8 +6310,8 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
  */
 export function createReviewContinuationPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
-  // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
-  // reading it outside the queueing transaction cannot race a change.
+  // it, so it takes its own id under the shared prefix. Only a pending ask can change wait mode, so the
+  // resolved row already carries its final mode.
   const mode = openDb().prepare("SELECT wait_mode FROM reviews WHERE id = ?").get(input.reviewId) as
     | { wait_mode: string | null }
     | undefined;
@@ -15586,6 +15634,7 @@ export function listPendingTurns(noteKey: string): PendingTurn[] {
  */
 export function createPendingTurn(input: {
   spokenWords?: string;
+  spokenSessionId?: string;
   id: string;
   noteKey: string;
   text: string;
@@ -15604,6 +15653,12 @@ export function createPendingTurn(input: {
         return rowToPendingTurn(existing);
       }
     }
+    // Only listener submissions have a capture identity. Reconstructed lower-level handoffs may reuse an outbox ID.
+    if (input.spokenSessionId !== undefined && input.spokenWords !== undefined) {
+      if (!d.prepare("INSERT OR IGNORE INTO spoken_outbox_ids (turn_id) VALUES (?)").run(input.id).changes) {
+        throw new Error("This spoken capture was already queued and has left the outbox.");
+      }
+    }
     const row = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
       .get(input.noteKey) as unknown as { seq: number };
@@ -15612,6 +15667,13 @@ export function createPendingTurn(input: {
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at, spoken_words)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL, ?)`,
     ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now, input.spokenWords ?? null);
+    if (input.spokenWords !== undefined && input.spokenSessionId !== undefined) {
+      // Snapshot only asks that existed when these words were queued. A replay returns above;
+      // recalling or delivering the turn removes these links with its outbox row.
+      d.prepare(`INSERT INTO spoken_turn_review_waits(review_id, turn_id)
+        SELECT id, ? FROM reviews WHERE session_id = ? AND status = 'pending' AND wait_mode IS NULL
+          AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(input.id, input.spokenSessionId);
+    }
     d.exec("COMMIT");
     return {
       id: input.id,

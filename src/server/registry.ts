@@ -7784,8 +7784,20 @@ export class Registry extends EventEmitter {
     return this.outstandingReviews(session.id).some((review) => questionHoldsCompletion(review, flagOn));
   }
 
+  /** Make the whole committed batch visible before synchronous listeners can answer any member. */
+  upsertReviews(reviews: ReviewItem[]): void {
+    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) {
+      if (this.reviews.get(review.id) === review) this.publishReview(review);
+    }
+  }
+
   upsertReview(review: ReviewItem): void {
     this.reviews.set(review.id, review);
+    this.publishReview(review);
+  }
+
+  private publishReview(review: ReviewItem): void {
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
@@ -7849,6 +7861,12 @@ export class Registry extends EventEmitter {
       out.push(r);
     }
     return out;
+  }
+
+  /** A filed plan still gates completion, but its agent can receive an addressed message. */
+  hasPendingReviewCall(sessionId: string): boolean {
+    if (!this.sessions.get(sessionId)?.pendingReviews) return false;
+    return this.pendingReviews(sessionId).some(review => review.waitMode !== "message");
   }
 
   /**

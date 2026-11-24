@@ -27,7 +27,7 @@ export type LaunchFailurePhase = (typeof LAUNCH_FAILURE_PHASES)[number];
 export const UNKNOWN_TERMINAL_GUIDANCE = " - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it";
 
 export const TERMINAL_RECEIPT_NAME = /^session-[A-Za-z0-9]{6}\.\d+\.\d+$/;
-const PendingTerminalLaunchSchema = z.object({ receipt: z.string().regex(TERMINAL_RECEIPT_NAME), deadline: z.number().int().nonnegative() });
+export const PendingTerminalLaunchSchema = z.object({ receipt: z.string().regex(TERMINAL_RECEIPT_NAME), deadline: z.number().int().nonnegative() });
 export type PendingTerminalLaunch = z.infer<typeof PendingTerminalLaunchSchema>;
 
 /**

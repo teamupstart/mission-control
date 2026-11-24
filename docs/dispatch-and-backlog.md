@@ -1135,8 +1135,9 @@ evidence that anybody is finished with the work in a tree. The retention clock a
 already had survives the settlement rather than restarting, so a daemon restarted every day
 cannot postpone cleanup forever.
 
-If a terminal backend timed out before it identified the pane, restart checks that launch's
-private start and exit records. A confirmed inactive terminal is shown as ended. Its checkouts
+Before sending a command to a terminal backend, the daemon records the launch receipt on the task.
+If it restarts while waiting for a reply or after a timeout, it uses that receipt to check the
+wrapper's start and exit records. A confirmed inactive terminal is shown as ended. Its checkouts
 keep their existing retention deadline, and retry stays blocked while any checkout is retained.
 An unverifiable launch keeps its uncertain status.
 

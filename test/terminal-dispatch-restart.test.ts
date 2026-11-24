@@ -4,7 +4,9 @@ import { once } from "node:events";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { launchFailureOutcome, newLaunchFailure, UNKNOWN_TERMINAL_GUIDANCE, type PendingTerminalLaunch } from "../src/shared/launch-failure.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -15,10 +17,66 @@ process.env.MISSION_HOME = dir;
 after(() => rmSync(dir, { recursive: true, force: true }));
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
-const { recordTaskWorktreeObservation, getTaskWorktreeRetention } = await import("../src/server/db.ts");
+const { recordTaskWorktreeObservation, getTaskWorktreeRetention, pendingTerminalSubmissions, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
 const { taskResourceGeneration, RETENTION_WINDOW_MS } = await import("../src/server/task-worktree-retention.ts");
 const { LAUNCH_PID_FILE } = await import("../src/server/terminal/launch-process.ts");
 const { discardTerminalReceipt, WRAPPER_EXIT_FILE } = await import("../src/server/terminal/dispatch-observation.ts");
+
+test("a schema 62 task survives upgrade without acquiring a terminal submission receipt", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    upgradeDatabaseToCurrentSchema(db);
+    db.exec(`ALTER TABLE tasks DROP COLUMN pending_terminal_submission;
+      PRAGMA user_version = 62;
+      INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at)
+      VALUES ('old-task', 'Restore me', '', 'ship', 'pi', '/repo', 'dispatching', 1, 1)`);
+    upgradeDatabaseToCurrentSchema(db);
+    const task = db.prepare("SELECT status, pending_terminal_submission FROM tasks WHERE id = 'old-task'").get();
+    assert.equal(task?.status, "dispatching");
+    assert.equal(task.pending_terminal_submission, null);
+  } finally { db.close(); }
+});
+
+for (const mode of ["unstarted", "exited"]) {
+  test(`restart recovers a dispatching task after a crash during backend submission (${mode})`, { timeout: 30_000 }, async (t) => {
+    const id = "submission-" + mode;
+    const { clone } = originAndCloneAt(join(dir, id));
+    new Registry().upsertTask(mkTask({ id, status: "dispatching", kind: "ship", agent: "pi", repoRoot: clone }));
+    const fixture = fileURLToPath(new URL("./fixtures/terminal-submission-crash.ts", import.meta.url));
+    const child = spawn(process.execPath, ["--import", "tsx", fixture, id, mode], {
+      env: { ...process.env, MISSION_PI_BIN: "/usr/bin/true" }, stdio: ["pipe", "ignore", "pipe", "ipc"],
+    });
+    const closed = once(child, "close");
+    t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+    let diagnostic = "";
+    assert.ok(child.stderr);
+    child.stderr.on("data", (data) => { diagnostic += data; });
+    await Promise.race([once(child, "message"), closed.then(() => { throw new Error(diagnostic || "daemon exited before submission"); })]);
+    child.kill("SIGKILL");
+    await closed;
+
+    const restarted = new Registry();
+    const before = restarted.getTask(id)!;
+    assert.equal(before.status, "dispatching");
+    assert.equal(before.launchFailure, null);
+    const submission = pendingTerminalSubmissions().get(id);
+    assert.ok(submission, "the interrupted attempt has a durable receipt before any backend reply");
+    t.after(() => discardTerminalReceipt(submission.receipt));
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const manager = new TaskManager(restarted);
+    t.after(() => manager.stop());
+    assert.deepEqual(restarted.getTask(id)?.launchFailure?.pendingTerminal, submission);
+    assert.equal(pendingTerminalSubmissions().has(id), false);
+    t.mock.timers.tick(120000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const recovered = restarted.getTask(id)!;
+    assert.equal(recovered.launchFailure?.terminalInactive, true);
+    assert.equal(recovered.launchFailure?.pendingTerminal, undefined);
+    assert.equal(launchFailureOutcome(recovered), "worktree-kept");
+    assert.equal(recovered.worktreeLeaseId, before.worktreeLeaseId);
+    assert.ok(existsSync(recovered.worktreePath!));
+  });
+}
 
 // A separate process really loses its open exit descriptor and deadline timer. No credentials,
 // environment patch or terminal argv are persisted with the task.

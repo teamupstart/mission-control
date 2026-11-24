@@ -197,6 +197,9 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
     assert.ok(returned, "the dispatch caller returns before the two-minute startup deadline");
   } else await dispatch;
   const launched = registry.getTask(task.id)!;
+  const { openDb } = await import("../src/server/db.ts");
+  assert.equal(openDb().prepare("SELECT pending_terminal_submission FROM tasks WHERE id = ?").get(task.id)?.pending_terminal_submission,
+    null, "the committed outcome cleared the in-flight receipt");
   if (cancelAfterHandoff) {
     assert.ok(socketWasOpen && handoffSocket && launchHome, "the handoff was listening before cancellation");
     assert.equal(spawnCount, scenario === "cancel-inventory" ? 0 : 1, "no backend launch after cancellation");

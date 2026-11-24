@@ -127,6 +127,7 @@ import {
   getTaskSessionClosure,
   listTaskSessionClosures,
   openDb,
+  pendingTerminalSubmissions,
   recordTaskSessionClosureAttempt,
   settleTaskWithRetentionAdoption,
   taskSessionClosureForSession,
@@ -1333,9 +1334,19 @@ export class TaskManager {
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
     const startupTasks = registry.listTasks();
+    const interruptedSubmissions = pendingTerminalSubmissions();
     const receipts = new Set<string>();
     for (const t of startupTasks) {
-      const pending = pendingTerminalLaunch(t);
+      const interrupted = interruptedSubmissions.get(t.id);
+      let pending = pendingTerminalLaunch(t);
+      if (interrupted && t.status === "dispatching" && !t.homeName && !t.sessionId) {
+        // The backend may have started the wrapper before the old daemon lost its reply.
+        // Transfer the receipt to the usual recovery record in the same write that clears the submission.
+        registry.upsertTask({ ...t, status: "failed", updatedAt: Date.now(),
+          error: "terminal dispatch interrupted by a restart" + UNKNOWN_TERMINAL_GUIDANCE,
+          launchFailure: { ...this.launchFailureFor(t, true), pendingTerminal: interrupted } });
+        pending = interrupted;
+      }
       if (pending) {
         receipts.add(pending.receipt);
         // An unconfirmed terminal has no backend identity for the regular home probe.

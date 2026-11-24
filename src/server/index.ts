@@ -21,7 +21,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Server } from "node:http";
 import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
 import type { Context } from "hono";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
@@ -50,7 +50,7 @@ import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { desktopVoiceEndpointPath, envVar } from "@shared/harness-runtime.mjs";
-import { serveDesktopVoice } from "./voice/desktop-endpoint.ts";
+import { DESKTOP_VOICE_DAEMON_STOPPING, serveDesktopVoice } from "./voice/desktop-endpoint.ts";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
@@ -937,6 +937,7 @@ if (hasDist) {
 
 let stopDesktopVoice = () => {};
 function watchDesktopVoice() {
+  const endpointFile = desktopVoiceEndpointPath();
   let active: AbortController | undefined;
   let retry: NodeJS.Timeout | undefined;
   function reconcile() {
@@ -944,7 +945,7 @@ function watchDesktopVoice() {
     if (featureEnabled(VOICE_FLAG)) {
       if (active) return;
       const controller = active = new AbortController();
-      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), desktopVoiceEndpointPath(), controller.signal).catch(error => {
+      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), endpointFile, controller.signal).catch(error => {
         if (controller.signal.aborted) return;
         console.error("[voice] Could not start private desktop endpoint:", error);
         active = undefined;
@@ -953,11 +954,12 @@ function watchDesktopVoice() {
     } else {
       active?.abort();
       active = undefined;
+      rmSync(endpointFile, { force: true });
     }
   }
   const unsubscribe = onFeatureFlagsChanged(reconcile);
   reconcile();
-  return () => { unsubscribe(); clearTimeout(retry); active?.abort(); };
+  return () => { unsubscribe(); clearTimeout(retry); active?.abort(DESKTOP_VOICE_DAEMON_STOPPING); };
 }
 
 let shutdownStarted = false;

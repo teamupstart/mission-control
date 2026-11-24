@@ -50,9 +50,18 @@ type Decision =
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 const QUOTATION_MARK = /\p{Quotation_Mark}/u;
+const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
 
 function normalized(text: string): string {
-  return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
+  return normalizeSpokenName(text).replace(BOUNDARY_PUNCTUATION, "").trim();
+}
+
+function hasBoundaryQuote(text: string): boolean {
+  return text.trim().match(BOUNDARY_PUNCTUATION)?.some((boundary) => QUOTATION_MARK.test(boundary)) ?? false;
+}
+
+function bareCommand(text: string): string | undefined {
+  return /^(stop|cancel)\s*[\p{Sentence_Terminal}…]*$/u.exec(text.trim().toLowerCase())?.[1];
 }
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
@@ -83,22 +92,25 @@ function closesWrapper(opener: string, closer: string): boolean {
 }
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
-function messageAfterAddress(text: string, start: number, end: number): string {
+function messageAfterAddress(text: string, end: number): string {
   const rest = text.slice(end).trimStart();
-  if (!rest.startsWith(",")) return rest;
-  let bodyStart = 1;
-  const address = text.slice(start, end);
-  const opening = address.match(/^[\p{Ps}\p{Pi}"']+/u)?.[0] ?? "";
+  const separatorLength = rest.startsWith(",") ? 1 : 0;
+  let bodyStart = separatorLength;
+  const address = text.slice(0, end).trimStart();
+  const opening = address.match(/^[\p{Ps}\p{Pi}"'\s]+/u)?.[0].replace(/\s/gu, "") ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
-  // Wrappers already closed before the comma belong to the address token itself.
+  // Some closing marks are attached to the final name token and have already been consumed.
   const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
   for (const opener of [...opening].reverse().slice(closed)) {
-    const closer = rest.slice(bodyStart).match(/^[\p{Pe}\p{Pf}"']/u)?.[0];
-    if (!closer || !closesWrapper(opener, closer)) break;
-    bodyStart += closer.length;
+    const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
+    if (!closing || !closesWrapper(opener, closing[1]!)) break;
+    bodyStart += closing[0].length;
   }
-  // An inner comma in “Will,” may be followed by one outer address separator.
-  if (bodyStart > 1 && rest[bodyStart] === ",") bodyStart++;
+  if (bodyStart > separatorLength) {
+    // Terminal punctuation attached to a standalone closer also belongs to the quoted name.
+    if (!separatorLength) bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
+    bodyStart += rest.slice(bodyStart).match(/^\s*,/u)?.[0].length ?? 0;
+  }
   return rest.slice(bodyStart).trimStart();
 }
 
@@ -112,11 +124,12 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
   const [firstToken, secondToken] = tokens;
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
-  const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
+  const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, token.index + token[0].length);
   const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
-  if (phrase === "cancel" && !QUOTATION_MARK.test(text)) return { kind: "control", command: "cancel" };
+  if (bareCommand(text) === "cancel") return { kind: "control", command: "cancel" };
+  const pickName = phrase !== null && !hasBoundaryQuote(text) ? phrase : null;
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
-    .filter((candidate) => normalized(candidate.title) === phrase)
+    .filter((candidate) => normalized(candidate.title) === pickName)
     .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
   if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
@@ -162,8 +175,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const stop = normalized(body) === "stop" && !QUOTATION_MARK.test(body);
-  const command = stop ? { command: "stop" as const } : {};
+  const command = bareCommand(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {

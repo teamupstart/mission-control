@@ -139,7 +139,7 @@ test("only the selected live recognizer can open or cancel a card after switchin
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
 });
 
-test("future captures beyond clock tolerance are dropped and a tolerated capture can be cancelled immediately", async (t) => {
+test("future captures beyond clock tolerance are dropped and a cancel on the same listener clock can act immediately", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const unsure = capture("Steven ask Will", "clock");
@@ -148,8 +148,26 @@ test("future captures beyond clock tolerance are dropped and a tolerated capture
   assert.deepEqual(await readHeard(), []);
   assert.equal(cards.length, 0);
   assert.deepEqual(await (await postAt(now + 1000)).json(), { accepted: true });
-  await say("cancel");
+  await post(utterancePath(), { ...capture("cancel"), capturedAt: now + 1000 }, token);
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["clock", "unsure"], ["clock", "cancelled"]]);
+});
+
+test("a listener clock ahead of the daemon preserves out-of-order cancel and pick eligibility", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, offset: number) =>
+    post(utterancePath(), { ...capture(text, id), capturedAt: now + offset }, token);
+  await postAt("older", "Will discard this", 100);
+  await postAt("newer", "Will keep this", 500);
+  assert.equal(cards.at(-1)?.deadline, now + 1000);
+  await postAt("delayed-cancel", "cancel", 300);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["older", "cancelled"]);
+  await postAt("unsure", "Steven ask Will", 700);
+  await postAt("delayed-pick", "Will", 600);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "pending"], ["unsure", "unsure"]]);
+  assert.deepEqual((await readHeard()).map((entry) => [entry.id, entry.time - now]), [
+    ["unsure", 700], ["delayed-pick", 600], ["newer", 500], ["delayed-cancel", 300], ["older", 100],
+  ]);
 });
 
 test("capture IDs must address a single card action URL segment", async () => {
@@ -233,9 +251,9 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
-test("quoted cancel leaves the pending card open until a bare cancel dismisses it", async () => {
+test("quoted or comma-prefixed cancel leaves the pending card open until a bare cancel dismisses it", async () => {
   await say("Will check the build", "waiting");
-  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel»."]) {
+  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel».", ",cancel"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.outcome, "ignored");
     assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["waiting", "pending"]]);
@@ -331,6 +349,36 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });
 
+test("extra message punctuation is queued verbatim and cannot turn stop into an interrupt", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["Will,,,stop", ",,stop"], ["“Will,”,,,stop", ",,stop"], ["Will, #stop!", "#stop!"], ["Will, stop,", "stop,"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  await say("Will, STOP。", "punctuated-command");
+  await act("punctuated-command", "send-now");
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+});
+
+test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
+  const before = interrupts.length;
+  for (const text of ["“Will, ” stop", "“ Will ” , stop"]) {
+    const id = randomUUID();
+    await say(text, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
+  await say("“Will, ” “stop”", "message-quote");
+  assert.equal((await act("message-quote", "send-now")).status, 200);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
+  assert.equal(interrupts.length, before + 2);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   await say("Will, " + body, "mention");
@@ -376,6 +424,22 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
   assert.equal((await act("older", "send-now")).status, 200);
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
+});
+
+test("a quoted candidate leaves the unsure card and queue untouched until an unquoted pick", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const before = queued("Will");
+  await say("Steven ask Will about the results", "choice");
+  for (const text of ["“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.rule, "no-message");
+    assert.deepEqual(queued("Will"), before);
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.state), ["unsure"]);
+  }
+  await say("Will.");
+  assert.deepEqual(queued("Will"), [...before, "ask Will about the results"]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
 test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {

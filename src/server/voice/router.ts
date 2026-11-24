@@ -68,11 +68,8 @@ export class VoiceRouter {
   async accept(utterance: VoiceUtterance): Promise<boolean> {
     const { mode, roster, backend } = this.state();
     if (!voiceCaptures(mode) || backend !== utterance.backend) return false;
-    const now = Date.now();
-    if (utterance.capturedAt > now + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
-    // A small clock difference must not put an open action in the future of its own controls.
-    const capturedAt = Math.min(utterance.capturedAt, now);
-    const { id } = utterance;
+    const { id, capturedAt } = utterance;
+    if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);

@@ -69,9 +69,18 @@ export class RecentlyHeard {
   clear(): void { this.entries = []; }
 }
 
+interface AnswerAttempt extends ActionTime {
+  reviewId: string;
+  sequence: number;
+}
+
+function compareAnswerCaptures(a: AnswerAttempt, b: AnswerAttempt): number {
+  return offsetUs(a, b) || a.sequence - b.sequence;
+}
+
 interface OpenCard {
   answer?: VoiceAnswer;
-  lastCorrection?: ActionTime;
+  answerAttempt?: AnswerAttempt;
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
@@ -210,6 +219,9 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
+  // Keep the last accepted capture until its question settles, even after a Cancel.
+  private readonly lastAnswer = new Map<string, AnswerAttempt>();
+  private answerSequence = 0;
   // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
   private lifetime = new AbortController();
   private readonly outbox = new Map<string, OutboxReceipt>();
@@ -242,8 +254,10 @@ export class VoiceRouter {
   }
 
   reviewSettled(reviewId: string): void {
+    this.lastAnswer.delete(reviewId);
     for (const item of this.open.values()) {
-      if (item.answer?.reviewId !== reviewId) continue;
+      if (item.answerAttempt?.reviewId !== reviewId) continue;
+      item.modelStep?.abort();
       this.take(item);
       this.questionNotice(item, "That question is already settled.");
     }
@@ -387,14 +401,14 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = "switch-answer";
       const index = spokenIndex(correction[1]!);
-      if (review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
+      if (index !== undefined && review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
         return this.prepareAnswer(latest, review, "option " + (index + 1), false, { id: utterance.id, time }).then(() => true);
       }
       return true;
     }
     const picks = unsure.filter(c => c.candidates[0]?.kind === "question");
     const index = spokenIndex(words);
-    if (picks.length && index >= 0 && !/^(?:option |[a-z][.!?]?$)/iu.test(words)) {
+    if (picks.length && index !== undefined && index >= 0 && !/^(?:option |[a-z][.!?]?$)/iu.test(words)) {
       const row = picks.length === 1 && picks[0]!.candidates[index];
       entry.outcome = "control";
       entry.rule = "pick-question";
@@ -454,8 +468,12 @@ export class VoiceRouter {
     correction?: { id: string; time: ActionTime }): Promise<void> {
     const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
+    const attempt = { ...(correction?.time ?? item.time), reviewId: review.id, sequence: ++this.answerSequence };
+    const accepted = this.lastAnswer.get(review.id);
+    if (accepted && compareAnswerCaptures(attempt, accepted) < 0) return;
     if (!correction) {
       // Reserve the capture's place while an option question is at the model.
+      item.answerAttempt = attempt;
       item.card = { ...item.card, state: "resolving", candidates: [] };
       item.modelStep = new AbortController();
       this.open.set(id, item);
@@ -467,7 +485,8 @@ export class VoiceRouter {
     // capture times on the live item; its original time still orders spoken Cancel.
     const previousId = item.card.id;
     if (signal.aborted || this.open.get(previousId) !== item || this.state().mode === "off") return;
-    if (correction && offsetUs(correction.time, item.lastCorrection ?? item.time) < 0) return;
+    const latest = this.lastAnswer.get(review.id);
+    if (latest && compareAnswerCaptures(attempt, latest) < 0) return;
     if (!this.questions!.pending().some(q => q.id === review.id)) {
       this.take(item);
       this.questionNotice(item, "That question is already settled.");
@@ -480,16 +499,17 @@ export class VoiceRouter {
       return;
     }
     for (const other of this.open.values()) {
-      if (other !== item && other.answer?.reviewId === review.id) {
-        if (offsetUs(other.lastCorrection ?? other.time, correction?.time ?? item.time) > 0 || !this.cancel(other.card.id)) { this.take(item); return; }
-      }
+      if (other === item || other.answerAttempt?.reviewId !== review.id) continue;
+      if (compareAnswerCaptures(other.answerAttempt, attempt) > 0) continue;
+      if (!this.cancel(other.card.id)) { this.take(item); return; }
     }
+    item.answerAttempt = attempt;
+    this.lastAnswer.set(review.id, attempt);
     clearTimeout(item.timer);
     const window = this.window();
     const windowMs = window.enabled ? window.seconds * 1000 : 0;
     const deadline = Date.now() + windowMs;
     if (correction) {
-      item.lastCorrection = correction.time;
       // Replace the action in place so delayed buttons cannot act on the new answer,
       // while spoken Cancel still follows the original capture order.
       this.open.delete(previousId);
@@ -683,7 +703,7 @@ export class VoiceRouter {
           this.publishDelivery(delivery);
         });
       }
-    } else if (!item.answer?.footerWindowId) {
+    } else if (!item.answer?.footerWindowId && !(item.answerAttempt && !item.answer)) {
       this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
@@ -905,6 +925,7 @@ export class VoiceRouter {
     }
     this.openCards.clear();
     this.open.clear();
+    this.lastAnswer.clear();
     this.resolutions.clear();
     this.lifetime.abort();
     this.lifetime = new AbortController();

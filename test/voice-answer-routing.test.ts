@@ -449,7 +449,7 @@ test("spoken option numbers select their position or give a notice without sendi
     assert.deepEqual(answers()[0]?.selections?.[0]?.selected, [expected], phrase);
     await say("cancel");
   }
-  for (const phrase of ["fifty first", "ninety-nine", "one hundred and eleven", "one thousand"]) {
+  for (const phrase of ["zeroth", "0th", "fifty first", "ninety-nine", "one hundred and eleven", "one thousand"]) {
     await say("Steve, option " + phrase);
     assert.deepEqual(answers(), []);
     assert.equal(cards.at(-1)?.detail, "No matching option.", phrase);
@@ -540,4 +540,38 @@ test("late and concurrent corrections keep the newest captured choice and its co
   t.mock.timers.tick(1001);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(registry.getReview(q.id)?.selections, [{ decisionId: "q", selected: ["postgres"], other: null }]);
+});
+
+test("a slow match cannot revive a cancelled newer answer or take a different question's slot", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const q = question();
+  const other = question("Which cache?", "sdk:Will");
+  const router = registry.voiceRouter!;
+  let started!: () => void;
+  let release!: () => void;
+  const matching = new Promise<void>(resolve => { started = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(model, "decide", async () => {
+    started();
+    await released;
+    return { rung: "job", answers: [{ choice: "sqlite", confidence: 1 }], detail: "delayed choice" };
+  });
+  const slow = say("Steve, answer: the one already running", "slow");
+  await matching;
+  t.mock.timers.tick(10);
+  await say("Will, option A", "will");
+  await say("Steve, option B", "newer");
+  assert.deepEqual(router.pendingVoiceActions.map(a => a.id), ["will", "newer"]);
+  await say("cancel");
+  release();
+  await slow;
+  assert.deepEqual(answers().map(a => a.reviewId), [other.id]);
+  assert.deepEqual(router.pendingVoiceActions.map(a => a.id), ["will"]);
+  await router.accept({ id: "late-transcript", capturedAt: now + 5, backend: "fluidaudio", text: "Steve, option A", words: [] });
+  assert.deepEqual(answers().map(a => a.reviewId), [other.id]);
+  t.mock.timers.tick(1001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.equal(registry.getReview(other.id)?.status, "answered");
 });

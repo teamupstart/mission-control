@@ -161,24 +161,20 @@ function spokenNumber(value: string, start = 0): number | undefined {
   return undefined;
 }
 
-export function spokenIndex(words: string): number {
+export function spokenIndex(words: string): number | undefined {
   const value = words.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/u, "").replace(/-/gu, " ");
   if (/^[a-z]$/u.test(value)) return value.charCodeAt(0) - 97;
   if (/^a[a-z]$/u.test(value)) return 26 + value.charCodeAt(1) - 97;
   if (/^\d+(?:st|nd|rd|th)?$/u.test(value)) return parseInt(value, 10) - 1;
   const number = spokenNumber(value) ?? (value.endsWith(" one") ? positions.get(value.slice(0, -4)) : undefined);
-  return (number ?? 0) - 1;
+  return number === undefined ? undefined : number - 1;
 }
 
 /** These commands request a particular option and cannot supply a written answer. */
 export function requestedChoice(words: string): number | "recommended" | undefined {
   if (/^go with your recommendation[.!?]*$/iu.test(words)) return "recommended";
   const selector = /^option\s+(.+?)\s*[.!?]*$/iu.exec(words)?.[1];
-  if (!selector) return undefined;
-  const index = spokenIndex(selector);
-  if (index >= 0) return index;
-  if (/^(?:zero|0+(?:th)?)$/iu.test(selector)) return -1;
-  return undefined;
+  return selector ? spokenIndex(selector) : undefined;
 }
 
 export async function matchAnswer(review: ReviewItem, words: string, allowText: boolean,
@@ -201,8 +197,8 @@ export async function matchAnswer(review: ReviewItem, words: string, allowText: 
   } else {
     const index = spokenIndex(words);
     const exact = options.filter(o => o.label.trim().toLowerCase() === normalized);
-    option = exact.length === 1 ? exact[0] : options[index];
-    if (!option && index >= 0) return null;
+    option = exact.length === 1 ? exact[0] : index === undefined ? undefined : options[index];
+    if (!option && index !== undefined) return null;
     if (!option && options.length) {
       const result = await decider.ask([{ kind: "option", text: words, prompt: decision.question,
         options: options.map(o => ({ ...o, detail: o.detail ?? "" })) }], { agents: target ? [target.agent] : [], signal }).catch(() => null);

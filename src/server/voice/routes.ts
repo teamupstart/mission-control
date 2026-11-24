@@ -1,7 +1,16 @@
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceRouter, type VoiceDeliverer } from "./router.ts";
-import type { Hono } from "hono";
+import { defaultVoiceDecider, type VoiceDecider } from "./decide.ts";
+import { decisionKeyAvailability, decisionKeyRevisions, removeDecisionKey, saveDecisionKey, savedDecisionKeys } from "./decision-key.ts";
+import {
+  VoiceDecisionKeyProviderSchema,
+  VoiceDecisionKeyPutSchema,
+  voiceDecisionKeyReport,
+  type VoiceKeyAvailability,
+  type VoiceKeyProvider,
+} from "@shared/voice-decide.ts";
+import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
@@ -17,13 +26,14 @@ import {
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
+  VoiceProviderIntentSchema,
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
 import { checkToken } from "../auth.ts";
-import { disabledFeatureResponse, requireFeature } from "../feature-flags/index.ts";
+import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
-import { getVoiceConfig, setVoiceConfig } from "./config.ts";
+import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
@@ -33,6 +43,23 @@ import { voiceStateStore, type VoiceStateStore } from "./state.ts";
  * disabled route still answers 404 before any body is read.
  */
 const VOICE_BODY_MAX_BYTES = 128 * 1024;
+
+function writeExpired(value?: string): boolean {
+  if (value === undefined) return false;
+  const expiry = Number(value);
+  return !Number.isSafeInteger(expiry) || expiry <= Date.now();
+}
+
+function keyWriteConflict(c: Context, provider: VoiceKeyProvider) {
+  if (writeExpired(c.req.header("x-voice-key-expires-at"))) {
+    return { error: "expired_key_write", reason: "The key change expired. Check its current source and try again." };
+  }
+  const observed = c.req.header("x-voice-key-revision");
+  if (observed !== undefined && observed !== decisionKeyRevisions()[provider]) {
+    return { error: "stale_key", reason: "The key changed since this row was read. Check its current source and try again." };
+  }
+  return null;
+}
 
 const limitBody = bodyLimit({
   maxSize: VOICE_BODY_MAX_BYTES,
@@ -71,6 +98,12 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
  *   already running, or a model already verified, is not started again.
  * - `DELETE /api/voice/model/download` cancels a running download, removes what it wrote, and
  *   returns `{ model }` as the disk now reads.
+ * - `GET /api/voice/decision-key` (contract E) returns `VoiceDecisionKeyReport`: the decision
+ *   provider in use and where each provider's key comes from. Never a key.
+ * - `PUT /api/voice/decision-key { provider, key }` saves one provider's key and `DELETE
+ *   /api/voice/decision-key?provider=` removes it; each leaves the other provider's key alone and
+ *   answers with the report. The key lives in `<state home>/voice/decision-key.json`, mode 0600,
+ *   outside SQLite and settings backups.
  *
  * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
  * cooperating local process posts to them, and the token is what separates it from any other.
@@ -88,7 +121,25 @@ export function registerVoiceRoutes(
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
 
-  app.get("/api/voice/config", gate, (c) => c.json({ config: getVoiceConfig() }));
+  let snapshotOrder = 0;
+  const dashboardSnapshot = () => ({
+    providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(), snapshotOrder: ++snapshotOrder, serverTime: Date.now(),
+  });
+
+  const providerConflict = () => ({
+    error: "A newer provider choice took effect.", config: getVoiceConfig(), providerRevision: providerRevision(),
+  });
+  app.get("/api/voice/config", gate, (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
+  });
+  app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceProviderIntentSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const ticket = reserveProviderWrite(parsed.data);
+    return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
+  });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
@@ -100,7 +151,13 @@ export function registerVoiceRoutes(
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    return c.json({ config: setVoiceConfig(parsed.data) });
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    if (writeExpired(c.req.header("x-voice-config-expires-at"))) {
+      return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
+    }
+    const ticket = c.req.header("x-voice-provider-ticket");
+    const config = setVoiceConfig(parsed.data, ticket);
+    return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);
   });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
@@ -118,6 +175,57 @@ export function registerVoiceRoutes(
     return c.json({ model: result.model }, 202);
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
+
+  const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
+  app.get("/api/voice/decision-key", gate, (c) => {
+    c.header("Cache-Control", "no-store");
+    const saved = savedDecisionKeys();
+    const config = getVoiceConfig();
+    const report = voiceDecisionKeyReport(config, decisionKeyAvailability(saved ?? {}, process.env));
+    return c.json({
+      ...report,
+      ...(saved === null && { savedKeysUnavailable: true }),
+      ...(c.req.header("x-voice-provider-revision") === "read" && {
+        selection: config.decisionProvider, keyRevisions: decisionKeyRevisions(), ...dashboardSnapshot(),
+      }),
+    });
+  });
+  app.put("/api/voice/decision-key", gate, limitBody, async (c) => {
+    // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key
+    // must not come back in the answer.
+    let body: unknown;
+    try { body = await c.req.json(); }
+    catch { return c.json({ error: "invalid_body", reason: "The body is not JSON." }, 400); }
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const parsed = VoiceDecisionKeyPutSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);
+    }
+    const conflict = keyWriteConflict(c, parsed.data.provider);
+    if (conflict) return c.json(conflict, 409);
+    let availability: VoiceKeyAvailability;
+    try {
+      availability = saveDecisionKey(parsed.data.provider, parsed.data.key);
+    } catch (error) {
+      console.warn("[voice] could not save the decision-model key:", error instanceof Error ? error.message : String(error));
+      return c.json({ error: "save_failed", reason: "The key could not be saved." }, 500);
+    }
+    return c.json(keyReport(availability));
+  });
+  app.delete("/api/voice/decision-key", gate, (c) => {
+    const provider = VoiceDecisionKeyProviderSchema.safeParse(c.req.query("provider"));
+    if (!provider.success) return c.json({ error: "invalid_provider", reason: "Name the provider: openai or jev." }, 400);
+    const conflict = keyWriteConflict(c, provider.data);
+    if (conflict) return c.json(conflict, 409);
+    let availability: VoiceKeyAvailability;
+    try {
+      availability = removeDecisionKey(provider.data);
+    } catch (error) {
+      console.warn("[voice] could not remove the decision-model key:", error instanceof Error ? error.message : String(error));
+      return c.json({ error: "save_failed", reason: "The key could not be removed." }, 500);
+    }
+    return c.json(keyReport(availability));
+  });
 
   app.get("/voice/listener/directive", gate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
@@ -166,9 +274,10 @@ export function registerVoiceUtteranceRoutes(
   app: Hono,
   deliverer: VoiceDeliverer,
   publish: (card: VoiceCard) => void,
+  decider: VoiceDecider = defaultVoiceDecider(),
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
-  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish,
+  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
     () => voiceStateStore.hostNowUs());
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);

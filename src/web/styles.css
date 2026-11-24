@@ -23146,6 +23146,29 @@ button.wf-carried.is-link:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Settings > Voice's "Faster routing" line: which decision model settles an ambiguous sentence
+   and what it is sent. Accented while a provider is in use, so a key picked up from the
+   environment cannot pass unnoticed; the words say it either way. */
+.voice-routing-line {
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--muted);
+}
+.voice-routing-line.is-on {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border-soft));
+  color: var(--fg);
+}
+.voice-key-source {
+  color: var(--fg);
+  font-weight: 560;
+}
+.voice-key-input {
+  width: 190px;
+}
 /* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
    would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
    never red: a warning is advice and nothing it says blocks a save. */

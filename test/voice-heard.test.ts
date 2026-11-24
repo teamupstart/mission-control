@@ -17,11 +17,12 @@ test("a daemon-dated dashboard pick and timestamped speech stay ordered across a
   t.mock.method(Date, "now", () => wallNow);
   const cards: VoiceCard[] = [];
   const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [steve, will] }),
-    () => ({ enabled: true, seconds: 30 }), { deliver: async () => "queued" }, card => cards.push(card), () => hostNow);
+    () => ({ enabled: true, seconds: 30 }), { deliver: async () => "queued" }, card => cards.push(card), undefined, () => hostNow);
   t.after(() => router.reset());
   const say = (id: string, text: string, capturedAt: number, startHostUs?: number) =>
     router.accept({ id, text, capturedAt, backend: "fluidaudio", words: [] }, { startHostUs });
-  assert.ok(await say("choice", "Steven ask Will", unix, 100_000));
+  assert.ok(await say("choice", "Steven ask Will about the deployment", unix, 100_000));
+  await router.resolution("choice");
   hostNow += 10_000;
   assert.ok(await router.pick("choice", will.key));
   wallNow -= 60_000;
@@ -121,6 +122,7 @@ test("delivery receives the routed stop decision across a cancel window and a ca
   try {
     await say("direct", "Steve, STOP!");
     await say("picked", "Steven, stop.");
+    await router.resolution("picked");
     assert.equal(await router.pick("picked", steve.key), true);
     await say("message", "Steve, stop the build");
     assert.deepEqual(deliveries, []);

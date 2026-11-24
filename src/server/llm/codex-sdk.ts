@@ -56,6 +56,14 @@ const THREAD_POSTURE = {
 } as const;
 
 /**
+ * Codex has no slot for a system prompt that replaces its own, so a caller's goes ahead
+ * of the prompt, set apart, which is what the spike's routing probe measured (S7).
+ */
+export function withSystemPrompt(prompt: string, systemPrompt: string | undefined): string {
+  return systemPrompt === undefined ? prompt : `${systemPrompt}\n\n${prompt}`;
+}
+
+/**
  * Provider config the exec transport spells as `-c` flags. Passed at the client because that
  * is where the SDK flattens `--config` overrides; a thread option cannot express these.
  */
@@ -167,13 +175,16 @@ export async function runCodexSdkOneShot(
     throw new Error("the codex SDK transport does not support images");
   }
 
+  opts.signal?.throwIfAborted();
   const env = agentSubprocessEnv(process.env, { loopbackAccess: true });
   const controller = new AbortController();
   liveRuns.add(controller);
   try {
     const clientOptions = {
       codexPathOverride: codexBin,
-      config: CLIENT_CONFIG,
+      // A run with thinking off takes `model_reasoning_effort` from the client config: the
+      // thread option's type stops at `minimal` and has no `none`.
+      config: opts.thinking === "off" ? { ...CLIENT_CONFIG, model_reasoning_effort: "none" } : CLIENT_CONFIG,
       env,
     };
     const client = deps.createClient
@@ -193,8 +204,8 @@ export async function runCodexSdkOneShot(
     // `outputSchema` is the SDK's spelling of the exec transport's `--output-schema`. Passing
     // it keeps a structured job answering the same shape on either transport; omitting it made
     // the two paths disagree for exactly the callers that care most.
-    const run = runWithProviderEvents(thread, prompt, {
-      signal: controller.signal,
+    const run = runWithProviderEvents(thread, withSystemPrompt(prompt, opts.systemPrompt), {
+      signal: opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal,
       ...(opts.schema ? { outputSchema: opts.schema } : {}),
     });
     const result = opts.timeoutMs

@@ -1,5 +1,5 @@
 import { envVar } from "@shared/harness-runtime.mjs";
-import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModels } from "@shared/llm-jobs.ts";
+import { LLM_JOB_SPECS, liveLlmJobIds, resolveLlmJobModels } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import type { LlmConfig } from "@shared/protocol.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
@@ -13,6 +13,7 @@ import {
   llmRunnerChoice,
 } from "./config.ts";
 import { allLlmRunners } from "./index.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 // What the app's offline work will actually spawn as, assembled for the one route that
 // reports it.
@@ -26,8 +27,10 @@ import { allLlmRunners } from "./index.ts";
 
 /** Every job at once, plus the runner, Claude transport and available providers. */
 export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
+  // A job behind a preview flag that is off is not reported at all (`voice-routing`).
+  const jobs = liveLlmJobIds(featureEnabled);
   const envValues = Object.fromEntries(
-    LLM_JOB_IDS.map((job) => [job, envVar(LLM_JOB_SPECS[job].envKey)]),
+    jobs.map((job) => [job, envVar(LLM_JOB_SPECS[job].envKey)]),
   ) as Partial<Record<LlmJobId, string | undefined>>;
   return {
     runner: llmRunnerChoice(cfg),
@@ -38,12 +41,14 @@ export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
     claudeTransport: claudeTransportChoice(cfg),
     codexTransport: codexTransportChoice(cfg),
     // Each job against ITS provider, which is no longer one answer for all five.
-    models: resolveLlmJobModels(cfg.models, envValues, (job) => llmJobRunner(job, cfg).id),
+    models: Object.fromEntries(Object.entries(
+      resolveLlmJobModels(cfg.models, envValues, (job) => llmJobRunner(job, cfg).id),
+    ).filter(([job]) => jobs.includes(job as LlmJobId))),
     // Beside the models rather than folded into them: a row prints the provider and the
     // model as two controls, and the provider carries its own source and `unknown`.
     jobRunners: Object.fromEntries(
-      LLM_JOB_IDS.map((job) => [job, llmJobRunner(job, cfg)]),
-    ) as Record<LlmJobId, ResolvedLlmRunner>,
+      jobs.map((job) => [job, llmJobRunner(job, cfg)]),
+    ) as Partial<Record<LlmJobId, ResolvedLlmRunner>>,
     // Ids AND labels, because a label lives on the implementation and the browser cannot
     // import one - see `LlmStatus.runners`.
     runners: allLlmRunners().map((r) => ({ id: r.id, label: r.label })),

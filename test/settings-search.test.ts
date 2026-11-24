@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import { SettingsPageFixture } from "./helpers/settings-page.ts";
 import { SetupPanel } from "../src/web/components/SetupPanel.tsx";
 import { SETUP_FAMILY_IDS } from "../src/shared/setup-catalog.ts";
 import { StorageSettingsPanelView } from "../src/web/components/StorageSettingsPanel.tsx";
@@ -115,9 +115,8 @@ const EVERY_CATEGORY: SettingsStatus = {
 
 function renderCategory(category: SettingsCategoryId): string {
   return renderToStaticMarkup(
-    createElement(FeatureFlagsContext.Provider, { value: FLAGS_ON }, createElement(SettingsPage, {
+    createElement(FeatureFlagsContext.Provider, { value: FLAGS_ON }, createElement(SettingsPageFixture, {
       category,
-      voiceConfig: { config: null, error: null, update: async () => false },
       shapingSettings: SHAPING,
       onNavigate: () => {},
       onLeave: () => {},

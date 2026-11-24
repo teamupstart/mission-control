@@ -27,6 +27,7 @@ import {
   piCatalogControlPath,
   piSdkModelsPath,
   writeFakeAgents,
+  writeFakeCodex,
 } from "./fake-agents.ts";
 import {
   conductorEngineerStatePath,
@@ -319,8 +320,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
-    copyFileSync(bins.codex, join(daemonPathBin, "codex"));
-    chmodSync(join(daemonPathBin, "codex"), 0o755);
+    writeFakeCodex(join(daemonPathBin, "codex"));
   }
   if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
     if (piOnLoginShellOnly) {
@@ -582,6 +582,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // (`startModelServer` in `voice.ts`, passed through `daemonEnv`) reaches a closed loopback
     // port and fails, rather than fetching half a gigabyte from Hugging Face.
     MISSION_VOICE_MODEL_BASE_URL: "http://127.0.0.1:9",
+    // No spec reaches a real decision-model provider (voice Phase 4). A key the machine running
+    // the suite holds is not inherited, so the decision model is off unless a spec supplies one
+    // through `daemonEnv`, and even then both providers point at a closed loopback port unless
+    // the spec points them at its own stand-in server.
+    OPENAI_API_KEY: undefined,
+    TYPESAFE_API_KEY: undefined,
+    MISSION_VOICE_OPENAI_DECISIONS_URL: "http://127.0.0.1:9",
+    MISSION_VOICE_JEV_URL: "http://127.0.0.1:9",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through

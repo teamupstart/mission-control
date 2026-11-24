@@ -5,8 +5,9 @@ When it is finished, the operator will talk to an agent by name, with speech rec
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
-holds a message for the configured cancel window and queues it to the addressed agent. On Apple silicon, the standalone listener captures and recognizes speech locally.
-The on-screen confirmation card belongs to a later phase.
+settles ambiguous sentences with a model, holds each message for the configured cancel window,
+and queues it to the addressed agent. On Apple silicon, the standalone listener captures and
+recognizes speech locally. The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
@@ -222,8 +223,10 @@ leave the cards open and record `ambiguous-pick` in Recently heard. If the selec
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
 no matching option records `no-message`. This includes “Release Captain” when both Release
 and Release Captain are on the roster.
-Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
-two-word match. No model is called.
+When a later name could start a second message, or the first name is in doubt, the
+[model step](#the-model-step) resolves that question. A later name with nothing on one
+side of it (“Steve and Will, check the build”, “Steve, ping Will”) leaves the whole
+message with the first agent.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the daemon submits the remaining text verbatim to the running target’s operator
@@ -249,7 +252,10 @@ The router allows up to 50 open or delivering cards in total. At capacity a capt
 would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
 Existing cards keep their deadlines, and the operator can still pick or cancel them.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
-timestamp. For a pick through the card API, the daemon records the host time when it applies
+timestamp and can select only choices the daemon had offered by then. A matching name on another
+card that was resolving at capture time keeps the pick ambiguous, even if that card has since
+settled or closed. The daemon retains the last 50 choice transitions and ignores spoken picks
+older than the history it can verify. For a pick through the card API, the daemon records the host time when it applies
 the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
 arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
@@ -263,6 +269,85 @@ card history exist only in memory and disappear on daemon restart or disabling v
 toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
 a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
+
+## The model step
+
+A sentence the names alone could not settle goes to one model step, with a five-second budget
+for the whole of it, process start included. It asks only what is left in doubt:
+
+- **Split or mention.** “Steve, check the build, and Alice, review the PR” is one card with two
+  parts: “check the build” to Steve and “review the PR” to Alice, each verbatim from the sentence
+  with the joining “and” dropped. When a comma alone marks the boundary, a lone ambiguous “and”
+  or “then” stays in the first message. In “Steve, echo done then, Alice, review the PR”, Steve
+  receives “echo done then” and Alice receives “review the PR” after either a model split or a
+  manual split pick. “Steve, ask Alice about the build” is a mention:
+  the whole text goes to Steve and nothing to Alice. A name inside a quoted sentence stays in the
+  dictated text. A quote around just the addressee can still start a separate command. Each possible split is considered in spoken
+  order, including repeated uses of the same name. The first split determines the two messages.
+  A “not sure” before that split leaves the card unsure. A sentence with more than eight possible
+  split positions goes straight to manual selection, with every position available. A name shared
+  by two agents counts once at each place it occurs in the sentence.
+  On an unsure card, picking the first agent keeps the whole message with that agent. Picking a
+  later occurrence confirms the split there, even when both messages go to the same agent.
+  If several rows share a name, their details distinguish keeping the message whole from splitting
+  at the words shown. Saying the shared name alone leaves the card unsure.
+- **Who.** A first word that sounds like two names (“Steven” with Steve and Stevie on the roster) asks
+  which was meant, judged by sound. If the rest of the sentence contains another possible command,
+  the router settles its split points after choosing the first agent, within the original deadline. If the selected spoken name belongs to several agents, the card stays unsure. The operator can pick the intended session from the roster rows.
+- **Option** questions, a loosely worded answer to a card, are part of the same contract for the
+  phase that answers cards by voice.
+
+An exact first-word name is never asked about: the model decides only split or mention, a name in
+doubt and an option. The step is a ladder, and every rung's answer is checked against the
+question's own choices before its confidence is read, since in the spike a model gave an option
+that was not on the card a confidence of 1.0.
+
+1. **A decision model**, when one is in use (see [Faster routing](#faster-routing)): one HTTPS
+   request per batch to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
+   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying each question as a typed choice.
+   Its two-second allowance covers the whole capture, including a follow-up split question.
+   A valid “not sure”, a refusal, or
+   confidence below 0.98 leaves routing unsure. An error, timeout, malformed reply, or choice
+   outside the offered values falls to the next rung with the time remaining.
+2. **The `voice-routing` job**, with thinking off and its own short system prompt, on the time
+   left. It runs on Codex (Luna, `gpt-6-luna`, floor 0.98) when every agent involved is a Codex
+   session, on Claude (Haiku) when every one is a Claude session, and otherwise on the provider
+   chosen for background jobs in **Settings > Models**. The Haiku rung is **off**: its retest
+   passed on accuracy and missed the five-second deadline once in 60 calls (see
+   [the spike findings](voice-spike-findings.md#s7-addendum-haiku-retest)), so a sentence to
+   Claude sessions skips this rung. Luna is never used in its place.
+3. **None**: the daemon marks the card `unsure` and includes the candidates for an operator
+   pick. A missing key or a disabled rung follows this same path.
+
+The daemon opens the card at once and puts it in the cancel order, so “cancel” stops it while the
+step runs. It is published as `resolving` only once the step has taken a second. When the step
+answers, the card keeps its place in the cancel order and becomes `pending` (one target, or
+two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
+both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
+cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
+each captured session immediately before delivering its part, in spoken order. If a session
+has left or been replaced, the other recipient can still receive their part. Recently heard
+lists each recipient and delivery result. The card carries the worse of the two outcomes.
+The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
+
+Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. None of
+the five moments in the selected **Roster rows** design (variant B) has a rendered outcome card
+in this phase. Phase 6 draws the on-screen candidate picker, the stopped resident and finished
+session with their respective actions, the message held behind a blocking question, and the
+two-message split or one-message mention. It also supplies the clickable rows used when asking
+aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
+in Voice settings lists addressable agents independently of these outcomes.
+[Selected routing-exceptions mock-up](plans/voice-addressing-for-agents/mockup-routing-exceptions.html#b)
+· [Phase 6 outcome cards](plans/voice-addressing-for-agents/phase-6-confirmation-and-outcome-cards.md)
+· [Phase 12 ask aloud](plans/voice-addressing-for-agents/phase-12-floating-surfaces-and-ask-aloud.md)
+
+For what each model receives, see [Voice routing in the Security guide](security.md#voice-routing).
+
+`MISSION_VOICE_OPENAI_DECISIONS_URL` and `MISSION_VOICE_JEV_URL` replace each provider's base URL
+(`https://api.openai.com`, `https://api.typesafe.ai`) for a test server or a gateway. The end-to-end
+suite points both at a closed loopback port, and its daemons never inherit `OPENAI_API_KEY` or
+`TYPESAFE_API_KEY`, so no spec reaches a real provider; a spec that drives the rung serves both
+endpoints with `startDecisionServer()`.
 
 ## Turning voice on
 
@@ -405,6 +490,46 @@ Below that are the behavior rows:
 | Cancel window (switch and length) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
 | When routing is unsure (Show on screen or Ask aloud) | `whenUnsure` | `show` |
 | Plan forms by voice | `planFormsByVoice` | on |
+
+### Faster routing
+
+The **Faster routing** group chooses the decision model (`decisionProvider`) and holds a key for
+each provider, since a key belongs to a provider.
+
+- The line at the top names the provider in use. When no provider is in use, it reads
+  “Not set: routing uses Luna for Codex sessions, and shows the candidates for others”.
+- **Decision model**: **Automatic** (null, the default), **Off** (`off`), **OpenAI Decisions**
+  (`openai`) or **Jev** (`jev`). Automatic takes the first of four keys that exists, in a fixed
+  order: a saved OpenAI Decisions key, a saved Jev key, `OPENAI_API_KEY` in the daemon's
+  environment, `TYPESAFE_API_KEY` in it. So a key in the environment alone switches the decision
+  model on, a saved key beats any environment key, and within each OpenAI Decisions comes first.
+  A provider chosen by name is used only with its own key; another provider's key is never sent
+  to it. Off sends nothing to either, whatever keys exist.
+- The **OpenAI Decisions key** and **Jev key** rows show **From the environment**, **Saved on
+  this Mac** or **Not set**. Enter a key and choose **Save** to add or replace that provider's
+  key. Choose **Remove** to delete its saved key. If that provider also has an environment key,
+  its row then shows **From the environment**. Each action affects only the selected provider.
+  If the daemon cannot read the key store, the rows flag the saved key status as unavailable.
+  The banner still names the provider receiving speech through an environment key, or
+  describes the job and roster fallback when neither provider is in use.
+  For storage and disclosure details, see [Saved voice decision keys](security.md#saved-voice-decision-keys).
+
+`GET /api/voice/decision-key` returns `{ provider, keys: { openai: { source }, jev: { source } } }`
+with `source` one of `settings`, `environment` or null. An unreadable store adds
+`savedKeysUnavailable: true` and the report identifies the usable environment keys.
+Dashboard reads of both config and key status carry the provider selection revision and the
+order in which the daemon read the snapshot. A delayed poll can still show a new cancel-window
+length, and an older result cannot make an already removed key appear saved again.
+Config, device and key-status reads expire after 15 seconds. Saving or removing a key cancels
+earlier key-status polls and refreshes the rows. Leaving Voice settings cancels outstanding reads.
+If a save or removal goes unconfirmed for 15 seconds, the dashboard releases both rows and
+reads the current key sources from the daemon.
+The dashboard sends that deadline and the revision it read for the provider with each save or removal.
+The daemon checks both before changing the key file. A late request cannot enable or disable routing
+after the dashboard has reported the timeout.
+`PUT /api/voice/decision-key` accepts
+`{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
+Decisions key. Both operations return the updated report.
 
 The settings are one `app_config` entry, `voice`, read with defaults so a field an older build
 never wrote needs no migration. It holds every field the later phases read, so none of them
@@ -602,6 +727,24 @@ absent otherwise; a shell report's `listener` entry is dropped.
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
+  Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
+  The dashboard uses the request and response times of daemon snapshots to estimate expiry.
+  A slow response preserves an earlier, more precise estimate. If the initial estimate is too
+  imprecise, the dashboard requests another sample within the edit's original time budget.
+  The daemon rejects an expired patch before changing any setting.
+- The dashboard reserves a provider selection with `POST /api/voice/config/provider-intent`
+  and sends the returned ticket in the config write's `x-voice-provider-ticket` header. A newer
+  selection can commit immediately. An older write arriving afterwards receives 409.
+  A window with a stale view can retry Off when the daemon's last provider intent
+  predates the click. An intervening reservation also invalidates that retry.
+  An uncommitted reservation also counts when ordering clicks from different windows.
+  Dashboard windows share the daemon's latest reservation receipt before submitting a write.
+  A click carrying that receipt follows the reservation even if its response arrives much later.
+  This protects a pending Off from a delayed opt-in and a pending provider from a delayed Off.
+  A later opt-in can still switch providers if its window observed the current selection.
+  The dashboard gives a provider change 75 seconds, including its reservation, write and any
+  retry. If the change times out, it reads the current configuration and provider from the daemon.
+  The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
   the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
@@ -642,6 +785,19 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
+- `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
+  split or mention with the target fixed, and where a split cuts the sentence.
+- `test/voice-decide.test.ts`, with both real provider adapters over a fake `fetch` answering in
+  each provider's documented reply shape and a scripted job: the key order (each source alone,
+  both saved, a saved Jev key against `OPENAI_API_KEY`, a chosen provider, Off, a chosen provider
+  with only the other's key), a provider error or timeout falling to the job on what is left of the
+  budget, a job past the deadline, a low confidence, a choice that is not on the list at 1.0, a
+  refusal, the job's provider following the agents, and the router's split, mention, unsure,
+  `resolving` and cancel-while-resolving.
+- `test/voice-decision-key-http.test.ts` covers saving and removing keys independently, each
+  provider's reported source, and the credential protections in the security guide.
+- `test/voice-utterances-http.test.ts`: the routes, the cancel order and delivery, with a scripted
+  model step, including a split queued to each agent.
 - `test/voice-config-http.test.ts`: defaults, patches, mute, the token routes, the frames, and
   every route answering 404 with the flag off.
 - `test/setup-probes.test.ts`: the **Voice previews**, **Microphone access** and **Voice speech
@@ -687,3 +843,11 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   offers the listener's devices. `startModelServer()` in `e2e/fixtures/voice.ts` stands in for
   Hugging Face with three small files and a manifest pinning them, so no spec downloads the real
   model.
+- `e2e/specs/voice-decision-key.spec.ts`: a saved OpenAI Decisions key reads **Saved on this Mac**
+  and the group names OpenAI Decisions, the page never holds the key, and Remove clears it; with
+  keys on both rows Automatic names OpenAI Decisions and choosing Jev names Jev, and a split
+  sentence reaches Jev with its own key; with `OPENAI_API_KEY` in the daemon's environment the
+  group names OpenAI Decisions and the row reads **From the environment**, and Off reads **Not
+  set** while the suite's fake Codex answers the routing job for split and mention.
+  `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
+  suite's daemon never inherits either variable, so no spec reaches a provider.

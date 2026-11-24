@@ -66,7 +66,7 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
   if (capture) await table.screenshot({ path: join(capture, "empty.png") });
 });
 
-test("a spoken selection shows the chosen agent without highlighting an unrelated opening word", async ({ dashboard: page, daemon }) => {
+test("a spoken split selection shows each recipient without highlighting the opening word", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   for (const callSign of ["Steve", "Will"]) {
     const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
@@ -82,7 +82,8 @@ test("a spoken selection shows the chosen agent without highlighting an unrelate
   expect((await say(daemon, "Will")).ok).toBe(true);
   const history = page.getByRole("region", { name: "Recently heard" });
   const original = history.getByRole("row").filter({ has: page.getByRole("cell", { name: phrase, exact: true }) });
-  await expect(original.getByRole("cell", { name: "Will", exact: true })).toBeVisible();
+  await expect(original.getByRole("cell", { name: "Steve", exact: true })).toBeVisible();
+  await expect(original).toContainText("Part 1 (Steve) queued. Part 2 (Will) queued.");
   await expect(original).toContainText("second name");
   await expect(history.getByRole("row").filter({ hasText: "spoken selection" })).toBeVisible();
   await expect(original.locator("mark")).toHaveCount(0, { timeout: 3000 });

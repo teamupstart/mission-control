@@ -5,6 +5,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
+  VOICE_LISTENER_ID_HEADER,
   type VoiceListenerDirective,
   VoiceConfigPatchSchema,
   VoiceListenerHelloSchema,
@@ -88,6 +89,8 @@ export function registerVoiceRoutes(
   app.get("/voice/listener/directive", gate, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
+    const id = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
     const current = store.directive();
     if (c.req.query("revision") !== current.revision) return c.json(current);
     const signal = c.req.raw.signal;
@@ -105,15 +108,15 @@ export function registerVoiceRoutes(
       signal.addEventListener("abort", finish, { once: true });
       if (signal.aborted) finish();
     });
-    return c.json(next);
+    return store.ownsCapture(id) ? c.json(next) : c.json({ error: "not_listener_owner" }, 409);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const result = store.acceptHello(parsed.data);
+    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data);
     if (!result.ok) {
-      return c.json({ error: "unsupported_protocol", reason: result.reason, protocol: result.protocol }, 409);
+      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : 409);
     }
     return c.json({ accepted: true, protocol: result.protocol });
   });
@@ -138,7 +141,8 @@ export function registerVoiceUtteranceRoutes(
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     // Capture may have stopped and resumed while the request was in flight or its body was being read.
-    if (c.req.query("revision") !== voiceStateStore.directive().revision) return c.json({ accepted: false });
+    if (!voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) ||
+      c.req.query("revision") !== voiceStateStore.directive().revision) return c.json({ accepted: false });
     return c.json({ accepted: await router.accept(parsed.data) });
   });
   app.get("/api/voice/heard", gate, (c) => {

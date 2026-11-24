@@ -31,12 +31,14 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, slowLoad = false } = {}) {
     const events: string[] = [];
     const hellos: { modelLoaded: boolean; version: string }[] = [];
+    const instanceIds = new Set<string | undefined>();
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
       const url = new URL(req.url!, "http://localhost");
+      instanceIds.add(req.headers["x-voice-listener-id"] as string | undefined);
       if (url.pathname === "/voice/listener/directive") {
         polls.push({ revision: url.searchParams.get("revision"), response: res });
         return;
@@ -87,14 +89,14 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
       response.end(JSON.stringify({ revision, capture, inputDevice, roster: names }));
     }
     apply(await nextPoll(null), "first", true);
-    return { events, posted, child, closed, nextPoll, apply, hellos };
+    return { events, posted, child, closed, nextPoll, apply, hellos, instanceIds };
   }
 
-  it("finishes the outstanding loading heartbeat before publishing protocol 2.0 readiness", async (t) => {
+  it("finishes the outstanding loading heartbeat before publishing protocol 3.0 readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
     await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
     assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
-    assert.ok(hellos.every(h => h.version === "2.0"));
+    assert.ok(hellos.every(h => h.version === "3.0"));
   });
 
   it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {
@@ -150,10 +152,12 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
 
   it("delivers the next segment on the same active microphone after a transcription failure", async (t) => {
-    const { events, posted, child } = await launch(t, { inputDevice: "two-segments" });
+    const { events, posted, child, instanceIds } = await launch(t, { inputDevice: "two-segments" });
     await until(() => events.includes("released next"), "second segment to finish");
     assert.deepEqual(events.filter(e => e.startsWith("decode ")), ["decode undecodable", "decode next"]);
     assert.deepEqual(posted, [{ text: "next", revision: "first" }]);
+    assert.equal(instanceIds.size, 1, "hello, polling and delivery must identify the same listener process");
+    assert.match([...instanceIds][0] ?? "", /^[0-9a-f-]{36}$/i);
     assert.deepEqual(events.filter(e => /^(opened|stopped|released microphone) /.test(e)), ["opened 1"]);
     assert.equal(child.exitCode, null);
   });

@@ -1,6 +1,6 @@
 import Foundation
 
-enum CaptureError: Error { case device, format }
+enum CaptureError: Error { case device, format, listenerInUse }
 
 struct Directive: Decodable {
     let revision: String
@@ -10,7 +10,7 @@ struct Directive: Decodable {
 }
 
 struct Hello: Encodable {
-    let version = "2.0"
+    let version = "3.0"
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
     let modelLoaded: Bool
@@ -22,6 +22,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let base: URL
     let token: String
     let directory: URL
+    private let listenerID = UUID().uuidString
     private lazy var session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
 
     override init() {
@@ -48,12 +49,17 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
+        req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
         if let body {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
         }
         let (data, response) = try await session.data(for: req)
+        if (response as? HTTPURLResponse)?.statusCode == 409,
+           (try? JSONDecoder().decode([String: String].self, from: data))?["error"] == "listener_in_use" {
+            throw CaptureError.listenerInUse
+        }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         return data
     }
@@ -159,6 +165,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 @main struct VoiceListener {
     @MainActor static func main() async {
         do { try await Listener().run() }
+        catch CaptureError.listenerInUse { fputs("Another voice listener is active.\n", stderr); exit(1) }
         catch CaptureError.device { fputs("The selected microphone input is unavailable.\n", stderr); exit(1) }
         catch { fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr); exit(1) }
     }

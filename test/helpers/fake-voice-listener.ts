@@ -1,16 +1,17 @@
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
-import { VOICE_HELLO_INTERVAL_MS, VOICE_LISTENER_PROTOCOL_VERSION, type VoiceListenerDirective, type VoiceListenerHello } from "../../src/shared/voice.ts";
+import { VOICE_HELLO_INTERVAL_MS, VOICE_LISTENER_ID_HEADER, VOICE_LISTENER_PROTOCOL_VERSION, type VoiceListenerDirective, type VoiceListenerHello } from "../../src/shared/voice.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 
 /** The same HTTP client can drive an in-process Hono app or a daemon on loopback. */
 export class FakeVoiceListener {
+  private readonly id = crypto.randomUUID();
   constructor(private readonly url: string, private readonly tokenFile: string,
     private readonly send: (url: string, init: RequestInit) => Promise<Response> = fetch) {}
 
   private request(path: string, body?: unknown) {
     return this.send(new URL(path, this.url).href, {
-      headers: { "x-harness-token": readFileSync(this.tokenFile, "utf8").trim(), "content-type": "application/json" },
+      headers: { "x-harness-token": readFileSync(this.tokenFile, "utf8").trim(), [VOICE_LISTENER_ID_HEADER]: this.id, "content-type": "application/json" },
       ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
     });
   }

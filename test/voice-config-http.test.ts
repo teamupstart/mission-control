@@ -26,6 +26,7 @@ type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 const token = ensureToken();
+const listenerId = crypto.randomUUID();
 const registry = new Registry();
 const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry) });
 const frames: VoiceState[] = [];
@@ -37,7 +38,7 @@ const json = (path: string, method = "GET", body?: unknown, extra: Record<string
   app.request(path, { method, headers: { ...headers, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 const hello = (body: Record<string, unknown> = {}, auth: string | null = token) => json("/voice/listener/hello", "POST", {
   backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted", ...body,
-}, auth === null ? {} : { "x-harness-token": auth });
+}, auth === null ? {} : { "x-harness-token": auth, "x-voice-listener-id": listenerId });
 const report = (body: Record<string, unknown>, auth: string | null = token) =>
   json("/voice/shell-report", "POST", body, auth === null ? {} : { "x-harness-token": auth });
 const setFlag = (id: "voice" | "async-input" | "inbox" | "filed-plan-decisions", enabled: boolean) =>
@@ -235,6 +236,22 @@ test("protocol 1.0 is refused at hello before unversioned captures can start", a
   assert.equal(state.capabilities.listener?.available, false);
   assert.equal(state.capabilities.listener?.reason, body.reason);
   assert.equal((await hello({ version: "two" })).status, 400, "a version that is not one is a 400");
+});
+
+test("protocol 3 requires a process UUID and a legacy hello cannot displace a live owner", async () => {
+  const body = { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted" };
+  const send = (version: string, id?: string) => json("/voice/listener/hello", "POST", { ...body, version },
+    { "x-harness-token": token, ...(id && { "x-voice-listener-id": id }) });
+  for (const id of [undefined, "invalid"]) {
+    const refused = await send(body.version, id);
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).error, "invalid_listener_id");
+  }
+  assert.equal((await hello()).status, 200);
+  const legacy = await send("2.0");
+  assert.equal(legacy.status, 409);
+  assert.equal((await legacy.json()).error, "unsupported_protocol");
+  assert.equal(voiceStateStore.state().mode, "listening");
 });
 
 test("a shell report's capabilities, call and hotkey error reach the state", async () => {

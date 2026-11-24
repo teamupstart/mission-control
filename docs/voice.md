@@ -36,9 +36,16 @@ FluidAudio model manifest. The helper reads microphone authorization without pro
 An explicit denial is sent in the hello and exits with status 2. An undetermined permission
 requires granting access from the launching app before capture can begin.
 
-On startup and every ten seconds, the helper posts protocol 2.0 to `/voice/listener/hello`.
-Version 2 requires the capture directive's revision on each utterance POST. A version 1
-hello receives HTTP 409 before the helper opens the microphone. The helper sends one hello
+On startup and every ten seconds, the helper posts protocol 3.0 to `/voice/listener/hello`.
+Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
+directive poll and utterance POST, alongside the daemon token. The first compatible hello
+claims capture. A second process receives HTTP 409 `listener_in_use` and exits before
+opening the microphone. A new process can claim capture 30 seconds after the owner's last
+hello. It receives a fresh revision even when settings are identical. The daemon checks
+ownership again when a held poll completes and before routing each utterance.
+
+Every utterance POST also requires the capture directive's revision. Older protocol majors
+receive HTTP 409 `unsupported_protocol` at hello. The helper sends one hello
 at a time, so a loading heartbeat completes before it announces CoreML readiness.
 The hello lists inputs by stable UID and reports built-in and Bluetooth transport. It
 omits empty or oversized UIDs and limits display names to 256 UTF-16 code units.
@@ -459,8 +466,8 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 - `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
-  major version from this daemon's (`2`) is refused with 409 `unsupported_protocol`, and the state's
-  `listener` capability says why.
+  major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
+  If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.

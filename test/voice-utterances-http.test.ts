@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { HeardEntry, VoiceCard } from "../src/shared/voice-routing.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
+import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
 process.env.MISSION_HOME = home;
@@ -17,7 +18,7 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
-const { VOICE_REQUIRED_FLAGS, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
+const { VOICE_REQUIRED_FLAGS, VOICE_HELLO_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { closeDb } = await import("../src/server/db.ts");
@@ -31,8 +32,9 @@ const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, review
 const cards: VoiceCard[] = [];
 registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
 const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const listenerId = randomUUID();
 const post = (path: string, body: unknown = {}, auth?: string) => app.request(path, { method: "POST",
-  headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth } : {}) },
+  headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth, "x-voice-listener-id": listenerId } : {}) },
   body: JSON.stringify(body) });
 const capture = (text: string, id = String(randomUUID())) => ({ id, text, backend: "fluidaudio", capturedAt: Date.now() });
 const utterancePath = (revision = voiceStateStore.directive().revision) => "/voice/utterances?revision=" + encodeURIComponent(revision);
@@ -48,6 +50,7 @@ pending.start();
 const queued = (agent: string) => registry.getSession("sdk:" + agent)!.pendingTurns.map((row) => row.text);
 
 beforeEach(async () => {
+  voiceStateStore.reset();
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
@@ -69,6 +72,51 @@ test("token and schema gates, muted drop, and push-to-talk acceptance", async ()
   await post("/voice/shell-report", { callActive: true, pushToTalk: true }, token);
   assert.equal(voiceStateStore.state().mode, "push-to-talk");
   assert.deepEqual(await (await say("Steve push to talk")).json(), { accepted: true });
+});
+
+test("only one listener can capture or deliver, and its heartbeat lease transfers after lapse", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  voiceStateStore.reset();
+  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  assert.equal(config.status, 200);
+  const clients = [0, 1].map(() => new FakeVoiceListener("http://localhost", join(home, "token"), async (url, init) => app.request(url, init)));
+  const hellos = await Promise.all(clients.map(client => client.hello()));
+  assert.deepEqual(hellos.map(res => res.status).sort(), [200, 409]);
+  const owner = clients[hellos.findIndex(res => res.ok)]!;
+  const other = clients[hellos.findIndex(res => !res.ok)]!;
+  assert.equal((await hellos.find(res => !res.ok)!.json()).error, "listener_in_use");
+  const original = await owner.poll();
+  assert.equal(original.capture, true);
+  await assert.rejects(other.poll(), /409/);
+  assert.equal((await other.hello({ version: "2.0" })).status, 409);
+  const spoken = "Steve count the microphones";
+  const count = queued("Steve").length;
+  for (const [client, accepted] of [[owner, true], [other, false]] as const) {
+    assert.deepEqual(await (await client.utterance(spoken, [], original.revision)).json(), { accepted });
+  }
+  assert.equal(queued("Steve").length, count + 1);
+  t.mock.timers.setTime(now + 10_000);
+  assert.ok((await owner.hello()).ok);
+  const held = assert.rejects(owner.poll(original.revision), /409/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.setTime(now + 10_000 + VOICE_HELLO_LAPSE_MS - 1);
+  assert.equal((await other.hello()).status, 409);
+  t.mock.timers.setTime(now + 10_000 + VOICE_HELLO_LAPSE_MS);
+  assert.deepEqual(await (await owner.utterance(spoken, [], original.revision)).json(), { accepted: false });
+  assert.ok((await other.hello()).ok);
+  await held;
+  const current = await other.poll();
+  assert.equal(current.capture, true);
+  assert.notEqual(current.revision, original.revision);
+  assert.equal((await owner.hello()).status, 409);
+  assert.deepEqual(await (await owner.utterance(spoken, [], current.revision)).json(), { accepted: false });
+  assert.deepEqual(await (await other.utterance(spoken, [], original.revision)).json(), { accepted: false });
+  assert.deepEqual(await (await other.utterance(spoken, [], current.revision)).json(), { accepted: true });
+  assert.equal(queued("Steve").length, count + 2);
+  assert.deepEqual(queued("Steve").slice(count), ["count the microphones", "count the microphones"]);
+  assert.equal((await readHeard()).length, 2);
 });
 
 test("only the selected live recognizer can open or cancel a card after switching backends", async (t) => {

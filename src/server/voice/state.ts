@@ -8,6 +8,7 @@ import {
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_MAJOR,
   VOICE_LISTENER_PROTOCOL_VERSION,
+  VoiceListenerIdSchema,
   VOICE_REQUIRED_FLAGS,
   VOICE_SHELL_REPORT_LAPSE_MS,
   voiceMode,
@@ -43,7 +44,7 @@ export interface VoiceStateDeps {
 
 export type VoiceHelloResult =
   | { ok: true; protocol: string }
-  | { ok: false; reason: string; protocol: string };
+  | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id"; reason: string; protocol: string };
 
 /**
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
@@ -54,7 +55,7 @@ export type VoiceHelloResult =
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
-  private hello: { at: number; hello: VoiceListenerHello } | null = null;
+  private hello: { at: number; id: string; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; report: VoiceShellReport } | null = null;
@@ -71,6 +72,14 @@ export class VoiceStateStore {
   private rosterSource: (() => readonly SpokenName[]) | null = null;
 
   constructor(private readonly deps: VoiceStateDeps) {}
+
+  private liveHello() {
+    return this.hello && this.deps.now() - this.hello.at < VOICE_HELLO_LAPSE_MS ? this.hello : null;
+  }
+
+  ownsCapture(id: string | undefined): boolean {
+    return id !== undefined && this.liveHello()?.id === id;
+  }
 
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
@@ -100,7 +109,7 @@ export class VoiceStateStore {
     if (!this.deps.enabled(VOICE_FLAG)) return voiceStateOff();
     const now = this.deps.now();
     const config = this.deps.config();
-    const hello = this.hello && now - this.hello.at < VOICE_HELLO_LAPSE_MS ? this.hello.hello : null;
+    const hello = this.liveHello()?.hello ?? null;
     const refused = this.refused && now - this.refused.at < VOICE_HELLO_LAPSE_MS ? this.refused : null;
     const report = this.report && now - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? this.report.report : null;
     const reasons = voiceUnavailableReasons({
@@ -135,7 +144,7 @@ export class VoiceStateStore {
 
   routingState() {
     const { mode, roster } = this.state();
-    const reported = this.hello?.hello.backend ?? null;
+    const reported = this.liveHello()?.hello.backend ?? null;
     const configured = this.deps.config().backend;
     const backend = configured === "auto" || configured === reported ? reported : null;
     return { mode, roster, backend };
@@ -164,27 +173,36 @@ export class VoiceStateStore {
 
   /** The input devices the live listener listed, or null with no live hello. */
   listenerDevices(): VoiceInputDevice[] | null {
-    const now = this.deps.now();
-    if (!this.hello || now - this.hello.at >= VOICE_HELLO_LAPSE_MS) return null;
-    return this.hello.hello.devices.map((device) => ({ ...device }));
+    return this.liveHello()?.hello.devices.map((device) => ({ ...device })) ?? null;
   }
 
   /**
-   * Take a listener's hello. One naming a protocol major this daemon does not speak is refused,
-   * and replaces any earlier hello: the listener that is running now is the one that cannot be
-   * heard, and the state says why until the refusal lapses.
+   * The first compatible hello after a lapse claims capture. Only that process can renew it.
+   * A competing or incompatible process must not alter a live owner's readiness or heartbeat.
    */
-  acceptHello(hello: VoiceListenerHello): VoiceHelloResult {
+  acceptHello(id: string | undefined, hello: VoiceListenerHello): VoiceHelloResult {
     const at = this.deps.now();
+    const owner = this.liveHello();
+    const protocol = VOICE_LISTENER_PROTOCOL_VERSION;
     const major = voiceProtocolMajor(hello.version);
     if (major !== VOICE_LISTENER_PROTOCOL_MAJOR) {
       const reason = `The listener speaks protocol ${hello.version}, and this Mission Control speaks ${VOICE_LISTENER_PROTOCOL_VERSION}. Update whichever is older.`;
-      this.hello = null;
-      this.refused = { at, reason };
-      this.publish();
-      return { ok: false, reason, protocol: VOICE_LISTENER_PROTOCOL_VERSION };
+      if (!owner || owner.id === id) {
+        this.hello = null;
+        this.refused = { at, reason };
+        this.publish();
+      }
+      return { ok: false, error: "unsupported_protocol", reason, protocol };
     }
-    this.hello = { at, hello };
+    if (!id || !VoiceListenerIdSchema.safeParse(id).success) {
+      return { ok: false, error: "invalid_listener_id", reason: "Send a UUID for this listener process.", protocol };
+    }
+    if (owner && owner.id !== id) {
+      return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
+    }
+    // Even if the lapse timer has not fired, a new lease invalidates all previously captured speech.
+    if (!owner) this.lastDirective = undefined;
+    this.hello = { at, id, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
     this.publish();

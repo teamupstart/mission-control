@@ -77,9 +77,12 @@ prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-
 
 On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
-Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
-directive poll and utterance POST, alongside the daemon token. The first compatible hello
-claims the listener lease. While its microphone permission is granted, a second process
+Standalone listeners generate a UUID per process. The desktop supervisor generates its own
+UUID and passes it to each managed helper after the previous child exits. This lets its
+replacement resume capture immediately after the daemon event stream reconnects.
+Send the UUID in `x-voice-listener-id` on each hello, directive poll and utterance POST,
+alongside the daemon token. The first compatible hello claims the listener lease.
+While its microphone permission is granted, a listener with a different UUID
 receives HTTP 409 `listener_in_use` and exits before
 opening the microphone. A new process can claim capture 30 seconds after the owner's last
 hello. It receives a fresh revision even when settings are identical. The daemon checks

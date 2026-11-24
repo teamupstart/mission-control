@@ -85,6 +85,54 @@ test("an in-transit Cancel can reach the daemon after the retry control returns"
   expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
 });
 
+test("an uncertain desktop countdown uses the same configured cap as the card", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 4);
+  await runningAgent(page, daemon, "Steve");
+  const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
+  await page.request.put(daemon.baseURL + "/api/ui/config", { data: { alerts: { ...config.alerts, notifications: true, sound: false } } });
+  await page.route("**/api/voice/config", route => route.fulfill({ status: 503 }));
+  await page.addInitScript(() => {
+    document.hasFocus = () => document.documentElement?.dataset.away !== "true";
+    Object.defineProperty(Notification, "permission", { get: () => "granted" });
+    Object.defineProperty(window, "missionDesktop", { value: {
+      isDesktop: true, onOpenSettings: () => () => {},
+      showVoiceCardNotice: ({ title, deadline }: { title: string; deadline: number }) => {
+        document.documentElement.dataset.noticeTitle = title;
+        document.documentElement.dataset.noticeBudget = String(deadline - Date.now());
+        return Promise.resolve(null);
+      },
+      dismissVoiceCardNotice() {},
+    } });
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", event => {
+          if (!event.isTrusted) return;
+          const frame = JSON.parse(event.data);
+          if (frame.type !== "snapshot" || !frame.voiceCards?.length) return;
+          // Model a stale stream timestamp with a wide upper bound. The daemon's
+          // actual card, cancel deadline and configured window are preserved.
+          frame.voiceServerTime -= 2500;
+          event.stopImmediatePropagation();
+          setTimeout(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) })), 150);
+        });
+      }
+    };
+  });
+  await say(daemon, "Steve, cap the notice");
+  await page.reload();
+  const card = page.getByRole("status").filter({ hasText: "cap the notice" });
+  await expect(card).toContainText("≤4s");
+  await page.evaluate(() => {
+    document.documentElement.dataset.away = "true";
+    window.dispatchEvent(new Event("blur"));
+  });
+  await expect(page.locator("html")).toHaveAttribute("data-notice-title", "To Steve · up to 4s to cancel", { timeout: 1000 });
+  expect(Number(await page.locator("html").getAttribute("data-notice-budget"))).toBeGreaterThan(4000);
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
 test("a desktop Cancel accepted before clock refinement is applied when its reply arrives", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 20);
   await runningAgent(page, daemon, "Steve");

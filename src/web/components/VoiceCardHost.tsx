@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
@@ -73,7 +73,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
     const showNotice = () => {
       try {
         const remaining = Math.max(0, deadline - performance.now());
-        const seconds = Math.ceil(remaining / 1000);
+        const seconds = voiceCountdownSeconds(remaining, card.windowMs);
         if (seconds === 0) return;
         const title = recipient + (card.provisionalDeadline ? " · up to " + seconds + "s to cancel" : " · sending in " + seconds + "s");
         const shell = window.missionDesktop;
@@ -129,7 +129,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
-  }, [cardId, wireDeadline, deadline, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
+  }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
   return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 

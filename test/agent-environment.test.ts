@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, renameSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
@@ -19,6 +20,35 @@ import { isolatedAgentArgv } from "../src/server/agent-subprocess-env.ts";
 import { beginResumeLaunch, createResumeLease, RESUME_START_MS, resumeLeaseRoot, writeResumeEnvironmentSocket, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
 import { openTerminalEnvironmentHandoff, reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs, terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
+
+test("a version 53 database gains an empty terminal warning store and retains its configured names", async () => {
+  const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version = 53");
+    const config = JSON.stringify({ names: ["SERVICE"] });
+    db.prepare("INSERT INTO app_config VALUES (?, ?)").run(APP_CONFIG_ENTRIES.agentEnvironment.key, config);
+    upgradeDatabaseToCurrentSchema(db);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM terminal_launch_warnings").get()?.n, 0);
+    assert.equal(db.prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.agentEnvironment.key)?.value, config);
+  } finally { db.close(); }
+});
+
+test("an unclaimed warning cannot be taken by a replaced launch directory and is pruned", async (t) => {
+  const { rememberTerminalLaunchWarning, restoreTerminalLaunchWarning, pruneTerminalLaunchWarnings } =
+    await import("../src/server/terminal-launch-warnings.ts");
+  const { openDb } = await import("../src/server/db.ts");
+  const dir = mkdtempSync(join(tmpdir(), "agent-warning-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const home = join(dir, "launch");
+  mkdirSync(home);
+  rememberTerminalLaunchWarning(home, ["MISSING"]);
+  renameSync(home, join(dir, "previous"));
+  mkdirSync(home);
+  assert.equal(restoreTerminalLaunchWarning("proc:replacement", home), undefined);
+  pruneTerminalLaunchWarnings(new Set());
+  assert.equal(openDb().prepare("SELECT 1 FROM terminal_launch_warnings WHERE launch_home = ?").get(home), undefined);
+});
 
 test("names reject assignments, duplicates, object keys, launcher identities and state credentials", () => {
   for (const name of ["TOKEN=example", "__proto__", "constructor", "MISSION_API_TOKEN", "FLEET_HOME",

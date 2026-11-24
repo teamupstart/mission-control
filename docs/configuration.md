@@ -540,7 +540,8 @@ Claude MCP header or as a Codex `bearer_token_env_var`.
 Each managed launch or managed resume reads the listed names from the daemon, then probes the
 login shell for any empty or unset names. Changes to shell exports take effect on the next
 launch. Settings reports presence and source. A missing variable leaves the session running
-and appears in its details. The setting and its backups contain only names. `CODEX_HOME` is
+and appears in its details. A running terminal session keeps its launch warning across daemon
+restarts. The setting and its backups contain only names. `CODEX_HOME` is
 reserved because Mission Control selects the Codex profile for each session.
 
 If another Settings tab saves a different list first, the older tab reloads the saved names

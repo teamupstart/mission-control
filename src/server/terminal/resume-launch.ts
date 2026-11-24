@@ -48,7 +48,7 @@ export async function launchPreparedResume<T>(
   let expected: TerminalLaunchWorkUnit | null = null;
   startingLeases.add(prepared.lease.home);
   try {
-    const named = prepared.resolveNamedEnvironment ? await prepared.resolveNamedEnvironment() : undefined;
+    const named = prepared.resolveNamedEnvironment ? await prepared.resolveNamedEnvironment(prepared.stateHome) : undefined;
     const startedAt = Date.now();
     prepared.beginLaunch(startedAt);
     if (named) {

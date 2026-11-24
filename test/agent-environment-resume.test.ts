@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task } from "../src/shared/types.ts";
 import { managedResumeFixture, writeResumeProcessInventory } from "./helpers/managed-resume-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -161,6 +162,42 @@ test("launchPreparedResume invokes the caller's resolver once at launch and publ
     assert.equal(resolveNamedEnvironment.mock.callCount(), 1);
     assert.equal(result.value, phase);
   }
+});
+
+test("a restarted daemon restores the terminal launch warning only to its original process", async () => {
+  writeProfile(true);
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const source = { id: "restart-warning", agentSessionId: "restart-native", agent: "claude", cwd,
+    runtime: "terminal", permissionMode: null } as const;
+  const prepared = await prepareTerminalResume(source, resumeContext(source, mkTask(), false, false));
+  const { closeDb, openDb } = await import("../src/server/db.ts");
+  const { resetTerminalLaunchWorkUnits } = await import("../src/server/terminal-launch-work-units.ts");
+  await launchPreparedResume({ name: source.id, prepared }, async ({ stateHome }) => {
+    // Simulate a daemon loss before discovery, then a second restart after binding.
+    resetTerminalLaunchWorkUnits();
+    const stored = openDb().prepare("SELECT missing_names FROM terminal_launch_warnings WHERE launch_home = ?").get(stateHome);
+    assert.deepEqual(JSON.parse(String(stored?.missing_names)), [removable]);
+    closeDb();
+    const discovery: DiscoveredSession = { syntheticId: "proc:ttys123:123:1000", agent: "claude", name: "claude", nameSource: "process",
+      cwd, gitBranch: null, repoRoot: cwd, gitRoot: cwd, pid: 123, tty: "ttys123", terminals: [],
+      startedAt: 1000, agentSessionId: source.agentSessionId, missionLaunched: true, missionLaunchHome: stateHome };
+    const first = new Registry();
+    first.applyDiscovery([{ ...discovery, missionLaunched: false, missionLaunchHome: null }]);
+    assert.equal(first.getSession(discovery.syntheticId)?.missingEnvironment, undefined);
+    first.applyDiscovery([discovery]);
+    assert.deepEqual(first.getSession(discovery.syntheticId)?.missingEnvironment, [removable]);
+
+    closeDb();
+    const restarted = new Registry();
+    const replacement = { ...discovery, syntheticId: "proc:ttys123:123:2000", startedAt: 2000 };
+    restarted.applyDiscovery([replacement]);
+    assert.equal(restarted.getSession(replacement.syntheticId)?.missingEnvironment, undefined,
+      "reusing the PID, pane and conversation cannot inherit the previous process's warning");
+    restarted.applyDiscovery([{ ...discovery, missionLaunched: false, missionLaunchHome: null }]);
+    assert.deepEqual(restarted.getSession(discovery.syntheticId)?.missingEnvironment, [removable],
+      "an already bound process retains its warning even on a partial discovery");
+    return { outcome: "refused", value: null };
+  });
 });
 
 async function checkExcludedResume(id: string, task: Task | null) {

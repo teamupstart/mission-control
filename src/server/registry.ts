@@ -379,6 +379,7 @@ import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
+import { pruneTerminalLaunchWarnings, restoreTerminalLaunchWarning } from "./terminal-launch-warnings.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
@@ -912,6 +913,8 @@ function bucketedAge(ms: number | null): number | null {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  /** A partial first scan can lack the wrapper. Try again once its launch home appears. */
+  private readonly checkedWarningHomes = new Set<string>();
   /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
   private readonly steered = new Map<string, SteeredTurn[]>();
   /** The last few receipts per note key, for the conversation's "received" label. */
@@ -3062,6 +3065,11 @@ export class Registry extends EventEmitter {
       // keeps the whole dashboard current.
       console.error("[registry] queue prune failed:", err);
     }
+    try {
+      pruneTerminalLaunchWarnings(this.sessions);
+    } catch {
+      console.warn("[registry] Could not prune terminal launch warnings");
+    }
     // Independently caught so housekeeping cannot stop the discovery sweep.
     try {
       pruneEpisodes(now - EPISODE_RETENTION_MS);
@@ -3299,6 +3307,11 @@ export class Registry extends EventEmitter {
         this.installHandedLaunchWorkUnit(base, launched, now);
         base.missingEnvironment = launched.missingEnvironment;
       });
+    }
+    if (d.startedAt && (!prev || (d.missionLaunchHome && !this.checkedWarningHomes.has(d.syntheticId)))) {
+      const missing = restoreTerminalLaunchWarning(d.syntheticId, d.missionLaunchHome);
+      if (missing) base.missingEnvironment = missing;
+      if (d.missionLaunchHome && missing !== null) this.checkedWarningHomes.add(d.syntheticId);
     }
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
@@ -7514,6 +7527,7 @@ export class Registry extends EventEmitter {
     this.announcedPrs.delete(id);
     this.hookSubagents.delete(id);
     this.discoveredIdentity.delete(id);
+    this.checkedWarningHomes.delete(id);
     this.clearSessionEffortTracking(id);
     this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);

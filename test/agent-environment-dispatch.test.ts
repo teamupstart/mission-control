@@ -14,6 +14,7 @@ import { originAndCloneAt } from "./helpers/git-fixture.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
 import { launchFailureOutcome } from "../src/shared/launch-failure.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { shellWords, wrapperAgentCommand } from "../src/server/terminal/shell.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 
@@ -94,6 +95,7 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
   }
 
   let observedEnvironment: Record<string, boolean> | undefined;
+  let discovered: DiscoveredSession | undefined;
   let spawnCount = 0;
   let delayed: { argv: readonly string[]; cwd: string } | undefined;
   const cancelAfterHandoff = scenario === "cancel-inventory" || scenario === "cancel-retry";
@@ -153,9 +155,10 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
       assert.ok(!report.done, "the dispatched agent reported its own environment");
       const { pid, home, sessionId, ...observed } = JSON.parse(report.value);
       observedEnvironment = observed;
-      registry.applyDiscovery([{ syntheticId: discoveredId, agent: "pi", name, nameSource: "process",
+      discovered = { syntheticId: discoveredId, agent: "pi", name, nameSource: "process",
         cwd, repoRoot: repo, gitRoot: cwd, gitBranch: null, pid, tty: "ttys123", startedAt: 1,
-        terminals: [mkMuxHandle({ session: name })], missionLaunched: true, missionLaunchHome: home }]);
+        terminals: [mkMuxHandle({ session: name })], missionLaunched: true, missionLaunchHome: home };
+      registry.applyDiscovery([discovered]);
       registry.applyHook({ agent: "pi", event: "SessionStart", sessionId, cwd, transcriptPath: null, env: { tmuxPane: "%1" } });
       return { ...OK, session: name };
     },
@@ -322,6 +325,11 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
   const session = registry.getSession(discoveredId);
   assert.ok(session, "the registry retained the dispatched agent");
   assert.deepEqual(session.missingEnvironment, passesNames ? ["MC_DISPATCH_MISSING"] : undefined);
+  assert.ok(discovered);
+  const restarted = new Registry();
+  restarted.applyDiscovery([discovered]);
+  assert.deepEqual(restarted.getSession(discoveredId)?.missingEnvironment, session.missingEnvironment,
+    "rediscovering the running agent preserves its original launch warning");
 }
 
 test("fresh terminal dispatch delivers the listed shell-only value, excludes the unlisted export and warns on the missing name",

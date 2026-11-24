@@ -1,5 +1,5 @@
 import type { Task } from "@shared/types.ts";
-import { launchAgentEnvironment } from "./agent-environment.ts";
+import { terminalLaunchEnvironment } from "./agent-environment.ts";
 import { kindMissionMcpRequirement, type MissionMcpTool } from "./mission-mcp.ts";
 import type { ResumeContext, ResumeSource } from "./harness/resume.ts";
 import { resolveDispatchAdvisor, resolveDispatchModel } from "./harnesses.ts";
@@ -19,7 +19,7 @@ export function resumeContext(
     .filter((path): path is string => Boolean(path && path !== session.cwd)) : [];
   const managed = session.runtime === "sdk" || task !== null || evidence || ensembleMember;
   const resident = task?.kind === "resident";
-  return { managed, resolveNamedEnvironment: managed ? () => launchAgentEnvironment(resident) : undefined,
+  return { managed, resolveNamedEnvironment: managed ? (launchHome) => terminalLaunchEnvironment(launchHome, resident) : undefined,
     requiredTools: [...tools], extraDirs: [...new Set(extraDirs)],
     // A resume is a start, so it decides again, here and once: the agent it opens carries the
     // task's work unit when the preview is on now, whatever the previous process carried.

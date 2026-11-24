@@ -326,7 +326,8 @@ let db: DatabaseSync | undefined;
 //     no task was given a spoken name before it existed.
 // 52: remember a stopped task's displaced roster name until it runs or changes names.
 // 53: reports and their mute records keep the spoken label alongside the fallback.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 53;
+// 54: missing variable names for one terminal launch, bound to its discovered process.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 54;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -538,6 +539,13 @@ function createSchemaObjects(d: DatabaseSync): void {
       payload    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, ts);
+
+    CREATE TABLE IF NOT EXISTS terminal_launch_warnings (
+      launch_home TEXT PRIMARY KEY,
+      directory_id TEXT NOT NULL,
+      session_id TEXT UNIQUE,
+      missing_names TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS session_agent_bindings (
       session_id       TEXT PRIMARY KEY,  -- the synthetic id (tty+pid+start)

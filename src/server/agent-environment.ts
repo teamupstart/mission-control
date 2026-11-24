@@ -8,6 +8,7 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 import { probeLoginShellPath } from "./executables/locator.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { resolveNamedVariable, type NamedAgentEnvironment } from "./executables/named-variable.ts";
+import { rememberTerminalLaunchWarning } from "./terminal-launch-warnings.ts";
 
 function configuredNames(): string[] {
   const entry = APP_CONFIG_ENTRIES.agentEnvironment;
@@ -57,4 +58,13 @@ export async function launchAgentEnvironment(resident = false): Promise<NamedAge
   if (resident || !featureEnabled(AGENT_ENVIRONMENT_FLAG)) return undefined;
   const { variables, extraEnv, missing } = await resolveEnvironment(configuredNames());
   return variables.length ? { extraEnv, missing } : undefined;
+}
+
+export async function terminalLaunchEnvironment(launchHome: string, resident: boolean) {
+  const named = await launchAgentEnvironment(resident);
+  if (named?.missing.length) {
+    try { rememberTerminalLaunchWarning(launchHome, named.missing); }
+    catch { console.warn("[agent-environment] Could not persist the terminal launch warning for rediscovery"); }
+  }
+  return named;
 }

@@ -19,7 +19,7 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import type { NamedAgentEnvironment } from "./executables/named-variable.ts";
-import { launchAgentEnvironment } from "./agent-environment.ts";
+import { terminalLaunchEnvironment } from "./agent-environment.ts";
 import { discardTerminalReceipt } from "./terminal/dispatch-observation.ts";
 import { RESUME_START_MS } from "./terminal/resume-lease.ts";
 import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
@@ -1137,7 +1137,7 @@ export class Dispatcher {
       // `preparePiLaunch` has already minted the native conversation id, so this needs no
       // provisional key and no later move: it is written under the key the session will hold
       // once `bindLaunchedAgentSession` runs.
-      const named = await launchAgentEnvironment(resident);
+      const named = await terminalLaunchEnvironment(stateHome, resident);
       const ownsLaunch = () => currentAttempt() && this.stillDispatching(taskId);
       if (!ownsLaunch()) {
         cleanupDisposableAgentStateHome(stateHome);

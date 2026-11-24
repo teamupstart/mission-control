@@ -18,7 +18,7 @@ import { harnessFor, resumeArgvFor } from "./index.ts";
 
 export interface ResumeContext {
   managed: boolean;
-  resolveNamedEnvironment?: () => Promise<NamedAgentEnvironment | undefined>;
+  resolveNamedEnvironment?: (launchHome: string) => Promise<NamedAgentEnvironment | undefined>;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
   /**

@@ -696,6 +696,40 @@ test("worktree scan read budget counts denied payloads, duplicate files and lite
   }
 });
 
+for (const packed of [false, true]) {
+  test(`CRLF normalization charges ${packed ? "packed" : "loose"} staged reads before allocating allowed or denied payloads`, async (t) => {
+    for (const denied of [false, true]) {
+      const f = fixture(t);
+      const names = ["a", "b", "c"].map(name => denied ? ".env." + name : name);
+      f.git("config", "core.autocrlf", "true");
+      for (const [i, name] of names.entries()) f.write(name, i === 2 ? "c".repeat(8411) : "a".repeat(8113));
+      f.git("add", ".");
+      f.git("commit", "-qm", "staged contents");
+      if (packed) f.git("repack", "-adf");
+      for (const name of names) f.write(name, name + "\r\n");
+      const prepare = (worktreeReadLimit: number, requiredLimit?: number) => seal(
+        { checkout: f.checkout, sourceBase: null }, mkdtempSync(join(dirname(f.checkout), "candidate-")), signal,
+        { worktreeReadLimit, storage: new RepositoryArtifactStorage(requiredLimit) });
+      const allocate = Buffer.allocUnsafe;
+      const sizes: number[] = [];
+      const allocations = t.mock.method(Buffer, "allocUnsafe", (size: number) => {
+        if (size === 8113 || size === 8411) sizes.push(size);
+        return allocate(size);
+      });
+      try {
+        await assert.rejects(prepare(15_000), { code: "worktree_read_limit" });
+        assert.deepEqual(sizes, [8113]); // Duplicate staged contents were tested once.
+        if (!denied) {
+          sizes.length = 0;
+          await assert.rejects(prepare(20_000, 5_000), { code: "required_storage_limit" });
+          assert.deepEqual(sizes, []);
+        }
+        await prepare(17_000);
+      } finally { allocations.mock.restore(); }
+    }
+  });
+}
+
 test("concurrent and sealed candidates retain their storage reservations until cleanup", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 180_000));
   f.write("file", Buffer.alloc(96_000, 0x61));
@@ -796,6 +830,58 @@ test("displaced digest bytes reserve temporary storage until pending cleanup suc
   await f.service.release(holder.submissionId);
   await f.service.release(incoming);
   await f.service.reconcile();
+});
+
+test("restart reserves published rollback bytes and retries the next digest after pending cleanup", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(100_000, 100_000));
+  const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    import { WorkflowStore } from "./src/server/workflows/store.ts";
+    import { WorkflowRepositoryArtifactService } from "./src/server/workflows/repository-artifact/service.ts";
+    const [root, checkout] = process.argv.slice(1);
+    const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+    const candidates = [];
+    for (const fill of ["a", "b"]) {
+      writeFileSync(join(checkout, "file"), fill.repeat(60_000));
+      candidates.push(await service.prepare({ checkout, sourceBase: null }, new AbortController().signal));
+    }
+    console.log(JSON.stringify(candidates));
+  `, f.root, f.checkout], { encoding: "utf8" });
+  const candidates = JSON.parse(output.trimEnd().split("\n").at(-1)!) as { id: string; digest: string }[];
+  const root = realpathSync(f.root);
+  mkdirSync(join(root, "digests"));
+  const paths = candidates.map(candidate => {
+    const pending = join(root, "pending", candidate.id);
+    const payload = join(pending, "artifact"), published = join(root, "digests", candidate.digest);
+    writeFileSync(join(pending, "promotion"), candidate.digest);
+    renameSync(payload, published);
+    return { payload, published };
+  });
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const remove = fs.rmSync;
+  const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof remove>) => {
+    if (paths.some(p => p.payload === args[0])) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 2; i++) {
+      await f.service.reconcile();
+      assert.equal(paths.filter(p => existsSync(p.payload)).length, 1);
+      assert.equal(paths.filter(p => existsSync(p.published)).length, 1);
+    }
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  } finally {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+  }
+  // Directory iteration may retry the refused rename before its peer is removed.
+  await f.service.reconcile();
+  assert.equal((await f.service.reconcile()).orphans, 0);
+  assert.ok(paths.every(p => !existsSync(p.payload) && !existsSync(p.published)));
+  await f.service.discard(await f.prepare());
 });
 
 test("recovery charges a previous writer's displaced bytes if cleanup still fails", async (t) => {
@@ -2869,9 +2955,11 @@ test("publication sync failures before and after rename roll back the claim and 
 });
 
 test("disk failure and a deferred SQLite failure after rename leave no claim and recover only the marked bytes", async (t) => {
-  const f = fixture(t);
+  // A live candidate already holds its reservation. Charging it twice during
+  // rollback would exceed this allowance even with no other writers.
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(80_000, 80_000));
   const warnings = t.mock.method(console, "warn", () => {});
-  f.write("a", "sealed");
+  f.write("a", "s".repeat(55_000));
   let failedWrite = false;
   const fs = (await import("node:fs/promises")).default;
   const { syncBuiltinESMExports } = await import("node:module");

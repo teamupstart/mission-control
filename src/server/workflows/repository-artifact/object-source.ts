@@ -83,7 +83,8 @@ export function checkedObjectSize(size: number) {
   return size;
 }
 
-export async function readLoose(root: number, id: string, type: string, info: boolean, signal: AbortSignal) {
+export async function readLoose(root: number, id: string, type: string, info: boolean, signal: AbortSignal,
+  beforePayload?: (size: number) => void) {
   const fanout = optionalEntry(root, id.slice(0, 2), directory);
   if (fanout === null) return null;
   let fd;
@@ -115,7 +116,9 @@ export async function readLoose(root: number, id: string, type: string, info: bo
         const size = Number(header.slice(type.length + 1));
         if (!Number.isSafeInteger(size) || size < 0 || header !== type + " " + size) unavailable();
         if (info) return { size, data: Buffer.alloc(0) };
-        data = Buffer.allocUnsafe(checkedObjectSize(size));
+        checkedObjectSize(size);
+        beforePayload?.(size);
+        data = Buffer.allocUnsafe(size);
         start = nul + 1;
       }
       if (chunk.length - start > data.length - offset) unavailable();

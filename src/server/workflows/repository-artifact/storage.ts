@@ -58,6 +58,23 @@ export class RepositoryArtifactStorage {
     this.accounts.set(pending, account);
   }
 
+  /** An in-process candidate may still carry its original charge. A recovered
+   * empty candidate needs a new reservation before the published bytes return. */
+  reclaimPublished(pending: string, bytes: number, move: () => void) {
+    const account = this.accounts.get(pending) ?? { required: 0, total: 0, displaced: 0 };
+    const extra = Math.max(0, bytes - (account.total - account.displaced));
+    if (extra) this.checkTemporary(extra);
+    this.temporaryBytes += extra;
+    account.total += extra;
+    this.accounts.set(pending, account);
+    try { move(); }
+    catch (error) {
+      this.temporaryBytes -= extra;
+      account.total -= extra;
+      throw error;
+    }
+  }
+
   async restoreAbandoned(path: string, kind: "pending" | "leases") {
     // Fail closed if the surviving payload cannot be measured. The next cleanup
     // can still remove it or replace this conservative charge with a precise one.

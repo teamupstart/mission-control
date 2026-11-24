@@ -31,6 +31,7 @@ import { CHECK_CONTEXTS, rollUpChecks } from "../github/check-rollup.ts";
 
 /** Generous next to `pr.ts`'s 8s: these carry a whole PR's thread history or a review body. */
 const GH_TIMEOUT_MS = 20_000;
+const GIT_OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /** Full GraphQL connection pages and their validation ceilings share one budget. */
 export const GITHUB_PAGE_SIZE = 100;
@@ -336,7 +337,7 @@ const openRecoverySource = z.object({
   timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
 });
 
-async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl>>, changedAt: number) {
+async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl>>, changedAt: number, expectedHead: string) {
   // Ask GitHub about the entire timestamp bucket containing this ref update.
   const since = new Date(Math.floor(changedAt / 1_000) * 1_000 - 1);
   if (!Number.isFinite(since.getTime())) return null;
@@ -348,14 +349,19 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   const base = response.data.data.repository;
   const matchesIdentity = base.nameWithOwner.toLowerCase() === `${pr.owner}/${pr.repo}`.toLowerCase() && base.pullRequest.number === pr.number;
   const errors = response.data.errors;
-  if (result.code !== 0 || errors?.length) {
+  const partial = result.code !== 0 || Boolean(errors?.length);
+  if (partial) {
     // gh writes partial GraphQL data to stdout and exits 1 for field errors.
-    // Only an identified closure survives errors confined to the source or timeline.
-    const independentErrors = errors?.length && errors.every(({ path }) => path?.[0] === "repository"
+    const sourceOrTimelineErrors = errors?.length && errors.every(({ path }) => path?.[0] === "repository"
       && path[1] === "pullRequest" && ["headRefName", "headRefOid", "headRepository", "timelineItems"].includes(String(path[2])));
-    return independentErrors && matchesIdentity && base.pullRequest.state !== "OPEN" ? false : null;
+    if (!matchesIdentity || !sourceOrTimelineErrors) return null;
   }
   if (!matchesIdentity || base.pullRequest.state !== "OPEN") return false;
+  // An identified PR can disprove the receipt even if its timeline or fork is unavailable.
+  const oid = base.pullRequest.headRefOid;
+  if (typeof oid === "string" && GIT_OBJECT_ID.test(oid) && oid !== expectedHead
+      && !errors?.some(({ path }) => path?.[2] === "headRefOid")) return false;
+  if (partial) return null;
   const source = openRecoverySource.safeParse(base.pullRequest);
   return source.success ? source.data : null;
 }
@@ -372,7 +378,7 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
       const [latest] = tip.data;
       if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
     }
-    const pull = await readRecoveryTimeline(pr, changedAt);
+    const pull = await readRecoveryTimeline(pr, changedAt, head);
     if (pull === false) return false;
     if (!pull) return null;
     if (pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
@@ -397,7 +403,7 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   if (tip.ref !== ref || tip.after !== expectedHead) return null;
   let verifiedForcePushId: string | undefined;
   if (tip.activity_type === "force_push") {
-    const snapshot = await readRecoveryTimeline(pr, tip.changedAt);
+    const snapshot = await readRecoveryTimeline(pr, tip.changedAt, expectedHead);
     if (!snapshot || snapshot.headRefOid !== expectedHead || snapshot.headRefName !== source.head.ref
         || snapshot.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
         || snapshot.timelineItems.pageInfo.hasNextPage) return null;
@@ -972,7 +978,7 @@ export async function mergeBase(
   );
   if (res.code !== 0) return fail("gh api (compare merge base)", res);
   const sha = res.stdout.trim();
-  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+  if (!GIT_OBJECT_ID.test(sha)) {
     return { ok: false, error: `compare reported no merge base ("${sha.slice(0, 40)}")` };
   }
   return { ok: true, value: sha };

@@ -3514,7 +3514,7 @@ test("a later push after a current-head grant remains an ordinary nonrecoverable
 async function strandLegacyGrant(
   seeded: Awaited<ReturnType<typeof spentInspectorGrant>>,
   preGrantHead: string,
-  { delayedObservation = false, returnedToPinnedHead = false, maxRepairRounds = 4 } = {},
+  { delayedObservation = false, returnedToPinnedHead = false, maxRepairRounds = 4, replacementHead = "current" } = {},
 ) {
   const { key, ids, manager, store, now, stale, registry } = seeded;
   // The old daemon restored the saved gate, which always names "historical".
@@ -3536,19 +3536,19 @@ async function strandLegacyGrant(
     state: { ...stale, targetHeadSha: "historical", waitReason: "review_pending" }, now: now + 1011,
   });
   assert.ok(stranded);
-  updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 1012,
-    ...(preGrantHead === "current" ? {} : { headSha: "current", lastReviewedAt: now + 1012 }),
+  updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: replacementHead, observedAt: now + 1012,
+    ...(preGrantHead === replacementHead ? {} : { headSha: replacementHead, lastReviewedAt: now + 1012 }),
     cleanReviewHeadSha: null }, now + 1012);
   const number = Number(key.split("#")[1]);
   writeFileSync(recoveryPr, JSON.stringify({ number, state: "open", created_at: new Date(now - 10_000).toISOString(), base: { repo: { full_name: "owner/repo" } },
-    head: { repo: { full_name: "author/fork" }, ref: "feature", sha: "current" } }));
+    head: { repo: { full_name: "author/fork" }, ref: "feature", sha: replacementHead } }));
   writeFileSync(branchActivity, JSON.stringify([
-    { id: 101, ref: "refs/heads/feature", before: "historical", after: "current",
-      timestamp: new Date(now + (returnedToPinnedHead || preGrantHead !== "current" ? 1012 : 6)).toISOString() },
+    { id: 101, ref: "refs/heads/feature", before: "historical", after: replacementHead,
+      timestamp: new Date(now + (returnedToPinnedHead || preGrantHead !== replacementHead ? 1012 : 6)).toISOString() },
     { id: 99, ref: "refs/heads/feature", before: "base", after: "historical",
       timestamp: new Date(now - 12_000).toISOString() },
   ]));
-  registry.inspectionUpdated(key, "current", "OPEN", delayedObservation ? now + 8 : now + 1012);
+  registry.inspectionUpdated(key, replacementHead, "OPEN", delayedObservation ? now + 8 : now + 1012);
   await manager.settleBackgroundWork();
   assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
   return stranded;
@@ -3926,6 +3926,45 @@ for (const scenario of [
       assert.equal(store.getRun(ids.run)?.status, scenario.blocked ? "blocked" : "waiting_for_new_head");
       assert.deepEqual(store.listSubmissions(ids.run), submissions);
       assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally { await manager.stop(); }
+  });
+}
+
+const verifiedRecoveryOid = "b".repeat(40);
+for (const partial of [
+  { name: "changed head", head: "a".repeat(40), errors: ["timelineItems"], blocked: true },
+  { name: "matching head", head: verifiedRecoveryOid, errors: ["timelineItems"], blocked: false },
+  { name: "matching head and ref activity", head: verifiedRecoveryOid, errors: ["timelineItems"], keepActivity: true, blocked: false },
+  { name: "missing head", head: null, errors: ["timelineItems"], blocked: false },
+  { name: "invalid OID", head: "unavailable", errors: ["timelineItems"], blocked: false },
+  { name: "head field also failed", head: "a".repeat(40), errors: ["timelineItems", "headRefOid"], blocked: false },
+  { name: "different PR", head: "a".repeat(40), errors: ["timelineItems"], wrongPr: true, blocked: false },
+]) {
+  test(`recovery checks the head in a partial PR response: ${partial.name}`, async () => {
+    let selecting = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (selecting && head === "historical") {
+        selecting = false;
+        if (!partial.keepActivity) rmSync(branchActivity);
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, number: pull.number + (partial.wrongPr ? 1 : 0),
+          head: { ...pull.head, sha: partial.head }, graphExitCode: 1,
+          graphErrors: partial.errors.map(field => ({ message: "Field unavailable", path: ["repository", "pullRequest", field] })),
+        }));
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid, { replacementHead: verifiedRecoveryOid });
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      selecting = true;
+      assert.equal((await recover(verifiedRecoveryOid)).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(selecting, false);
+      assert.equal(phaseOf(seeded), partial.blocked ? "blocked/inspector_head_mismatch" : "waiting_for_new_head/inspector_findings");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
     } finally { await manager.stop(); }
   });
 }

@@ -2,7 +2,7 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   appendFileSync,
@@ -2679,6 +2679,39 @@ test("status reports both sides of file and directory replacements without treat
   assert.equal((await reader.query("read", { path: "former-file/child" })).items[0]?.text, "new child");
   assert.equal((await reader.query("read", { path: "former-directory" })).items[0]?.text, "new file");
   assert.equal((await reader.query("read", { path: "former-file", layer: "index" })).items[0]?.text, "old file");
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
+
+test("checkout ownership requires the Git directory to identify the submitted worktree", async (t) => {
+  const f = fixture(t);
+  f.git("commit", "--allow-empty", "-qm", "initial");
+  const linked = f.checkout + "-linked";
+  f.git("worktree", "add", "-q", "--detach", linked);
+  const other = f.checkout + "-other";
+  mkdirSync(other);
+  const prepare = () => f.service.prepare({ checkout: other, sourceBase: null }, signal);
+  for (const path of [f.checkout, linked]) {
+    const admin = f.git("-C", path, "rev-parse", "--absolute-git-dir");
+    writeFileSync(join(other, ".git"), "gitdir: " + admin + "\n");
+    await assert.rejects(prepare(), { code: "artifact_unavailable" });
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  }
+});
+
+test("checkout ownership accepts separate Git metadata with an explicit reciprocal worktree", async (t) => {
+  const f = fixture(t);
+  const checkout = f.checkout + "-separate", admin = f.checkout + "-metadata";
+  f.git("init", "-q", "--separate-git-dir", admin, checkout);
+  f.git("--git-dir", admin, "config", "--local", "core.worktree", relative(admin, checkout));
+  writeFileSync(join(checkout, "owned"), "submitted bytes");
+  const candidate = await f.service.prepare({ checkout, sourceBase: null }, signal);
+  const snapshot = await f.service.promote(candidate, f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const lease = await f.service.materialize(f.request(snapshot), signal);
+  assert.equal(lease.descriptor.worktree.find(entry => entry.path === "owned")?.blob,
+    f.git("-C", checkout, "hash-object", "owned"));
   await lease.release();
   await f.service.release(snapshot.submissionId);
   await f.service.reconcile();

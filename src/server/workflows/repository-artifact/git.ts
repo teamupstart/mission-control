@@ -30,13 +30,15 @@ const flags = [
   "-c",
   "core.hooksPath=/dev/null",
 ];
-function checkoutEnvironment(configRead: boolean) {
+export type CheckoutDirectories = { root: string; admin: string; common: string };
+function checkoutEnvironment(configRead: boolean, directories?: CheckoutDirectories) {
   // Query effective checkout settings through Git's config reader only. All commands that
   // inspect the index and object database run with system and global configuration disabled.
   return {
     ...env,
     HOME: process.env.HOME,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    ...(directories && { GIT_DIR: directories.admin, GIT_COMMON_DIR: directories.common, GIT_WORK_TREE: directories.root }),
     ...(configRead
       ? {
           GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
@@ -51,12 +53,13 @@ export async function checkoutGit(
   args: string[],
   signal: AbortSignal,
   missing = false,
+  directories?: CheckoutDirectories,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
       executable,
       [...flags, ...args],
-      { cwd, env: checkoutEnvironment(args[0] === "config"), signal, timeout: 30_000, maxBuffer: 128 << 20, encoding: "buffer" },
+      { cwd, env: checkoutEnvironment(args[0] === "config", directories), signal, timeout: 30_000, maxBuffer: 128 << 20, encoding: "buffer" },
       (error, stdout) => {
         if (missing && Number(error?.code) === 1) resolve(Buffer.alloc(0));
         else if (error) reject(error);
@@ -67,10 +70,10 @@ export async function checkoutGit(
 }
 
 /** Consume NUL-delimited Git output with backpressure and stop Git on the first refused path. */
-export async function checkoutRecords(executable: string, cwd: string, args: string[], signal: AbortSignal,
+export async function checkoutRecords(executable: string, directories: CheckoutDirectories, args: string[], signal: AbortSignal,
   maxRecordBytes: number, accept: (record: Buffer) => void) {
   const child = spawn(executable, [...flags, ...args], {
-    cwd, signal, env: checkoutEnvironment(false), timeout: 30_000, stdio: ["ignore", "pipe", "ignore"],
+    cwd: directories.root, signal, env: checkoutEnvironment(false, directories), timeout: 30_000, stdio: ["ignore", "pipe", "ignore"],
   });
   const finished = new Promise<Error | number | null>(done => {
     child.once("error", done);

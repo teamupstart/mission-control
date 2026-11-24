@@ -97,6 +97,12 @@ v1 artifacts.
 Comparing the layers avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.
 
+Before reading the index or history, capture verifies where Git stores the checkout's
+metadata. A linked worktree needs its own registration under the common directory and
+a backlink to its `.git` file. Other separate Git directories need a local
+`core.worktree` setting naming the submitted checkout. Capture pins the validated
+worktree, Git directory and common directory for the remaining Git commands.
+
 History starts at HEAD and visits all parents breadth-first in recorded order. The service
 stops before the first revision that would exceed 2,048 commits or 512 MiB of additional
 unique allowed blob bytes. It counts objects already required by base, HEAD, index or

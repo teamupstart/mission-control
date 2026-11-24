@@ -3,7 +3,7 @@ import { nativeStateLockAddonPath } from "../../state-ownership-native.ts";
 import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { checkoutGit, checkoutRecords } from "./git.ts";
 import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
@@ -26,30 +26,52 @@ export function validPath(raw: Buffer) {
   return raw.toString("hex");
 }
 
-export async function sample(executable: string, cwd: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
-  const git = (args: string[], missing = false) => checkoutGit(executable, cwd, args, signal, missing);
-  const line = (buf: Buffer) => {
-    if (buf.at(-1) !== 10 || !Buffer.from(buf.toString()).equals(buf)) unavailable();
-    return buf.subarray(0, -1).toString();
-  };
-  const root = await realpath(line(await git(["rev-parse", "--show-toplevel"])));
-  const checkout = await realpath(cwd);
-  // core.worktree cannot broaden the submitted checkout into a containing directory.
-  let nearest = checkout;
-  for (;;) {
-    const marker = await lstat(join(nearest, ".git")).catch((error) => {
+function line(buf: Buffer) {
+  if (buf.at(-1) !== 10 || !Buffer.from(buf.toString()).equals(buf)) unavailable();
+  return buf.subarray(0, -1).toString();
+}
+
+async function checkoutDirectories(executable: string, cwd: string, signal: AbortSignal) {
+  const discover = (args: string[], missing = false) => checkoutGit(executable, cwd, args, signal, missing);
+  const root = await realpath(line(await discover(["rev-parse", "--show-toplevel"])));
+  // core.worktree cannot broaden the submitted checkout past a nearer marker.
+  for (let dir = await realpath(cwd); dir !== root; dir = dirname(dir)) {
+    const marker = await lstat(join(dir, ".git")).catch(error => {
       if (error.code !== "ENOENT") throw error;
       return null;
     });
-    if (marker) {
-      if (!marker.isDirectory() && !marker.isFile()) unavailable();
-      break;
-    }
-    if (dirname(nearest) === nearest) unavailable();
-    nearest = dirname(nearest);
+    if (marker || dirname(dir) === dir) unavailable();
   }
-  if (nearest !== root) unavailable();
-  const common = await realpath(line(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])));
+  const dotGit = join(root, ".git");
+  const marker = await lstat(dotGit);
+  if (!marker.isDirectory() && !marker.isFile()) unavailable();
+  const admin = marker.isDirectory() ? dotGit : await realpath(line(await discover(["rev-parse", "--absolute-git-dir"])));
+  const common = await realpath(line(await discover(["--git-dir", admin, "rev-parse", "--path-format=absolute", "--git-common-dir"])));
+  if (marker.isDirectory()) {
+    if (common !== dotGit) unavailable();
+  } else if (admin === common) {
+    // A separate Git directory (including an absorbed submodule) must itself
+    // name this worktree. An ordinary repository selected by a gitfile cannot.
+    const config = join(admin, "config");
+    if (!(await lstat(config)).isFile()) unavailable();
+    const owner = await discover(["config", "--file", config, "--no-includes", "--get", "core.worktree"], true);
+    if (!owner.length || await realpath(resolve(admin, line(owner))) !== root) unavailable();
+  } else {
+    if (dirname(admin) !== join(common, "worktrees")) unavailable();
+    const backlink = Buffer.from(join(admin, "gitdir"));
+    const stat = await lstat(backlink);
+    if (!stat.isFile()) unavailable();
+    const { data } = await readWorkingFile(backlink, stat, signal, 16_384);
+    const target = resolve(admin, line(data));
+    if (join(await realpath(dirname(target)), basename(target)) !== dotGit) unavailable();
+  }
+  return { root, admin, common };
+}
+
+export async function sample(executable: string, cwd: string, signal: AbortSignal, limits?: Partial<PathBudget>) {
+  const directories = await checkoutDirectories(executable, cwd, signal);
+  const { root, common } = directories;
+  const git = (args: string[], missing = false) => checkoutGit(executable, root, args, signal, missing, directories);
   const format = line(await git(["rev-parse", "--show-object-format"]));
   if (!["sha1", "sha256"].includes(format)) unavailable();
   const shallow = await shallowCommits(common, format, signal);
@@ -73,18 +95,18 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   // A staged record includes the mode, OID, stage and tag before the path.
   const maxRecordBytes = budget.pathBytes + 100;
   const records = (args: string[], accept: (row: Buffer) => void) =>
-    checkoutRecords(executable, root, args, signal, maxRecordBytes, accept);
+    checkoutRecords(executable, directories, args, signal, maxRecordBytes, accept);
   const paths = new Set<string>();
-  const directories = new Set<string>();
+  const pathPrefixes = new Set<string>();
   function collectPath(raw: Buffer) {
     if (!chargePaths(budget, raw.length)) expansionExceeded();
     // Each implicit directory becomes a node when the worktree and index trees
     // are built. All ancestors above a known prefix have already been charged.
     for (let end = raw.lastIndexOf(47); end > 0; end = raw.lastIndexOf(47, end - 1)) {
       const prefix = raw.toString("hex", 0, end);
-      if (directories.has(prefix)) break;
+      if (pathPrefixes.has(prefix)) break;
       if (!chargePaths(budget, end)) expansionExceeded();
-      directories.add(prefix);
+      pathPrefixes.add(prefix);
     }
     const key = validPath(raw);
     paths.add(key);
@@ -136,7 +158,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
   });
-  return { root, common, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
+  return { ...directories, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);
@@ -161,7 +183,7 @@ async function openChecked(path: Buffer, directory = false) {
   }
 }
 
-async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSignal) {
+async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSignal, limit = MAX_CAPTURE_OBJECT_BYTES) {
   const fd = await openChecked(path).catch(error => {
     if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? ""))
       throw new RepositoryCaptureChanged();
@@ -171,7 +193,7 @@ async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSigna
     const stat = await fd.stat();
     if (!stat.isFile() || observed.dev !== stat.dev || observed.ino !== stat.ino)
       throw new RepositoryCaptureChanged();
-    if (stat.size > MAX_CAPTURE_OBJECT_BYTES)
+    if (stat.size > limit)
       throw Object.assign(new Error("Worktree file exceeds capture limit"), { code: "worktree_file_too_large" });
     const data = await readExactFile(fd, stat.size, signal);
     if (data === null) throw new RepositoryCaptureChanged();

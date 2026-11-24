@@ -59,9 +59,17 @@ export interface VoiceSplitPoint {
 function splitHead(text: string): string {
   // A comma may separate independent commands, or introduce one joining phrase.
   // Everything before that boundary belongs to the first message, including punctuation.
-  return text.trimEnd().replace(
+  const raw = text.trim();
+  const punctuated = raw.replace(
     /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and then|and|then|also|plus)\s*,?$|,$/iu, "",
-  ).trim();
+  );
+  if (punctuated !== raw) return punctuated.trimEnd();
+  const conjunction = /\s+and(?:\s+then)?$/iu.exec(raw);
+  if (!conjunction) return raw;
+  const preceding = raw.slice(0, conjunction.index);
+  // A request to spell a word or quote a literal makes “and” part of that request.
+  const namesLiteral = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu;
+  return namesLiteral.test(preceding) ? raw : preceding;
 }
 
 export type VoiceAddressedCommand = "stop";

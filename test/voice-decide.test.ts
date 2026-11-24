@@ -1045,3 +1045,51 @@ test("a pick older than the retained choice history abstains while a fresh pick 
   await say("Alice", "fresh");
   assert.equal(router.activeCards()[0]?.state, "pending");
 });
+
+test("a confirmed split separates an unpunctuated and from an instruction while keeping literal and", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const [spoken, expected] of [
+    ["check the build and", "check the build"], ["check the build and then", "check the build"],
+    ["spell and", "spell and"], ["explain the word and", "explain the word and"],
+  ]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${spoken} Alice, review the PR`, id);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});
+
+test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let chooseFirst!: (result: VoiceDecisionResult) => void;
+  let chooseSplit!: (result: VoiceDecisionResult) => void;
+  let startSecond!: () => void;
+  const first = new Promise<VoiceDecisionResult>(resolve => { chooseFirst = resolve; });
+  const split = new Promise<VoiceDecisionResult>(resolve => { chooseSplit = resolve; });
+  const started = new Promise<void>(resolve => { startSecond = resolve; });
+  const { router, cards } = routerRig(questions => {
+    if (questions[0]?.kind === "who") return first;
+    startSecond();
+    return split;
+  }, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await router.accept(VoiceUtteranceSchema.parse({ id: "visible", text: "Steven, check the build, and Alice, review the PR",
+    backend: "fluidaudio", capturedAt: Date.now() }));
+  t.mock.timers.tick(1000);
+  assert.equal(cards.at(-1)?.parts[0]?.target, null);
+  const original = router.activeCards()[0]!;
+  chooseFirst(answered("task:Steve"));
+  await started;
+  try {
+    const latest = cards.at(-1)!;
+    assert.equal(latest.state, "resolving");
+    assert.equal(latest.parts[0]?.target?.name, "Steve");
+    assert.deepEqual(latest.candidates.map(c => c.title), ["Steve", "Alice"]);
+    assert.deepEqual(router.activeCards(), [latest]);
+    assert.equal(original.parts[0]?.target, null);
+  } finally {
+    chooseSplit(answered("split"));
+    await router.resolution("visible");
+  }
+});

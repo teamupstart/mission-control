@@ -77,7 +77,9 @@ recreating the path reports both the deletion and the new working file. The read
 read the recreated bytes. When a directory replaces a file
 or a file replaces a directory, the reader gets the missing deletion records from the
 verified path manifest. They appear in `git_status` alongside the replacement files and
-grant no content access. This also covers previously sealed v1 artifacts.
+grant no content access. The same status-only records carry deletions when the live
+worktree array is full. Directory replacements are also recovered for previously sealed
+v1 artifacts.
 Comparing the layers avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.
 
@@ -93,6 +95,11 @@ boundary commits to the same breadth-first prefix. Traversal stops before the fi
 omitted parent, including at a merge, and records the original parent IDs in the frontier.
 Missing objects inside the selected prefix fail sealing. Changing the source's shallow
 boundary also changes the stable capture fingerprint.
+
+The queue holds only distinct revisions that can enter the prefix. The v1 descriptor
+records up to 100 parents per revision. An older merge above that limit ends the prefix,
+and its original commit can still serve as a diff-only base. A HEAD above the limit
+fails capture because its complete parent list is required in the descriptor.
 
 Each tree walk can expand up to 200,000 entries and 64 MiB of raw path names. A
 streamed index and untracked listing enforces the same limits before opening working

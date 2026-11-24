@@ -1336,6 +1336,29 @@ test("a shallow merge preserves the breadth-first prefix when another branch has
   await f.service.reconcile();
 });
 
+test("wide merges preserve the largest representable breadth-first prefix and diff-only base", async (t) => {
+  const f = fixture(t);
+  const { write, commit } = objects(f.checkout);
+  const tree = write("tree", Buffer.alloc(0));
+  const roots = Array.from({ length: 101 }, (_, i) => commit(tree, [], String(i)));
+  const wide = commit(tree, roots, "101 parents");
+  const parents = [wide, ...roots.slice(1, 100)];
+  const head = commit(tree, parents, "100 parents");
+  f.git("update-ref", "HEAD", head);
+  const candidate = await f.prepare(wide);
+  const artifact = join(f.root, "pending", candidate.id, "artifact");
+  const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")));
+  assert.deepEqual(manifest.view.retainedRevisions, [{ id: head, tree, parents }]);
+  assert.deepEqual(manifest.view.frontier, [{ revision: head, omittedParents: parents }]);
+  assert.equal(manifest.view.base, wide);
+  assert.equal(existsSync(join(artifact, wide)), true);
+  assert.equal(existsSync(join(artifact, roots[0]!)), false);
+  await f.service.discard(candidate);
+  f.git("update-ref", "HEAD", wide);
+  await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+});
+
 test("history sealing releases commit and tree payloads during a zero-blob history walk", (t) => {
   const f = fixture(t);
   const { write, commit } = objects(f.checkout);
@@ -1999,6 +2022,30 @@ test("a staged deletion and a recreated working file retain both statuses and th
   await lease.release();
   await f.service.release(s.submissionId);
   await f.service.reconcile();
+});
+
+test("deletions beyond the live worktree limit remain visible through status-only records", async (t) => {
+  const f = fixture(t);
+  for (const path of ["old-a", "old-b", "old-c"]) f.write(path, path);
+  f.git("add", ".");
+  f.git("commit", "-qm", "old files");
+  f.git("rm", "-q", "old-a", "old-b", "old-c");
+  f.write("new-a", "live a");
+  f.write("new-b", "live b");
+  mkdirSync(f.root);
+  const snapshot = await seal({ checkout: f.checkout, sourceBase: null }, f.root, signal, { entries: 3 });
+  const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "artifact", "manifest.json"), "utf8")));
+  const view = descriptor(manifest, snapshot.digest, "lease");
+  assert.deepEqual(view.worktree.map(e => e.path), ["new-a", "new-b", "old-a"]);
+  assert.deepEqual(view.statusDeletions?.map(e => e.path), ["old-b", "old-c"]);
+  const reader = createRepositoryReader({ view, objectDirectory: f.root, gitBinary: "git", workloadId: "work",
+    attemptId: "attempt", signal, budgets: {}, audit: async () => {} });
+  const status = await reader.query("git_status", {});
+  assert.equal(status.status, "ok");
+  assert.deepEqual(status.items.map(e => [e.path, e.metadata?.classifications]), [
+    ["new-a", ["untracked"]], ["new-b", ["untracked"]],
+    ...["old-a", "old-b", "old-c"].map(path => [path, ["committed", "staged", "deleted"]]),
+  ]);
 });
 
 test("base-only deletions stay in the base-to-HEAD diff and never appear as checkout status", async (t) => {

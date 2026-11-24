@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { mkdir, lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  enqueueHistoryParents,
+  MAX_REPOSITORY_REVISION_PARENTS,
   REPOSITORY_HISTORY_POLICY_V1 as policy,
   type RepositoryViewDescriptor,
 } from "@shared/repository-access.ts";
@@ -155,17 +157,21 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const treeEnd = firstNewline < 0 ? data.length : firstNewline;
     if (treeEnd !== 5 + id.length || data.toString("latin1", 0, 5) !== "tree ") unavailable();
     const tree = oid.parse(data.toString("latin1", 5, treeEnd));
-    const parents: string[] = [];
+    let parents: string[] | null = [];
     for (let start = treeEnd + 1; start < data.length && data[start] !== 10;) {
       const newline = data.indexOf(10, start);
       const end = newline < 0 ? data.length : newline;
       if (data.toString("latin1", start, start + 7) === "parent ") {
         if (end - start !== 7 + id.length) unavailable();
+        if (parents.length === MAX_REPOSITORY_REVISION_PARENTS) {
+          parents = null;
+          break;
+        }
         parents.push(oid.parse(data.toString("latin1", start + 7, end)));
       }
       start = end + 1;
     }
-    return { data, record: { id, tree, parents } };
+    return { data, id, tree, parents };
   }
 
   async function scanTree(id: string, prefix: Buffer, layer: Layer, budget: PathBudget, incremental: boolean) {
@@ -273,7 +279,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
 
   async function include(revision: Awaited<ReturnType<typeof commit>>, treeIds: Set<string>, layer: Layer, required = true) {
     collect(layer);
-    await save("commit", revision.data, revision.record.id, required);
+    await save("commit", revision.data, revision.id, required);
     // Selection can reject a revision. Copy each newly accepted tree by ID only after
     // that decision and let save verify its bytes against the same ID.
     for (const tree of treeIds) {
@@ -286,7 +292,9 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;
       const revision = await commit(anchor);
-      const { layer, treeIds, complete } = await flatten(revision.record.tree);
+      if (anchor === head && !revision.parents)
+        throw Object.assign(new Error("HEAD exceeds the v1 parent list limit"), { code: "head_parent_limit" });
+      const { layer, treeIds, complete } = await flatten(revision.tree);
       if (!complete) expansionExceeded();
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
@@ -305,6 +313,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     }
     const retainedRevisions: RepositoryViewDescriptor["retainedRevisions"] = [];
     const queue = head ? [head] : [];
+    const scheduled = new Set(queue);
     const seen = new Set<string>();
     const shallow = new Set(state.shallow);
     const omittedParents = new Set<string>();
@@ -314,13 +323,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       // The v1 descriptor is one breadth-first prefix. Stop before a source-shallow
       // parent, even when another branch in the queue has deeper history available.
       if (omittedParents.has(id)) break;
-      if (seen.has(id)) continue;
       if (!await fitsHistoryMetadata(id, "commit")) break;
       const revision = await commit(id);
-      const { record } = revision;
+      const { parents, tree } = revision;
+      if (!parents) break;
       // A v1 frontier cannot declare an already-retained revision to be omitted.
-      if (shallow.has(id) && record.parents.some(parent => seen.has(parent))) break;
-      const { layer, treeIds, complete } = await flatten(record.tree, true);
+      if (shallow.has(id) && parents.some(parent => seen.has(parent))) break;
+      const { layer, treeIds, complete } = await flatten(tree, true);
       if (!complete) break;
       const extra = new Set(
         [...layer]
@@ -338,10 +347,10 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (retainedBlobBytes + bytes > policy.maxUniqueBlobBytes) break;
       await include(revision, treeIds, layer, false);
       retainedBlobBytes += bytes;
-      retainedRevisions.push(record);
+      retainedRevisions.push({ id, tree, parents });
       seen.add(id);
-      if (shallow.has(id)) for (const parent of record.parents) omittedParents.add(parent);
-      queue.push(...record.parents);
+      if (shallow.has(id)) for (const parent of parents) omittedParents.add(parent);
+      enqueueHistoryParents(queue, scheduled, parents, policy.maxCommits);
     }
     // A shared nonempty blob would disclose denied bytes through the allowed path.
     // The canonical empty blob has no payload. Path policy still denies the sensitive name.
@@ -399,7 +408,10 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       const parts = path.split("/");
       for (let n = 1; n < parts.length; n++) dirs.add(parts.slice(0, n).join("/"));
     }
-    for (const p of paths.filter((p) => p.classifications.includes("deleted"))) {
+    const worktreeLimit = expansionBudget(limits).entries;
+    for (const p of paths) {
+      if (workView.length >= worktreeLimit) break;
+      if (!p.classifications.includes("deleted")) continue;
       const path = decodedPath(p.bytes);
       if (
         !path ||

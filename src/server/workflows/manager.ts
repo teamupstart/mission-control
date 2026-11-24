@@ -9,7 +9,11 @@ import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import type { RawWorkflowContext } from "./context.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import type { WorkflowRepositoryArtifactCandidate } from "./repository-artifact/service.ts";
+import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
@@ -165,6 +169,7 @@ import type { CheckAttemptRef } from "./check-runtime.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
+  discardWorkflowCandidate,
   compactWorkflowContext,
   classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
@@ -831,7 +836,7 @@ export class WorkflowManager {
       // reset session's chip kept naming a workflow that no longer existed and could never
       // run. Every other path that ends a binding retires it here as well.
       for (const id of removed.bindingIds) this.registry.removeWorkflowBinding(id);
-    });
+    }, noteKey => this.store.workflowResetBlocker(noteKey));
   }
 
   start(): void {
@@ -1161,8 +1166,8 @@ export class WorkflowManager {
     return { ok: true, workflow, ...result };
   }
 
-  publish(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowPublishMutation {
-    const result = this.store.publishWorkflow(id, expectedDraftRevision, randomUUID(), now);
+  publish(id: string, expectedDraftRevision: number, now = Date.now(), requestId?: string): WorkflowPublishMutation {
+    const result = this.store.publishWorkflow(id, expectedDraftRevision, randomUUID(), now, requestId);
     if (!result.ok) return result;
     const summary = this.store.summary(result.workflow);
     this.registry.upsertWorkflow(summary);
@@ -2368,6 +2373,10 @@ export class WorkflowManager {
           && binding.state === "active"
           && existingRun.status === "waiting_for_session"
         ) {
+          const version = this.store.getWorkflowVersionById(existingRun.workflowVersionId);
+          if (!version || (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(existing.id))) {
+            return { ok: false, reason: "conflict", message: "The original submitted checkout is unavailable. Submit a new capture." };
+          }
           const revived = this.store.reviveFailedSubmission(
             existing.id,
             existingRun.id,
@@ -5644,12 +5653,14 @@ export class WorkflowManager {
       || !summary
       || !binding.sessionId
     ) return;
+    const attempts = this.store.listAttempts(submission.id);
     const rendered = renderWorkflowFeedback({
       workflowName: summary.workflowName,
       version,
       run,
       submission,
-      attempts: this.store.listAttempts(submission.id),
+      attempts,
+      citations: this.store.repositoryCitations(attempts),
     });
     if (rendered.failedPersonaCount === 0) return;
     const prepared = this.store.prepareDelivery({
@@ -6877,7 +6888,7 @@ export class WorkflowManager {
       undefined,
       true,
       undefined,
-      (capturedSubmission) => this.sealSessionActionContinuation({
+      (capturedSubmission) => this.prepareSessionActionContinuation({
         attempt,
         snapshot,
         version,
@@ -6908,7 +6919,7 @@ export class WorkflowManager {
    * capture guard requires the run and submission to be `capturing`, and neither is any more -
    * so recovery has to be able to seal an already-captured child directly.
    */
-  private async sealSessionActionContinuation(input: {
+  private async prepareSessionActionContinuation(input: {
     attempt: WorkflowNodeAttempt;
     snapshot: SessionActionSnapshot;
     version: WorkflowVersion;
@@ -6918,7 +6929,7 @@ export class WorkflowManager {
     child: WorkflowSubmission;
     /** Where to resolve the captured abbreviation, or null when it cannot be resolved. */
     repositoryRoot: string | null;
-  }): Promise<boolean> {
+  }): Promise<false | (() => boolean)> {
     const { attempt, snapshot, version, node, expectation, adapter, child } = input;
     const context = WorkflowContextSnapshotSchema.safeParse(child.context);
     if (!context.success) {
@@ -6965,19 +6976,13 @@ export class WorkflowManager {
         completion: snapshot.completion.kind,
       }),
     }));
-    const completed = Boolean(this.store.completeSessionActionContinuation({
+    return () => Boolean(this.store.completeSessionActionContinuation({
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
       warnings,
       now: Date.now(),
     }));
-    // Capture starts while the action still holds the conversation. Re-offer only after
-    // its completion is durable, including when sealing a captured child after restart.
-    const run = completed ? this.store.getRun(child.runId) : null;
-    const binding = run ? this.store.getBinding(run.bindingId) : null;
-    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
-    return completed;
   }
 
   private trackBackgroundTask(task: Promise<void>): void {
@@ -7495,10 +7500,14 @@ export class WorkflowManager {
     expectation?: WorkflowCaptureExpectation,
     // Awaited, because the one guard that uses it has to ask git which commit the capture
     // actually holds before it can say whether the capture is the one the adapter proved.
-    beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
+    beforeActivate?: (captured: WorkflowSubmission) => Promise<false | (() => boolean)>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     // The root's durable boundary also covers Foreman capture and interrupted retries.
     allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
+    let candidate: WorkflowRepositoryArtifactCandidate | undefined;
+    let releaseClaim = false;
+    let digest: string | undefined;
+    let sealing = false;
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling
@@ -7567,8 +7576,12 @@ export class WorkflowManager {
       const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
-      const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
-        () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
+      const needsRepository = version && workflowRequiresRepositoryCapture(version.graph);
+      if (needsRepository && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) {
+        sealing = true;
+        throw new Error("Persona repository access preview is off");
+      }
+      const read = () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
           this.registry,
           binding,
           this.priorFeedback(run.id),
@@ -7579,13 +7592,35 @@ export class WorkflowManager {
           frozenIntent,
           version?.graph,
           this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
-        ),
-        (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
+        );
+      const changed = (candidate: WorkflowRawCaptureRead) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
           binding,
           candidate.boundary,
-        ),
-      );
+        );
+      const capture = async () => {
+        if (!needsRepository) return captureStableWorkflowContext(read, changed);
+        sealing = true;
+        const service = this.repositoryArtifacts;
+        const session = binding.sessionId && this.registry.getSession(binding.sessionId);
+        const checkout = session && workflowCheckoutPath(binding, session);
+        if (!checkout) throw new Error("The submission has no local repository checkout");
+        const signal = AbortSignal.timeout(600_000);
+        const prepared = await captureStableWorkflowContext(read, changed, {
+          sampleBoundary: () => service.sampleBoundary(checkout, signal),
+          prepare: (value) => {
+            if (value.repositoryCapture?.checkout !== checkout) throw new Error("The submitted checkout changed");
+            return service.prepare(value.repositoryCapture, signal);
+          },
+          stillCurrent: (item) => service.stillCurrent(item, signal),
+          discard: (item) => service.discard(item),
+        });
+        if (!prepared) throw new Error("The repository changed during both capture attempts");
+        candidate = prepared.candidate;
+        sealing = false;
+        return prepared.captured;
+      };
+      const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await capture();
       if (!this.captureIsActive(run.id, submission.id)) {
         return {
           ok: false,
@@ -7691,6 +7726,17 @@ export class WorkflowManager {
         artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
+      if (needsRepository) {
+        sealing = true;
+        if (candidate) {
+          digest = (await this.repositoryArtifacts.promote(candidate, submission.id)).digest;
+          candidate = undefined;
+        } else {
+          digest = this.store.inheritRepositoryClaim(submission.id);
+        }
+        releaseClaim = true;
+        sealing = false;
+      }
       const priorCapture = WorkflowContextSnapshotSchema.safeParse(submission.context);
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
@@ -8012,8 +8058,10 @@ export class WorkflowManager {
           sourceSubmissionId: selectionSource?.id ?? null,
         }),
       });
-      const fingerprint = workflowContextFingerprint(context);
-      const repositoryFingerprint = workflowRepositoryFingerprint(context);
+      const withDigest = (value: string) => digest
+        ? createHash("sha256").update(JSON.stringify([value, digest])).digest("hex") : value;
+      const fingerprint = withDigest(workflowContextFingerprint(context));
+      const repositoryFingerprint = withDigest(workflowRepositoryFingerprint(context));
       const shippingOnlyContinuation = submission.refinementReason === "session_action"
         && submission.continuationNodeId !== null
         && version !== null
@@ -8041,14 +8089,19 @@ export class WorkflowManager {
             pendingPullRequestAction: version != null
               && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
-      const runnable = this.store.updateSubmissionCapture(submission.id, {
+      const finalCapture = {
         context: workflowJson(context),
         evidence: workflowJson(context.evidence),
         fingerprint,
         repositoryFingerprint,
         readiness,
-        status: "running",
-      }, Date.now());
+      };
+      // Guards can inspect the candidate before the repository claim and final
+      // context become durable together. A readiness hold freezes it separately.
+      const runnable = digest ? {
+        ...currentSubmission, context: finalCapture.context, evidence: finalCapture.evidence,
+        evidenceFingerprint: fingerprint, repositoryFingerprint, readiness,
+      } : this.store.updateSubmissionCapture(submission.id, { ...finalCapture, status: "running" });
       /*
        * The WORK, not the submission's identity.
        *
@@ -8076,7 +8129,10 @@ export class WorkflowManager {
         : Boolean(previousFingerprint) && fingerprint === previousFingerprint;
       if (unchanged && !allowUnchanged) {
         const refusedAt = Date.now();
-        this.store.setSubmissionState(submission.id, "failed", refusedAt);
+        this.store.transact(() => {
+          if (digest) this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture }, refusedAt);
+          this.store.setSubmissionState(submission.id, "failed", refusedAt);
+        });
         // Append BEFORE counting, so the count includes this refusal and the two reads can
         // never disagree about whether the current one is in it.
         this.store.appendEvent(run.id, "resubmit_refused_unchanged", {
@@ -8108,7 +8164,10 @@ export class WorkflowManager {
         // delivered work's next natural completed generation. That is what supplies the NEXT
         // legitimate claim; resetting the prompted guard here would spin capture against a
         // session that is not changing.
-        if (!exhausted) this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
+        if (!exhausted) {
+          releaseClaim = false;
+          this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
+        }
         return {
           ok: false,
           reason: "unchanged_evidence",
@@ -8125,7 +8184,8 @@ export class WorkflowManager {
           context.compaction.reusedFromSubmissionId ?? submission.id,
         readiness: readiness?.status ?? "not_evaluated",
       }, Date.now());
-      if (beforeActivate && !(await beforeActivate(runnable))) {
+      const sealAction = beforeActivate ? await beforeActivate(runnable) : undefined;
+      const guardConflict = (): WorkflowRuntimeMutation<WorkflowSubmitResult> => {
         this.publishRun(run.id);
         return {
           ok: false,
@@ -8133,70 +8193,80 @@ export class WorkflowManager {
           message: "The captured evidence did not satisfy this submission's activation guard",
           current: this.presentRun(this.store.getRun(run.id)),
         };
-      }
-      if (version && !shippingOnlyContinuation) {
-        const evaluated = evidenceReadinessEvaluatedEvent({
-          submission: runnable,
-          readiness,
-          coverage: frozenCoverage,
-          version,
-        });
-        this.store.appendEvent(
-          run.id,
-          "evidence_readiness_evaluated",
-          evaluated.payload,
-          Date.now(),
-          evaluated.eventId,
-        );
-      }
-      if (enforcingReadiness && context.reconciliation?.status !== "complete"
-          && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
-        const blocked = this.store.failEvidencePreparation({
-          submissionId: submission.id, kind: "mapping",
-          automatic: this.automaticEvidencePreparation(binding, submission),
-          detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
-          now: Date.now(),
-        });
-        this.store.appendEvent(run.id, "evidence_reconciliation_error", {
-          submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
-        }, Date.now());
-        this.publishRun(run.id);
-        return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
-      }
-      if (enforcingReadiness && readiness?.status === "gaps") {
-        if (this.continueExhaustedEvidenceReadiness(run.id, submission.id, binding, Date.now())) {
-          return { ok: true, value: { run: this.store.getRun(run.id)!, submission: runnable } };
+      };
+      if (sealAction === false) return guardConflict();
+
+      // Validate the action asynchronously, then commit its receipts and the exact
+      // checkout disposition together. Only publish or activate after SQLite commits.
+      const disposition = this.store.transact(() => {
+        if (sealAction && !sealAction()) return "conflict";
+        if (version && !shippingOnlyContinuation) {
+          const evaluated = evidenceReadinessEvaluatedEvent({
+            submission: runnable,
+            readiness,
+            coverage: frozenCoverage,
+            version,
+          });
+          this.store.appendEvent(
+            run.id,
+            "evidence_readiness_evaluated",
+            evaluated.payload,
+            Date.now(),
+            evaluated.eventId,
+          );
         }
-        const waitedAt = Date.now();
-        const waitingSubmission = this.store.setSubmissionState(
-          submission.id,
-          "waiting_for_evidence_readiness",
-          waitedAt,
-        );
-        const waitingRun = this.store.setRunState(
-          run.id,
-          "waiting_for_evidence_readiness",
-          "evidence_readiness",
-          {
+        if (enforcingReadiness && context.reconciliation?.status !== "complete"
+            && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
+          if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
+          this.store.failEvidencePreparation({
+            submissionId: submission.id, kind: "mapping",
+            automatic: this.automaticEvidencePreparation(binding, submission),
+            detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
+            now: Date.now(),
+          });
+          this.store.appendEvent(run.id, "evidence_reconciliation_error", {
+            submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
+          }, Date.now());
+          return "mapping";
+        }
+        if (enforcingReadiness && readiness?.status === "gaps") {
+          if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
+          if (binding.state === "active" && this.store.continueExhaustedEvidenceReadiness(submission.id, Date.now())) return "exhausted";
+          const waitedAt = Date.now();
+          this.store.setSubmissionState(
+            submission.id,
+            "waiting_for_evidence_readiness",
+            waitedAt,
+          );
+          this.store.setRunState(
+            run.id,
+            "waiting_for_evidence_readiness",
+            "evidence_readiness",
+            {
+              submissionId: submission.id,
+              gapCodes: readiness.gapCodes,
+            },
+            waitedAt,
+          );
+          this.store.appendEvent(run.id, "evidence_readiness_waiting", {
             submissionId: submission.id,
+            round: submission.round,
+            segment: submission.segment,
             gapCodes: readiness.gapCodes,
-          },
-          waitedAt,
-        );
-        this.store.appendEvent(run.id, "evidence_readiness_waiting", {
-          submissionId: submission.id,
-          round: submission.round,
-          segment: submission.segment,
-          gapCodes: readiness.gapCodes,
-        }, waitedAt, `evidence-readiness-wait:${submission.id}`);
-        this.publishRun(run.id);
-        this.scheduleEvidenceReadinessDelivery(submission.id);
-        return { ok: true, value: { run: waitingRun, submission: waitingSubmission } };
-      }
-      this.engine.activateSubmission(submission.id);
-      const updatedRun = this.store.getRun(run.id) ?? run;
+          }, waitedAt, `evidence-readiness-wait:${submission.id}`);
+          return "waiting";
+        }
+        if (digest) this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture });
+        if (sealAction) this.store.setRunState(run.id, "running", "activating", null, Date.now());
+        return "activate";
+      });
+      if (disposition === "conflict") return guardConflict();
+      releaseClaim = false;
+      if (disposition === "activate" || disposition === "exhausted") this.engine.activateSubmission(submission.id);
       this.publishRun(run.id);
-      return { ok: true, value: { run: updatedRun, submission: runnable } };
+      if (disposition === "waiting") this.scheduleEvidenceReadinessDelivery(submission.id);
+      if (sealAction || disposition === "exhausted") this.scheduleQueuedDeliveries(binding.noteKey);
+      return { ok: true, value: { run: this.store.getRun(run.id)!, submission: disposition === "activate" && !digest ? runnable : this.store.getSubmission(submission.id)! } };
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -8208,7 +8278,7 @@ export class WorkflowManager {
         const failingItem = imageFailure ? error.item : null;
         const detail = {
           error: message,
-          ...(imageFailure ? { code: error.code } : {}),
+          ...(imageFailure ? { code: error.code } : sealing ? { code: "repository_capture_unavailable" } : {}),
           ...(failingItem
             ? { itemName: failingItem.displayName, itemClientId: failingItem.clientItemId }
             : {}),
@@ -8243,6 +8313,9 @@ export class WorkflowManager {
         reason: "stale_capture",
         message: `Workflow evidence capture failed: ${message}`,
       };
+    } finally {
+      if (candidate) await discardWorkflowCandidate(this.repositoryArtifacts, candidate);
+      if (releaseClaim) await this.repositoryArtifacts.release(submission.id);
     }
   }
 
@@ -8478,7 +8551,8 @@ export class WorkflowManager {
     if (!resolved) return false;
     const { attempt, snapshot, state, binding, version, node } = resolved;
     if (!WorkflowContextSnapshotSchema.safeParse(child.context).success) return false;
-    const sealed = await this.sealSessionActionContinuation({
+    if (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(child.id)) return false;
+    const seal = await this.prepareSessionActionContinuation({
       attempt,
       snapshot,
       version,
@@ -8488,7 +8562,8 @@ export class WorkflowManager {
       child,
       repositoryRoot: binding.sessionRepoRoot ?? null,
     });
-    if (!sealed) return false;
+    if (!seal || !seal()) return false;
+    this.scheduleQueuedDeliveries(binding.noteKey);
     this.store.appendEvent(child.runId, "session_action_continuation_resealed", {
       attemptId: attempt.id,
       submissionId: child.id,
@@ -8537,6 +8612,8 @@ export class WorkflowManager {
     if (this.retentionRunning) return;
     this.retentionRunning = true;
     try {
+      const cleanup = this.engine.reconcileTerminalRepositoryWorkloads();
+      if (cleanup) await cleanup;
       const result = (this.options.runRetention ?? runWorkflowRetention)(
         this.store,
         getWorkflowPolicy().retention,

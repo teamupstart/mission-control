@@ -71,13 +71,13 @@ const CLIENT_CONFIG = {
   features: { shell_tool: false, unified_exec: false },
 } as const;
 
-interface SdkThread {
+interface SdkThread<P = string> {
   readonly id?: string | null;
-  run(prompt: string, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
+  run(prompt: P, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
     finalResponse?: string | null;
     usage?: Record<string, unknown> | null;
   }>;
-  runStreamed?(prompt: string, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
+  runStreamed?(prompt: P, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
     events: AsyncGenerator<
       | { type: "item.completed"; item: { type: string; text?: string } }
       | { type: "turn.completed"; usage: Record<string, unknown> }
@@ -88,10 +88,11 @@ interface SdkThread {
   }>;
 }
 
-async function runWithProviderEvents(
-  thread: SdkThread,
-  prompt: string,
+export async function runWithProviderEvents<P>(
+  thread: SdkThread<P>,
+  prompt: P,
   options: { signal?: AbortSignal; outputSchema?: unknown },
+  diagnostics: "fail" | "await_terminal" = "fail",
 ): Promise<{ finalResponse: string; usage: Record<string, unknown> | null }> {
   // The SDK's run() throws only Error(message) for turn.failed, erasing the fact that
   // the message came from a provider event. Read the same stream directly when available.
@@ -105,7 +106,9 @@ async function runWithProviderEvents(
   let completed = false;
   for await (const event of events) {
     if (event.type === "turn.failed" && "error" in event) throw new ProviderFailure(event.error.message);
-    if (event.type === "error" && "message" in event) throw new Error(event.message);
+    // A repository workload can retry its transport inside the same provider session.
+    // Its result is authoritative only at turn.completed or turn.failed.
+    if (diagnostics === "fail" && event.type === "error" && "message" in event) throw new Error(event.message);
     if (event.type === "item.completed" && "item" in event && event.item.type === "agent_message") {
       finalResponse = event.item.text ?? "";
     }

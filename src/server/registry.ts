@@ -1068,6 +1068,7 @@ export class Registry extends EventEmitter {
    */
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
+  private checkWorkflowReset: ((noteKey: string) => string | null) | null = null;
   /** Explicit grants, bounded by live sessions and never persisted. */
   private sessionControlGrants = new Map<string, string>();
   /**
@@ -2878,8 +2879,13 @@ export class Registry extends EventEmitter {
     }
   }
 
-  registerWorkflowReset(cleanup: (noteKey: string) => void): void {
+  registerWorkflowReset(cleanup: (noteKey: string) => void, check: (noteKey: string) => string | null): void {
     this.workflowReset = cleanup;
+    this.checkWorkflowReset = check;
+  }
+
+  workflowResetBlocker(noteKey: string): string | null {
+    return this.checkWorkflowReset?.(noteKey) ?? null;
   }
 
   clearWorkflowState(noteKey: string): void {

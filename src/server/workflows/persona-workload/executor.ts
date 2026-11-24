@@ -1,3 +1,4 @@
+import { ProviderFailure } from "../../llm/provider-failure.ts";
 import { FIXED_OS_EXECUTABLES } from "../../executables/catalog.ts";
 import { openRepositoryAuditJournal } from "./audit-journal.ts";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
@@ -5,6 +6,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  REPOSITORY_EVIDENCE_CAPABILITY,
   PersonaWorkloadRequestSchema,
   PersonaWorkloadResultSchema,
   PersonaWorkloadVerdictSchema,
@@ -35,6 +37,8 @@ export interface LocalPersonaWorkloadExecutorOptions {
   nodeBinary: string;
   gitBinary: string;
   providerBinary: (provider: "claude" | "codex") => Promise<string>;
+  /** After registration the durable owner removes this home once its process group is empty. */
+  ownWorkspace?: (workloadId: string, path: string) => void;
   /** Explicit provider authentication only. Never pass the daemon environment or Mission credentials. */
   providerEnvironment: (
     provider: "claude" | "codex",
@@ -43,6 +47,7 @@ export interface LocalPersonaWorkloadExecutorOptions {
 }
 /** Unwired reference executor. Durable dispatch and reconciliation belong to Phase 3. */
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
+  readonly repositoryEvidenceCapability = REPOSITORY_EVIDENCE_CAPABILITY;
   private readonly jobs = new Map<string, Job>();
   private readonly cancelled = new Map<string, number>();
   constructor(private readonly options: LocalPersonaWorkloadExecutorOptions) {}
@@ -128,6 +133,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private async run(job: Job): Promise<void> {
     const { request } = job;
     let root: string | undefined;
+    let registeredHome = false;
     let lease: RepositoryViewLease | undefined;
     const emit = (payload: Record<string, unknown>) =>
       job.events.push({
@@ -187,6 +193,10 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       job.controller.signal.throwIfAborted();
       emit({ type: "repository_verified" });
       root = await mkdtemp(join(tmpdir(), "mission-repository-workload-"));
+      if (this.options.ownWorkspace) {
+        this.options.ownWorkspace(request.workloadId, root);
+        registeredHome = true;
+      }
       const cwd = join(root, "provider");
       await mkdir(cwd);
       const auditPath = join(root, "audit.jsonl"),
@@ -297,6 +307,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         usage: output.usage,
       });
     } catch (error) {
+      if (error instanceof ProviderFailure) result = { status: "failed", code: "provider_unavailable", providerFailure: error.kind };
       if (error instanceof RepositoryCapabilityError)
         result = { status: "failed", code: "capability_mismatch", capabilityReason: error.reason };
     } finally {
@@ -313,7 +324,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       } catch {
         result = { status: "failed", code: "artifact_unavailable" };
       }
-      if (root)
+      if (root && !registeredHome)
         await rm(root, { recursive: true, force: true }).catch(() => {
           result = { status: "failed", code: "artifact_unavailable" };
         });
@@ -333,7 +344,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       }
       if (auditFailed) result = { status: "failed", code: "audit_unavailable" };
       if (result.status === "failed" && usage) result = { ...result, usage };
-      emit({ type: "terminal", result });
+      emit({ type: "terminal", capability: request.requiredCapability, result });
       job.terminal = true;
     }
   }

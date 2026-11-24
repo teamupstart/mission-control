@@ -1,5 +1,5 @@
 import { createContext, useEffect, useRef } from "react";
-import { VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport } from "@shared/voice-answers.ts";
+import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceTimeBounds } from "@shared/voice-answers.ts";
 
 import { fetchVoiceCardTime } from "./api.ts";
 import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
@@ -24,7 +24,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     let pending: { key: string; controller: AbortController } | undefined;
     let last = "";
     let retry: ReturnType<typeof setTimeout>;
-    let observed: { state: string; at: number } | undefined;
+    let observed: { state: string; at: number; id: number } | undefined;
     const cardClock = new VoiceCardClock();
     let calibration: Promise<void> | undefined;
     async function sampleClock() {
@@ -50,7 +50,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       const payload: OpenCardsReport = { windowId, focused: hasFocus,
         cards: elements.map(el => ({ kind: "question", id: el.dataset.voiceQuestion!, focused: el.contains(document.activeElement) })) };
       const state = voiceReplyState(payload);
-      if (state !== observed?.state) observed = state ? { state, at: performance.now() } : undefined;
+      if (state !== observed?.state) observed = state ? { state, at: performance.now(), id: ++clock.revision } : undefined;
       const body = JSON.stringify(payload);
       const key = clock.focusAtUs + body;
       if (pending?.key === key || (!pending && last === key)) return;
@@ -62,18 +62,24 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       last = "";
       try {
         const observation = observed;
+        const send = (bounds?: VoiceTimeBounds, calibrating = false) => fetch(dashboard ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
+          signal: AbortSignal.any([controller.signal, attempt.controller.signal, AbortSignal.timeout(1500)]),
+          headers: { "content-type": "application/json", [VOICE_FOCUS_TIME_HEADER]: String(clock.focusAtUs),
+            [VOICE_REPORT_REVISION_HEADER]: String(++clock.revision),
+            ...(observation && { [VOICE_OBSERVATION_ID_HEADER]: String(observation.id) }),
+            ...(calibrating && { [VOICE_CALIBRATING_HEADER]: "1" }),
+            ...(bounds && { [VOICE_CARDS_OBSERVED_HEADER]: String(bounds.latest), [VOICE_CARDS_EARLIEST_HEADER]: String(bounds.earliest) }) }, body });
         let bounds = observation && cardClock.serverTimeAt(observation.at);
         if (observation && (!bounds || bounds.latest - bounds.earliest > 100)) {
+          // Publish the focus change first. Its higher-revision refinement can overtake
+          // this request, and neither request may resurrect a superseded observation.
+          void send(bounds, true).catch(() => {});
           calibration ??= sampleClock().finally(() => { calibration = undefined; });
           await calibration;
           bounds = cardClock.serverTimeAt(observation.at);
         }
         if (pending !== attempt || controller.signal.aborted) return;
-        const response = await fetch(dashboard ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
-          signal: AbortSignal.any([controller.signal, attempt.controller.signal, AbortSignal.timeout(1500)]),
-          headers: { "content-type": "application/json", [VOICE_FOCUS_TIME_HEADER]: String(clock.focusAtUs),
-            [VOICE_REPORT_REVISION_HEADER]: String(++clock.revision),
-            ...(bounds && { [VOICE_CARDS_OBSERVED_HEADER]: String(bounds.latest), [VOICE_CARDS_EARLIEST_HEADER]: String(bounds.earliest) }) }, body });
+        const response = await send(bounds);
         if (pending === attempt && response.ok) last = key;
       } catch { /* A timeout retries from the current DOM and document focus. */ }
       if (pending !== attempt || controller.signal.aborted) return;

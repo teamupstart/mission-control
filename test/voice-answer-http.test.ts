@@ -69,7 +69,7 @@ test("a reload after a backward clock adjustment restores focus and rejects olde
   const windows = registry.voiceRouter!.openCards;
   const close = windows.connect("previous");
   const closeOlder = windows.connect("delayed");
-  const report = (windowId: string, stamp: number) => windows.report({ windowId, focused: true, cards: [] }, stamp);
+  const report = (windowId: string, stamp: number) => windows.report({ windowId, focused: true, cards: [] }, { focusAtUs: stamp });
   assert.ok(report("previous", now * 1000));
   close();
   monotonicMs += 10_001;

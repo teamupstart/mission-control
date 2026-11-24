@@ -627,3 +627,44 @@ test("speech intersecting the clock uncertainty requests a repeat and never star
   await reply("after-open", 175);
   assert.equal(answers()[0]?.text, "Postgres");
 });
+
+test("a calibrating focus reserves its reply until confirmed and loses it on cancel or a different focus", async t => {
+  const router = registry.voiceRouter!;
+  const a = question();
+  const b = question("Which cache?");
+  const windowId = "provisional-focus";
+  t.after(router.openCards.connect(windowId));
+  let revision = 0;
+  const report = (focus: string, observationId: string, calibrating = false) => put("/api/voice/open-cards", {
+    windowId, focused: true, cards: [a, b].map(q => ({ id: q.id, kind: "question", focused: q.id === focus })),
+  }, { "x-voice-focus-at-us": "100", "x-voice-report-revision": String(++revision), "x-voice-observation-id": observationId,
+    ...(calibrating ? { "x-voice-calibrating": "1" } : { "x-voice-cards-observed-at-ms": "0" }) });
+  await report(a.id, "1");
+  for (const [i, action] of ["cancel", "focus", "confirm"].entries()) {
+    const obs = String(2 + i * 2);
+    await report(b.id, obs, true);
+    const id = "calibrating-" + action;
+    const reply = router.accept({ id, text: "reply, option B", backend: "fluidaudio", capturedAt: Date.now(), words: [] });
+    assert.deepEqual(answers(), []);
+    assert.ok(router.pendingVoiceActions.some(a => a.id === id));
+    if (action === "cancel") await say("cancel");
+    if (action === "focus") await report(a.id, String(Number(obs) + 1));
+    else await report(b.id, obs);
+    await reply;
+    if (action === "confirm") assert.equal(answers()[0]?.reviewId, b.id);
+    else assert.deepEqual(answers(), []);
+    assert.equal(registry.getReview(a.id)?.status, "pending");
+  }
+});
+
+test("an addressed agent retains its one open target when another agent has focus", async () => {
+  const visible = question();
+  question("Which cache?");
+  const focused = question("Which platform?", "sdk:Will");
+  await show([visible.id, focused.id], focused.id);
+  await say("Steve, option B");
+  assert.equal(answers()[0]?.reviewId, visible.id);
+  await say("cancel");
+  await say("reply, option A");
+  assert.equal(answers()[0]?.reviewId, focused.id);
+});

@@ -423,7 +423,7 @@ export class VoiceRouter {
     const pending = this.questions!.pending().filter(q => q.createdAt <= time.openedAt && (!target || q.sessionId === target.sessionId))
       .sort((a, b) => a.createdAt - b.createdAt);
     const timing = this.questionCaptureTiming(time);
-    const drawn = this.openCards.target(pending);
+    const drawn = this.openCards.target(pending, !!target && !reply);
     const open = timing === "eligible" ? drawn : undefined;
     const body = (reply?.[1] ?? addressed!.text).trim();
     if (!body) return false;
@@ -437,6 +437,10 @@ export class VoiceRouter {
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     entry.matchedName = target?.name ?? null;
+    const calibration = reply && drawn && this.openCards.pendingCalibration;
+    if (calibration && drawn) {
+      return this.prepareAnswer(item, drawn, body, !choiceCommand, undefined, calibration).then(() => true);
+    }
     if (reply && timing === "uncertain") {
       this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
       return true;
@@ -476,7 +480,7 @@ export class VoiceRouter {
   }
 
   private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean,
-    correction?: { id: string; time: ActionTime }): Promise<void> {
+    correction?: { id: string; time: ActionTime }, calibration?: AbortSignal): Promise<void> {
     const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
     const attempt = { ...(correction?.time ?? item.time), reviewId: review.id, sequence: ++this.answerSequence };
@@ -489,6 +493,17 @@ export class VoiceRouter {
       item.modelStep = new AbortController();
       this.open.set(id, item);
       this.pendingVoiceActions.push({ id, kind: "card", ...item.time, cancel: () => this.cancel(id) });
+    }
+    if (calibration) {
+      const wake = AbortSignal.any([calibration, item.modelStep!.signal, signal, AbortSignal.timeout(3000)]);
+      if (!wake.aborted) await new Promise<void>(resolve => wake.addEventListener("abort", () => resolve(), { once: true }));
+      if (signal.aborted || this.open.get(id) !== item) return;
+      const target = this.openCards.target(this.questions!.pending());
+      if (this.openCards.pendingCalibration || target?.id !== review.id || this.questionCaptureTiming(item.time) !== "eligible") {
+        this.take(item);
+        this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
+        return;
+      }
     }
     const target = item.card.parts[0]?.target ?? null;
     const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
@@ -743,7 +758,7 @@ export class VoiceRouter {
       else if (words) {
         this.questions!.removeCompanion(id);
         item.time = time ?? this.now();
-        const open = this.questionCaptureTiming(item.time) === "eligible" ? this.openCards.target(pending) : undefined;
+        const open = this.questionCaptureTiming(item.time) === "eligible" ? this.openCards.target(pending, true) : undefined;
         const work = this.prepareQuestionReply(item, review, words, choiceCommand, open)
           .catch(() => {
             if (this.open.get(id) !== item) return;

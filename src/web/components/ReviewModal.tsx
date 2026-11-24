@@ -201,7 +201,8 @@ export function ReviewCard({
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   const voiceAnswers = useContext(VoiceAnswersContext);
-  const voiceQuestion = question && voiceAnswers !== null && !snoozing && (decisions?.length ?? 0) <= 1;
+  const drawnQuestion = question && voiceAnswers !== null && !snoozing;
+  const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
   const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
   const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
   // The daemon owns the deadline. Once the operator edits this preview, the draft
@@ -315,7 +316,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-question={voiceQuestion ? review.id : undefined} tabIndex={voiceQuestion ? -1 : undefined}>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-question={drawnQuestion ? review.id : undefined} tabIndex={drawnQuestion ? -1 : undefined}>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}

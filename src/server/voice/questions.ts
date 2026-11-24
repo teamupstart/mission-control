@@ -12,6 +12,15 @@ export interface VoiceQuestions {
   open(windowId: string, review: ReviewItem): void;
 }
 
+interface CardReportTiming {
+  focusAtUs?: number;
+  revision?: number;
+  withdraw?: boolean;
+  observation?: VoiceTimeBounds;
+  observationId?: number;
+  calibrating?: boolean;
+}
+
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
   private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number }>();
@@ -20,7 +29,9 @@ export class VoiceOpenCards {
   private observedAt?: VoiceTimeBounds;
   private replyState?: string;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number; observation?: VoiceTimeBounds }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number;
+    observation?: VoiceTimeBounds; observationId?: number; receivedAt: number; calibration?: AbortController }>();
+  private calibration?: AbortController;
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -44,7 +55,8 @@ export class VoiceOpenCards {
     };
   }
 
-  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false, observation?: VoiceTimeBounds): boolean {
+  report(report: OpenCardsReport, timing: CardReportTiming = {}): boolean {
+    const { focusAtUs: observedAtUs, revision = 0, withdraw, observation, observationId, calibrating } = timing;
     const stream = this.streams.get(report.windowId);
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
@@ -59,24 +71,43 @@ export class VoiceOpenCards {
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     // A standalone surface keeps its stream but ceases to be a dashboard. Retain
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
-    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs, observation });
+    const sameObservation = observationId !== undefined && last?.observationId === observationId;
+    const receivedAt = sameObservation ? last.receivedAt : performance.now();
+    const ongoing = sameObservation && last.calibration && !last.calibration.signal.aborted ? last.calibration : undefined;
+    const calibration = calibrating ? ongoing ?? new AbortController() : undefined;
+    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs,
+      observation, observationId, receivedAt, calibration });
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
-    const received = performance.now();
-    const clamp = (stamp: number) => Math.max(stream.connectedAt, Math.min(stamp, received));
+    // The question was already drawn by the first receipt of this observation.
+    const clamp = (stamp: number) => Math.max(stream.connectedAt, Math.min(stamp, receivedAt));
     const observedAt = this.current === report && observation
-      ? { earliest: clamp(observation.earliest), latest: clamp(observation.latest) } : undefined;
-    this.reportChanged(observedAt, observation?.latest !== last?.observation?.latest || observation?.earliest !== last?.observation?.earliest);
+      ? { earliest: clamp(observation.earliest), latest: clamp(observation.latest) }
+      : this.current === report && observationId !== undefined
+        ? { earliest: calibrating ? stream.connectedAt : receivedAt, latest: receivedAt } : undefined;
+    this.reportChanged(observedAt, observationId !== last?.observationId || observation?.latest !== last?.observation?.latest ||
+      observation?.earliest !== last?.observation?.earliest);
     return true;
   }
 
   private reportChanged(observedAt?: VoiceTimeBounds, observedAgain = false): void {
-    const state = voiceReplyState(this.current);
+    const current = this.current;
+    const calibration = current && this.reports.get(current.windowId)?.calibration;
+    if (calibration !== this.calibration) {
+      this.calibration?.abort();
+      this.calibration = calibration;
+      observedAgain = true;
+    }
+    const state = voiceReplyState(current);
     if (state !== this.replyState || (observedAt !== undefined && observedAgain)) {
       this.replyState = state;
       this.observedAt = observedAt;
       this.changedAt = Date.now();
     }
     this.changed();
+  }
+
+  get pendingCalibration(): AbortSignal | undefined {
+    return this.calibration?.signal;
   }
 
   private get current(): OpenCardsReport | undefined {
@@ -109,14 +140,18 @@ export class VoiceOpenCards {
     return monotonicCapture < this.observedAt.latest ? "uncertain" : "eligible";
   }
 
-  target(questions: ReviewItem[]): ReviewItem | undefined {
+  target(questions: ReviewItem[], addressed = false): ReviewItem | undefined {
     const cards = this.current?.cards ?? [];
-    const open = questions.filter(q => cards.some(c => c.id === q.id));
-    const focused = open.filter(q => cards.some(c => c.id === q.id && c.focused));
-    return open.length === 1 ? open[0] : focused.length === 1 ? focused[0] : undefined;
+    // An unnamed reply follows focus across all drawn questions, including manual
+    // forms. An explicitly addressed agent retains its own open-card targeting rule.
+    const candidates = addressed ? cards.filter(card => questions.some(q => q.id === card.id)) : cards;
+    const focused = candidates.length === 1 ? candidates : candidates.filter(card => card.focused);
+    return focused.length === 1 ? questions.find(q => q.id === focused[0]!.id) : undefined;
   }
 
   clear(): void {
+    this.calibration?.abort();
+    this.calibration = undefined;
     this.replyState = undefined;
     this.latestFocusUs = 0;
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);

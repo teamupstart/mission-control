@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
@@ -132,6 +133,11 @@ for (const slowAgain of [false, true]) {
     const probe = Promise.withResolvers<number>();
     const release = Promise.withResolvers<void>();
     let probes = 0;
+    if (slowAgain) await page.route("**/api/voice/open-cards", async route => {
+      // Delay both sources of certainty: the first card report and the time probes.
+      if (route.request().headers()["x-voice-calibrating"]) await release.promise;
+      await route.continue();
+    });
     await page.route("**/api/voice/config", async route => {
       if (route.request().method() === "HEAD") {
         if (++probes === 1) {
@@ -143,7 +149,7 @@ for (const slowAgain of [false, true]) {
       }
       await route.continue();
     });
-    const delivered = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    const delivered = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && !r.request().headers()["x-voice-calibrating"] &&
       r.request().postDataJSON().cards.some((c: { id: string }) => c.id === id));
     try {
       await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
@@ -188,6 +194,78 @@ test("manually reopening a review cannot replay a completed voice pick", async (
   await expect(picked).not.toBeFocused();
   await say(daemon, "reply, yesterday");
   await expect(picked.getByRole("textbox")).toBeEmpty();
+});
+
+test("a reply cannot reach the old question while a new focus is calibrating", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const first = await file(page, daemon, steve.cwd, "First benchmark?");
+  const second = await file(page, daemon, steve.cwd, "Second benchmark?");
+  const release = Promise.withResolvers<void>();
+  const probing = Promise.withResolvers<void>();
+  let hold = false;
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() === "HEAD") {
+      if (!hold) return route.fulfill({ status: 503 });
+      probing.resolve();
+      await release.promise;
+    }
+    await route.continue();
+  });
+  try {
+    await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+    const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+    await expectContentClearsBorder(inbox);
+    const card = (id: string) => inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+    const focused = (id: string, calibrating: boolean) => page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+      Boolean(r.request().headers()["x-voice-calibrating"]) === calibrating &&
+      r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === id));
+    const firstReport = focused(first, false);
+    await card(first).focus();
+    await firstReport;
+    hold = true;
+    const secondReport = focused(second, true);
+    await card(second).focus();
+    await Promise.all([probing.promise, secondReport]);
+    // Capture strictly after the new focus is visible to the daemon, while the probe is held.
+    const received = Date.now();
+    await expect.poll(() => Date.now(), { intervals: [5] }).toBeGreaterThan(received + 5);
+    const reply = say(daemon, "reply, tomorrow", { id: "reply-during-probe" });
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries
+      .some((entry: { id: string }) => entry.id === "reply-during-probe"), { intervals: [10] }).toBe(true);
+    await expect(card(first)).toBeEmpty();
+    await expect(card(second)).toBeEmpty();
+    release.resolve();
+    await reply;
+    await expect(card(first)).toBeEmpty();
+    await expect(card(second)).toHaveValue("tomorrow");
+  } finally {
+    release.resolve();
+  }
+});
+
+test("a focused multi-decision form blocks replies to its single-decision neighbor", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const neighbor = await file(page, daemon, steve.cwd, "When should the build start?");
+  const title = "Choose both settings";
+  const multi = await file(page, daemon, steve.cwd, title);
+  // The current MCP schema permits one decision on input. Restore a persisted
+  // multi-decision input through the normal boot path to exercise manual forms.
+  await daemon.shutdown();
+  withDaemonDb(daemon, db => db.prepare("UPDATE reviews SET decisions = ? WHERE id = ?").run(
+    JSON.stringify(["Compiler", "Profiler"].map(question => ({ id: question, question, options: [{ id: "enabled", label: "Enable " + question }] }))), multi));
+  await daemon.restart();
+  await page.reload();
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const manual = inbox.locator(".review").filter({ hasText: title });
+  await manual.getByRole("radio").first().focus();
+  await say(daemon, "reply, tomorrow");
+  await expect(inbox.locator('[data-voice-question="' + neighbor + '"]').getByRole("textbox")).toBeEmpty();
+  await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + neighbor)).json()).status).toBe("pending");
 });
 
 test("a companion identifies its destination and hands its calibrated countdown to the owning footer", async ({ dashboard: page, daemon }) => {

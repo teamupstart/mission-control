@@ -1038,7 +1038,9 @@ publishes changes with `voice_answer`. The focused dashboard reports its drawn q
 cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header orders reports
 across windows. The dashboard also reports when the question became eligible on the daemon's
 monotonic clock, so a delayed report can still accept speech captured while the card was visible.
-The dashboard refines a slow clock sample with a second round trip. If speech falls within the
+The dashboard reports focus immediately and refines a slow clock sample with a second round trip.
+A reply waiting for calibration stays bound to the observed question and can be cancelled.
+Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,
 the daemon uses report receipt time. Choosing a question in the picker
 acknowledges the choice immediately and publishes the matched answer when it is ready.

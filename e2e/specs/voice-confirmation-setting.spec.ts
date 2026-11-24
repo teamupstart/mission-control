@@ -31,6 +31,10 @@ test("three placement previews persist across reload, with a toast fallback and 
   await page.goto(daemon.baseURL + "/#/voice/popover");
   await expect(page.locator(".voice-standalone")).toHaveCount(1);
   await expect(page.locator(".app")).toHaveCount(0);
+  const pending = page.getByRole("status").filter({ hasText: "To Steve" });
+  await expect(pending.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+  await pending.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Cancelled");
 });
 
 test("visiting either standalone voice route preserves a closed Dispatch draft and attachment", async ({ dashboard: page, daemon }) => {
@@ -246,8 +250,16 @@ test("standalone held messages can be switched and recalled while a new countdow
   await expect(card).toContainText("another countdown");
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(choose).toHaveValue("first");
+  // Reopen a fresh dashboard against the restarted daemon so no local card can supply the picker.
+  await daemon.crash();
+  await daemon.restart();
+  await page.reload();
+  await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 7000 });
+  await expect(choose.getByRole("option", { name: /check the second release/ })).toHaveCount(1);
   for (const id of ["first", "second"]) {
     await choose.selectOption(id);
+    await expect(card).toContainText(question);
+    await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
     const recalled = page.waitForResponse(response => response.url().endsWith("/voice%3A" + id + "/recall"));
     await card.getByRole("button", { name: "Cancel message" }).click();
     expect(await (await recalled).json()).toEqual({ ok: true, text: "check the " + id + " release" });

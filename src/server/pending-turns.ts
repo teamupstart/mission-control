@@ -727,6 +727,12 @@ export class PendingTurnManager {
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);
+    if (event.type === "voice_roster") {
+      for (const target of event.roster) {
+        const session = target.sessionId && this.registry.getSession(target.sessionId);
+        if (session) this.registry.voiceRouter?.restoreHeldTurns(session);
+      }
+    }
     if (event.type === "feature_flags") {
       for (const session of this.registry.liveSessions()) {
         if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));
@@ -735,6 +741,7 @@ export class PendingTurnManager {
   }
 
   private observeSession(session: Session): void {
+    this.registry.voiceRouter?.restoreHeldTurns(session);
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);

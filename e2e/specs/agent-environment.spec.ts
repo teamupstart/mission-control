@@ -171,7 +171,7 @@ test.describe("Agent environment Settings failures", () => {
       await names.fill(scenario.draft);
       await panel.getByRole("button", { name: "Save variable names" }).click();
       await expectError(panel, scenario.error, scenario.image);
-      expect(writes).toEqual(scenario.sendsPut ? [{ names: [scenario.draft] }] : []);
+      expect(writes).toEqual(scenario.sendsPut ? [{ names: [scenario.draft], expectedRevision: expect.stringMatching(/^[a-f0-9]{64}$/) }] : []);
       await expect(names).toHaveValue(scenario.draft);
       await expect(panel.getByRole("listitem")).toHaveText([savedStatus]);
       await page.reload();
@@ -179,6 +179,28 @@ test.describe("Agent environment Settings failures", () => {
       await expect(panel.getByRole("listitem")).toHaveText([savedStatus]);
     });
   }
+
+  test("an older tab cannot overwrite a completed save and can edit again after reloading the winner", async ({ daemon, dashboard: page }) => {
+    const endpoint = daemon.baseURL + "/api/agent-environment";
+    const other = await page.context().newPage();
+    const stale = page.getByRole("region", { name: "Agent environment" });
+    const newer = other.getByRole("region", { name: "Agent environment" });
+    for (const tab of [page, other]) await tab.goto(daemon.baseURL + "/#/settings/harnesses");
+    for (const panel of [stale, newer]) await expect(panel.getByRole("textbox")).toHaveValue(savedName);
+    await stale.getByRole("textbox").fill("E2E_STALE_NAME");
+    await newer.getByRole("textbox").fill("E2E_NEWER_NAME");
+    await newer.getByRole("button", { name: "Save variable names" }).click();
+    await expect(newer.getByRole("listitem")).toHaveText(["E2E_NEWER_NAME Present (daemon)"]);
+    const rejected = page.waitForResponse((r) => r.url() === endpoint && r.request().method() === "PUT");
+    await stale.getByRole("button", { name: "Save variable names" }).click();
+    expect((await rejected).status()).toBe(409);
+    await expect(stale.getByRole("textbox")).toHaveValue("E2E_NEWER_NAME");
+    await expectError(stale, "Another save changed the variable names. Showing the current settings.", "round16-stale-tab.png");
+    expect((await (await page.request.get(endpoint)).json()).names).toEqual(["E2E_NEWER_NAME"]);
+    await stale.getByRole("textbox").fill(savedName);
+    await stale.getByRole("button", { name: "Save variable names" }).click();
+    await expect(stale.getByRole("listitem")).toHaveText([savedStatus]);
+  });
 
   test("a later save supersedes an in-flight status probe and the first tab shows the committed names", async ({ daemon, dashboard: page }) => {
     const endpoint = daemon.baseURL + "/api/agent-environment";

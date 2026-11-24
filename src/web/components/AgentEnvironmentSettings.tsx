@@ -6,6 +6,7 @@ import { Tooltip } from "./Tooltip.tsx";
 
 export function AgentEnvironmentSettings() {
   const [variables, setVariables] = useState<WorktreeClaimVariableView[] | null>(null);
+  const [revision, setRevision] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -17,12 +18,14 @@ export function AgentEnvironmentSettings() {
       if (!current) return;
       if (!result) { setError("Could not read agent environment settings."); return; }
       setVariables(result.variables);
+      setRevision(result.revision);
       setDraft(result.names.join("\n"));
     });
     return () => { current = false; };
   }, [readAttempt]);
 
   async function save() {
+    if (revision === null) return;
     const config = AgentEnvironmentConfigSchema.safeParse({ names: draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
     if (!config.success) {
       setError("Enter up to 32 unique variable names, one per line. Assignments and reserved names are unavailable.");
@@ -30,14 +33,16 @@ export function AgentEnvironmentSettings() {
     }
     setError("");
     setSaving(true);
-    const result = await api.setAgentEnvironment(config.data.names);
+    const result = await api.setAgentEnvironment(config.data.names, revision);
     if (result.status === 409) {
       const current = await fetchAgentEnvironment();
       setVariables(current?.variables ?? null);
+      setRevision(current?.revision ?? null);
       setDraft((current?.names ?? result.names ?? []).join("\n"));
       setError(current ? "Another save changed the variable names. Showing the current settings." : "Could not read agent environment settings.");
-    } else if (result.ok && result.variables && result.names) {
+    } else if (result.ok && result.variables && result.names && result.revision) {
       setVariables(result.variables);
+      setRevision(result.revision);
       setDraft(result.names.join("\n"));
     } else {
       setError("Could not save agent environment settings.");

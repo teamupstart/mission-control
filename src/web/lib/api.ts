@@ -2514,8 +2514,8 @@ export const api = {
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
   /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
-  setAgentEnvironment: (names: string[]) =>
-    put<ActionResult & Partial<AgentEnvironmentSettingsView>>("/api/agent-environment", { names }),
+  setAgentEnvironment: (names: string[], expectedRevision: string) =>
+    put<ActionResult & Partial<AgentEnvironmentSettingsView>>("/api/agent-environment", { names, expectedRevision }),
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---

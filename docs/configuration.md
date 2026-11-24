@@ -543,6 +543,9 @@ launch. Settings reports presence and source. A missing variable leaves the sess
 and appears in its details. The setting and its backups contain only names. `CODEX_HOME` is
 reserved because Mission Control selects the Codex profile for each session.
 
+If another Settings tab saves a different list first, the older tab reloads the saved names
+and shows a conflict message. You can then edit the current list.
+
 The preview adds selected variables to the usual launch environment. Terminal launches
 transfer them through a private one-use Unix socket. The pane must present the random ticket
 delivered with its launch command. An invalid ticket leaves the handoff available to the pane.

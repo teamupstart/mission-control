@@ -3688,6 +3688,10 @@ export const AgentEnvironmentConfigSchema = z.object({
     .refine((names) => new Set(names).size === names.length, "Variable names must be unique"),
 }).strict();
 
+export const AgentEnvironmentSaveSchema = AgentEnvironmentConfigSchema.extend({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+});
+
 /**
  * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).
  * Anything that cannot be such a path is refused rather than silently matching nothing: an

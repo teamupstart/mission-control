@@ -20,10 +20,14 @@ function selection(names: string[]) {
   return { names, revision: createHash("sha256").update(JSON.stringify(names)).digest("hex") };
 }
 
-export function saveAgentEnvironment(names: string[]) {
+export function saveAgentEnvironment(names: string[], expectedRevision?: string) {
+  if (expectedRevision !== undefined) {
+    const current = selection(configuredNames());
+    if (current.revision !== expectedRevision) return { ok: false, selection: current };
+  }
   const config = AgentEnvironmentConfigSchema.parse({ names });
   setAppConfig(APP_CONFIG_ENTRIES.agentEnvironment, config);
-  return selection(config.names);
+  return { ok: true, selection: selection(config.names) };
 }
 
 /** A fresh, bounded probe. Secret values never enter the executable locator's cached snapshot. */

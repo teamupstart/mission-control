@@ -359,6 +359,18 @@ test("mismatched address wrappers stay in the queued message and cannot trigger 
   assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
 });
 
+test("a stop after an unclosed address wrapper queues as text at the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const before = interrupts.length;
+  const messages = queued("Will");
+  for (const text of ["[Will, stop", "“Will, STOP!", "「[Will, ] stop", ", [Will, stop"]) await say(text);
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.equal(interrupts.length, before);
+  assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
+  assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   await say("Will, " + body, "mention");

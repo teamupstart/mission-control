@@ -2248,7 +2248,9 @@ Every arm restores a status something watches, because nothing polls a blocked r
 - A **GitHub Inspector-only gate run** resumes in `waiting_for_new_head`. The evaluator checks
   the pinned PR for a durable observation newer than the saved one, including observations
   made while the budget was exhausted. Otherwise it waits for a positive new read. A null
-  wakeup can trigger this lookup. The saved head alone cannot spend the grant.
+  wakeup can trigger this lookup. The saved head alone cannot spend the grant. If the ledger
+  records a read with unknown PR state, a queued notification must be strictly newer than
+  that read to supply the head.
 
 **And the grant says what it bought.** It was the one primary on the page with no visible
 result, so a click that worked was indistinguishable from a click that failed. The header now

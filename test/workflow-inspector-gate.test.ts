@@ -3359,6 +3359,30 @@ test("grant waits through absent, failed, foreign and old observations and a clo
   } finally { await manager.stop(); }
 });
 
+test("a grant waits for a positive observation newer than the last durable null read", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "queued", observedAt: now + 11 }, now + 11);
+    registry.inspectionUpdated(key, "queued", "OPEN", now + 11);
+    // The queued evaluation will read the ledger after this unsuccessful read.
+    updateInspectorPr(key, { observedState: null, observedHeadSha: null, observedAt: now + 12 }, now + 12);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+
+    registry.inspectionUpdated(key, "tied", "OPEN", now + 12);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+
+    registry.inspectionUpdated(key, "confirmed", "OPEN", now + 13);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "confirmed"]]);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { await manager.stop(); }
+});
+
 test("a durable observation arriving during commit resolution wins over a delayed grant notification", async () => {
   let entered!: () => void;
   let release!: () => void;

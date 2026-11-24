@@ -554,12 +554,13 @@ function grantedHeadObservation(
     && signal.observedState !== null && signal.observedAt >= boundary.requestedAt ? signal : null;
   // Use the latest durable review and publication facts even for a queued notification.
   const { observedAt, observedState, observedHeadSha } = ledger;
-  const useDurable = observedAt !== null && observedState != null
-    && (!incoming || observedAt >= incoming.observedAt);
+  // Compare timestamps first. A failed durable read supersedes older or tied notifications.
+  const useDurable = observedAt !== null && (!incoming || observedAt >= incoming.observedAt);
   const current = useDurable
     ? { prKey: ledger.key, observedAt, observedState, observedHeadSha, ledger }
     : incoming && { ...incoming, ledger };
-  if (!current || current.observedAt < boundary.minimumObservedAt || current.observedAt < state.enteredAt
+  if (!current || current.observedState == null
+      || current.observedAt < boundary.minimumObservedAt || current.observedAt < state.enteredAt
       || current.observedAt < (state.lastObservedAt ?? 0)
       || (current.observedState === "OPEN" && !current.observedHeadSha)) return null;
   if (!useDurable && current.observedAt === state.lastObservedAt

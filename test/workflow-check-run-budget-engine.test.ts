@@ -577,6 +577,67 @@ test("two check nodes on one Command share its budget inside a single round", as
   assert.equal(store.getRun("run-shared")?.status, "completed");
 });
 
+test("a sibling CodeRabbit gate waits for the final reservation to settle", async () => {
+  const id = "coderabbit-shared-refund";
+  const submissionId = `submission-${id}`;
+  const graph: PublishedWorkflowGraph = {
+    ...twoGateGraph,
+    nodes: twoGateGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const store = seedSubmission(id, 5, graph);
+  const yaml = { source: ".coderabbit.yaml" as const, enabled: true, state: "enabled" as const, digest: "a".repeat(64), diagnostic: "enabled" };
+  const evidence = { ...context.evidence, coderabbit: yaml };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+    fingerprint: id, status: "running",
+  }, 4);
+  const comparison = store.freezeCodeRabbitComparison(submissionId, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  const release = Promise.withResolvers<void>();
+  const executions: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    checkConcurrency: 2,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: ({ nodeId }) => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async () => {
+        executions.push(nodeId);
+        const disconnect = executions.length === 1;
+        if (disconnect) await release.promise;
+        return {
+          kind: "exited", exitCode: disconnect ? 1 : 0, output: "", truncatedBytes: 0,
+          review: {
+            comparison, status: disconnect ? "incomplete" : "complete",
+            counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+            titles: [], diagnostic: disconnect ? "WebSocket closed" : "Complete review",
+            ...(disconnect ? { retryableConnection: true as const } : {}),
+          },
+        };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission(submissionId);
+  try {
+    await waitFor(() => executions.length === 1);
+    const sibling = executions[0] === "gate" ? "gate2" : "gate";
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    release.resolve();
+    await waitFor(() => store.latestAttemptForNode(submissionId, sibling)?.state === "completed");
+    assert.equal(gateOutcome(store, submissionId, sibling).status, "passed");
+    assert.deepEqual(executions.slice(1), [sibling]);
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+  } finally {
+    release.resolve();
+    await engine.stop();
+  }
+});
+
 test("an action-required Command blocks without retrying and resumes only after explicit retry", async () => {
   const store = seedSubmission("action-required");
   let authorized = false;

@@ -3156,6 +3156,7 @@ The locally observed `origin/HEAD` supplies the default base. If it is unavailab
 explicit base in Library.
 
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
+CodeRabbit nodes in the same run take turns so a node can use a slot an earlier attempt returns.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion before a node starts reviewing skips with a warning above the pipeline for that

@@ -471,6 +471,7 @@ export class WorkflowEngine {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  private readonly scheduledCodeRabbitRuns = new Set<string>();
   /**
    * One abort controller per check attempt from the moment it is claimed until it settles.
    * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
@@ -963,14 +964,21 @@ export class WorkflowEngine {
       const ready = this.store.listRunnableAttempts(schedulingNow);
       for (const attempt of ready) {
         if (this.scheduledAttempts.has(attempt.id)) continue;
+        const resolved = this.resolveAttempt(attempt);
+        const target = resolved?.node;
+        // A CodeRabbit reservation can be returned. Let it settle before a sibling in
+        // this run decides the allowance is exhausted, without holding a check slot to wait.
+        const codeRabbitRunId = target?.kind === "check" && target.slot === "coderabbit"
+          ? resolved.run.id : null;
+        if (codeRabbitRunId && this.scheduledCodeRabbitRuns.has(codeRabbitRunId)) continue;
+        if (codeRabbitRunId) this.scheduledCodeRabbitRuns.add(codeRabbitRunId);
         this.scheduledAttempts.add(attempt.id);
         // The limiter is chosen HERE, from the node kind, before either is acquired - not
         // inside `runAttempt`. This gate wraps the whole attempt, so an inner check limiter
         // would still have made every waiting and running check occupy one of the three
         // tool-less model-review slots, which is exactly what a separate budget is for.
-        const target = this.targetNode(attempt);
-        const skipCheckLimit = target?.kind === "check"
-          && this.checkBudgetAlreadySpent(attempt, target);
+        const skipCheckLimit = resolved && target?.kind === "check"
+          && this.checkBudgetAlreadySpent(resolved.run, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
         // The held check slot goes to the attempt, which gives it up while a dependency claim
         // runs and takes one again before its Command spawns.
@@ -989,6 +997,7 @@ export class WorkflowEngine {
           .finally(() => {
             this.inFlight.delete(promise);
             this.scheduledAttempts.delete(attempt.id);
+            if (codeRabbitRunId) this.scheduledCodeRabbitRuns.delete(codeRabbitRunId);
             this.wake();
           });
         this.inFlight.add(promise);
@@ -1028,10 +1037,6 @@ export class WorkflowEngine {
     return { submission, run, version, node };
   }
 
-  private targetNode(attempt: WorkflowNodeAttempt): PublishedWorkflowNode | null {
-    return this.resolveAttempt(attempt)?.node ?? null;
-  }
-
   /**
    * Whether this Check can be decided from an allowance a prior attempt already spent.
    *
@@ -1040,16 +1045,14 @@ export class WorkflowEngine {
    * concurrent settings change cannot make an executable Command escape the shared limiter.
    */
   private checkBudgetAlreadySpent(
-    attempt: WorkflowNodeAttempt,
+    run: WorkflowRun,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
   ): boolean {
-    const resolved = this.resolveAttempt(attempt);
-    if (!resolved) return false;
     const command = this.workflowCommand(node.slot);
     const spent = this.store.checkRunsSpent(
-      resolved.run.id,
+      run.id,
       node.slot,
-      resolved.run.checkBudgetEpochRound ?? null,
+      run.checkBudgetEpochRound ?? null,
     );
     return checkRunBudgetSpent(
       spent,

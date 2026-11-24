@@ -149,6 +149,14 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect(card()).toContainText("2 commits not pushed");
   await expect(card().getByRole("button", { name: "Resubmit" })).toHaveCount(0);
   await capture(card(), "01-parked-push", page);
+  // This fact sheet names the run. Any other open work still appears on the tile.
+  const queuePath = `/api/sessions/${encodeURIComponent(id)}/queue`;
+  const queued = await api<{ id: string }>(daemon, queuePath, { intent: "Review uncommitted parser tests" });
+  const tile = page.locator(".tile.is-stalled").filter({ has: card() });
+  await expect(tile.getByText("1 queued", { exact: true })).toBeVisible();
+  await capture(tile, "05-parked-with-open-queue", page);
+  await api(daemon, `${queuePath}/${queued.id}`, undefined, "DELETE");
+  await expect(tile.getByText("1 queued", { exact: true })).toHaveCount(0);
   await card().getByRole("button", { name: "Tell it to push", exact: true }).click();
   await expect.poll(() => sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "push" });
   await expect.poll(() => heard(daemon, id, INBOX_MESSAGES.push), { timeout: 30_000 }).toBe(true);
@@ -236,6 +244,7 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   await expect(card).toContainText("Tidy the changelog", { timeout: 15_000 });
   const queue = card.getByRole("button", { name: "Open queue" });
   await expect(queue).toBeVisible();
+  await expect(page.locator(".tile.is-stalled").filter({ has: card }).getByText("1 queued", { exact: true })).toHaveCount(0);
   await api(daemon, `${queuePath}/${item.id}`, undefined, "DELETE");
   await expect(queue).toHaveCount(0);
   await expect(card).not.toContainText("1 open item");

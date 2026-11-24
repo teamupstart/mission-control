@@ -92,6 +92,9 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
     await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+shift+Space");
     await beginRecording();
+    await page.keyboard.press("Control+Shift+Equal");
+    await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+shift++");
+    await beginRecording();
     await page.keyboard.press("Alt+Space");
     await expect.poll(async () => (await saved()).hotkey).toBe("alt+Space");
     await report({ hotkeyError: { reason: "macOS refused ⌥Space: another app already owns it.", chordInForce: "ctrl+k" } });

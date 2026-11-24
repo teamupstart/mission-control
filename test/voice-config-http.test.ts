@@ -77,6 +77,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
     await json("/api/voice/config/provider-intent", "POST"),
     await json("/api/voice/hotkey-recording", "POST"),
     await json("/api/voice/mute", "POST", { muted: true }),
+    await json("/api/voice/mute"),
     await json("/api/voice/indicators", "PUT", { id: "edge", enabled: true }),
     await hello(),
     await report({}),
@@ -94,6 +95,16 @@ test("GET returns every contract A field with its default", async () => {
   const response = await json("/api/voice/config");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("reading mute after a toggle returns the authoritative state without another write", async () => {
+  await json("/api/voice/mute", "POST", { toggle: true });
+  const applied = voiceStateStore.state();
+  assert.equal(applied.muted, true);
+  const readback = await json("/api/voice/mute");
+  assert.equal(readback.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await readback.json(), { state: applied });
+  assert.deepEqual(voiceStateStore.state(), applied);
 });
 
 test("a recorder owns the shortcut only until disconnect and cannot be opened by a foreign origin", async () => {

@@ -8,6 +8,7 @@ import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
 import { desktopVoiceEndpointPath } from "../shared/harness-runtime.mjs";
 import type { TrayVoiceState } from "./voice-tray.ts";
+import { showVoiceMuteError } from "./tray.ts";
 import { logMain } from "./main-log.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
@@ -43,6 +44,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let layoutSubscription: number | undefined;
   let state: ShellVoiceState = voiceStateOff();
   let lastEnabledMute: boolean | undefined;
+  let hotkeyAttempt = 0;
   let nextPromptAt = 0;
   let retryDelay = 5000;
   let prompt: Promise<boolean> | undefined;
@@ -160,7 +162,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
     if (!hardware) {
       hardware = macVoiceHardware(dirname(binary), () => listener.pid,
-        () => void sendMute({ toggle: true }), () => void requestReport());
+        () => void toggleFromHotkey(), () => void requestReport());
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
         () => hardware?.layoutChanged());
     }
@@ -176,6 +178,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   }
   function update(next: ShellVoiceState) {
     state = next;
+    if (next.mode === "off") hotkeyAttempt++;
     lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
     onState(state);
     void sync();
@@ -251,6 +254,29 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     const response = await connection.postStatus("/api/voice/mute", command,
       AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
     return response?.ok ?? false;
+  }
+  async function toggleFromHotkey() {
+    const attempt = ++hotkeyAttempt;
+    const current = connection;
+    if (!current || disabled() || await sendMute({ toggle: true })) return;
+    const relevant = () => attempt === hotkeyAttempt && lastEnabledMute !== undefined && !lifetime.signal.aborted;
+    if (!relevant()) return;
+    let message = "Mute shortcut not confirmed. Current Voice status unavailable.";
+    try {
+      const before = state;
+      const response = await current.request("/api/voice/mute", {
+        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1500)]),
+      });
+      if (response.ok) {
+        const snapshot = ShellVoiceStateSchema.safeParse((await response.json() as { state?: unknown }).state);
+        if (snapshot.success && relevant() && current === connection && hasSnapshot) {
+          // A newer streamed update may have arrived while this read was in flight.
+          if (before === state) update(snapshot.data);
+          message = lastEnabledMute ? "Mute shortcut not confirmed. Voice is muted." : "Mute shortcut not confirmed. Manual mute is off.";
+        }
+      } else await response.body?.cancel();
+    } catch { /* A lost read leaves the live stream in charge of recovery. */ }
+    if (relevant()) showVoiceMuteError(message);
   }
   connect();
   const heartbeat = setInterval(() => void sync(), 5000);

@@ -53,6 +53,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   const heartbeatMs = 750;
   let keepalive: "ping" | "registry" | "silent" = "ping";
   let toggles = 0;
+  let muteReadbacks = 0;
+  let readbackMuted = false;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
@@ -96,10 +98,19 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/api/voice/mute") {
+      if (req.method === "GET") {
+        muteReadbacks++;
+        res.end(JSON.stringify({ state: { ...voiceStateOff(), muted: readbackMuted,
+          mode: readbackMuted ? "muted" : "listening", configuredHotkey: "cmd+ctrl+shift+F10" } }));
+        return;
+      }
       const command = JSON.parse(body);
       if (command.toggle) toggles++;
       else requests.push(command.muted);
-      if (muteResponse === "timeout") return;
+      if (muteResponse === "timeout") {
+        if (command.toggle) readbackMuted = !readbackMuted;
+        return;
+      }
       if (muteResponse === "refused") res.statusCode = 503;
     }
     if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
@@ -290,6 +301,25 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       }
     });
 
+    await t.test("a refused hotkey opens tray feedback; a lost reply reconciles the applied mute without toggling twice", async () => {
+      const before = toggles;
+      try {
+        for (const outcome of ["refused", "timeout"] as const) {
+          muteResponse = outcome;
+          for (const down of [true, false]) {
+            await app.evaluate((_, down) => (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
+          }
+          const message = outcome === "refused" ? "Manual mute is off." : "Voice is muted.";
+          await until(async () => (await read()).labels.includes("Mute shortcut not confirmed. " + message));
+          assert.equal((await read()).mode, outcome === "refused" ? "listening" : "muted");
+        }
+        assert.equal(toggles, before + 2, "exactly one toggle per tap, even when its response times out");
+        assert.equal(muteReadbacks, 2);
+      } finally {
+        muteResponse = "ok";
+        publish(reserved);
+      }
+    });
     await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.freeKeyAndNotify());
     await until(() => reports.at(-1)?.registeredHotkey === reserved && reports.at(-1)?.hotkeyError === null);
 
@@ -336,24 +366,41 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(await polls(), stoppedPolls, "no native input query across two polling intervals while off");
   });
   await t.test("Carbon moves the same V shortcut from US to Dvorak and reuses an unchanged physical binding", async () => {
-    const changes = await app.evaluate((_, path) => {
-      const registrar = process.getBuiltinModule("node:module").createRequire(path)(path);
+    const changes = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { layoutKeysAvailable } = require(paths.events);
       const chord = "cmd+ctrl+alt+shift+v";
       try {
         delete process.env.MC_TEST_VOICE_DVORAK;
         const us = registrar.register(chord, () => {});
+        const usKeys = layoutKeysAvailable();
         process.env.MC_TEST_VOICE_DVORAK = "1";
         const moved = registrar.register(chord, () => {});
         const repeated = registrar.register(chord, () => {});
+        const dvorakKeys = layoutKeysAvailable();
         delete process.env.MC_TEST_VOICE_DVORAK;
-        // Dvorak V is on the US period key. This must reuse the current Carbon reservation.
-        return [us, moved, repeated, registrar.register("cmd+ctrl+alt+shift+.", () => {}), registrar.register(chord, () => {})];
+        // Dvorak V is on the main US period key. Probe its physical Carbon code
+        // directly: Shift+Option+period need not produce the period character.
+        return [us, usKeys, moved, repeated, dvorakKeys, registrar.register(chord, () => {})];
       } finally {
         delete process.env.MC_TEST_VOICE_DVORAK;
         registrar.unregister();
       }
-    }, layoutAddon);
-    assert.deepEqual(changes, [true, true, false, false, true]);
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(changes, [true, [false, true], true, false, [true, false], true]);
+  });
+  await t.test("Control+Shift+Plus reserves the main US Equals key and leaves keypad Plus free", async () => {
+    const keys = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { plusKeysAvailable } = require(paths.events);
+      try {
+        registrar.register("ctrl+shift++", () => {});
+        return plusKeysAvailable();
+      } finally { registrar.unregister(); }
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(keys, [false, true]);
   });
   const images: string[] = [];
   for (const mode of ["listening", "muted", "auto-muted", "push-to-talk", "unavailable", "off"] satisfies VoiceMode[]) {

@@ -1,5 +1,7 @@
 #include <Carbon/Carbon.h>
 #include <node_api.h>
+#include <algorithm>
+#include <array>
 #include <string>
 #include <map>
 #include <optional>
@@ -74,7 +76,12 @@ std::optional<UInt32> typingKeyCode(const std::string& key, UInt32& modifiers) {
   std::optional<UInt32> result;
   if (data) {
     const auto layout = reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(data));
-    for (UInt32 level : {0u, UInt32(shiftKey), UInt32(optionKey), UInt32(shiftKey | optionKey)}) {
+    std::array<UInt32, 4> levels = {0, shiftKey, optionKey, shiftKey | optionKey};
+    // The recorded layer wins when another key produces the same character, e.g.
+    // Shift+Equals on the main US keyboard and unshifted Plus on the keypad.
+    auto recorded = std::find(levels.begin(), levels.end(), modifiers & (shiftKey | optionKey));
+    std::rotate(levels.begin(), recorded, recorded + 1);
+    for (UInt32 level : levels) {
       if ((level & optionKey) && !(modifiers & optionKey)) continue;
       for (UInt16 code = 0; code < 128; ++code) {
         UniChar chars[8];

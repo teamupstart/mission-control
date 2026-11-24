@@ -34,6 +34,13 @@ let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
+export function showVoiceMuteError(message: string): void {
+  if (!presentation) return;
+  muteError = message;
+  refreshMenu?.();
+  if (menu) tray?.popUpContextMenu(menu);
+}
+
 export function setTrayVoice(state: TrayVoiceState): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
   if (next?.nextMuted !== presentation?.nextMuted) {
@@ -80,9 +87,7 @@ async function requestMute(handlers: TrayHandlers, muted: boolean): Promise<void
     if (muteConfirmation !== deadline) return;
     clearTimeout(deadline);
     muteConfirmation = undefined;
-    muteError = `${muted ? "Mute" : "Unmute"} not confirmed. Try again.`;
-    render(handlers);
-    if (menu) tray?.popUpContextMenu(menu);
+    showVoiceMuteError(`${muted ? "Mute" : "Unmute"} not confirmed. Try again.`);
   }
 }
 

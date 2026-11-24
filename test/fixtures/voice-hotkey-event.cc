@@ -27,6 +27,33 @@ static void cleanup(void*) {
 }
 static napi_value releaseReservation(napi_env, napi_callback_info) { cleanup(nullptr); return nullptr; }
 
+// Probe physical Carbon codes independently of either registrar's layout translation.
+static napi_value physicalKeysAvailable(napi_env env, UInt32 modifiers, UInt32 first, UInt32 second) {
+  const UInt32 keys[] = {first, second};
+  napi_value result;
+  napi_create_array_with_length(env, 2, &result);
+  for (UInt32 i = 0; i < 2; ++i) {
+    EventHotKeyRef probe;
+    OSStatus status = RegisterEventHotKey(keys[i], modifiers, {'Test', 2 + i},
+                                          GetApplicationEventTarget(), kEventHotKeyExclusive, &probe);
+    if (!status) UnregisterEventHotKey(probe);
+    else if (status != eventHotKeyExistsErr) {
+      napi_throw_error(env, nullptr, "Could not probe the modifier and physical key");
+      return nullptr;
+    }
+    napi_value available;
+    napi_get_boolean(env, !status, &available);
+    napi_set_element(env, result, i, available);
+  }
+  return result;
+}
+static napi_value plusKeysAvailable(napi_env env, napi_callback_info) {
+  return physicalKeysAvailable(env, controlKey | shiftKey, kVK_ANSI_Equal, kVK_ANSI_KeypadPlus);
+}
+static napi_value layoutKeysAvailable(napi_env env, napi_callback_info) {
+  return physicalKeysAvailable(env, cmdKey | controlKey | optionKey | shiftKey, kVK_ANSI_V, kVK_ANSI_Period);
+}
+
 NAPI_MODULE_INIT() {
   // A separate owner forces a real Carbon refusal while the original chord is live.
   if (RegisterEventHotKey(kVK_F10, cmdKey | controlKey | shiftKey, {'Test', 1},
@@ -37,8 +64,10 @@ NAPI_MODULE_INIT() {
   napi_add_env_cleanup_hook(env, cleanup, nullptr);
   napi_property_descriptor props[] = {
     {"post", nullptr, post, nullptr, nullptr, nullptr, napi_default, nullptr},
-    {"releaseReservation", nullptr, releaseReservation, nullptr, nullptr, nullptr, napi_default, nullptr}
+    {"releaseReservation", nullptr, releaseReservation, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"plusKeysAvailable", nullptr, plusKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"layoutKeysAvailable", nullptr, layoutKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 2, props);
+  napi_define_properties(env, exports, 4, props);
   return exports;
 }

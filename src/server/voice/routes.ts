@@ -94,6 +94,7 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
  * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
  * - `POST /api/voice/mute { muted }` mutes or unmutes and returns `{ state }`.
+ * - `GET /api/voice/mute` reads the current state after an unconfirmed shortcut.
  * - `GET /api/voice/devices` returns `{ devices, listener }`: the input devices the live listener
  *   listed in its hello, which Voice settings offers beside the built-in microphone and the
  *   system default, and whether a listener is live at all.
@@ -186,6 +187,12 @@ export function registerVoiceRoutes(
         end();
       }
     }));
+  });
+  // A lost reply to a toggle is ambiguous. The desktop reads the authoritative
+  // state through the same pinned endpoint without issuing a second toggle.
+  app.get("/api/voice/mute", gate, c => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ state: store.state() });
   });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });

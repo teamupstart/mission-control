@@ -30,8 +30,8 @@ let lastIndicators: string | undefined;
 let indicatorRevision = 0;
 
 /** Called with the persisted selection, synchronously, when building a reply or stream frame. */
-export function voiceIndicatorVersion(indicators: string[]): VoiceRevision {
-  const key = JSON.stringify(indicators);
+export function voiceIndicatorVersion(voice: UiConfig["voice"]): VoiceRevision {
+  const key = JSON.stringify([voice.indicators, voice.confirmation]);
   if (key !== lastIndicators) {
     lastIndicators = key;
     indicatorRevision++;
@@ -158,7 +158,7 @@ export function getUiConfig(persistMigration = true): UiConfig {
 export function uiConfigView(): UiConfigView {
   const configured = getAppConfig(CONFIG_ENTRY) !== undefined;
   const config = getUiConfig();
-  if (featureEnabled(VOICE_FLAG)) return { configured, config, voiceIndicatorVersion: voiceIndicatorVersion(config.voice.indicators) };
+  if (featureEnabled(VOICE_FLAG)) return { configured, config, voiceIndicatorVersion: voiceIndicatorVersion(config.voice) };
   // Behind its flag like every voice surface: with it off the response is the one an install
   // without voice gave. The stored value is kept, and returns with the flag.
   const { voice: _withheld, ...withoutVoice } = config;
@@ -193,12 +193,12 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
 }
 
 /** The daemon reads and writes synchronously, so independent checkbox edits compose. */
-export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): string[] | null {
+export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): UiConfig["voice"] | null {
   const voice = getUiConfig().voice;
-  if (voice.indicators.includes(id) === enabled) return voice.indicators;
+  if (voice.indicators.includes(id) === enabled) return voice;
   if (enabled && voice.indicators.length >= VOICE_INDICATORS_MAX) return null;
   const indicators = enabled ? [...voice.indicators, id] : voice.indicators.filter(item => item !== id);
-  return setUiConfig({ voice: { ...voice, indicators } }).voice.indicators;
+  return setUiConfig({ voice: { ...voice, indicators } }).voice;
 }
 
 /**

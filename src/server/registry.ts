@@ -1528,7 +1528,7 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
-        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi.indicators),
+        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
@@ -1675,7 +1675,9 @@ export class Registry extends EventEmitter {
   }
 
   emitVoiceIndicators(indicators: string[]): void {
-    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", confirmation: storedVoiceUi().confirmation, indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const selection = { confirmation: storedVoiceUi().confirmation, indicators };
+    this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
   emitVoiceCard(card: VoiceCard): void {

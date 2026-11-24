@@ -21,7 +21,9 @@ export class VoiceCardClock {
       this.lower = Math.max(this.lower, lower);
       this.upper = Math.min(this.upper, upper);
     }
-    return { offset: this.lower, uncertain: this.upper - this.lower > 100 };
+    // Until the latest possible deadline the daemon may still accept Cancel. Its
+    // response settles the action even when the independent time probe failed.
+    return { offset: this.upper, uncertain: this.upper - this.lower > 100 };
   }
 }
 

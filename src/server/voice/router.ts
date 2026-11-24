@@ -132,7 +132,7 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
-  private readonly delivering = new Map<string, OpenCard>();
+  private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
   private readonly recentIds = new Set<string>();
@@ -153,7 +153,9 @@ export class VoiceRouter {
     return this.resolutions.get(id);
   }
 
-  activeCards(): VoiceCard[] { return Array.from(this.open.values(), ({ card }) => card); }
+  activeCards(): VoiceCard[] {
+    return [...Array.from(this.open.values(), ({ card }) => card), ...this.delivering.values()];
+  }
 
   private latestActionAt(capturedAt: number): PendingVoiceAction | undefined {
     let latest: PendingVoiceAction | undefined;
@@ -354,17 +356,24 @@ export class VoiceRouter {
     this.take(item);
     const { mode } = this.state();
     if (mode === "off") return false;
-    this.delivering.set(id, item);
+    const inFlight = { ...item.card, reason: "delivering", deadline: null };
+    this.delivering.set(id, inFlight);
+    let announced = false;
     // A split delivers each part in the order it was said; the card shows the worse outcome.
     let outcome: VoiceDeliveryOutcome | null = null;
     for (const [index, part] of item.card.parts.entries()) {
       const state = this.state();
-      if (this.delivering.get(id) !== item || state.mode === "off") return true;
+      if (this.delivering.get(id) !== inFlight || state.mode === "off") return true;
       const selected = part.target;
       const target = selected && selectedSession(state.roster, selected);
       let result: DeliveryResult = "not-running";
       try {
         if (target) {
+          if (!announced) {
+            this.publish(inFlight);
+            announced = true;
+            if (this.delivering.get(id) !== inFlight) return true;
+          }
           const partId = index === 0 ? id : `${id}#${index + 1}`;
           result = await this.deliverer.deliver(target, part.text, partId, item.commands?.[index]);
         }
@@ -378,7 +387,7 @@ export class VoiceRouter {
     outcome ??= "not-running";
     if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
-    if (this.delivering.get(id) !== item) return true;
+    if (this.delivering.get(id) !== inFlight) return true;
     this.delivering.delete(id);
     item.entry.outcome = outcome;
     if (this.state().mode !== "off") this.publish({ ...item.card, state: outcome, deadline: null });

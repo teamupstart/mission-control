@@ -334,6 +334,8 @@ final class Microphone {
     private let tapLock = NSLock()
     private var segmenter: InputSegmenter?
     private var heldSpeech: HeldSpeech?
+    private let onQueueFull: () -> Void
+    private var queueFullReported = false
     private let captureClock = CaptureClock()
     private var cutoff: Int64?
     private var onBoundary: (@MainActor () -> Void)?
@@ -352,10 +354,16 @@ final class Microphone {
     }
 
     init(selection: String, held: Bool = false, devices: [Device] = Device.inputs(), engine: AVAudioEngine = AVAudioEngine(),
+         onQueueFull: @escaping () -> Void = {
+             DispatchQueue.global(qos: .utility).async {
+                 fputs("Voice listener queue full. New speech dropped while earlier phrases await delivery.\n", stderr)
+             }
+         },
          onStopped: @escaping @MainActor (Microphone) -> Void = { _ in }) throws {
         self.engine = engine
+        self.onQueueFull = onQueueFull
         heldSpeech = held ? HeldSpeech() : nil
-        (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(2))
+        (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingOldest(2))
         try Self.selectInput(selection, from: devices) { device in
             var object = device
             guard let unit = engine.inputNode.audioUnit,
@@ -384,8 +392,14 @@ final class Microphone {
         let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
             guard let segmenter else { return nil }
             for segment in segmenter.consume(buffer, at: when, clock: clock, cutoff: cutoff) {
-                if heldSpeech != nil { heldSpeech?.append(segment) }
-                else { continuation.yield(segment) }
+                if heldSpeech != nil {
+                    heldSpeech?.append(segment)
+                } else if case .dropped = continuation.yield(segment) {
+                    if !queueFullReported { onQueueFull() }
+                    queueFullReported = true
+                } else {
+                    queueFullReported = false
+                }
             }
             guard let cutoff, let end = segmenter.deliveredThrough, end >= cutoff else { return nil }
             defer { onBoundary = nil }

@@ -16,7 +16,7 @@ names no agent until the flag is on again.
 
 ## Running the listener on a development Mac
 
-Build with `npm run build:native`. Start the daemon, enable the four previews, download
+Build the helper with `npm run build:voice-listener`. Start the daemon, enable the four previews, download
 the model in Setup and unmute Voice. From a terminal with microphone access, run
 `npm run voice:listener`. Speak a running resident's reference name followed by “check the
 build”. After the cancel window, look for “check the build” in the resident's conversation
@@ -106,7 +106,9 @@ Only a correction aligned to the leading address can change the transcript and i
 labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
-Only text, relative word timings and capture metadata reach the daemon. Samples and pending
+While listening, two completed phrases can wait in capture order behind a busy recognizer
+or a pending POST. If that queue fills, the listener drops the incoming phrase and reports
+the backlog on stderr. Only text, relative word timings and capture metadata reach the daemon. Samples and pending
 utterances stay in memory. Except for a matching push-to-talk release, a changed directive
 discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
 If a hardware change stops the engine, the helper refreshes its directive and opens a new

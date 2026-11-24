@@ -19,10 +19,10 @@ final class MicrophoneDeviceTests: XCTestCase {
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
         XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
         let stopped = expectation(description: "configuration change posted inside engine.start()")
-        let input = try Microphone(selection: "system-default", devices: [], engine: engine) { mic in
+        let input = try Microphone(selection: "system-default", devices: [], engine: engine, onStopped: { mic in
             XCTAssertFalse(mic.isRunning)
             stopped.fulfill()
-        }
+        })
         defer { input.stop() }
         await fulfillment(of: [stopped], timeout: 2)
     }

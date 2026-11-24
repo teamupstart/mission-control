@@ -288,7 +288,7 @@ final class ListenerTests: XCTestCase {
         }
     }
 
-    func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {
+    private func captureFourPhrases(held: Bool, onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
         let (_, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
         let pcm = speech + Array(repeating: Float(0), count: 16_000)
@@ -297,7 +297,7 @@ final class ListenerTests: XCTestCase {
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
         XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
         engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
-        let input = try Microphone(selection: "system-default", held: true, devices: [], engine: engine)
+        let input = try Microphone(selection: "system-default", held: held, devices: [], engine: engine, onQueueFull: onQueueFull)
         let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
         frame.frameLength = frame.frameCapacity
         frame.floatChannelData![0].update(from: pcm, count: pcm.count)
@@ -305,10 +305,28 @@ final class ListenerTests: XCTestCase {
             let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(i * pcm.count) / 16_000))
             input.consume(frame, at: when, clock: CaptureClock(hostTime: 0, unixTime: 100))
         }
-        let held = input.stop(releasedAt: 100_000 + Int64((4 * pcm.count + 15) / 16))
+        return (input, pcm.count)
+    }
+
+    func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {
+        let (input, length) = try captureFourPhrases(held: true) { XCTFail("The normal listening queue overflowed") }
+        let held = input.stop(releasedAt: 100_000 + Int64((4 * length + 15) / 16))
         XCTAssertEqual(held.count, 4)
         for (i, phrase) in held.enumerated() {
-            XCTAssertEqual(Double(phrase.capturedAt), 100_000 + Double(i * pcm.count) / 16, accuracy: 200)
+            XCTAssertEqual(Double(phrase.capturedAt), 100_000 + Double(i * length) / 16, accuracy: 200)
+        }
+    }
+
+    func testBackloggedMicrophoneKeepsOldestPhrasesAndReportsDrops() async throws {
+        var warnings = 0
+        let (input, length) = try captureFourPhrases(held: false) { warnings += 1 }
+        input.stop()
+        var starts: [Int64] = []
+        for await segment in input.segments { starts.append(segment.capturedAt) }
+        XCTAssertEqual(warnings, 1)
+        XCTAssertEqual(starts.count, 2)
+        for (i, start) in starts.enumerated() {
+            XCTAssertEqual(Double(start), 100_000 + Double(i * length) / 16, accuracy: 200)
         }
     }
 

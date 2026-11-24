@@ -189,12 +189,12 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 if capture {
                     let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
                     let batch = Capture(next.revision)
-                    let microphone = try Microphone(selection: next.inputDevice, held: held) { [weak self] stopped in
+                    let microphone = try Microphone(selection: next.inputDevice, held: held, onStopped: { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil
                         self.directivePoll?.cancel()
-                    }
+                    })
                     batch.mic = microphone
                     current = batch
                     let previous = draining.last?.decoding

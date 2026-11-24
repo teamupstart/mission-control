@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
-import { voiceCardDeadline, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
@@ -60,7 +60,7 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
 
 export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
-  operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string): Promise<void> };
+  operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string, retryAfterMs?: number): Promise<void> };
 }) {
   const [now, setNow] = useState(() => performance.now());
   const launchIds = useRef(new Map<string, string>());
@@ -100,7 +100,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       return;
     }
     const label = action === "cancel" ? "Cancel" : "Send now";
-    void run(() => api.voiceCardAction(card.id, action, { deadline }), "", label + " was not confirmed. ");
+    void run(() => api.voiceCardAction(card.id, action, { deadline }), "", label + " was not confirmed. ", voiceCardRetryDelay(deadline));
   };
   const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
   const remaining = Math.max(0, (deadline ?? 0) - now);

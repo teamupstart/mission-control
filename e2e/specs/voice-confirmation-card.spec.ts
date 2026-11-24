@@ -61,6 +61,77 @@ test("a stalled card action reports the unconfirmed request and permits a retry"
     .map(row => row.spoken_words))).toEqual(["check stalled-send-now"]);
 });
 
+test("an in-transit Cancel can reach the daemon after the retry control returns", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 8);
+  await runningAgent(page, daemon, "Steve");
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/cards/in-transit/cancel", async route => {
+    await release.promise;
+    await route.continue();
+  });
+  await say(daemon, "Steve, wait for my request", { id: "in-transit" });
+  const card = page.getByRole("status").filter({ hasText: "wait for my request" });
+  const cancel = card.getByRole("button", { name: "Cancel" });
+  await expect(cancel).toBeVisible();
+  await page.waitForTimeout(3900);
+  await cancel.click();
+  try {
+    await expect(card).toContainText("Cancel was not confirmed", { timeout: 2700 });
+    await expect(cancel).toBeEnabled();
+  } finally {
+    release.resolve();
+  }
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible({ timeout: 3000 });
+  expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
+});
+
+test("a desktop Cancel accepted before clock refinement is applied when its reply arrives", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 20);
+  await runningAgent(page, daemon, "Steve");
+  const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
+  await page.request.put(daemon.baseURL + "/api/ui/config", { data: { alerts: { ...config.alerts, notifications: true, sound: false } } });
+  await say(daemon, "Steve, wait for the clock", { id: "notice-refined" });
+  const calibrate = Promise.withResolvers<void>();
+  await page.route("**/api/voice/config", async route => { await calibrate.promise; await route.continue(); });
+  await page.addInitScript(() => {
+    document.hasFocus = () => false;
+    Object.defineProperty(Notification, "permission", { get: () => "granted" });
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", event => {
+          if (!event.isTrusted || JSON.parse(event.data).type !== "snapshot") return;
+          event.stopImmediatePropagation();
+          setTimeout(() => this.dispatchEvent(new MessageEvent("message", { data: event.data })), 1000);
+        });
+      }
+    };
+    let firstId: string;
+    Object.defineProperty(window, "missionDesktop", { value: {
+      isDesktop: true, onOpenSettings: () => () => {},
+      showVoiceCardNotice: ({ id }: { id: string }) => {
+        if (firstId) return Promise.resolve(null);
+        firstId = id;
+        document.documentElement.dataset.noticeAccepted = "cancel";
+        return new Promise(resolve => window.addEventListener("release-native-reply", () => resolve("cancel"), { once: true }));
+      },
+      dismissVoiceCardNotice: (id: string) => {
+        if (id === firstId) document.documentElement.dataset.noticeReplaced = "true";
+      },
+    } });
+  });
+  await page.reload();
+  try {
+    await expect(page.locator("html")).toHaveAttribute("data-notice-accepted", "cancel");
+  } finally {
+    calibrate.resolve();
+  }
+  await expect(page.locator("html")).toHaveAttribute("data-notice-replaced", "true");
+  await page.evaluate(() => window.dispatchEvent(new Event("release-native-reply")));
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible({ timeout: 3000 });
+  expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
+});
+
 test("a lost Send now response cannot keep its delivered outcome busy", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await runningAgent(page, daemon, "Steve");

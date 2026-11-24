@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { voiceCardDeadline, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
@@ -13,17 +13,34 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
   const [busy, setBusy] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
   const feedback = actionFeedback?.state === card.state ? actionFeedback.message : "";
-  const run = useCallback(async (perform: () => Promise<ActionResult>, success = "", failure = "") => {
+  const lastAttempt = useRef(0);
+  const retryTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => {
+    lastAttempt.current++;
+    window.clearTimeout(retryTimer.current);
+  }, []);
+  const run = useCallback(async (perform: () => Promise<ActionResult>, success = "", failure = "", retryAfterMs?: number) => {
+    const attempt = ++lastAttempt.current;
+    window.clearTimeout(retryTimer.current);
     setBusy(true);
     setActionFeedback(null);
+    if (retryAfterMs !== undefined) retryTimer.current = window.setTimeout(() => {
+      if (lastAttempt.current !== attempt) return;
+      setActionFeedback({ state: card.state, message: failure + "Still waiting for the daemon." });
+      setBusy(false);
+    }, retryAfterMs);
     try {
       const result = await perform();
+      if (lastAttempt.current !== attempt) return;
       const message = result.ok ? success : failure + (result.error ?? "The card changed before that action completed.");
       setActionFeedback({ state: card.state, message });
     } catch {
-      setActionFeedback({ state: card.state, message: failure + "Mission Control could not complete that action." });
+      if (lastAttempt.current === attempt) setActionFeedback({ state: card.state, message: failure + "Mission Control could not complete that action." });
     } finally {
-      setBusy(false);
+      if (lastAttempt.current === attempt) {
+        window.clearTimeout(retryTimer.current);
+        setBusy(false);
+      }
     }
   }, [card.state]);
   const announced = useRef<number | null>(null);
@@ -34,6 +51,12 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
   }, [card, notify, sound]);
   const { id: cardId, state } = card;
   const deadline = voiceCardDeadline(card);
+  const wireDeadline = card.deadline;
+  const pendingNotice = useRef<{ wireDeadline: number; deadline: number } | null>(null);
+  useLayoutEffect(() => {
+    pendingNotice.current = state === "pending" && wireDeadline !== null && deadline !== null ? { wireDeadline, deadline } : null;
+    return () => { pendingNotice.current = null; };
+  }, [state, wireDeadline, deadline]);
   const waiting = card.parts.filter(part => !part.immediateStop);
   const stops = card.parts.filter(part => part.immediateStop);
   const scope = waiting.length > 1 ? "both" : stops.length ? "remaining" : "single";
@@ -65,10 +88,15 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
             if (blurCount !== attempt) notifyWhenAway();
           };
           void shell.showVoiceCardNotice({ id, title, body, deadline: Date.now() + Math.floor(remaining), scope }).then(choice => {
-            if (!active || !choice) return;
+            if (!choice) return;
             if (choice === "window-focused") return allowRetry();
+            // Electron can accept a button before a clock correction replaces the notice.
+            // A matching daemon deadline identifies the original delivery across that change.
+            const pending = pendingNotice.current;
+            if (!pending || pending.wireDeadline !== wireDeadline) return;
             const label = choice === "cancel" ? "Cancel" : "Send now";
-            void run(() => api.voiceCardAction(cardId, choice, { deadline }), "", `Desktop ${label} was not confirmed. `);
+            void run(() => api.voiceCardAction(cardId, choice, { deadline: pending.deadline }), "",
+              `Desktop ${label} was not confirmed. `, voiceCardRetryDelay(pending.deadline));
           }, allowRetry);
           return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
         }
@@ -101,7 +129,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
-  }, [cardId, deadline, card.provisionalDeadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
+  }, [cardId, wireDeadline, deadline, card.provisionalDeadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
   return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 

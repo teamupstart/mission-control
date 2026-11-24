@@ -141,6 +141,10 @@ export function registerVoiceRoutes(
   });
   app.get("/api/voice/config", gate, (c) => {
     c.header("Cache-Control", "no-store");
+    if (c.req.method === "HEAD") {
+      c.header("X-Voice-Server-Time-Ms", String(Date.now()));
+      return c.body(null);
+    }
     return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
   });
   app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {

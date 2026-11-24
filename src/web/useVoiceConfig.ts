@@ -8,7 +8,9 @@ import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type V
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
 const POLL_MS = 5000;
-const KEY_STATUS_TIMEOUT_MS = 3 * POLL_MS;
+const SETTINGS_REQUEST_TIMEOUT_MS = 3 * POLL_MS;
+// A provider receipt remains usable after a minute-long response delay across windows.
+const PROVIDER_EDIT_TIMEOUT_MS = 75_000;
 
 // A receipt contains only a daemon instance, sequence and random nonce. Sharing
 // it before sending the PUT lets another window prove what preceded its click.
@@ -27,10 +29,10 @@ function rememberIntentReceipt(receipt?: string): void {
 
 // Order clicks across same-origin windows before either reservation reaches the daemon.
 // The lock covers the local counter only. A slow HTTP request cannot hold up another click.
-async function nextProviderGesture(): Promise<VoiceProviderIntent["gesture"]> {
+async function nextProviderGesture(signal: AbortSignal): Promise<VoiceProviderIntent["gesture"]> {
   const key = "mission.voice.providerGesture";
   try {
-    return await navigator.locks.request(key, () => {
+    return await navigator.locks.request(key, { signal }, () => {
       const previous = localStorage.getItem(key);
       const [group, value] = previous?.split(":") ?? [];
       const parsed = VoiceProviderGestureSchema.safeParse({ group, order: Number(value) + 1 });
@@ -167,9 +169,11 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const optOut = decisionProvider === "off";
     const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id,
       observedIntent: changesProvider ? observedIntentReceipt() : undefined };
-    const reservation = changesProvider ? nextProviderGesture().then(gesture => {
+    const providerRequest = changesProvider ? new AbortController() : undefined;
+    const timer = providerRequest && setTimeout(() => providerRequest.abort(), PROVIDER_EDIT_TIMEOUT_MS);
+    const reservation = providerRequest ? nextProviderGesture(providerRequest.signal).then(gesture => {
       intent.gesture = gesture;
-      return api.reserveVoiceProviderWrite(intent);
+      return api.reserveVoiceProviderWrite(intent, providerRequest.signal);
     }) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
@@ -180,8 +184,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         setPending(pendingRef.current.filter(candidate => candidate !== edit));
         return false;
       }
+      const signal = sendProvider && providerRequest ? providerRequest.signal : AbortSignal.timeout(SETTINGS_REQUEST_TIMEOUT_MS);
       let res = sendProvider && order && !order.ticket ? order
-        : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
+        : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined, signal);
       // A receipt captured at click time establishes order independently of
       // latency. Without one, the daemon's idle interval must cover the whole trip.
       const window = order?.intentWindow;
@@ -189,9 +194,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       if (canRetry && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
           window && ((intent.observedIntent !== undefined && window.receipt === intent.observedIntent) ||
             window.quietForMs > performance.now() - selectedAt)) {
-        const retry = await api.reserveVoiceProviderWrite({ ...intent, observedRevision: res.providerRevision, unchangedSince: window.token });
+        const retry = await api.reserveVoiceProviderWrite({ ...intent, observedRevision: res.providerRevision, unchangedSince: window.token }, signal);
         rememberIntentReceipt(retry.intentReceipt);
-        if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
+        if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket, signal) : retry;
       }
       const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&
         (res.ok || res.status === undefined || res.status >= 500);
@@ -222,10 +227,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       return kept;
     };
-    if (!changesSettings) return save();
-    const result = settingsQueue.current.then(save);
-    settingsQueue.current = result.then(() => {}, () => {});
-    return result;
+    const result = changesSettings ? settingsQueue.current.then(save) : save();
+    if (changesSettings) settingsQueue.current = result.then(() => {}, () => {});
+    return result.finally(() => clearTimeout(timer));
   }, [observeProvider, setConfirmed, setPending, writer]);
 
   const config = useMemo(
@@ -316,7 +320,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       const at = writes.current;
       const group = reads.signal;
       const deadline = new AbortController();
-      const timer = setTimeout(() => deadline.abort(), KEY_STATUS_TIMEOUT_MS);
+      const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
       const read = await fetchVoiceDecisionKey(AbortSignal.any([group, deadline.signal])).finally(() => clearTimeout(timer));
       if (group.aborted || writes.current !== at) return;
       if (read) {

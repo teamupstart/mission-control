@@ -955,6 +955,37 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     });
   }
 
+  for (const stage of ["reservation", "write"] as const) {
+    test(`an unanswered provider ${stage} expires and reconciles the window with the daemon`, async ({ dashboard: page, context, daemon }) => {
+      await turnVoiceOn(daemon);
+      await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
+      const other = await context.newPage();
+      await openVoiceSettings(other, daemon);
+      await page.clock.install();
+      await openVoiceSettings(page, daemon);
+      const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window length" });
+      await expect(length(page)).toHaveValue("4");
+      const stalled = await holdProviderRequest(page, stage);
+      try {
+        await providerMenu(page).selectOption("off");
+        await stalled.held;
+        await expect(providerMenu(page)).toHaveValue("off");
+        await providerMenu(other).selectOption("openai");
+        await length(other).selectOption("8");
+        await expect.poll(async () => (await api<{ config: { decisionProvider: string; cancelWindow: { seconds: number } } }>(daemon, "/api/voice/config")).config)
+          .toMatchObject({ decisionProvider: "openai", cancelWindow: { seconds: 8 } });
+        await page.clock.fastForward(75_000);
+        await expect(providerMenu(page)).toHaveValue("openai", { timeout: 2_000 });
+        await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+        await expect(length(page)).toHaveValue("8");
+        await expect(panel(page)).toContainText("The provider change could not be confirmed.");
+        if (stage === "write") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "42-expired-provider-write");
+      } finally {
+        stalled.release();
+      }
+    });
+  }
+
   test("a fresh provider report discloses routing enabled in another window while config is stalled", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

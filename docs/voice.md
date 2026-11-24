@@ -553,6 +553,8 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   A click carrying that receipt follows the reservation even if its response arrives much later.
   This protects a pending Off from a delayed opt-in and a pending provider from a delayed Off.
   A later opt-in can still switch providers if its window observed the current selection.
+  The dashboard gives a provider change 75 seconds, including its reservation, write and any
+  retry. If the change times out, it reads the current configuration and provider from the daemon.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty

@@ -2512,12 +2512,12 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  reserveVoiceProviderWrite: (intent: VoiceProviderIntent) =>
+  reserveVoiceProviderWrite: (intent: VoiceProviderIntent, signal: AbortSignal) =>
     post<ActionResult & { ticket?: string; intentReceipt?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; receipt: string; quietForMs: number; pendingSelection: boolean } }>(
-      "/api/voice/config/provider-intent", intent),
-  setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
+      "/api/voice/config/provider-intent", intent, { signal }),
+  setVoiceConfig: (patch: VoiceConfigPatch, ticket: string | undefined, signal: AbortSignal) =>
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
-      ticket ? { headers: { "x-voice-provider-ticket": ticket } } : undefined),
+      { signal, headers: ticket ? { "x-voice-provider-ticket": ticket } : undefined }),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   /** A 409 carries `reason` when there is no model to download. */

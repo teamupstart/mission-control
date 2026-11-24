@@ -9,16 +9,7 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
-/**
- * A call sign, end to end (voice plan, Phase 2). With voice on, Dispatch > Advanced offers a
- * Call sign field whose heard-as preview shows the sentence the operator would say and a
- * four-step meter. "Will" is an everyday word, so it draws a warning, and Dispatch stays enabled
- * anyway. Dispatched as "Alice", the task carries its call sign, Settings > Voice lists Alice as a
- * running session, and with the inbox naming rule on the agent's question card names it Alice.
- *
- * Real daemon, routes, SSE and the built dashboard. Every agent is the suite's fake, the question
- * is filed on the channel the MCP `request_input` tool uses, and nothing listens to a microphone.
- */
+// The suite dispatches fixture agents and files their questions through the MCP review route.
 
 const EVIDENCE = artifactsDir("voice-call-sign");
 
@@ -90,7 +81,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 1280, height: 1200 });
 
-  // Off: Advanced offers no call sign, and the voice routes are closed.
   let dialog = await openDispatch(page, daemon, "Check the build");
   await advancedOf(dialog).click();
   await expect(dialog.getByRole("combobox", { name: "Persona", exact: true })).toBeVisible();
@@ -98,7 +88,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  // On, with the page left open: the field is drawn in Advanced for every kind.
   await turnVoiceOn(daemon);
   dialog = await openDispatch(page, daemon, "Check the build");
   const advanced = advancedOf(dialog);
@@ -115,8 +104,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expectContentClearsBorder(dialog);
   await shoot(dialog, "01-advanced-empty");
 
-  // "Will": an everyday word and one short syllable. Two warnings, two of four steps, and a line
-  // for each; Dispatch stays enabled.
   await field.fill("Will");
   await expect(dialog.locator(".voice-heard")).toHaveText("Will, check the build");
   await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "2");
@@ -126,7 +113,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
   await shoot(dialog, "02-warning-everyday-word");
 
-  // "Alice": distinctive, all four steps.
   await field.fill("Alice");
   await expect(dialog.locator(".voice-heard")).toHaveText("Alice, check the build");
   await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "4");
@@ -134,7 +120,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(dialog.locator(".voice-name-warning")).toHaveCount(0);
   await shoot(dialog, "03-distinctive");
 
-  // Collapsed, the summary names the call sign.
   await advanced.click();
   await expect(field).toBeHidden();
   await expect(advanced).toContainText("Call sign: Alice");
@@ -156,7 +141,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   }, { timeout: 60_000 }).toBe("idle");
   expect(session.task?.callSign).toBe("Alice");
 
-  // Settings > Voice lists Alice: a running session, saying Alice, with a distinctive name.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Alice", exact: true }) });
@@ -166,7 +150,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(page.getByRole("tabpanel", { name: "Voice" })).toContainText("A resident's reference name is set on its profile");
   await shoot(page.getByRole("tabpanel", { name: "Voice" }), "05-roster");
 
-  // The agent asks a question: with the inbox naming rule on, its card names it Alice.
   await ask(daemon, session.cwd!);
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   const button = page.locator("button.pulse-seg", { hasText: "to answer" });
@@ -178,8 +161,6 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(inbox.locator("section.review .review-head .review-agent")).toHaveText("Alice");
   await shoot(inbox, "06-question-card-names-alice");
 
-  // Voice off, with the inbox left open: the call sign is kept but names nothing, so the card
-  // falls back to the task title the inbox naming rule printed before voice.
   await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
   await expect(inbox.locator("section.inbox-reviews .inbox-head strong")).toHaveText(session.task!.title);
   await expect(inbox.locator("section.review .review-head .review-agent")).toHaveText(session.task!.title);
@@ -196,7 +177,6 @@ test("a warned call sign is dispatched as typed: the task keeps it and the roste
   const advanced = advancedOf(dialog);
   if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
 
-  // "Will" draws two warnings, and the dispatch goes ahead with it unchanged.
   await callSignOf(dialog).fill("Will");
   await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "2");
   await expect(dialog.locator(".voice-meter-bad")).toHaveText("Everyday word");
@@ -219,7 +199,6 @@ test("a warned call sign is dispatched as typed: the task keeps it and the roste
   }, { timeout: 60_000 }).toBe("idle");
   expect(session.task?.callSign).toBe("Will");
 
-  // The roster lists Will, running, with both warnings in its check.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Will", exact: true }) });
@@ -237,7 +216,6 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   });
   expect(task.callSign).toBe("Marlowe");
 
-  // It survives a daemon restart.
   await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
   await daemon.shutdown();
   await daemon.restart();
@@ -245,7 +223,6 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   await page.reload();
   await expect(page.locator("main.board")).toBeVisible();
 
-  // A task in the backlog is not an agent yet: with Marlowe still saved, the roster leaves it out.
   // The built-in resident's row shows the roster has loaded, so the absence is not just early.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
@@ -279,7 +256,6 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   if ((await advancedOf(editor).getAttribute("aria-expanded")) !== "true") await advancedOf(editor).click();
   await expect(callSignOf(editor)).toHaveValue("Marlowe");
 
-  // Cleared and saved: the update takes it off with null.
   await callSignOf(editor).fill("");
   const updated = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
   await editor.getByRole("button", { name: "Save", exact: true }).click();

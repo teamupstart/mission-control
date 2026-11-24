@@ -7,15 +7,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
-/**
- * A resident's reference name, end to end (voice plan, Phase 2). With voice on, a resident
- * profile's Identity card offers a Reference name field with the same heard-as preview as a call
- * sign, checked against the other names on the roster. Saved, Settings > Voice lists the resident
- * by its profile name, saying the reference name; cleared, it says the profile name again.
- *
- * Real daemon, routes, SSE and the built dashboard. No agent is launched and nothing listens to a
- * microphone: a resident that is not running is still on the roster, marked not running.
- */
+// The roster includes stopped residents, so these fixtures only need profiles.
 
 const EVIDENCE = artifactsDir("voice-reference-name");
 const PERSONA_ID = "builtin:code-risk-reviewer";
@@ -59,7 +51,6 @@ test("a reference name set on a resident's profile is checked as it is typed, su
     persona: { personaId: PERSONA_ID },
   } });
 
-  // Off: the Identity card has no reference name.
   await page.goto(`${daemon.baseURL}/#/residents`);
   const editor = page.getByRole("region", { name: "Resident profile Release Captain" });
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Release Captain/ }).first().click();
@@ -67,7 +58,6 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await expect(identity.getByLabel("Name", { exact: true })).toHaveValue("Release Captain");
   await expect(referenceNameOf(identity)).toHaveCount(0);
 
-  // On, with the page left open: the field appears, and its preview checks each name typed.
   for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"]) await setFlag(daemon, id, true);
   const field = referenceNameOf(identity);
   await expect(field).toBeVisible();
@@ -87,8 +77,7 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await expect(identity.locator(".voice-meter-good")).toHaveText("Distinctive");
   await shoot(identity, "02-distinctive");
 
-  // Saved: a new revision carries it, trimmed. The editor names the revision once the save is
-  // back, which is when it stops holding unsaved changes.
+  // The revision changes when the editor has received the save response.
   await editor.getByRole("button", { name: "Save", exact: true }).click();
   await expect(editor).toContainText("Revision 2. Edits apply");
   await expect.poll(async () => {
@@ -96,8 +85,6 @@ test("a reference name set on a resident's profile is checked as it is typed, su
     return profiles.find((profile) => profile.id === captain.id)?.settings.identity.referenceName ?? null;
   }).toBe("Marlowe");
 
-  // Settings > Voice, after a daemon restart: the resident by its profile name, saying the
-  // reference name, not running.
   await daemon.shutdown();
   await daemon.restart();
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
@@ -109,7 +96,6 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await expect(steve.getByRole("cell")).toHaveText(["Steve", "Resident", "Steve", "Not running", "Distinct"]);
   await shoot(page.getByRole("tabpanel", { name: "Voice" }), "03-roster");
 
-  // Cleared: saved blank, and the roster says the profile name again.
   await page.goto(`${daemon.baseURL}/#/residents`);
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Release Captain/ }).first().click();
   await expect(referenceNameOf(identity)).toHaveValue("Marlowe");
@@ -140,7 +126,6 @@ test("a warned reference name is saved as typed, and the roster lists it with it
     persona: { personaId: PERSONA_ID },
   } });
 
-  // "Stevie" sounds like Steve, and Save goes ahead with it unchanged.
   await page.goto(`${daemon.baseURL}/#/residents`);
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Release Captain/ }).first().click();
   const editor = page.getByRole("region", { name: "Resident profile Release Captain" });
@@ -159,7 +144,6 @@ test("a warned reference name is saved as typed, and the roster lists it with it
   const profiles = await api<ResidentProfile[]>(daemon, "/api/residents/profiles");
   expect(profiles.find((profile) => profile.id === captain.id)?.settings.identity.referenceName).toBe("Stevie");
 
-  // The roster lists Release Captain said as Stevie, with the warning, and Steve warns back.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Stevie", exact: true }) }).getByRole("cell"))

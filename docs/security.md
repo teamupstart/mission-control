@@ -45,9 +45,13 @@ every egress guard the read path applies applies here unchanged.
 ## Voice routing
 
 With the `voice` preview on, a spoken sentence that names alone cannot settle goes to one model
-step ([Voice addressing](voice.md#the-model-step)). Whichever rung runs receives the sentence and
-the names and one-line roles of the agents it is about (a resident's description, a session's
-task title), and nothing else: no transcript, no file, no audio. Audio never leaves the listener.
+step ([Voice addressing](voice.md#the-model-step)). Each model asked receives the spoken sentence
+as text. To resolve an unclear name, it also receives the candidate names and their one-line
+roles (a resident's description or a session's task title). To distinguish a split from a
+mention, it receives the first and later names and the location of the later name in the
+sentence when available. For a spoken answer to a card, it receives the card question, the
+offered option labels and any option details. Session transcripts and files stay out of these
+requests. Audio stays with the listener.
 
 - **A decision model** (OpenAI Decisions or Jev) receives it over HTTPS when one is in use. **A
   key in the environment is enough**: with **Settings → Voice → Decision model** on Automatic,

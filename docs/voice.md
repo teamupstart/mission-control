@@ -133,8 +133,7 @@ in Voice settings lists addressable agents independently of these outcomes.
 · [Phase 6 outcome cards](plans/voice-addressing-for-agents/phase-6-confirmation-and-outcome-cards.md)
 · [Phase 12 ask aloud](plans/voice-addressing-for-agents/phase-12-floating-surfaces-and-ask-aloud.md)
 
-The step's questions name the agents involved with their roles, and quote the sentence. That is
-what leaves the machine, and only to the rung that runs: see [docs/security.md](security.md).
+For what each model receives, see [Voice routing in the Security guide](security.md#voice-routing).
 
 `MISSION_VOICE_OPENAI_DECISIONS_URL` and `MISSION_VOICE_JEV_URL` replace each provider's base URL
 (`https://api.openai.com`, `https://api.typesafe.ai`) for a test server or a gateway. The end-to-end
@@ -289,9 +288,8 @@ Below that are the behavior rows:
 The **Faster routing** group chooses the decision model (`decisionProvider`) and holds a key for
 each provider, since a key belongs to a provider.
 
-- The line at the top names the provider in use and says that ambiguous sentences and the
-  roster's names and roles are sent to it. With none in use it says what routing does instead:
-  today, “Not set: routing uses Luna for Codex sessions, and shows the candidates for others”.
+- The line at the top names the provider in use. When no provider is in use, it reads
+  “Not set: routing uses Luna for Codex sessions, and shows the candidates for others”.
 - **Decision model**: **Automatic** (null, the default), **Off** (`off`), **OpenAI Decisions**
   (`openai`) or **Jev** (`jev`). Automatic takes the first of four keys that exists, in a fixed
   order: a saved OpenAI Decisions key, a saved Jev key, `OPENAI_API_KEY` in the daemon's

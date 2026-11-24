@@ -334,7 +334,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     return rows;
   }
 
-  private forgetConversation(key: string): void {
+  /** Release one conversation's rows and scan state. A later read reloads them from SQLite. */
+  forgetConversation(key: string): void {
     for (const row of this.cache.get(key) ?? []) {
       this.scanned.delete(row.id);
       this.expired.delete(row.id);

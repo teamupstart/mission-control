@@ -248,7 +248,7 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
  * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
 function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, now: number, sdkInput?: SdkTurn): boolean {
   if (send.kind !== "spoken" || send.reservationId !== null) return true;
-  const conversation = { key: turn.noteKey, transcript: sessionMessages(session) };
+  const conversation = { key: turn.noteKey, transcript: sessionMessages(session), session };
   const row = reserveSpokenHandoff(conversation, turn, send.words,
     sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, generation, now);
   if (!row) return false;

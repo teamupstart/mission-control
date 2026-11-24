@@ -381,7 +381,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
-import { pruneExpiredSpokenTurns } from "./delivery-ledgers.ts";
+import { pruneExpiredSpokenTurns, spokenLedger } from "./delivery-ledgers.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
@@ -7568,7 +7568,10 @@ export class Registry extends EventEmitter {
     if (leaving) {
       const key = noteKeyFor(leaving);
       const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
-      if (!held) this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      if (!held) {
+        spokenLedger.forgetConversation(key);
+        this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      }
     }
   }
 
@@ -9591,13 +9594,20 @@ export class Registry extends EventEmitter {
     if (!this.sweptSessions) return 0;
     const byKey = new Map([...this.sessions.values()].map(session => [noteKeyFor(session), session]));
     let persisted: Map<string | null, SdkSessionRow> | undefined;
-    return pruneExpiredSpokenTurns(now, key => {
+    return pruneExpiredSpokenTurns(now, (key, locator) => {
+      // The file or native conversation may outlive the terminal and this daemon.
+      if (locator.transcriptAgent) {
+        const archived = { id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
+          agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath };
+        const transcript = sessionMessages(archived);
+        if (transcript) return transcript;
+      }
       const session = byKey.get(key);
       if (session?.agentSessionId === key) {
         const transcript = sessionMessages(session);
         if (transcript) return transcript;
       }
-      // SDK rows outlive eviction. Only an exact native binding identifies a transcript for deletion.
+      // Older handoffs may predate the ledger's locator. SDK rows also remember an exact native binding.
       persisted ??= new Map(listSdkSessions().map(row => [row.agentSessionId, row]));
       const row = persisted.get(key);
       return row?.agent ? sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,

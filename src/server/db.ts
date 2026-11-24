@@ -1,5 +1,5 @@
 import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
-import type { SdkUsage } from "./harness/types.ts";
+import type { SdkUsage, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
@@ -3856,6 +3856,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_agent", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_cwd", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_path", "TEXT");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
   addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
@@ -13314,7 +13317,13 @@ export interface BindableDelivery {
 
 // ---- spoken turns (operator words and the exact payload delivered) ----
 
-export interface SpokenTurnRow extends BindableDelivery {
+export interface SpokenTranscriptLocator {
+  transcriptAgent: TranscriptSession["agent"] | null;
+  transcriptCwd: string | null;
+  transcriptPath: string | null;
+}
+
+export interface SpokenTurnRow extends BindableDelivery, SpokenTranscriptLocator {
   transcriptBoundary: string | null;
   spokenWords: string;
   received: string;
@@ -13326,10 +13335,11 @@ export function insertSpokenTurn(row: SpokenTurnRow): void {
   openDb().prepare(
     `INSERT INTO session_spoken_turns
        (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, contested, message_id, message_ts,
-        outbox_turn_id, outbox_revision, transcript_boundary)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        outbox_turn_id, outbox_revision, transcript_boundary, transcript_agent, transcript_cwd, transcript_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.noteKey, row.fingerprint, row.spokenWords, row.received,
-    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs, row.outboxTurnId, row.outboxRevision, row.transcriptBoundary);
+    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs,
+    row.outboxTurnId, row.outboxRevision, row.transcriptBoundary, row.transcriptAgent, row.transcriptCwd, row.transcriptPath);
 }
 
 export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
@@ -13339,7 +13349,8 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
     `SELECT id, note_key AS noteKey, fingerprint, spoken_words AS spokenWords, received,
             delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
             message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision,
-            transcript_boundary AS transcriptBoundary
+            transcript_boundary AS transcriptBoundary, transcript_agent AS transcriptAgent,
+            transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath
        FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
          OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.spoken_reservation_id = session_spoken_turns.id
            AND p.state = 'sending' AND p.spoken_handoff_generation IS NOT NULL))
@@ -13374,20 +13385,23 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
 }
 
 export function expiredSpokenReservations(cutoff: number) {
-  return openDb().prepare(`SELECT DISTINCT note_key AS noteKey FROM session_spoken_turns
+  return openDb().prepare(`SELECT note_key AS noteKey, transcript_agent AS transcriptAgent,
+      transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath FROM session_spoken_turns
     WHERE abandoned_at <= ? OR (message_id IS NULL AND runtime_confirmed_at <= ?)
-      OR (message_id = id AND message_ts IS NULL AND runtime_confirmed_at <= ?)`)
-    .all(cutoff, cutoff, cutoff) as { noteKey: string }[];
+      OR (message_id = id AND message_ts IS NULL AND runtime_confirmed_at <= ?)
+    GROUP BY note_key, transcript_agent, transcript_cwd, transcript_path`)
+    .all(cutoff, cutoff, cutoff) as unknown as Array<SpokenTranscriptLocator & { noteKey: string }>;
 }
 
-export function deleteExpiredSpokenReservations(noteKey: string, sdkCutoff: number | null, textCutoff: number | null): number {
+export function deleteExpiredSpokenReservations(group: SpokenTranscriptLocator & { noteKey: string },
+  sdkCutoff: number | null, textCutoff: number | null): number {
   const removed = openDb().prepare(`DELETE FROM session_spoken_turns
-    WHERE note_key = ? AND message_ts IS NULL AND (
+    WHERE note_key = ? AND transcript_agent IS ? AND transcript_cwd IS ? AND transcript_path IS ? AND message_ts IS NULL AND (
       (abandoned_at <= ? AND runtime_confirmed_at IS NULL) OR
       (runtime_confirmed_at <= ? AND message_id = id) OR
       (runtime_confirmed_at <= ? AND message_id IS NULL))`)
-    .run(noteKey, sdkCutoff, sdkCutoff, textCutoff);
-  if (removed.changes) discardedSpokenKeys.add(noteKey);
+    .run(group.noteKey, group.transcriptAgent, group.transcriptCwd, group.transcriptPath, sdkCutoff, sdkCutoff, textCutoff);
+  if (removed.changes) discardedSpokenKeys.add(group.noteKey);
   return Number(removed.changes);
 }
 

@@ -25,8 +25,10 @@ import {
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
+  type SpokenTranscriptLocator,
   type SpokenTurnRow,
 } from "./db.ts";
+import type { TranscriptSession } from "./harness/types.ts";
 import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
@@ -115,8 +117,10 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   sender: row => row.spokenWords,
 });
 
+type SpokenConversation = DeliveryConversation & { session?: Pick<TranscriptSession, "agent" | "cwd" | "transcriptPath"> };
+
 /** On runtimes that accept a native user-message id, reserve that identity before the write. */
-export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string,
+export function reserveSpokenTurn(conversation: SpokenConversation, spokenWords: string, received: string,
   clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision"> & { reservationId: string }, now = Date.now()) {
   return spokenLedger.reserve(conversation, received, base => {
     const transcript = conversation.transcript;
@@ -126,6 +130,9 @@ export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWord
       messageId: clientMessageIds ? base.id : null,
       transcriptOffset: boundary?.offset ?? base.transcriptOffset,
       transcriptBoundary: boundary?.proof ?? (!clientMessageIds && !transcript ? "missing" : null),
+      transcriptAgent: conversation.session?.agent ?? null,
+      transcriptCwd: conversation.session?.cwd ?? null,
+      transcriptPath: transcript?.path ?? conversation.session?.transcriptPath ?? null,
     };
   }, now, attempt.reservationId);
 }
@@ -135,7 +142,7 @@ export function followSpokenConversationKey(sessionId: string, fromKey: string, 
 }
 
 /** At the transport guard, the receiving cycle and its corresponding ledger reservation commit together. */
-export function reserveSpokenHandoff(conversation: DeliveryConversation, turn: PendingTurn, words: string,
+export function reserveSpokenHandoff(conversation: SpokenConversation, turn: PendingTurn, words: string,
   clientMessageIds: boolean, generation: number, now: number): SpokenTurnRow | null {
   // Process invalidations from prior outbox transactions before the ledger is read inside this one.
   spokenLedger.rows(conversation.key);
@@ -178,17 +185,17 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
 }
 
 /** Final transcript pass for abandoned attempts and confirmed deliveries still awaiting a native match. */
-export function pruneExpiredSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"],
+export function pruneExpiredSpokenTurns(now: number, transcriptFor: (key: string, locator: SpokenTranscriptLocator) => DeliveryConversation["transcript"],
   unavailableBefore?: number): number {
   const cutoff = now - DELIVERY_LAG_MS;
   let removed = 0;
-  for (const { noteKey } of expiredSpokenReservations(cutoff)) {
-    const transcript = transcriptFor(noteKey);
-    const scan = transcript ? reconcileSpokenTurns(noteKey, transcript, now) : "unavailable";
-    if (scan === "complete") removed += deleteExpiredSpokenReservations(noteKey, cutoff, cutoff);
+  for (const group of expiredSpokenReservations(cutoff)) {
+    const transcript = transcriptFor(group.noteKey, group);
+    const scan = transcript ? reconcileSpokenTurns(group.noteKey, transcript, now) : "unavailable";
+    if (scan === "complete") removed += deleteExpiredSpokenReservations(group, cutoff, cutoff);
     else if (scan === "unavailable" && unavailableBefore !== undefined) {
       // Only confirmed, unbound text expires without a readable file. Exact SDK receipts can still arrive.
-      removed += deleteExpiredSpokenReservations(noteKey, null, Math.min(cutoff, unavailableBefore));
+      removed += deleteExpiredSpokenReservations(group, null, Math.min(cutoff, unavailableBefore));
     }
   }
   return removed;

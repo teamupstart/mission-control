@@ -218,6 +218,23 @@ test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev name
 test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
   test.use({ environmentKey: ENVIRONMENT_KEY });
 
+  for (const provider of ["OpenAI Decisions", "Off"] as const) {
+    test(`${provider} keeps an earlier mention of Alice in Steve's message`, async ({ dashboard: page, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      await providerMenu(page).selectOption({ label: provider });
+      await expect(line(page)).toHaveText(provider === "Off" ? NOT_SET : using(provider));
+
+      const { entry, card } = await sayAndSettle(daemon, "Steve, ask Alice about the build, and Alice, review the PR");
+      expect(card?.parts.map(part => [part.target?.name, part.text])).toEqual([
+        ["Steve", "ask Alice about the build"], ["Alice", "review the PR"],
+      ]);
+      expect(entry.detail).toContain(provider === "Off" ? "job on codex answered" : "OpenAI Decisions answered");
+      expect(decisions.requests).toHaveLength(provider === "Off" ? 0 : 1);
+    });
+  }
+
   for (const mutation of ["save", "remove"] as const) {
     test(`Off stops provider routing before a pending key ${mutation} completes`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

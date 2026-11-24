@@ -5,6 +5,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
 import {
   VOICE_LISTENER_PROTOCOL_VERSION,
@@ -235,21 +236,16 @@ export interface DecisionServer {
 /**
  * Answer as OpenAI Decisions (`POST /v1/decisions`) and Jev (`POST /v1/systemone`) do, in their
  * documented reply shapes, so a spec drives the decision-model rung with no real provider. A
- * split question is answered "split" when the speech turns to the second name with a comma
- * ("…, and Alice, review the PR"), else "mention"; any other question is answered with its first
- * choice at a confidence below every floor, which the daemon reads as "not sure".
+ * split question is classified at its requested occurrence. Other questions get "not sure".
  */
 export async function startDecisionServer(): Promise<DecisionServer> {
   const requests: DecisionRequest[] = [];
   const verdict = (name: string | undefined, instructions: string, input: string | undefined): { choice: string; confidence: number } => {
-    const second = /Later it names (.+?)\. Decide/.exec(instructions)?.[1];
     const speech = input?.split("\n")
       .map(line => /^Speech for (q\d+(?:, q\d+)*): ("[\s\S]*")$/u.exec(line))
       .find(match => name && match?.[1]?.split(", ").includes(name))?.[2];
-    if (!second || !speech) return { choice: "not sure", confidence: 0.4 };
-    const text = JSON.parse(speech) as string;
-    const split = new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second},`).test(text);
-    return { choice: split ? "split" : "mention", confidence: 0.99 };
+    const choice = speech ? fixtureSplitAnswer(instructions, JSON.parse(speech) as string) : "not sure";
+    return { choice, confidence: choice === "not sure" ? 0.4 : 0.99 };
   };
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];

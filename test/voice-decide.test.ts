@@ -1253,6 +1253,17 @@ test("a comma before the connector lets a split end the first instruction with a
   }
 });
 
+test("a confirmed split keeps the argument in 'explain how to use then'", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    await say("Steve, explain how to use then, Alice, review the PR", "use");
+    if (choice === null) assert.ok(await router.pick("use", "task:Alice"));
+    assert.ok(await router.sendNow("use"));
+    assert.deepEqual(delivered, [["Steve", "explain how to use then", "use"], ["Alice", "review the PR", "use#2"]]);
+  }
+});
+
 test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let chooseFirst!: (result: VoiceDecisionResult) => void;

@@ -68,7 +68,7 @@ function splitHead(text: string): string {
   // still needs the final word as its argument. The comma alone separates the address.
   const before = preceding.replace(/[\p{P}\s]+$/u, "");
   if (/\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
-  const needsObject = /\b(?:with|to|from|by|as|for|of|into)$/iu.test(before);
+  const needsObject = /\b(?:use|with|to|from|by|as|for|of|into)$/iu.test(before);
   return needsObject && !conjunction[0].startsWith(",") ? raw : preceding;
 }
 

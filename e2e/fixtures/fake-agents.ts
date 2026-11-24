@@ -1010,6 +1010,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   // Claude's vendored SDK actually sniffs the extension: `spawnAppServer` execs the resolved
   // path directly, so the shebang is what picks the interpreter either way.
   const codex = join(binDir, "fake-codex");
+  copyFileSync(fileURLToPath(new URL("./voice-split-answer.ts", import.meta.url)), join(binDir, "voice-split-answer.ts"));
   copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), codex);
   chmodSync(codex, 0o755);
   writeCodexCatalogMode(home, "success");

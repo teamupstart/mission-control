@@ -39,6 +39,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
 /** Stable per fake process, so one spec can hold two independent Codex sessions at once. */
 const DEFAULT_THREAD_ID = `01999999-0000-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
@@ -279,12 +280,9 @@ function voiceRoutingAnswer(prompt) {
   for (const block of prompt.split(/\n(?=Question q\d+ \()/)) {
     const head = /^Question (q\d+) \((who|split|option)\):/m.exec(block);
     if (!head) continue;
-    const second = /Later it names (.+?)\. Decide/.exec(block);
     const text = speech.get(head[1]) ?? (single ? JSON.parse(single[1]) : "");
-    const split = head[2] === "split" && second && new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second[1]},`).test(text);
-    answers[head[1]] = head[2] === "split"
-      ? { choice: split ? "split" : "mention", confidence: 0.99 }
-      : { choice: "not sure", confidence: 0 };
+    const choice = head[2] === "split" ? fixtureSplitAnswer(block, text) : "not sure";
+    answers[head[1]] = { choice, confidence: choice === "not sure" ? 0 : 0.99 };
   }
   return JSON.stringify({ answers });
 }

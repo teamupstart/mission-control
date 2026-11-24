@@ -378,11 +378,15 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
           </span>}
       </div>
       <div className="kb-row-controls">
-        {available ? <button type="button" aria-label="Mute hotkey" aria-pressed={recording}
-          className={`kb-capture${recording ? " is-recording" : ""}`}
-          onBlur={() => setRecording(false)} onClick={() => setRecording(!recording)}>
-          {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}
-        </button> : <span className="kb-row-desc">{voice?.capabilities.hotkey?.reason ?? "Needs the desktop app"}</span>}
+        {available ? (
+          <Tooltip label={recording ? "Press a shortcut, or Escape to cancel" : "Record a system-wide mute shortcut"}>
+            <button type="button" aria-label="Mute hotkey" aria-pressed={recording}
+              className={`kb-capture${recording ? " is-recording" : ""}`}
+              onBlur={() => setRecording(false)} onClick={() => setRecording(!recording)}>
+              {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}
+            </button>
+          </Tooltip>
+        ) : <span className="kb-row-desc">{voice?.capabilities.hotkey?.reason ?? "Needs the desktop app"}</span>}
       </div>
     </div>
   );

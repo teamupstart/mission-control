@@ -60,7 +60,10 @@ test("Voice settings records a chord, explains refusal, and follows call and key
       expect((await controls.locator(selector).boundingBox())?.width).toEqual((await approved.locator(selector).boundingBox())?.width);
     }
     await mock.close();
+    await capture.focus();
+    await expect(page.locator(".tooltip")).toHaveText("Record a system-wide mute shortcut");
     await capture.click();
+    await expect(capture).toHaveAccessibleDescription("Press a shortcut, or Escape to cancel");
     await expect(capture).toHaveText("Press a key…");
     await screenshot("capture");
     await page.keyboard.press("Escape");

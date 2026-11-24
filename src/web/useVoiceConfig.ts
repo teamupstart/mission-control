@@ -10,6 +10,16 @@ import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type V
 const POLL_MS = 5000;
 const SETTINGS_REQUEST_TIMEOUT_MS = 3 * POLL_MS;
 
+async function readSetting<T>(read: (signal: AbortSignal) => Promise<T>, group: AbortSignal): Promise<T> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
+  try {
+    return await read(AbortSignal.any([group, deadline.signal]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // A receipt contains only a daemon instance, sequence and random nonce. Sharing
 // it before sending the PUT lets another window prove what preceded its click.
 const RECEIPT_KEY = "mission.voice.providerIntentReceipt";
@@ -132,14 +142,14 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
 
   useEffect(() => {
     if (!enabled) return;
-    let alive = true;
+    const reads = new AbortController();
     let snapshot: VoiceDashboardSnapshot | undefined;
     const tick = async (): Promise<void> => {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
       if (pendingRef.current.length > 0) return;
       const at = nextEdit.current;
-      const read = await fetchVoiceConfig();
-      if (alive && read && !isOlderSnapshot(read, snapshot) && nextEdit.current === at && pendingRef.current.length === 0) {
+      const read = await readSetting(fetchVoiceConfig, reads.signal);
+      if (!reads.signal.aborted && read && !isOlderSnapshot(read, snapshot) && nextEdit.current === at && pendingRef.current.length === 0) {
         if (!observeProvider(read.providerRevision, read.config.decisionProvider)) return;
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);
@@ -149,7 +159,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
     return () => {
-      alive = false;
+      reads.abort();
       clearInterval(id);
     };
   }, [enabled, observeProvider, setConfirmed, unconfirmedProviderEdit]);
@@ -263,15 +273,15 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
   const [state, setState] = useState<VoiceDevicesState>(NO_DEVICES);
   useEffect(() => {
     if (!enabled) return;
-    let alive = true;
+    const reads = new AbortController();
     const tick = async (): Promise<void> => {
-      const read = await fetchVoiceDevices();
-      if (alive && read) setState({ devices: read.devices, listener: read.listener });
+      const read = await readSetting(fetchVoiceDevices, reads.signal);
+      if (!reads.signal.aborted && read) setState({ devices: read.devices, listener: read.listener });
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
     return () => {
-      alive = false;
+      reads.abort();
       clearInterval(id);
     };
   }, [enabled]);
@@ -317,9 +327,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       const id = ++nextRead;
       const at = writes.current;
       const group = reads.signal;
-      const deadline = new AbortController();
-      const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
-      const read = await fetchVoiceDecisionKey(AbortSignal.any([group, deadline.signal])).finally(() => clearTimeout(timer));
+      const read = await readSetting(fetchVoiceDecisionKey, group);
       if (group.aborted || writes.current !== at) return;
       if (read) {
         // Requests may reach the daemon out of order even when they share a provider revision.

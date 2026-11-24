@@ -1100,34 +1100,38 @@ test("a delayed config poll shows the newer cancel window when it reaches the da
   }
 });
 
-test("stalled key-status reads expire and leaving Voice cancels the remaining polls", async ({ dashboard: page, daemon }) => {
-  await turnVoiceOn(daemon);
-  await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
-  await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
-  await openVoiceSettings(page, daemon);
-  await expect(line(page)).toHaveText(NOT_SET);
-  const held: Route[] = [];
-  const cancelled = new Set<Route>();
-  await page.route("**/api/voice/decision-key", route => { held.push(route); });
-  page.on("requestfailed", request => {
-    const route = held.find(r => r.request() === request);
-    if (route) cancelled.add(route);
-  });
-  try {
-    for (let i = 1; i <= 4; i++) {
-      await page.clock.fastForward(5_000);
-      await expect.poll(() => held.length).toBe(i);
+for (const resource of ["config", "devices", "decision-key"] as const) {
+  test(`stalled ${resource} reads expire and leaving Voice cancels the remaining polls`, async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    const held: Route[] = [];
+    const cancelled = new Set<Route>();
+    await page.route(`**/api/voice/${resource}`, route => { held.push(route); });
+    page.on("requestfailed", request => {
+      const route = held.find(r => r.request() === request);
+      if (route) cancelled.add(route);
+    });
+    try {
+      for (let i = 1; i <= 4; i++) {
+        await page.clock.fastForward(5_000);
+        await expect.poll(() => held.length).toBe(i);
+      }
+      await expect.poll(() => cancelled.size, { timeout: 2_000 }).toBeGreaterThan(0);
+      if (resource === "decision-key") {
+        await expect(line(page)).toHaveText("Key status unavailable", { timeout: 2_000 });
+        await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "41-expired-status-poll");
+      }
+      await page.goto(`${daemon.baseURL}/#/settings/models`);
+      await expect(panel(page)).toHaveCount(0);
+      await expect.poll(() => cancelled.size).toBe(held.length);
+    } finally {
+      await Promise.all(held.map(route => route.abort().catch(() => undefined)));
     }
-    await expect(line(page)).toHaveText("Key status unavailable", { timeout: 2_000 });
-    await expect.poll(() => cancelled.size).toBeGreaterThan(0);
-    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "41-expired-status-poll");
-    await page.goto(`${daemon.baseURL}/#/settings/models`);
-    await expect(panel(page)).toHaveCount(0);
-    await expect.poll(() => cancelled.size).toBe(held.length);
-  } finally {
-    await Promise.all(held.map(route => route.abort().catch(() => undefined)));
-  }
-});
+  });
+}
 
 test("saving and removing a key cancel earlier polls before refreshing the rows", async ({ dashboard: page, daemon }) => {
   await turnVoiceOn(daemon);

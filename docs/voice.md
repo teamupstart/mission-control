@@ -353,8 +353,8 @@ with `source` one of `settings`, `environment` or null. An unreadable store adds
 Dashboard reads of both config and key status carry the provider selection revision and the
 order in which the daemon read the snapshot. A delayed poll can still show a new cancel-window
 length, and an older result cannot make an already removed key appear saved again.
-Key-status reads expire after 15 seconds. Saving or removing a key cancels earlier polls
-and refreshes the rows. Leaving Voice settings cancels outstanding reads.
+Config, device and key-status reads expire after 15 seconds. Saving or removing a key cancels
+earlier key-status polls and refreshes the rows. Leaving Voice settings cancels outstanding reads.
 If a save or removal goes unconfirmed for 15 seconds, the dashboard releases both rows and
 reads the current key sources from the daemon.
 The dashboard sends the revision it read for that provider with each save or removal.

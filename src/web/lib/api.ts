@@ -504,10 +504,10 @@ export interface VoiceDashboardSnapshot {
 }
 
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
-export const fetchVoiceConfig = () => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
-  { headers: { "x-voice-provider-revision": "read" } });
+export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
+  { signal, headers: { "x-voice-provider-revision": "read" } });
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
-export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
+export const fetchVoiceDevices = (signal?: AbortSignal) => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices", { signal });
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
 export const fetchVoiceDecisionKey = (signal?: AbortSignal) =>
   fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; keyRevisions: Record<VoiceKeyProvider, string> }>("/api/voice/decision-key",

@@ -1,4 +1,4 @@
-import { VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
+import { verifySupervisorReport, VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
 import { askAloudPossible, askSentence, SpeechInstanceSchema, VOICE_INSTANCE_HEADER } from "@shared/voice-speech.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -125,8 +125,7 @@ export function registerVoiceRoutes(
   const authed = (header: string | undefined): boolean => checkToken(header);
   const allowDrain = (supervisorReport = false): MiddlewareHandler => async (c, next) => {
     if (featureEnabled(VOICE_FLAG)) return next();
-    const manager = authed(c.req.header("x-harness-token")) && store.disabledSpeech();
-    if (manager && (manager.held || supervisorReport)) return next();
+    if (authed(c.req.header("x-harness-token")) && (supervisorReport || store.disabledSpeech()?.held)) return next();
     return disabledFeatureResponse(c, VOICE_FLAG);
   };
   const drainGate = allowDrain();
@@ -272,10 +271,17 @@ export function registerVoiceRoutes(
   app.post("/voice/listener/supervised", allowDrain(true), limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.object({ instance: SpeechInstanceSchema, state: z.enum(["started", "exited"]) }));
-    if (!parsed.ok) return c.json({ error: "invalid_supervisor_report" }, 400);
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled && (parsed.data.state !== "exited" || !store.disabledSpeech()?.canRetireLaunch(parsed.data.instance))) return disabled;
-    const result = store.speech.supervised(parsed.data.instance, parsed.data.state, c.req.header(VOICE_SUPERVISOR_PROOF_HEADER));
+    if (!parsed.ok) return disabled ?? c.json({ error: "invalid_supervisor_report" }, 400);
+    const { instance, state } = parsed.data;
+    const proof = c.req.header(VOICE_SUPERVISOR_PROOF_HEADER);
+    if (disabled) {
+      if (state !== "exited") return disabled;
+      // A trusted exit can arrive before its start. Persist it even on a fresh, disabled daemon.
+      if (!store.disabledSpeech()?.canRetireLaunch(instance) && !verifySupervisorReport(instance, state, proof, () => false)) return disabled;
+      store.speech.setEnabled(false);
+    }
+    const result = store.speech.supervised(instance, state, proof);
     if (result === "unauthorized") return c.json({ error: "unauthorized_supervisor" }, 403);
     if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);

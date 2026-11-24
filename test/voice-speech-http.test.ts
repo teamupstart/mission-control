@@ -931,7 +931,11 @@ test("a definitive exit refusal after an unknown start outcome returns the origi
   const original = new Error("Connection failed before the start reached the daemon");
   await assert.rejects(signer.launch(home, process.execPath, ["--version"], {}, async (subject, state, proof) => {
     reports.push(state);
-    if (state === "started") { toggle(false); throw original; }
+    if (state === "started") {
+      toggle(false);
+      Object.assign(process.env, newFixtureSupervisor("shell").daemonEnv);
+      throw original;
+    }
     assert.equal((await peer.report(state, subject, proof)).status, 404);
     return false;
   }), error => error === original);
@@ -1265,7 +1269,7 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal((await peer.request("/voice/listener/directive")).status, 404);
     assert.equal((await post("/api/voice/speech/audition")).status, 404);
     assert.equal((await holder.report("started")).status, 404);
-    assert.equal((await peer.report("exited")).status, 404);
+    assert.equal((await peer.report("exited")).status, 200);
     assert.equal((await holder.event(id, "started")).status, 404);
     assert.equal((await peer.event(id, "ended")).status, 409);
     assert.equal((await holder.report("exited", holder.instance, "bad")).status, 403);
@@ -1288,7 +1292,7 @@ test("with Voice off a signed exit retires a recorded launch after its last play
   assert.equal((await holder.event(id, "ended")).status, 200);
   assert.deepEqual(entries(), []);
   store.reset(); // Only durable records identify the launch now.
-  assert.equal((await peer.report("exited")).status, 404);
+  assert.equal((await peer.report("exited")).status, 200);
   assert.equal((await holder.report("started")).status, 404);
   assert.equal((await peer.report("exited", holder.instance)).status, 403);
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), [holder.instance]);
@@ -1298,6 +1302,26 @@ test("with Voice off a signed exit retires a recorded launch after its last play
   rmSync(ledger);
   store.reset(); toggle(true); await peer.hello();
   assert.equal((await peer.poll()).capture, true);
+});
+
+test("a trusted exit received first with Voice off survives restart and rejects the delayed start", async () => {
+  const listener = player();
+  toggle(false); store.reset();
+  const marker = join(home, "voice/supervised-exits", announcementName(listener.instance) + ".json");
+  assert.equal((await listener.report("exited", listener.instance, "invalid")).status, 404);
+  assert.throws(() => statSync(marker), { code: "ENOENT" });
+  assert.equal((await listener.report("started")).status, 404);
+  assert.equal((await listener.report("exited")).status, 200);
+  assert.equal(statSync(marker).mode & 0o777, 0o600);
+  assert.equal((await listener.report("exited")).status, 200);
+  assert.throws(() => statSync(inventory), { code: "ENOENT" });
+  store.reset(); toggle(true); await listener.hello();
+  const late = await listener.report("started");
+  assert.equal(late.status, 409);
+  assert.deepEqual(await late.json(), { error: "launch_exited" });
+  assert.equal((await post("/api/voice/speech/audition")).status, 409);
+  store.reset(); await listener.hello();
+  assert.equal((await listener.poll()).capture, true);
 });
 
 for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof of ["ended", "exited"] as const) {

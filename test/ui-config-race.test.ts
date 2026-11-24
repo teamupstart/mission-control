@@ -60,7 +60,7 @@ test("initial hydration cannot undo an indicator save acknowledged after the GET
     return Response.json({ indicators: ["status-line", "edge"] });
   });
   const hydration = hydrateUiConfig();
-  assert.equal(await updateVoiceIndicator("edge", true), true);
+  assert.equal(await updateVoiceIndicator("edge", true), "saved");
   finishRead(Response.json({ configured: true, config: { ...before, richText: true } }));
   await hydration;
   assert.deepEqual(uiConfig().voice.indicators, ["status-line", "edge"]);
@@ -80,6 +80,6 @@ test("an older indicator response reconciles against the newer selection in the 
   const saving = updateVoiceIndicator("edge", true);
   await updateUiConfig({ voice: newer });
   acknowledge(Response.json({ indicators: ["status-line", "edge"] }));
-  assert.equal(await saving, true);
+  assert.equal(await saving, "saved");
   assert.deepEqual(uiConfig().voice.indicators, newer.indicators);
 });

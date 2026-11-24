@@ -416,6 +416,55 @@ test("a failed indicator save shows an alert and restores the previous selection
   await expect(segment).toBeVisible();
 });
 
+for (const applied of [false, true]) {
+  test(`a stalled indicator save unlocks all five choices and reconciles a write the daemon ${applied ? "applied" : "did not receive"}`, async ({ dashboard: page, daemon }) => {
+    await enableVoice(daemon);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const settings = page.getByRole("group", { name: "In the window" });
+    const edge = settings.getByRole("checkbox", { name: "Edge light" });
+    const alert = settings.getByRole("alert");
+    await expect(settings.getByRole("checkbox", { name: "Status line" })).toBeChecked();
+    const writing = Promise.withResolvers<void>();
+    const releaseRead = Promise.withResolvers<void>();
+    await page.route("**/api/voice/indicators", async route => {
+      if (applied) expect((await route.fetch()).ok()).toBe(true);
+      // Withhold the response until the dashboard aborts its request.
+      writing.resolve();
+    }, { times: 1 });
+    try {
+      await edge.check();
+      await writing.promise;
+      await expect(settings.getByRole("checkbox", { disabled: true })).toHaveCount(5);
+      await page.route("**/api/ui/config", async route => {
+        await releaseRead.promise;
+        await route.continue();
+      }, { times: 1 });
+      await expect(alert).toHaveText(/save timed out.*could not be confirmed/i, { timeout: 10_000 });
+      await expect(settings.getByRole("checkbox", { disabled: false })).toHaveCount(5);
+      const refreshed = page.waitForResponse(daemon.baseURL + "/api/ui/config");
+      releaseRead.resolve();
+      const response = await refreshed;
+      expect(response.ok()).toBe(true);
+      expect((await response.json()).config.voice.indicators.includes("edge")).toBe(applied);
+      await expect(edge).toBeChecked({ checked: applied });
+      await expect(page.locator("button.vi-edge")).toHaveCount(applied ? 1 : 0);
+      if (applied && process.env.MC_E2E_EVIDENCE) {
+        const root = artifactsDir("voice-window");
+        mkdirSync(root, { recursive: true });
+        await page.mouse.move(1, 1);
+        await edge.blur();
+        await expect(page.locator(".tooltip")).toHaveCount(0);
+        await settings.screenshot({ path: join(mkdtempSync(join(root, "save-timeout-")), "settings.png") });
+      }
+      await edge.setChecked(!applied);
+      await expect(alert).toHaveCount(0);
+      await expect(page.locator("button.vi-edge")).toHaveCount(applied ? 0 : 1);
+    } finally {
+      releaseRead.resolve();
+    }
+  });
+}
+
 // The console always sends the keyboard shortcut to the transcript. Mount the actual fallback
 // with no transcript owner, using the same dev-dashboard fixture as dispatch-modes.spec.ts.
 test("the Action Bar fallback keeps its visible typing prompt and draft alongside its voice hint", async ({ dashboard: page, daemon }) => {

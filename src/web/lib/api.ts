@@ -2506,8 +2506,8 @@ export const api = {
   setVoiceConfig: (patch: VoiceConfigPatch) =>
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
-  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean) =>
-    put<ActionResult & { indicators?: string[] }>("/api/voice/indicators", { id, enabled }),
+  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
+    put<ActionResult & { indicators?: string[] }>("/api/voice/indicators", { id, enabled }, { signal }),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   /** A 409 carries `reason` when there is no model to download. */

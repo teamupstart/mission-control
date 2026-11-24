@@ -196,13 +196,14 @@ export async function refreshAnnouncedTours(): Promise<boolean> {
 let indicatorReadGeneration = 0;
 let indicatorRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+const INDICATOR_REQUEST_TIMEOUT_MS = 5000;
 
 /** Retry a failed or superseded read without keeping the settings controls disabled. */
 async function reconcileVoiceIndicators(): Promise<void> {
   const generation = ++indicatorReadGeneration;
   clearTimeout(indicatorRetryTimer);
   const atRead = current.voice.indicators;
-  const view = await fetchUiConfig(AbortSignal.timeout(5000));
+  const view = await fetchUiConfig(AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS));
   if (generation !== indicatorReadGeneration) return;
   if (view && (!view.config.voice || current.voice.indicators === atRead)) {
     indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
@@ -214,16 +215,22 @@ async function reconcileVoiceIndicators(): Promise<void> {
 }
 
 /** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
-export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<boolean> {
+export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<"saved" | "failed" | "unconfirmed"> {
   const atWrite = current.voice.indicators;
-  const result = await api.setVoiceIndicator(id, enabled);
-  if (!result.ok || !result.indicators) return false;
+  const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
+  const result = await api.setVoiceIndicator(id, enabled, deadline);
+  if (deadline.aborted) {
+    // The daemon may have persisted the edit before the response stalled.
+    void reconcileVoiceIndicators();
+    return "unconfirmed";
+  }
+  if (!result.ok || !result.indicators) return "failed";
   if (current.voice.indicators !== atWrite) {
     await reconcileVoiceIndicators();
   } else {
     commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
   }
-  return true;
+  return "saved";
 }
 
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener

@@ -1,3 +1,4 @@
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
@@ -122,6 +123,44 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(1);
   await expect.poll(pendingWords).toEqual([earlier]);
   await captureCard(mixed, "mixed-split-recalled");
+});
+
+test("a held transcript scrolls inside a split with a failed sibling", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  // Refuse only the second part in this fixture's outbox so the daemon publishes a mixed result.
+  withDaemonDb(daemon, db => db.exec(`
+    CREATE TRIGGER refuse_split_sibling BEFORE INSERT ON pending_turns
+    WHEN NEW.id = 'voice:mixed-long#2' BEGIN SELECT RAISE(ABORT, 'Test outbox refused the sibling'); END
+  `));
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the build output. ".repeat(60) + "Start at the final check";
+  await say(daemon, "Steve, " + words + ", and Will, review the release", { id: "mixed-long" });
+  const card = page.getByRole("status");
+  await card.getByRole("button", { name: /Will/ }).click();
+  await card.getByRole("button", { name: "Send both now" }).click();
+  const mixed = card.filter({ hasText: "Held for Steve" });
+  await expect(mixed).toContainText("Failed to send to Will");
+  const recall = mixed.getByRole("button", { name: "Cancel message" });
+  const transcript = mixed.locator("q").filter({ hasText: "Start at the final check" });
+  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await transcript.hover();
+  await page.mouse.wheel(0, 10000);
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  for (const control of [recall, mixed.getByRole("button", { name: "Open question" }), mixed.getByText("Failed to send to Will")]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+  await captureCard(mixed, "held-scroll-with-failed-sibling");
+  const receipt = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Amixed-long/recall"));
+  await recall.click();
+  expect((await receipt).ok()).toBe(true);
+  await expect(mixed).toHaveCount(0);
 });
 
 test("without randomUUID a pending card can cancel and a stopped resident can relaunch", async ({ dashboard: page, daemon }) => {

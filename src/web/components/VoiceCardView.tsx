@@ -139,7 +139,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
             "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn, wordsId)}</div>
-          <q id={wordsId}>{turn?.spokenWords ?? part.text}</q>
+          <q id={wordsId} className="vc-transcript">{turn?.spokenWords ?? part.text}</q>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>

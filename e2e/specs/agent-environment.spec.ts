@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator } from "@playwright/test";
@@ -103,6 +103,50 @@ test.describe("Agent environment Settings failures", () => {
     await expect(panel.getByRole("textbox")).toBeEnabled();
     await expect(panel.getByRole("textbox")).toHaveValue(savedName);
     await expect(panel.getByRole("listitem")).toHaveText([savedStatus]);
+  });
+
+  test("opening Settings retries a superseded read and enables the editor with the winning names", async ({ daemon, dashboard: page }) => {
+    const endpoint = daemon.baseURL + "/api/agent-environment";
+    // Save the delayed name with its gate open, then hold the panel's initial real GET.
+    const release = join(daemon.recordDir, "probe-release");
+    const marker = join(daemon.recordDir, "probe-started");
+    writeFileSync(release, "");
+    await expect(await page.request.put(endpoint, { data: { names: ["E2E_DELAYED_NAME"] } })).toBeOK();
+    unlinkSync(marker);
+    unlinkSync(release);
+    const first = page.waitForResponse((res) => res.url() === endpoint && res.request().method() === "GET");
+    await page.goto(daemon.baseURL + "/#/settings/harnesses");
+    await expect.poll(() => existsSync(marker)).toBe(true);
+    await expect(await page.request.put(endpoint, { data: { names: ["E2E_NEWER_NAME"] } })).toBeOK();
+    writeFileSync(release, "");
+    expect((await first).status()).toBe(409);
+    const panel = page.getByRole("region", { name: "Agent environment" });
+    await expect(panel.getByRole("textbox")).toHaveValue("E2E_NEWER_NAME");
+    await expect(panel.getByRole("button", { name: "Save variable names" })).toBeEnabled();
+    await expect(panel.getByRole("listitem")).toHaveText(["E2E_NEWER_NAME Present (daemon)"]);
+    await expect(panel.getByRole("alert")).toHaveCount(0);
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("agent-environment");
+      mkdirSync(dir, { recursive: true });
+      await panel.screenshot({ path: join(dir, "retried-read.png") });
+    }
+  });
+
+  test("repeated read conflicts stop after one automatic retry and can be retried in the panel", async ({ daemon, dashboard: page }) => {
+    let reads = 0;
+    await page.route(daemon.baseURL + "/api/agent-environment", async (route) => {
+      reads++;
+      return reads <= 2 ? route.fulfill({ status: 409, json: { variables: null } }) : route.continue();
+    });
+    await page.goto(daemon.baseURL + "/#/settings/harnesses");
+    const panel = page.getByRole("region", { name: "Agent environment" });
+    await expectError(panel, "Could not read agent environment settings.", "read-retry-exhausted.png");
+    expect(reads).toBe(2);
+    await expect(panel.getByRole("textbox")).toBeDisabled();
+    await panel.getByRole("button", { name: "Retry loading variable names" }).click();
+    await expect(panel.getByRole("textbox")).toHaveValue(savedName);
+    await expect(panel.getByRole("button", { name: "Save variable names" })).toBeEnabled();
+    expect(reads).toBe(3);
   });
 
   for (const scenario of [

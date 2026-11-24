@@ -500,8 +500,18 @@ interface AgentEnvironmentSettingsView {
   revision: string;
   variables: import("@shared/worktrees.ts").WorktreeClaimVariableView[];
 }
-export const fetchAgentEnvironment = () =>
-  fetchJson<AgentEnvironmentSettingsView>("/api/agent-environment");
+export async function fetchAgentEnvironment(): Promise<AgentEnvironmentSettingsView | null> {
+  const path = "/api/agent-environment";
+  try {
+    const response = await actionFetch(path);
+    // The names changed while the shell probe was running. Read the committed revision
+    // once more, both for an initial load and for recovery from a superseded save.
+    if (response.status === 409) return fetchJson<AgentEnvironmentSettingsView>(path);
+    return response.ok ? await response.json() as AgentEnvironmentSettingsView : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");

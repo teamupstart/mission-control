@@ -9,8 +9,10 @@ export function AgentEnvironmentSettings() {
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [readAttempt, setReadAttempt] = useState(0);
   useEffect(() => {
     let current = true;
+    setError("");
     void fetchAgentEnvironment().then((result) => {
       if (!current) return;
       if (!result) { setError("Could not read agent environment settings."); return; }
@@ -18,7 +20,7 @@ export function AgentEnvironmentSettings() {
       setDraft(result.names.join("\n"));
     });
     return () => { current = false; };
-  }, []);
+  }, [readAttempt]);
 
   async function save() {
     const config = AgentEnvironmentConfigSchema.safeParse({ names: draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
@@ -59,6 +61,11 @@ export function AgentEnvironmentSettings() {
         </Tooltip>
       </div>
       {error && <p role="alert" className="settings-error">{error}</p>}
+      {error && !variables && (
+        <Tooltip label="Reload the saved variable names and their status">
+          <button className="btn" type="button" onClick={() => setReadAttempt((attempt) => attempt + 1)}>Retry loading variable names</button>
+        </Tooltip>
+      )}
       {!!variables?.length && <ul aria-label="Variable status">{variables.map(({ name, source }) => (
         <li key={name}><code>{name}</code> <span>{source === "daemon" ? "Present (daemon)" : source === "loginShell" ? "Present (login shell)" : "Absent"}</span></li>
       ))}</ul>}

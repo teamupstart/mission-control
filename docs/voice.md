@@ -8,7 +8,8 @@ The daemon accepts text captures from a token-authenticated listener. It resolve
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
 recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
-and Linux. The corner confirmation card names the recipient and shows the spoken words. Its bar and
+and Linux. The corner confirmation card names the recipient and shows the spoken words.
+Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now. Its bar and
 seconds count down together. On a slow connection, `≤` marks the longest time that could
 remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
 Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
@@ -52,7 +53,7 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. If a save times out, you can select another placement. A delayed request
+for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
 cannot replace the newer saved choice, even when that save reaffirms the current placement.
 Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each

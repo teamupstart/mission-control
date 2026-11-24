@@ -112,40 +112,45 @@ test("a stalled placement save releases the controls and can be retried", async 
   await expect(pill).toBeChecked();
 });
 
-test("a timed-out placement save cannot overwrite the newer choice when it reaches the daemon late", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
-  const group = page.getByRole("group", { name: "Confirmation card" });
-  const pill = group.getByRole("radio", { name: /Floating pill/ });
-  const popover = group.getByRole("radio", { name: /Tray popover/ });
-  const url = daemon.baseURL + "/api/voice/confirmation";
-  // Keep the first request's actual body, including the version the operator saw.
-  const delayed = page.waitForRequest(request => request.url() === url && request.method() === "PUT");
-  await page.route(url, () => {}, { times: 1 });
-  await pill.click();
-  const first = await delayed;
-  await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
-  const saved = page.waitForResponse(response => response.url() === url && response.request().method() === "PUT");
-  await popover.click();
-  expect((await saved).ok()).toBe(true);
-  await expect(popover).toBeEnabled();
-  const late = await page.request.put(url, { data: first.postDataJSON() });
-  expect(late.status()).toBe(409);
-  expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe("popover");
-  await page.reload();
-  await expect(popover).toBeChecked();
-  await expect(group.getByRole("radio")).toHaveCount(3);
-  await page.mouse.move(0, 0);
-  await captureCard(group, "placement-after-stale-save");
-  await runningAgent(page, daemon, "Steve");
-  await say(daemon, "Steve, check the build and report back");
-  const card = page.getByRole("status").filter({ hasText: "To Steve" });
-  await expectCardGeometry(card, "confirmation-card", "#a .cc-card");
-  await expect(card.getByRole("button", { name: "Send now" })).toBeEnabled();
-  await captureCard(card, "toast-after-stale-save");
-  await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
-});
+for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner toast/]] as const) {
+  test(`a timed-out placement save cannot overwrite the operator’s later ${placement} choice`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const group = page.getByRole("group", { name: "Confirmation card" });
+    const pill = group.getByRole("radio", { name: /Floating pill/ });
+    const choice = group.getByRole("radio", { name: label });
+    const url = daemon.baseURL + "/api/voice/confirmation";
+    // Keep the first request's actual body, including the version the operator saw.
+    const delayed = page.waitForRequest(request => request.url() === url && request.method() === "PUT");
+    await page.route(url, () => {}, { times: 1 });
+    await pill.click();
+    const first = await delayed;
+    await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
+    if (placement === "toast") await expect(choice).toBeChecked();
+    const [saved] = await Promise.all([
+      page.waitForResponse(response => response.url() === url && response.request().method() === "PUT", { timeout: 5000 }),
+      choice.click(),
+    ]);
+    expect(saved.ok()).toBe(true);
+    await expect(choice).toBeEnabled();
+    const late = await page.request.put(url, { data: first.postDataJSON() });
+    expect(late.status()).toBe(409);
+    expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe(placement);
+    await page.reload();
+    await expect(choice).toBeChecked();
+    await expect(group.getByRole("radio")).toHaveCount(3);
+    await page.mouse.move(0, 0);
+    await captureCard(group, placement === "toast" ? "reaffirmed-toast-after-timeout" : "placement-after-stale-save");
+    await runningAgent(page, daemon, "Steve");
+    await say(daemon, "Steve, check the build and report back");
+    const card = page.getByRole("status").filter({ hasText: "To Steve" });
+    await expectCardGeometry(card, "confirmation-card", "#a .cc-card");
+    await expect(card.getByRole("button", { name: "Send now" })).toBeEnabled();
+    if (placement === "popover") await captureCard(card, "toast-after-stale-save");
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  });
+}
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
   test(`the ${label} keeps an unresolved recipient picker reachable ahead of a newer held result`, async ({ dashboard: page, daemon }) => {

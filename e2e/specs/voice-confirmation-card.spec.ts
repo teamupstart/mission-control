@@ -58,6 +58,29 @@ test("the accessible countdown announces its initial duration without repeating 
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
+test("a long transcript scrolls while the recipient and countdown controls stay in view", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the changes to the build. ".repeat(64) + "Start with the final change.";
+  await say(daemon, "Steve, " + words);
+  const card = page.getByRole("status").filter({ hasText: "To Steve" });
+  const recipient = card.getByText("To Steve", { exact: true });
+  const seconds = card.locator(".vc-seconds");
+  const cancel = card.getByRole("button", { name: "Cancel", exact: true });
+  const send = card.getByRole("button", { name: "Send now" });
+  const transcript = card.getByText(words, { exact: true });
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await transcript.hover();
+  await page.mouse.wheel(0, 10000);
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  await captureCard(card, "long-transcript-controls");
+  await cancel.click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
 test("a stalled card action reports the unconfirmed request and permits a retry", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 8);
   await runningAgent(page, daemon, "Steve");

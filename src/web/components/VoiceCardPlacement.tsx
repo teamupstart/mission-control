@@ -11,7 +11,7 @@ export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
   const save = async (placement: VoiceConfirmationPlacement) => {
     setSaving(placement);
     const saved = await updateVoicePlacement(placement);
-    setError(saved ? "" : "Could not save the confirmation card placement.");
+    setError(saved ? "" : "Could not save the confirmation card placement. Select the placement you want to keep, even if it is already checked.");
     setSaving(null);
   };
   return <fieldset className="settings-group vc-placements" data-anchor="voice/confirmation">
@@ -20,6 +20,7 @@ export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
       <span className={`vc-preview vc-preview-${id}`} aria-hidden="true"><i /></span>
       <span><Tooltip label={`Save ${choices[id]} as your preferred confirmation card placement`}>
         <input type="radio" name="voice-placement" checked={(saving ?? voice.confirmation) === id} disabled={saving !== null}
+          onClick={() => { if (error && id === voice.confirmation) void save(id); }}
           onChange={() => void save(id)} />
       </Tooltip> {choices[id]}</span>
       {id !== "toast" && !voiceCapable(state, "floating-windows") && <small>Needs the desktop app</small>}

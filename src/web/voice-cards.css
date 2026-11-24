@@ -41,6 +41,9 @@ button.vc-roster:hover { border-color: var(--working); }
 .vc-name { color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg)); font-weight: 650; }
 .vc-roster .agent-dot { --agent-accent: var(--resident, var(--dim)); }
 .vc-role { display: block; }
+.vc-transcript, .vc-pending .vc-role, .vc-heard, .vc-held .vc-outcome > q {
+  max-block-size: min(12rem, 22dvh); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin;
+}
 .vc-heard { font: 12px var(--mono); color: var(--muted); }
 .vc-placements { border: 0; min-width: 0; padding: 0; }
 .vc-placements > div { display: flex; flex-wrap: wrap; gap: 10px; }

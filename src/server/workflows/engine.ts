@@ -971,6 +971,12 @@ export class WorkflowEngine {
         const codeRabbitRunId = resolved && target?.kind === "check" && target.slot === "coderabbit"
           ? resolved.run.id : null;
         if (codeRabbitRunId && this.scheduledCodeRabbitRuns.has(codeRabbitRunId)) continue;
+        // Honor the persisted retry even during backoff or after restart. Otherwise a
+        // queued sibling could spend the slot that the retry's failed execution returned.
+        if (codeRabbitRunId && resolved && attempt.state === "queued"
+          && this.store.listAttempts(attempt.submissionId).some((pending) =>
+            pending.state === "retry_wait" && resolved.version.graph.nodes.some((node) =>
+              node.id === pending.nodeId && node.kind === "check" && node.slot === "coderabbit"))) continue;
         if (codeRabbitRunId) this.scheduledCodeRabbitRuns.add(codeRabbitRunId);
         this.scheduledAttempts.add(attempt.id);
         // The limiter is chosen HERE, from the node kind, before either is acquired - not

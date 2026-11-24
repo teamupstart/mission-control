@@ -577,7 +577,7 @@ test("two check nodes on one Command share its budget inside a single round", as
   assert.equal(store.getRun("run-shared")?.status, "completed");
 });
 
-test("a sibling CodeRabbit gate waits for the final reservation to settle", async () => {
+test("a sibling CodeRabbit gate waits for the final reservation and its connection retry", async () => {
   const id = "coderabbit-shared-refund";
   const submissionId = `submission-${id}`;
   const graph: PublishedWorkflowGraph = {
@@ -598,7 +598,9 @@ test("a sibling CodeRabbit gate waits for the final reservation to settle", asyn
   let release!: () => void;
   const reservationHeld = new Promise<void>((resolve) => { release = resolve; });
   const executions: string[] = [];
+  let now = Date.now();
   const engine = new WorkflowEngine(store, () => {}, {
+    now: () => now,
     checkConcurrency: 2,
     runnerFor: scriptedRunner(() => "pass"),
     resolveExecution: passingExecution,
@@ -626,12 +628,21 @@ test("a sibling CodeRabbit gate waits for the final reservation to settle", asyn
   engine.activateSubmission(submissionId);
   try {
     await waitFor(() => executions.length === 1);
-    const sibling = executions[0] === "gate" ? "gate2" : "gate";
+    const first = executions[0]!;
+    const sibling = first === "gate" ? "gate2" : "gate";
     assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
     release();
-    await waitFor(() => store.latestAttemptForNode(submissionId, sibling)?.state === "completed");
-    assert.equal(gateOutcome(store, submissionId, sibling).status, "passed");
-    assert.deepEqual(executions.slice(1), [sibling]);
+    await waitFor(() => store.latestAttemptForNode(submissionId, first)?.state === "retry_wait");
+    const retry = store.latestAttemptForNode(submissionId, first)!;
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
+    now = retry.retryAt!;
+    engine.wake();
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "completed");
+    assert.deepEqual(executions, [first, first]);
+    assert.equal(store.latestAttemptForNode(submissionId, first)?.id, retry.id);
+    assert.equal((store.getAttempt(retry.id)?.output as { status?: string })?.status, "passed");
+    assert.equal(gateOutcome(store, submissionId, sibling).status, "budget_spent");
     assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
   } finally {
     release();

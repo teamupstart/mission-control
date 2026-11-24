@@ -29,7 +29,7 @@ import {
 import { WORK_UNIT_ENV_VAR } from "../shared/work-unit.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
-import { shellCommand } from "./terminal/shell.ts";
+import { probePadding, shellCommand } from "./terminal/shell.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
@@ -65,16 +65,25 @@ export function observeTerminalWrapperExit(stateHome: string) {
   return {
     confirmed: () => outcome() === true,
     async waitForExit(stillOwned: () => boolean): Promise<boolean> {
+      let pid: number | undefined;
+      let retriedClaim = false;
       while (stillOwned()) {
         const exited = outcome();
         if (exited !== null) return exited;
-        try {
-          const pid = Number(readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8"));
-          if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 0);
-        } catch (error) {
-          // A killed wrapper cannot produce a new receipt. Its disappearance alone is
-          // insufficient for reclaiming the checkout, which may still have an occupant.
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") return outcome() === true;
+        if (pid === undefined) {
+          try {
+            const claimed = Number(readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8"));
+            if (Number.isSafeInteger(claimed) && claimed > 0) pid = claimed;
+          } catch { /* The wrapper may be removing the home. Recheck the receipt below. */ }
+          // The PID file can exist briefly before printf writes it. Give the owner
+          // another observation, then retain an ambiguous checkout without polling it.
+          if (pid === undefined && retriedClaim) return outcome() === true;
+          retriedClaim = true;
+        }
+        if (pid !== undefined) {
+          try { process.kill(pid, 0); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return outcome() === true;
+          }
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref());
       }
@@ -369,22 +378,6 @@ function launchAndCleanupScript(
     "",
   ].join("\n");
 }
-
-/**
- * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
- * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
- * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
- * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
- * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
- * resolved interpreter's own path, which a version manager can make long.
- */
-function probePadding(program: string): string {
-  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
-  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
-}
-
-/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
-const PATH_MAX_BYTES = 4096;
 
 /**
  * Run `argv` only if it fits under the platform's argument limit in THIS shell's environment -

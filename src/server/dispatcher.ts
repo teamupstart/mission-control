@@ -3764,11 +3764,19 @@ export async function spawnUniquely(
   let exitRecord: ReturnType<typeof observeTerminalWrapperExit> | undefined;
   let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
   try {
-    const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     exitRecord = observeTerminalWrapperExit(effectiveStateHome);
-    handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named);
-    if (named) pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
-    return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
+    let argv: string[];
+    if (named) {
+      handoff = await terminalEnvironmentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome }, named, {
+        wrap: (reader) => isolatedAgentArgv(reader, { cwd, stateHome: effectiveStateHome, extraEnv }),
+        fallbackArgv: fallbackAgentArgs && [agentBin, ...fallbackAgentArgs],
+      });
+      argv = handoff.argv;
+      pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+    } else {
+      argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
+    }
+    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps);
   } catch (error) {
     if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord) {
       pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);

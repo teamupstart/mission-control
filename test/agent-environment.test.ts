@@ -121,7 +121,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
   const agent = [process.execPath, probe];
   const pane = { ...process.env, MISSING_NAME: "stale", TMUX_PANE: "%real" };
   // Check dispatch wrapper entry as well as the final agent, before the wrapper can repair its environment.
-  const checkEntry = 'if [ -n "${MISSION_API_TOKEN:-}${MISSION_SCOUT_SESSION_LOCATOR:-}" ] || [ "${MISSION_PORT:-}" = spoofed-port ]; then exit 42; fi; exec "$@"';
+  const checkEntry = 'if [ -n "${FIXTURE_TOKEN+x}${MISSION_API_TOKEN:-}${MISSION_SCOUT_SESSION_LOCATOR:-}" ] || [ "${MISSION_PORT:-}" = spoofed-port ]; then exit 42; fi; exec "$@"';
 
   for (const kind of ["dispatch wrapper", "managed resume guard"] as const) {
     await t.test(kind, async (t) => {
@@ -130,10 +130,16 @@ test("terminal handoff enforces SDK isolation before either launch command execu
       let paneCommand: string[];
       if (kind === "dispatch wrapper") {
         stateHome = mkdtempSync(join(dir, "dispatch-"));
-        const argv = isolatedAgentArgv(agent, { stateHome });
-        launchFile = argv[1]!;
-        const handoff = await terminalEnvironmentArgv(["/bin/sh", "-c", checkEntry, "entry-check", ...argv], { cwd: dir, stateHome }, named);
+        const handoff = await terminalEnvironmentArgv(agent, { cwd: dir, stateHome }, named, {
+          wrap: (reader) => {
+            const wrapper = isolatedAgentArgv(reader, { stateHome });
+            launchFile = wrapper[1]!;
+            return ["/bin/sh", "-c", checkEntry, "entry-check", ...wrapper];
+          },
+          fallbackArgv: null,
+        });
         t.after(handoff.dispose);
+        assert.ok(!readFileSync(join(stateHome, "launch.json"), "utf8").includes(secret));
         paneCommand = handoff.argv;
       } else {
         const root = resumeLeaseRoot(dir);
@@ -149,10 +155,25 @@ test("terminal handoff enforces SDK isolation before either launch command execu
         paneCommand = handoff.authorize([process.execPath, guard, root, lease.id]);
       }
       assert.ok(!paneCommand.join(" ").includes(secret));
-      assert.ok(!readFileSync(launchFile, "utf8").includes(secret));
+      assert.ok(!readFileSync(launchFile!, "utf8").includes(secret));
       await promisify(execFile)(paneCommand[0]!, paneCommand.slice(1), { env: pane });
     });
   }
+
+  await t.test("a named dispatch probes the final agent size and records only the command that ran", async (t) => {
+    for (const fits of [true, false]) {
+      const stateHome = mkdtempSync(join(dir, "dispatch-fit-"));
+      const output = join(dir, fits ? "primary-start" : "fallback-start");
+      const command = [...agent, output, fits ? "short" : "p".repeat(3 * 1024 * 1024)];
+      const handoff = await terminalEnvironmentArgv(command, { cwd: dir, stateHome }, named, {
+        wrap: (reader) => isolatedAgentArgv(reader, { stateHome }), fallbackArgv: [...agent, output],
+      });
+      t.after(handoff.dispose);
+      await promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: pane });
+      assert.equal(readFileSync(output, "utf8"), "started\n");
+      assert.equal(readFileSync(stateHome + ".turn-one", "utf8"), fits ? "shaped" : "original");
+    }
+  });
 
   await t.test("a terminal handoff delivers the credential once and rejects the same argv before a second agent starts", async (t) => {
     const starts = join(dir, "agent-starts");

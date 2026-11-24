@@ -28,6 +28,7 @@ const { shellCommand } = await import("../src/server/terminal/shell.ts");
 const { LAUNCH_PID_FILE } = await import("../src/server/terminal/launch-process.ts");
 const {
   agentSubprocessEnv,
+  observeTerminalWrapperExit,
   cleanupAgentSubprocessEnv,
   dropPaneIdentityEnv,
   isolatedAgentArgv,
@@ -428,4 +429,20 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
     rmSync(`${live}.turn-one`, { force: true });
     rmSync(live, { recursive: true, force: true });
   }
+});
+
+test("an incomplete PID claim retires its exit observer without confirming checkout cleanup", async (t) => {
+  const home = mkdtempSync(join(root, "incomplete-claim-"));
+  const observation = observeTerminalWrapperExit(home);
+  t.after(observation.close);
+  writeFileSync(join(home, LAUNCH_PID_FILE), "");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let result: boolean | undefined;
+  void observation.waitForExit(() => true).then((value) => { result = value; });
+  for (let tick = 0; tick < 3; tick++) {
+    t.mock.timers.tick(5_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(result, false);
+  assert.ok(existsSync(home));
 });

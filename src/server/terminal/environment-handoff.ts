@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdtempSync, realpathSync, rmdirSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmdirSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../agent-subprocess-env.ts";
 import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { resolveOwnedRuntime } from "../../shared/owned-runtime.mjs";
 import { resumeGuardPath } from "../resume-guard-path.ts";
+import { turnOneOutcomePath } from "./launch-process.ts";
 import { RESUME_START_MS } from "./resume-lease.ts";
 
 /** Only selected, isolated overrides cross the socket. The wrapper owns its state and loopback credentials. */
@@ -117,13 +118,28 @@ export async function openTerminalEnvironmentHandoff(
   return { path, authorize, dispose };
 }
 
-/** A fresh dispatch runs its existing shell wrapper under the selected environment. */
+/** Put the one-use reader at the final agent command. The owning shell retains its own environment. */
 export async function terminalEnvironmentArgv(
-  argv: string[], launch: { cwd: string; stateHome: string }, named?: NamedAgentEnvironment,
+  argv: string[], launch: { cwd: string; stateHome: string }, named: NamedAgentEnvironment,
+  dispatch?: { wrap: (reader: string[]) => string[]; fallbackArgv: readonly string[] | null },
 ) {
-  if (!named) return { argv, dispose() {} };
-  const { path, authorize, dispose } = await openTerminalEnvironmentHandoff(launch, named);
   const runtime = resolveOwnedRuntime({ executable: process.execPath, kind: process.versions.electron ? "electron" : "node" });
-  return { argv: authorize([...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),
-    runtime.command, resumeGuardPath(), "--with-agent-environment", path, ...argv]), dispose };
+  const guard = resumeGuardPath();
+  const { path, authorize, dispose } = await openTerminalEnvironmentHandoff(launch, named);
+  try {
+    const reader = ["/usr/bin/env", ...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),
+      runtime.command, guard];
+    if (!dispatch) return { argv: authorize([...reader, "--with-agent-environment", path, ...argv]), dispose };
+    const manifest = join(launch.stateHome, "launch.json");
+    writeFileSync(manifest, JSON.stringify({ argv, fallbackArgv: dispatch.fallbackArgv,
+      outcomePath: turnOneOutcomePath(launch.stateHome) }), { flag: "wx", mode: 0o600 });
+    const wrapper = dispatch.wrap([...reader, "--dispatch-agent", path, manifest]);
+    // On expiry the daemon may already have removed the wrapper. Keep the diagnostic
+    // available in the pane, even when the reader inside that wrapper can no longer run.
+    const start = 'if [ -S "$1" ]; then shift; exec "$@"; fi; echo "Mission Control could not read the terminal environment handoff. It expired or is unavailable. Start a new launch." >&2; exit 1';
+    return { argv: authorize(["/bin/sh", "-c", start, "mission-dispatch", path, ...wrapper]), dispose };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
 }

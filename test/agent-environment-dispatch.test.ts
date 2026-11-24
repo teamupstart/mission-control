@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -102,12 +102,25 @@ process.stdin.resume();
       }
       // Execute exactly what the launcher gives the pane. The probe stays alive until
       // dispatch binds the task so discovery can claim this wrapper's missing-name warning.
+      if (scenario === "ship") {
+        const wrapper = argv.find((word) => word.endsWith("/launch-and-cleanup.sh"));
+        assert.ok(wrapper);
+        // Observe the real dispatch wrapper at entry and in its EXIT trap. Record only
+        // the phase if a variable intended for the final agent reaches either boundary.
+        const marker = join(dir, "unexpected-wrapper-environment");
+        const check = (phase: string) => `if [ "\${MC_DISPATCH_LISTED+x}" = x ]; then echo ${phase} >> "${marker}"; fi`;
+        const script = readFileSync(wrapper, "utf8").replace("#!/bin/sh", `#!/bin/sh\n${check("entry")}`)
+          .replace("cleanup_owned_home() {", `cleanup_owned_home() {\n${check("cleanup")}`);
+        writeFileSync(wrapper, script);
+      }
       const child = spawn(argv[0]!, argv.slice(1), { cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
       const exited = once(child, "close");
       t.after(async () => {
         child.stdin.end();
         const [code] = await exited;
         assert.equal(code, 0, "the terminal wrapper and its agent exited cleanly");
+        if (scenario === "ship") assert.equal(existsSync(join(dir, "unexpected-wrapper-environment")), false,
+          "selected variables belong only to the final agent");
       });
       const lines = createInterface({ input: child.stdout });
       const report = await lines[Symbol.asyncIterator]().next();
@@ -323,7 +336,7 @@ test("dispatch state-home cleanup follows wrapper startup across the handoff dea
 
   await t.test("a reader that consumes the socket but never starts its wrapper still expires", async (t) => {
     const { command, stateHome } = await accepted(t, "/bin/true", []);
-    const socket = createConnection(command[command.indexOf("--with-agent-environment") + 1]!);
+    const socket = createConnection(command[command.indexOf("mission-dispatch") + 1]!);
     const ticket = command.find((arg) => arg.startsWith("MISSION_TERMINAL_HANDOFF_TICKET="))!;
     socket.write(Buffer.from(ticket.split("=")[1]!, "hex"));
     socket.resume();

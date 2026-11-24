@@ -123,6 +123,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "the operator's MCP server command, from the run's daemon-private snapshot, started by the scoped launcher with its own secrets" },
   ],
   "src/server/terminal/resume-guard.ts": [
+    { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "fixed shell probes the final argument size with an empty environment before dispatch chooses a shaped prompt" },
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
   ],
   "src/server/session-files.ts": [

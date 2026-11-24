@@ -1,9 +1,11 @@
 import { createConnection } from "node:net";
 import type { TerminalEnvironmentPatch } from "./environment-handoff.ts";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { WORK_UNIT_ENV_VAR } from "@shared/work-unit.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
+import { probePadding } from "./shell.ts";
 import { run } from "../util/exec.ts";
 import { claimResumeLease, completeResumeLease, readResumeEnvironmentSocket, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
 import { parseResumeProcesses, resumeDescendantsExited } from "./resume-processes.ts";
@@ -112,26 +114,42 @@ async function applyEnvironmentPatch(socketPath: string, env: NodeJS.ProcessEnv)
   return true;
 }
 
-/** Replace the dispatch reader with the original wrapper, preserving its PID, cwd, tty and argv. */
+/** Apply the patch only on the exec that replaces the reader with the final agent. */
 async function execWithAgentEnvironment(): Promise<void> {
-  const [socketPath, command, ...args] = process.argv.slice(3);
-  if (!socketPath || !command || !process.execve) throw new Error("Unavailable environment handoff");
+  const [socketPath, ...command] = process.argv.slice(3);
+  if (!socketPath || !process.execve) throw new Error("Unavailable environment handoff");
   const env = { ...process.env };
   if (!await applyEnvironmentPatch(socketPath, env)) {
     process.exitCode = 1;
     return;
   }
   delete env.ELECTRON_RUN_AS_NODE;
-  return process.execve(command, [command, ...args], env);
+  const dispatch = process.argv[2] === "--dispatch-agent"
+    ? JSON.parse(readFileSync(command[0]!, "utf8")) as { argv: string[]; fallbackArgv: string[] | null; outcomePath: string }
+    : null;
+  let argv: readonly string[] = dispatch?.argv ?? command;
+  if (dispatch?.fallbackArgv) {
+    // argv and env share execve's byte and pointer budget. Charge each final environment
+    // entry as one inert argument, so the probe runs with neither credentials nor loader overrides.
+    const envPadding = Object.entries(env).map(([key, value]) => "x".repeat(Buffer.byteLength(key) + 1 + Buffer.byteLength(value!)));
+    const executable = FIXED_OS_EXECUTABLES.sh;
+    const fits = spawnSync(executable, ["-c", ":", "mission-turn-one-probe", probePadding(argv[0]!), ...argv, ...envPadding],
+      { env: {}, stdio: "ignore" }).status === 0;
+    if (!fits) argv = dispatch.fallbackArgv;
+    writeFileSync(dispatch.outcomePath, fits ? "shaped" : "original", { mode: 0o600 });
+  }
+  if (!argv[0]) throw new Error("Missing agent command");
+  return process.execve(argv[0], [...argv], env);
 }
 
+const dispatchReader = process.argv[2] === "--with-agent-environment" || process.argv[2] === "--dispatch-agent";
 try {
-  if (process.argv[2] === "--with-agent-environment") await execWithAgentEnvironment();
+  if (dispatchReader) await execWithAgentEnvironment();
   else if (process.argv[2] === "--check") console.log("mission-resume-guard-v1");
   else process.exitCode = await main();
 } catch {
   // Config, bearer values and the agent argv must never enter a launch error.
-  console.error(process.argv[2] === "--with-agent-environment"
+  console.error(dispatchReader
     ? "Mission Control could not execute the terminal launch command."
     : "Mission Control refused the managed resume. Recheck its managed launch status before trying again.");
   process.exitCode = 1;

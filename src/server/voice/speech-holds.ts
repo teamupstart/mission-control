@@ -32,6 +32,7 @@ export class SpeechHolds {
   private readonly path: string;
   private readonly inventoryPath: string;
   private readonly usedPath: string;
+  private lastInventory?: Launch[];
   constructor(private readonly directory: string) {
     this.path = join(directory, "speech-holds.json");
     this.inventoryPath = join(directory, "supervised-instances.json");
@@ -53,6 +54,13 @@ export class SpeechHolds {
     }
   }
 
+  /** An exit is final for this per-launch nonce. Unreadable proof cannot establish silence. */
+  exitRecorded(name: string): boolean | undefined {
+    const path = join(this.directory, "supervised-exits", name + ".json");
+    try { return readFileSync(path, "utf8") === "true" ? true : undefined; }
+    catch (error) { return missing(error, path) ? false : undefined; }
+  }
+
   load(): { holds: Hold[]; unknown: boolean } {
     try {
       const holds = z.array(entry).parse(JSON.parse(readFileSync(this.path, "utf8")));
@@ -63,7 +71,9 @@ export class SpeechHolds {
     } catch (error) {
       const ledgerMissing = missing(error, this.path);
       const holds = this.discover({ ledgerMissing });
-      if (holds.length || !ledgerMissing) this.save(holds);
+      if ((holds.length || !ledgerMissing) && !this.save(holds) && !holds.length) {
+        holds.push({ jobId: randomUUID(), supervisor: SUPERVISOR_DIRECTORY });
+      }
       return { holds, unknown: holds.length > 0 };
     }
   }
@@ -81,8 +91,14 @@ export class SpeechHolds {
     try { records = this.processRecords(); }
     catch { if (!inventory) incomplete = true; }
     const launches = this.resolveLaunches([...(inventory ?? []), ...records]);
-    if (incomplete || ((!ledgerMissing || mayExist(this.usedPath)) && !inventory && !records.length)) {
-      launches.set(SUPERVISOR_DIRECTORY, { supervisor: SUPERVISOR_DIRECTORY });
+    if (!inventory) {
+      if (incomplete || mayExist(this.usedPath) || (!ledgerMissing && !records.length)) {
+        // Individual receipts identify possible players but do not prove that every receipt survived.
+        launches.set(SUPERVISOR_DIRECTORY, { supervisor: SUPERVISOR_DIRECTORY });
+      } else if (records.length) {
+        // Import pre-inventory supervisor records before recovery creates the usage marker.
+        this.lastInventory = [...launches.values()];
+      }
     }
     return [...launches.values()].map(launch => typeof launch === "string"
       ? { jobId: randomUUID(), purpose: "ask", instance: launch }
@@ -118,37 +134,48 @@ export class SpeechHolds {
         else if (!active.has(launch.supervisor)) active.set(launch.supervisor, launch);
       }
     }
+    for (const name of active.keys()) {
+      if (name.startsWith("announced-") && this.exitRecorded(name)) active.delete(name);
+    }
     return active;
   }
 
   /** Keep the supervisor's process record separate from the daemon's receipt for each launch. */
-  recordAnnouncement(instance: string, state: "started" | "exited", holds: Hold[]): boolean {
+  recordAnnouncement(instance: string, state: "started" | "exited", holds: Hold[]): "accepted" | "already_exited" | "unavailable" {
     const name = announcementName(instance);
     const path = join(this.directory, "supervised", name + ".json");
     try {
-      let inventory = this.readInventory();
+      if (state === "started") {
+        const exited = this.exitRecorded(name);
+        if (exited !== false) return exited ? "already_exited" : "unavailable";
+      }
+      let inventory = this.readInventory() ?? this.lastInventory;
       const known: Launch[] = holds.flatMap((hold): Launch[] => {
         if ("instance" in hold) return [hold.instance];
         return hold.supervisor === SUPERVISOR_DIRECTORY ? [] : [{ supervisor: hold.supervisor }];
       });
       if (!inventory) {
         // A fresh directory or a new launch cannot reconstruct the missing launch history.
-        if (holds.some(hold => "supervisor" in hold && hold.supervisor === SUPERVISOR_DIRECTORY)) return false;
+        if (mayExist(this.usedPath) || holds.some(hold => "supervisor" in hold && hold.supervisor === SUPERVISOR_DIRECTORY)) return "unavailable";
         inventory = [...this.resolveLaunches([...known, ...this.processRecords()]).values()];
-        if (!this.write(this.inventoryPath, inventory)) return false;
+        if (!this.write(this.inventoryPath, inventory)) return "unavailable";
       }
       const active = this.resolveLaunches([...known, ...inventory]);
       if (state === "started") {
-        if (!this.write(path, { instance })) return false;
+        if (!this.write(path, { instance })) return "unavailable";
         active.set(name, instance);
       } else {
+        if (!this.write(join(this.directory, "supervised-exits", name + ".json"), true)) return "unavailable";
         try { unlinkSync(path); }
-        catch (error) { if (!missing(error, path)) return false; }
+        catch (error) { if (!missing(error, path)) return "unavailable"; }
         active.delete(name);
       }
-      return this.write(this.inventoryPath, [...active.values()]);
+      const next = [...active.values()];
+      if (!this.write(this.inventoryPath, next)) return "unavailable";
+      this.lastInventory = next;
+      return "accepted";
     } catch {
-      return false;
+      return "unavailable";
     }
   }
 

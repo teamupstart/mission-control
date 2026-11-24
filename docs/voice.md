@@ -1000,11 +1000,16 @@ Recently heard records playback-time utterances only from the capture lease owne
 
 After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor
-records. Capture resumes once each outstanding listener confirms playback ended
-or its supervisor confirms exit. A fresh state home with no launch history can
-capture immediately. If all three sources disappear after speech has been used,
-the persisted usage marker keeps capture off until recovery can identify the
-listeners and obtain silence confirmation.
+records. It asks each identifiable player to stop. If speech has been used and
+the inventory is unavailable, capture stays paused even after every listener
+with a surviving receipt confirms. Recovery needs a complete launch inventory
+to account for players whose receipts may have disappeared. A fresh state home
+with no launch history can capture immediately.
+
+The daemon acknowledges silence only after it persists the updated hold ledger.
+If that write fails, the end or exit report returns HTTP 503, the Stop directive
+remains active, and the sender can retry. An accepted signed exit is final for
+that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
 Before starting a child it chooses an instance of the form `shell_<nonce>` or

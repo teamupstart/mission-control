@@ -33,7 +33,7 @@ interface Playback {
   timer?: unknown;
   unanswered?: boolean;
   confirmBy?: number;
-  onStop?: "failed" | "stopped" | "timed-out";
+  onStop?: "failed" | "stopped" | "timed-out" | "finished";
 }
 
 export class VoiceSpeechManager {
@@ -110,12 +110,13 @@ export class VoiceSpeechManager {
       : "supervisor" in existing && existing.supervisor === hold.supervisor);
     if (!exists) this.recoverHold(hold);
   }
-  supervised(instance: string, state: SupervisorReportState, proof?: string): "accepted" | "unauthorized" | "unavailable" {
+  supervised(instance: string, state: SupervisorReportState, proof?: string): "accepted" | "unauthorized" | "already_exited" | "unavailable" | "hold_unavailable" {
     if (!verifySupervisorReport(this.deps.directory, instance, state, proof)) return "unauthorized";
-    if (!this.ledger.recordAnnouncement(instance, state, this.holds())) {
+    const report = this.ledger.recordAnnouncement(instance, state, this.holds());
+    if (report !== "accepted") {
       this.announced.delete(instance);
       this.deps.changed();
-      return "unavailable";
+      return report;
     }
     if (state === "started") this.announced.add(instance);
     else this.announced.delete(instance);
@@ -130,13 +131,17 @@ export class VoiceSpeechManager {
           // A signed report matches its exact launch receipt even if the receipt has disappeared.
           const recorded = hold.supervisor === announcementName(instance) ? instance : this.ledger.supervisorRecord(hold.supervisor);
           if (!recorded) continue;
-          this.recoverDiscovered({ jobId: randomUUID(), instance: recorded, purpose: "ask" });
+          if (!this.ledger.exitRecorded(announcementName(recorded))) {
+            this.recoverDiscovered({ jobId: randomUUID(), instance: recorded, purpose: "ask" });
+          }
         }
-        this.finish(item, "failed");
+        if (!this.finish(item, "failed")) return "hold_unavailable";
       }
     }
     if (state === "exited") {
-      for (const item of this.items()) if (item.job.holder === instance) this.finish(item, "failed");
+      for (const item of this.items()) {
+        if (item.job.holder === instance && !this.finish(item, "failed")) return "hold_unavailable";
+      }
     }
     this.deps.changed();
     return "accepted";
@@ -213,31 +218,38 @@ export class VoiceSpeechManager {
 
   event(id: string, instance: string | undefined, type: "started" | "ended", outcome: "finished" | "stopped" | "failed" = "finished") {
     const item = this.jobs.get(id);
-    if (!instance || item?.job.holder !== instance) return false;
-    if (type === "ended") this.finish(item, item.onStop ?? outcome);
-    else if (item.job.state === "ready") {
+    if (!instance || item?.job.holder !== instance) return "not_holder";
+    if (type === "ended") return this.finish(item, item.onStop ?? outcome) ? "accepted" : "hold_unavailable";
+    if (item.job.state === "ready") {
       item.job.state = "speaking";
       this.arm(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS,
         () => this.stop(id, "timed-out"));
       this.deps.changed();
     }
-    return true;
+    return "accepted";
   }
 
   private finish(item: Playback, state: "stopped" | "timed-out" | "failed" | "finished") {
     const wasFirst = item.job === this.live;
+    if (item.hold && !this.ledger.save(this.holds().filter(hold => hold !== item.hold))) {
+      item.job.state = "stopping";
+      item.onStop = state;
+      this.confirm(item);
+      this.deps.changed();
+      return false;
+    }
     this.clear(item);
     item.job.state = state;
     this.jobs.delete(item.job.id);
     if (item.hold) {
       this.history.push({ from: item.since, until: this.deps.now() });
-      this.save();
       if (!this.held) this.unknown = false;
     }
     if (item.job.purpose === "audition") this.lastAudition = { id: item.job.id, state };
     this.deps.changed();
     const next = this.jobs.values().next().value;
     if (wasFirst && this.enabled && !this.held && next?.job.state === "preparing") void this.prepare(next);
+    return true;
   }
 
   private confirm(item: Playback) {

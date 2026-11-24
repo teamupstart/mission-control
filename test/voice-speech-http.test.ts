@@ -1,5 +1,6 @@
 import { fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 import { VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
+import { announcementName } from "../src/server/voice/speech-holds.ts";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -17,6 +18,8 @@ const inventory = join(home, "voice/supervised-instances.json");
 const used = join(home, "voice-speech-used");
 // The HTTP harness shares a disposable home. Each scenario starts with its own launches.
 afterEach(() => {
+  rmSync(ledger, { recursive: true, force: true });
+  rmSync(join(home, "voice/supervised-exits"), { recursive: true, force: true });
   rmSync(supervised, { recursive: true, force: true });
   rmSync(inventory, { force: true });
   rmSync(used, { force: true });
@@ -186,6 +189,86 @@ test("a signed exit returns 503 and holds capture until a retry removes the laun
   assert.equal((await holder.poll()).capture, true);
 });
 
+test("a surviving peer receipt cannot account for a missing player when the inventory is lost", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.event(await audition(), "started")).status, 200);
+  await peer.announce();
+  renameSync(inventory, inventory + ".saved");
+  rmSync(ledger);
+  rmSync(join(supervised, announcementName(holder.instance) + ".json"));
+  store.reset(); await peer.hello();
+  const partial = await peer.poll();
+  assert.equal(partial.capture, false);
+  assert.equal(partial.speak.stop, true);
+  assert.equal((await peer.event(partial.speak.id, "ended")).status, 200);
+  assert.equal((await peer.poll()).capture, false);
+  store.reset(); await peer.hello();
+  assert.equal((await peer.poll()).capture, false);
+  assert.equal((await peer.report("started")).status, 503);
+  renameSync(inventory + ".saved", inventory);
+  assert.equal((await peer.report("exited")).status, 200);
+  const stop = await holder.poll();
+  assert.equal(stop.capture, false);
+  assert.equal(stop.speak.stop, true);
+  assert.equal((await holder.event(stop.speak.id, "ended")).status, 200);
+  assert.equal((await peer.poll()).capture, true);
+});
+
+test("a delayed signed start cannot revive a launch after exit, including across restart", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.event(await audition(), "started")).status, 200);
+  assert.equal((await holder.report("exited")).status, 200);
+  // The supervisor may still have its old process record when a retry arrives.
+  writeFileSync(join(supervised, "shell.json"), JSON.stringify({ instance: holder.instance }));
+  for (const restart of [false, true]) {
+    if (restart) { rmSync(ledger); store.reset(); await holder.hello(); }
+    assert.equal((await holder.report("started")).status, 409);
+    assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+    assert.deepEqual(readdirSync(supervised), ["shell.json"]);
+    assert.equal((await holder.poll()).capture, true);
+    assert.equal((await post("/api/voice/speech/audition")).status, 409);
+    assert.equal((await holder.report("exited")).status, 200);
+  }
+  const next = player();
+  await next.announce(); await next.hello();
+  const nextJob = await audition();
+  assert.equal((await next.poll()).speak.id, nextJob);
+  assert.equal((await next.event(nextJob, "ended")).status, 200);
+});
+
+for (const proof of ["ended", "exited"] as const) {
+  test(`silence proof (${proof}) returns 503 until the hold can be durably cleared`, async () => {
+    const holder = player();
+    await holder.announce(); await holder.hello();
+    const id = await audition();
+    assert.equal((await holder.event(id, "started")).status, 200);
+    const confirm = () => proof === "ended" ? holder.event(id, "ended") : holder.report("exited");
+    renameSync(ledger, ledger + ".saved");
+    mkdirSync(ledger);
+    try {
+      const refused = await confirm();
+      assert.equal(refused.status, 503);
+      assert.deepEqual(await refused.json(), { error: "speech_hold_unavailable" });
+      const pending = await holder.poll();
+      assert.equal(pending.capture, false);
+      assert.deepEqual(pending.speak, { id, stop: true });
+      assert.equal((await confirm()).status, 503);
+    } finally {
+      rmSync(ledger, { recursive: true });
+      renameSync(ledger + ".saved", ledger);
+    }
+    assert.deepEqual(entries(), [{ jobId: id, instance: holder.instance, purpose: "audition" }]);
+    store.reset(); await holder.hello();
+    assert.equal((await holder.poll()).capture, false);
+    assert.equal((await confirm()).status, 200);
+    assert.deepEqual(entries(), []);
+    store.reset(); await holder.hello();
+    assert.equal((await holder.poll()).capture, true);
+  });
+}
+
 test("repairing an unreadable launch receipt requests silence from the recovered instance", async () => {
   const p = player();
   await p.announce(); await p.hello();
@@ -193,7 +276,8 @@ test("repairing an unreadable launch receipt requests silence from the recovered
   await p.event(id, "started");
   const [receipt] = readdirSync(supervised);
   writeFileSync(join(supervised, receipt!), "?");
-  rmSync(inventory); // Exercise recovery from the receipt alone.
+  // Inventory can preserve a receipt name while its holder identity is unreadable.
+  writeFileSync(inventory, JSON.stringify([{ supervisor: receipt!.slice(0, -5) }]));
   writeFileSync(ledger, "?");
   store.reset(); await p.hello();
   assert.equal((await p.poll()).capture, false);
@@ -214,7 +298,7 @@ test("a disappeared launch receipt can be cleared by the exact signed exit", asy
   const [name] = readdirSync(supervised);
   const receipt = join(supervised, name!);
   writeFileSync(receipt, "{");
-  rmSync(inventory);
+  writeFileSync(inventory, JSON.stringify([{ supervisor: name!.slice(0, -5) }]));
   writeFileSync(ledger, "{");
   store.reset();
   await holder.hello();
@@ -236,10 +320,10 @@ for (const proof of ["ended", "exited"] as const) {
     const id = await audition();
     assert.equal((await holder.event(id, "started")).status, 200);
 
-    // Neither daemon record identifies the launch. Only the supervisor's unreadable process record survives.
+    // The inventory identifies which process record to recover, but only that record can name its holder.
     const [receipt] = readdirSync(supervised);
     rmSync(join(supervised, receipt!));
-    rmSync(inventory);
+    writeFileSync(inventory, JSON.stringify([{ supervisor: "shell" }]));
     const processRecord = join(supervised, "shell.json");
     writeFileSync(processRecord, "{");
     writeFileSync(ledger, "{");
@@ -470,8 +554,9 @@ test("audition reports an immediate storage failure and publishes the terminal r
   const first = await audition();
   assert.equal((await holder.event(first, "started")).status, 200);
   const queued = await audition();
-  rmSync(ledger);
-  mkdirSync(ledger);
+  // Clearing the first job can succeed, while persisting a new handoff fails.
+  renameSync(used, used + ".saved");
+  mkdirSync(used);
   try {
     assert.equal((await holder.event(first, "ended")).status, 200);
     assert.equal(store.state().speech.job, null);
@@ -483,7 +568,8 @@ test("audition reports an immediate storage failure and publishes the terminal r
     assert.equal((await holder.poll()).speak, null);
     assert.equal((await holder.poll()).capture, true);
   } finally {
-    rmSync(ledger, { recursive: true });
+    rmSync(used, { recursive: true });
+    renameSync(used + ".saved", used);
   }
 });
 
@@ -597,7 +683,7 @@ test("deleting an unreadable supervisor record leaves its hold intact through pe
   assert.equal((await p.poll()).capture, false);
 
   writeFileSync(join(supervised, "unreadable.json"), JSON.stringify({ instance: unknown.instance }));
-  await peer.announce();
+  await p.announce();
   const recovered = await unknown.poll();
   assert.equal(recovered.capture, false);
   assert.equal(recovered.speak.stop, true);
@@ -683,6 +769,8 @@ test("recovery remains closed when neither ledger repair nor supervisor enumerat
   assert.equal((await peer.report("started")).status, 503);
   assert.equal((await p.poll()).capture, false);
   renameSync(inventory + ".saved", inventory);
+  assert.equal((await peer.report("started")).status, 503); // The ledger still cannot persist the transfer.
+  rmSync(ledger, { recursive: true });
   await peer.announce();
   const directive = await p.poll();
   assert.equal(directive.capture, false);

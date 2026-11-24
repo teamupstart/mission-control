@@ -263,6 +263,8 @@ export function registerVoiceRoutes(
     if (disabled && (parsed.data.state !== "exited" || !store.speech.awaitsExit(parsed.data.instance))) return disabled;
     const result = store.speech.supervised(parsed.data.instance, parsed.data.state, c.req.header(VOICE_SUPERVISOR_PROOF_HEADER));
     if (result === "unauthorized") return c.json({ error: "unauthorized_supervisor" }, 403);
+    if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
+    if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
     if (result === "unavailable") return c.json({ error: "supervisor_record_unavailable" }, 503);
     return c.json({ ok: true });
   });
@@ -281,8 +283,10 @@ export function registerVoiceRoutes(
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
     if (disabled && (parsed.data.type !== "ended" || !store.hasDisabledSpeechHold())) return disabled;
     const event = parsed.data;
-    const ok = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
+    const result = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
       event.type === "ended" ? event.outcome : undefined);
+    if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
+    const ok = result === "accepted";
     return c.json({ ok }, ok ? 200 : 409);
   });
 

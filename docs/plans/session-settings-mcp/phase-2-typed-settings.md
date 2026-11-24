@@ -4,7 +4,7 @@ Ordinary preferences in existing typed setting domains become searchable, readab
 
 ## Entry and scope
 
-Repository: Mission Control. Direct prerequisites: the planning session and merged Phase 1. Read plan.md, phased-plan.md and the inventory Phase 1 introduced. Own ordinary, typed patch fields whose dashboard and daemon share a standard mutation path. Include nested and generated settings when the same pattern applies. Phase 3 owns specialized intents and remaining controls. Leave every pending row assigned to a real owning phase.
+Repository: Mission Control. Direct prerequisites: the planning session and merged Phase 1. Phase implementer prerequisites include the [approved design](plan.md), [implementation index](phased-plan.md) and inventory delivered by [Phase 1](phase-1-session-access.md). Own ordinary, typed patch fields whose dashboard and daemon share a standard mutation path. Include nested and generated settings when the same pattern applies. Phase 3 owns specialized intents and remaining controls. Leave every pending row assigned to a real owning phase.
 
 ## Implementation order
 

@@ -4,7 +4,7 @@ A session can use the same compact tool for every ordinary Mission Control setti
 
 ## Entry and scope
 
-Repository: Mission Control. Direct prerequisites: the planning session and merged Phase 2. Phase 1 is transitive. Read plan.md, phased-plan.md, the completed typed-owner inventory and its remaining named rows. Close all outstanding controls and editable leaves. Preserve existing owner-specific validation, operator authority, public keys and compact wire contract.
+Repository: Mission Control. Direct prerequisites: the planning session and merged Phase 2. Phase 1 is transitive. Phase implementer prerequisites include the [approved design](plan.md), [implementation index](phased-plan.md) and remaining inventory rows identified by [Phase 2](phase-2-typed-settings.md). Close all outstanding controls and editable leaves. Preserve existing owner-specific validation, operator authority, public keys and compact wire contract.
 
 ## Implementation order
 

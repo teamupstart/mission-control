@@ -6,7 +6,7 @@ A human asks a session to switch Mission Control to its light theme. The session
 
 ## One tool with progressive discovery
 
-Add one session tool, mission_settings, with three operations. find takes a short query and optional cursor and returns up to eight matching keys, labels and access modes. get takes one exact key and returns its effective value, type, editable constraints and available choices on demand. set takes one exact key and a JSON value and returns the effective result. Use the setting owner’s validation and reject ambiguous matches. A known key can be read or changed directly.
+Add one session tool, mission_settings, with three operations. find takes a short query and optional cursor and returns up to eight matching keys, labels and access modes. get takes one exact key and an optional choiceCursor. It returns the effective value, type, editable constraints and one bounded page of choices. When nextChoiceCursor is present, another get with the same key and that token as choiceCursor returns the next page. The final page omits nextChoiceCursor. set takes one exact key and a JSON value and returns the effective result. Use the setting owner’s validation and reject ambiguous matches. A known key can be read or changed directly.
 
 Example sequence: find(query="theme") → ui.skin; get(key="ui.skin") → current skin and shipped choices; set(key="ui.skin", value="daylight") → ui.skin = daylight. Return compact error codes with a corrective hint for unknown keys, invalid choices, protected settings, disabled access and stale writes. Keep search results free of values. Page long choice lists and bound large values with explicit continuation or size errors so truncation cannot turn into a write.
 
@@ -48,4 +48,4 @@ Add a Playwright spec with a fixture session that finds and sets Daylight, check
 
 ## Implementation phases
 
-Read the [implementation index](phased-plan.md) for the dependency graph, verification strategy and three phase files.
+The [implementation index](phased-plan.md) links the three phases and records their dependencies and verification strategy.

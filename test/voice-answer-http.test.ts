@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, applyFeatureFlagIntent, post, registry, say } from "./helpers/voice-http.ts";
+import { act, app, applyFeatureFlagIntent, post, registry, say } from "./helpers/voice-http.ts";
 import { answers, put, question, show } from "./helpers/voice-question.ts";
 
 test("the deadline resolves through the human click path, correction restarts it", async t => {
@@ -124,4 +124,22 @@ test("a future focus timestamp cannot prevent another live dashboard taking over
   assert.equal((await report("already-connected", Date.now() * 1000 + 1)).status, 200);
   assert.equal(windows.target([q])?.id, q.id);
   assert.deepEqual(answers(), [{ ...answer, footerWindowId: "already-connected" }]);
+});
+
+test("a manual edit cancels corrected actions of the same answer and cannot cancel a fresh answer", async () => {
+  const q = question();
+  const editCancel = (reviewId: string, originId: string) => app.request("/api/voice/cards/" + originId + "/cancel", {
+    method: "POST", headers: { host: "localhost", "x-voice-edit-review": reviewId },
+  });
+  await say("Steve, option B", "original");
+  await say("no, A", "corrected");
+  assert.equal(answers()[0]?.id, "corrected");
+  assert.equal((await act("original", "send-now?source=card")).status, 409);
+  assert.equal((await editCancel("different-question", "original")).status, 409);
+  assert.equal((await editCancel(q.id, "original")).status, 200);
+  assert.deepEqual(answers(), []);
+  await say("Steve, option B", "fresh-answer");
+  assert.equal((await editCancel(q.id, "original")).status, 409);
+  assert.equal(answers()[0]?.id, "fresh-answer");
+  assert.equal(registry.getReview(q.id)?.status, "pending");
 });

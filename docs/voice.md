@@ -1080,7 +1080,8 @@ and restarts its countdown. If that answer settles before the correction arrives
 questions keep their choices and deadlines. The footer's **Cancel** and **Submit now** act on that answer.
 Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
 confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
-if the request fails or takes too long. The original answer can still submit at the deadline.
+if the request fails or takes too long. If speech changes the pending answer, the footer shows
+the revised choice and cancellation follows it. Your manual edit stays in the field. A pending answer can still submit at its deadline.
 If the focused dashboard shows the question, its footer carries the countdown. When the
 question closes or its dashboard loses focus or disconnects, a companion card shows the same
 answer and deadline, along with the question title and the agent’s name when available. Returning to the question moves the controls back to its footer. Only the dashboard that owns that footer can submit from it.

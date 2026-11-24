@@ -369,3 +369,50 @@ test("a standalone question picker can retry once a dashboard is available", asy
   await expect(picker).toHaveCount(0);
   expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
 });
+
+test("a spoken correction during manual cancellation leaves the draft visible and cancels the corrected answer", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "When should the build start?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title,
+      decisions: [{ id: "when", question: title, allowOther: true, options: [{ id: "now", label: "Now" }] }] },
+  });
+  expect(filed.ok()).toBe(true);
+  const { id } = await filed.json();
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const card = inbox.locator(".review").filter({ hasText: title });
+  const input = card.getByRole("textbox");
+  await say(daemon, "reply, tomorrow", { id: "before-manual-edit" });
+  await expect(input).toHaveValue("tomorrow");
+  const first = Promise.withResolvers<void>();
+  const retry = Promise.withResolvers<void>();
+  let requests = 0;
+  await page.route("**/api/voice/cards/*/cancel", async route => {
+    await (++requests === 1 ? first.promise : retry.promise);
+    await route.continue();
+  });
+  try {
+    await input.fill("after lunch");
+    await expect.poll(() => requests).toBe(1);
+    await say(daemon, "no, A", { id: "correction-during-edit" });
+    const footer = card.getByRole("status").filter({ hasText: "A · Now" });
+    await expect(footer.getByRole("button", { name: "Submit now" })).toBeDisabled();
+    await expect(input).toHaveValue("after lunch");
+    await expect(card.getByRole("radio", { name: /Now/ })).not.toBeChecked();
+    await expect.poll(() => requests).toBe(2);
+    await captureCard(inbox.locator(".inbox-item").filter({ has: page.getByRole("heading", { name: title }) }), "manual-draft-during-correction-r23");
+    const accepted = page.waitForResponse(r => r.url().endsWith("/cancel") && r.ok());
+    first.resolve();
+    await accepted;
+    await expect(footer).toHaveCount(0);
+    await expect(input).toHaveValue("after lunch");
+    expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
+  } finally {
+    first.resolve();
+    retry.resolve();
+  }
+});

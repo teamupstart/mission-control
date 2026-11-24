@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -208,27 +208,38 @@ export function ReviewCard({
   // The daemon owns the deadline. Once the operator edits this preview, the draft
   // owns the inputs immediately, including while the cancel request is in flight.
   const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);
-  const cancelStatus = editCancel?.id === pendingAnswer?.id ? editCancel?.status : undefined;
+  const origin = pendingAnswer?.originId ?? pendingAnswer?.id;
+  const manualEdit = !!origin && draft.voiceEditOrigin === origin;
+  const cancelStatus = manualEdit ? (editCancel?.id === pendingAnswer?.id ? editCancel?.status : undefined) ?? "requested" : undefined;
   const preview = cancelStatus ? undefined : pendingAnswer;
   const voiceSelection = preview?.selections?.[0];
   const displayedAnswers = voiceSelection ? { [voiceSelection.decisionId]: {
     selected: voiceSelection.selected, other: voiceSelection.other ?? "", note: "",
   } } : draft.decisions;
-  const answerAction = async (action: "cancel" | "send-now", manualEdit = !!cancelStatus) => {
+  const requestedRevision = useRef<string | undefined>(undefined);
+  const cancelEdited = useCallback(async (revision: string, originId: string) => {
+    requestedRevision.current = revision;
+    const attempt = { id: revision, status: "requested" as const };
+    setEditCancel(attempt);
+    const result = await api.voiceAnswerAction(originId, "cancel", undefined, review.id);
+    if (!result.ok) setEditCancel(current => current === attempt ? { ...attempt, status: "failed" } : current);
+  }, [review.id]);
+  const revision = pendingAnswer?.id;
+  useEffect(() => {
+    // A correction may overtake cancellation. The draft keeps the input and the
+    // corrected action gets its own retry even if the first request is stalled.
+    if (manualEdit && revision && origin && requestedRevision.current !== revision) void cancelEdited(revision, origin);
+  }, [manualEdit, revision, origin, cancelEdited]);
+  const answerAction = async (action: "cancel" | "send-now") => {
     if (!pendingAnswer) return;
-    const attempt = manualEdit && action === "cancel" ? { id: pendingAnswer.id, status: "requested" as const } : null;
-    if (attempt) setEditCancel(attempt);
+    if (manualEdit && action === "cancel") return cancelEdited(pendingAnswer.id, origin!);
     const result = await api.voiceAnswerAction(pendingAnswer.id, action, voiceAnswers?.windowId);
-    if (result.ok) return;
-    if (attempt) {
-      // A retry can reach the daemon before the earlier request returns.
-      setEditCancel(current => current === attempt ? { ...attempt, status: "failed" } : current);
-    } else {
-      setErr(result.error ?? "This answer is no longer pending.");
-    }
+    if (!result.ok) setErr(result.error ?? "This answer is no longer pending.");
   };
   function cancelForManualEdit() {
-    if (preview) void answerAction("cancel", true);
+    if (!preview || !origin) return;
+    updateDraft(d => ({ ...d, voiceEditOrigin: origin }));
+    void cancelEdited(preview.id, origin);
   }
   const footer = pendingAnswer && <VoiceAnswerFooter answer={pendingAnswer} options={decisions?.[0]?.options}
     act={answerAction} canSubmit={!!voiceAnswers?.windowId && voiceAnswers.windowId === pendingAnswer.footerWindowId} cancelStatus={cancelStatus} />;

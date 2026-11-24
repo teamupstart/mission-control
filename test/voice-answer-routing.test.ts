@@ -764,9 +764,14 @@ test("exact option labels normalize trailing punctuation on both sides and still
 });
 
 test("named choice and Other dictation use the focus confirmed for that utterance", async t => {
+  const now = Date.now();
+  const connected = performance.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  t.mock.method(performance, "now", () => connected + (Date.now() - now));
   const first = question();
   const second = question("Which cache?");
   await show([first.id, second.id], first.id);
+  t.mock.timers.tick(10);
   let sequence = 0;
   const publish = registry.emitQuestionEvent.bind(registry);
   t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {

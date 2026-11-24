@@ -34,6 +34,8 @@ export function voiceReplyState(report?: OpenCardsReport): string | undefined {
 
 export interface VoiceAnswer {
   id: string;
+  /** A manual edit can cancel the same pending answer across action revisions. */
+  originId?: string;
   reviewId: string;
   selections: PlanDecisionAnswer[] | null;
   text: string;

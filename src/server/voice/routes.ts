@@ -420,7 +420,9 @@ export function registerVoiceUtteranceRoutes(
     return c.body(null, 204);
   });
   app.post("/api/voice/cards/:id/cancel", gate, (c) => {
-    const ok = router.cancel(c.req.param("id"));
+    const id = c.req.param("id");
+    const edited = c.req.header("x-voice-edit-review");
+    const ok = edited ? router.cancelEditedAnswer(edited, id) : router.cancel(id);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/send-now", gate, async (c) => {

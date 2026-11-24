@@ -325,7 +325,8 @@ let db: DatabaseSync | undefined;
 // 51: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
 //     no task was given a spoken name before it existed.
 // 52: remember a stopped task's displaced roster name until it runs or changes names.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 52;
+// 53: reports and their mute records keep the spoken label alongside the fallback.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 53;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -5192,6 +5193,9 @@ function migrate(d: DatabaseSync): void {
       muted_at    INTEGER NOT NULL
     );
   `);
+
+  addColumn(d, "reports", "author_spoken_name", "TEXT");
+  addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

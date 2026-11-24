@@ -300,6 +300,8 @@ called by it on the inbox, the review modal, question cards, alert titles, the A
 report's author, and a resident by its reference name in its board colour. They are voice's names,
 so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
+New reports capture both author labels when posted. Switching Voice changes which label is shown,
+even after the session exits. Older reports with a single recorded label keep that attribution.
 
 ## The voice state
 

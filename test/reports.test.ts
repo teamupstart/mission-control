@@ -100,16 +100,16 @@ test("a schema 49 database, from before mutes, gains the empty report_mutes tabl
   ).run();
   db.closeDb();
   const raw = new DatabaseSync(join(home, "harness.db"));
-  raw.exec("DROP TABLE IF EXISTS report_mutes; PRAGMA user_version = 49;");
+  raw.exec("DROP TABLE IF EXISTS report_mutes; ALTER TABLE reports DROP COLUMN author_spoken_name; PRAGMA user_version = 49;");
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 50);
   const columns = (upgraded.prepare("PRAGMA table_info(report_mutes)").all() as Array<{ name: string; pk: number }>);
-  assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0]]);
+  assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0], ["author_spoken_name", 0]]);
   assert.equal((upgraded.prepare("SELECT COUNT(*) AS n FROM report_mutes").get() as { n: number }).n, 0);
-  const row = upgraded.prepare("SELECT title, read_at FROM reports WHERE id = 'r-mut'").get() as { title: string; read_at: number | null };
-  assert.deepEqual({ ...row }, { title: "Kept", read_at: null });
+  const row = upgraded.prepare("SELECT title, read_at, author_name, author_spoken_name FROM reports WHERE id = 'r-mut'").get() as { title: string; read_at: number | null };
+  assert.deepEqual({ ...row }, { title: "Kept", read_at: null, author_name: "Mut", author_spoken_name: null });
   upgraded.prepare("DELETE FROM reports WHERE id = 'r-mut'").run();
 });
 
@@ -187,6 +187,15 @@ test("a session's call sign names a report's author only while the voice flag is
   flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
   const on = await reports.post(session("s-voice-on"), { title: "Parser fixed", body: "Done." });
   assert.equal(on.author.name, "Alice");
+  assert.equal(reports.get(off.id)?.author.name, "Alice");
+  reports.mute(on.author.key);
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  assert.equal(reports.get(on.id)?.author.name, "Fix the parser");
+  assert.equal(reports.listMutes().find((m) => m.authorKey === on.author.key)?.authorName, "Fix the parser");
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  assert.equal(reports.get(on.id)?.author.name, "Alice");
+  assert.equal(reports.listMutes().find((m) => m.authorKey === on.author.key)?.authorName, "Alice");
+  reports.unmute(on.author.key);
 });
 
 test("replaces: the new report takes the old one's place and keeps its place in the queue", async () => {

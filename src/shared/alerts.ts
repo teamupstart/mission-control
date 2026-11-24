@@ -16,7 +16,7 @@
 import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
 import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
-import { reportToRead, type ReportItem } from "./reports.ts";
+import { reportAuthorName, reportToRead, type ReportItem } from "./reports.ts";
 import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
@@ -275,8 +275,8 @@ export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | un
  * The alert a report's announce stamp raises, worded by the stamp and named by the name the
  * report stored when it was posted, so it reads the same after its session is gone.
  */
-export function reportAlert(report: ReportItem): Alert {
-  const name = report.author.name;
+export function reportAlert(report: ReportItem, spokenNames?: boolean): Alert {
+  const name = spokenNames === undefined ? report.author.name : reportAuthorName(report.author, spokenNames);
   return {
     id: `report:${report.id}`,
     kind: "report",
@@ -566,7 +566,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       if (report.announcedAs === null || !reportToRead(report) || report.countedInDigestAt !== null) continue;
       const before = reportsBefore.get(report.id);
       if (before ? before.announcedAs !== null : !unheldReportIsNews(report, prev)) continue;
-      alerts.push(reportAlert(report));
+      alerts.push(reportAlert(report, next.spokenNames));
     }
   }
 

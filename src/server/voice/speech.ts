@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   VOICE_SPEECH_CONFIRM_LIMIT_MS, VOICE_SPEECH_END_MARGIN_MS, VOICE_SPEECH_START_LIMIT_MS,
-  VOICE_SPEECH_SYSTEM_LIMIT_MS, type SpeakDirective, type VoiceSpeechJob, type VoiceSpeechVoice,
+  VOICE_SPEECH_SYSTEM_LIMIT_MS, type SpeakDirective, type VoiceSpeechJob, type VoiceSpeechState, type VoiceSpeechVoice,
 } from "@shared/voice-speech.ts";
 import { verifySupervisorReport, type SupervisorReportState } from "./supervisor-auth.ts";
 import { announcementName, SpeechHolds, SUPERVISOR_DIRECTORY, type Hold } from "./speech-holds.ts";
@@ -38,6 +38,7 @@ interface Playback {
 
 export class VoiceSpeechManager {
   readonly announced = new Set<string>();
+  lastAudition: VoiceSpeechState["lastAudition"] = null;
   private readonly ledger: SpeechHolds;
   private readonly jobs = new Map<string, Playback>();
   private readonly history: { from: number; until: number }[] = [];
@@ -71,7 +72,7 @@ export class VoiceSpeechManager {
     // A directory that becomes readable may identify additional players after jobs were queued.
     return this.items().find(item => item.hold)?.job ?? this.jobs.values().next().value?.job ?? null;
   }
-  /** Switching the preview off parks the handshake. Only playback or process proof clears a hold. */
+  /** Disable new playback and timers while the holder finishes the stop handshake. */
   setEnabled(enabled: boolean) {
     if (enabled === this.enabled) return;
     this.enabled = enabled;
@@ -86,15 +87,14 @@ export class VoiceSpeechManager {
     }
   }
 
-  private changed() {
-    if (this.enabled) this.deps.changed();
-  }
-
   get directiveKey() { return this.items().filter(i => i.hold).map(i => i.job.id + i.job.state).join(","); }
   stopAll(purpose?: VoiceSpeechJob["purpose"]) {
     for (const { job } of this.items().reverse()) if (!purpose || job.purpose === purpose) this.stop(job.id);
   }
   get held() { return this.items().some(i => i.hold); }
+  awaitsExit(instance: string) {
+    return this.items().some(item => item.hold && (item.job.holder === instance || "supervisor" in item.hold));
+  }
   get listenerFailure() {
     if (this.unknown) return "the record of unfinished speech could not be read";
     return this.items().some(i => i.unanswered) ? "the listener did not confirm that speech had stopped" : null;
@@ -114,7 +114,7 @@ export class VoiceSpeechManager {
     if (!verifySupervisorReport(this.deps.directory, instance, state, proof)) return "unauthorized";
     if (!this.ledger.recordAnnouncement(instance, state, this.holds())) {
       this.announced.delete(instance);
-      this.changed();
+      this.deps.changed();
       return "unavailable";
     }
     if (state === "started") this.announced.add(instance);
@@ -138,7 +138,7 @@ export class VoiceSpeechManager {
     if (state === "exited") {
       for (const item of this.items()) if (item.job.holder === instance) this.finish(item, "failed");
     }
-    this.changed();
+    this.deps.changed();
     return "accepted";
   }
 
@@ -170,7 +170,7 @@ export class VoiceSpeechManager {
     if (!target) return this.finish(item, "failed");
     job.voice = target.voice;
     if (target.voice.engine === "neural") {
-      this.changed();
+      this.deps.changed();
       if (!this.jobs.has(job.id)) return;
       try {
         const audio = await this.synth.synthesize(job.text, target.voice);
@@ -194,7 +194,7 @@ export class VoiceSpeechManager {
     item.since = this.deps.now();
     job.state = "ready";
     this.arm(item, VOICE_SPEECH_START_LIMIT_MS, () => this.stop(job.id, "timed-out"));
-    this.changed();
+    this.deps.changed();
   }
 
   stop(id = this.live?.id, outcome: "stopped" | "timed-out" = "stopped") {
@@ -204,7 +204,7 @@ export class VoiceSpeechManager {
     item.job.state = "stopping";
     item.onStop = outcome;
     this.confirm(item);
-    this.changed();
+    this.deps.changed();
   }
 
   stopCard(id: string) {
@@ -219,7 +219,7 @@ export class VoiceSpeechManager {
       item.job.state = "speaking";
       this.arm(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS,
         () => this.stop(id, "timed-out"));
-      this.changed();
+      this.deps.changed();
     }
     return true;
   }
@@ -234,9 +234,10 @@ export class VoiceSpeechManager {
       this.save();
       if (!this.held) this.unknown = false;
     }
+    if (item.job.purpose === "audition") this.lastAudition = { id: item.job.id, state };
+    this.deps.changed();
     const next = this.jobs.values().next().value;
-    if (wasFirst && !this.held && next?.job.state === "preparing") void this.prepare(next);
-    this.changed();
+    if (wasFirst && this.enabled && !this.held && next?.job.state === "preparing") void this.prepare(next);
   }
 
   private confirm(item: Playback) {
@@ -244,7 +245,7 @@ export class VoiceSpeechManager {
     if (!this.enabled) return;
     const remaining = item.confirmBy - this.deps.now();
     if (remaining <= 0) item.unanswered = true;
-    else this.arm(item, remaining, () => { item.unanswered = true; this.changed(); });
+    else this.arm(item, remaining, () => { item.unanswered = true; this.deps.changed(); });
   }
   private arm(item: Playback, ms: number, fn: () => void) {
     this.clear(item);

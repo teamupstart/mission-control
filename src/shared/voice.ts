@@ -414,7 +414,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     const entry = state.capabilities[id];
     if (entry) capabilities[id] = { available: entry.available, reason: entry.reason };
   }
-  const { voice, reason, catalog, model, job } = state.speech;
+  const { voice, reason, catalog, model, job, lastAudition } = state.speech;
   const entries = (voices: typeof catalog.system) => voices.map(v => [v.id, v.name, v.detail]);
   return JSON.stringify([
     state.mode,
@@ -428,7 +428,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     canonicalVoiceModel(state.model),
     voice && [voice.engine, voice.id], reason, job && [job.id, job.purpose, job.state, job.cardId],
-    entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model),
+    entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model), lastAudition && [lastAudition.id, lastAudition.state],
   ]);
 }
 
@@ -457,7 +457,7 @@ export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
 
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", speech: { voice: null, reason: "Voice is off.", job: null, catalog: { neural: [], system: [] }, model: { ...VOICE_MODEL_STATE_NONE } }, reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
+  return { mode: "off", speech: { voice: null, reason: "Voice is off.", job: null, lastAudition: null, catalog: { neural: [], system: [] }, model: { ...VOICE_MODEL_STATE_NONE } }, reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----

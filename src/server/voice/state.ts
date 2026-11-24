@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { stateDir } from "../../shared/harness-runtime.mjs";
 import { askAloudPossible, resolveSpeechVoice, type VoiceSpeechCatalog } from "@shared/voice-speech.ts";
 import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
+import { SpeechHolds } from "./speech-holds.ts";
 import { randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
@@ -90,9 +91,19 @@ export class VoiceStateStore {
 
   private manager?: VoiceSpeechManager;
   private muted = false;
+  private get speechDirectory() { return this.deps.speechDirectory ?? join(stateDir(), "voice"); }
+
+  /** An authenticated drain request can be the first request after restarting with Voice off. */
+  hasDisabledSpeechHold(): boolean {
+    if (!this.manager && !new SpeechHolds(this.speechDirectory).hasRecoveryEvidence()) return false;
+    const manager = this.speech;
+    manager.setEnabled(false);
+    return manager.held;
+  }
+
   get speech(): VoiceSpeechManager {
     return this.manager ??= new VoiceSpeechManager({
-      directory: this.deps.speechDirectory ?? join(stateDir(), "voice"),
+      directory: this.speechDirectory,
       now: this.deps.wallNow ?? (() => Date.now()), setTimer: this.deps.setTimer, clearTimer: this.deps.clearTimer,
       synthesizer: this.deps.speechBackend?.synthesizer,
       target: purpose => {
@@ -227,7 +238,7 @@ export class VoiceStateStore {
     return {
       muted: config.muted,
       mode,
-      speech: { ...resolved, job, catalog, model },
+      speech: { ...resolved, job, lastAudition: manager.lastAudition, catalog, model },
       modeVersion: { source: this.source, revision: this.modeRevision },
       reasons,
       capabilities,

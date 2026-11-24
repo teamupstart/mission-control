@@ -34,8 +34,9 @@ test("automatic prefers F4 then the best English system voice; an explicit voice
 });
 
 test("preparing, queued, failed and expired jobs preserve handoff order", async t => {
-  const directory = mkdtempSync(join(tmpdir(), "speech-queue-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const home = mkdtempSync(join(tmpdir(), "speech-queue-"));
+  const directory = join(home, "voice");
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   const { instance, proof } = fixtureVoiceSupervisor(directory);
   let complete!: () => void;
   let reject!: () => void;

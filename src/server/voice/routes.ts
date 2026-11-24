@@ -12,7 +12,7 @@ import {
   type VoiceKeyAvailability,
   type VoiceKeyProvider,
 } from "@shared/voice-decide.ts";
-import type { Context, Hono } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
@@ -87,8 +87,7 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
 }
 
 /**
- * Voice's routes (contracts A, B, D and I), every one behind the `voice` flag: with it off each answers
- * 404 before its handler runs.
+ * Voice's routes are gated by the preview. An existing speech hold can still drain with Voice off.
  *
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
  * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
@@ -123,6 +122,10 @@ export function registerVoiceRoutes(
 ): void {
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
+  const drainGate: MiddlewareHandler = async (c, next) => {
+    if (featureEnabled(VOICE_FLAG) || (authed(c.req.header("x-harness-token")) && store.hasDisabledSpeechHold())) return next();
+    return disabledFeatureResponse(c, VOICE_FLAG);
+  };
 
   let snapshotOrder = 0;
   const dashboardSnapshot = () => ({
@@ -241,6 +244,7 @@ export function registerVoiceRoutes(
     if (!state.speech.voice) return c.json({ reason: state.speech.reason }, 409);
     const text = askSentence(state.roster.slice(0, 2).map(v => v.name)) ?? "Steve or Stephen?";
     const job = store.speech.open("audition", text, null);
+    if (job.state === "failed") return c.json({ error: "audition_failed", reason: "The voice sample could not be prepared for playback." }, 503);
     return c.json({ id: job.id });
   });
   app.post("/api/voice/speech/stop", gate, limitBody, async c => {
@@ -251,12 +255,12 @@ export function registerVoiceRoutes(
     store.speech.stop(parsed.data.id);
     return c.json({ ok: true });
   });
-  app.post("/voice/listener/supervised", gate, limitBody, async c => {
+  app.post("/voice/listener/supervised", drainGate, limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.object({ instance: SpeechInstanceSchema, state: z.enum(["started", "exited"]) }));
     if (!parsed.ok) return c.json({ error: "invalid_supervisor_report" }, 400);
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled) return disabled;
+    if (disabled && (parsed.data.state !== "exited" || !store.speech.awaitsExit(parsed.data.instance))) return disabled;
     const result = store.speech.supervised(parsed.data.instance, parsed.data.state, c.req.header(VOICE_SUPERVISOR_PROOF_HEADER));
     if (result === "unauthorized") return c.json({ error: "unauthorized_supervisor" }, 403);
     if (result === "unavailable") return c.json({ error: "supervisor_record_unavailable" }, 503);
@@ -268,34 +272,38 @@ export function registerVoiceRoutes(
     if (!wav) return c.notFound();
     return c.body(wav, 200, { "Content-Type": "audio/wav", "Cache-Control": "no-store" });
   });
-  app.post("/voice/speech/jobs/:id/events", gate, limitBody, async c => {
+  app.post("/voice/speech/jobs/:id/events", drainGate, limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.discriminatedUnion("type", [
       z.object({ type: z.literal("started") }), z.object({ type: z.literal("ended"), outcome: z.enum(["finished", "stopped", "failed"]) }),
     ]));
     if (!parsed.ok) return parsed.res;
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled) return disabled;
+    if (disabled && (parsed.data.type !== "ended" || !store.hasDisabledSpeechHold())) return disabled;
     const event = parsed.data;
     const ok = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
       event.type === "ended" ? event.outcome : undefined);
     return c.json({ ok }, ok ? 200 : 409);
   });
 
-  app.get("/voice/listener/directive", gate, async (c, next) => {
+  app.get("/voice/listener/directive", drainGate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
     const id = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!store.ownsCapture(id) && !store.speech.held) return c.json({ error: "not_listener_owner" }, 409);
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
+    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+    if (disabled && !store.speech.speak(instance)) return disabled;
     const current = store.directiveFor(instance);
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal, instance);
     await next();
-  }, gate, (c) => {
+  }, drainGate, (c) => {
     if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) && !store.speech.held) return c.json({ error: "not_listener_owner" }, 409);
     const state = store.state();
     const next = store.directiveFor(c.req.header(VOICE_INSTANCE_HEADER), state);
+    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+    if (disabled && !next.speak) return disabled;
     if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);
     const draining = store.drainingRevisions();
     if (draining.length) c.header(VOICE_DRAINING_REVISIONS_HEADER, draining.join(","));
@@ -349,14 +357,14 @@ export function registerVoiceUtteranceRoutes(
     // Capture may have stopped and resumed while the request was in flight or its body was being read.
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
     if (disabled) return disabled;
+    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     if (voiceStateStore.speech.during(parsed.data.capturedAt)) {
       const { id, capturedAt, text } = parsed.data;
       router.heard.record({ id, time: capturedAt, text, outcome: "ignored", matchedName: null,
         pauseMs: null, rule: "while-speaking", detail: "Heard while speaking" });
       return c.json({ accepted: false });
     }
-    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
-    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
     const revision = c.req.query("revision");

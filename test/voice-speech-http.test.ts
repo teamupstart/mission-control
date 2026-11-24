@@ -14,10 +14,12 @@ import { VOICE_INSTANCE_HEADER, VOICE_SPEECH_DEFAULT_NEURAL } from "../src/share
 const ledger = join(home, "voice/speech-holds.json");
 const supervised = join(home, "voice/supervised");
 const inventory = join(home, "voice/supervised-instances.json");
+const used = join(home, "voice-speech-used");
 // The HTTP harness shares a disposable home. Each scenario starts with its own launches.
 afterEach(() => {
   rmSync(supervised, { recursive: true, force: true });
   rmSync(inventory, { force: true });
+  rmSync(used, { force: true });
 });
 const entries = () => JSON.parse(readFileSync(ledger, "utf8"));
 const audition = async () => (await (await post("/api/voice/speech/audition")).json()).id as string;
@@ -54,7 +56,7 @@ function player(owner: string = listenerId, server = app, directory = join(home,
   };
 }
 
-test("timers request a stop, another listener cannot acquire or end it, and capture waits for the playing holder", async t => {
+test("timers request a stop, only the capture owner logs playback-time utterances, and only the holder can end playback", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const holder = player(), other = player(crypto.randomUUID());
   const frames: unknown[] = [];
@@ -103,8 +105,12 @@ test("timers request a stop, another listener cannot acquire or end it, and capt
   assert.equal((await other.request("/voice/speech/jobs/" + id + "/audio")).status, 404);
   assert.equal((await other.event(id, "ended")).status, 409);
   const at = Date.now();
+  const before = await readHeard();
   assert.deepEqual(await (await other.request("/voice/utterances", capture("Steve leaked"))).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), before);
+  assert.deepEqual(await (await holder.request("/voice/utterances", capture("Steve playing"))).json(), { accepted: false });
   assert.equal((await readHeard())[0]?.rule, "while-speaking");
+  assert.equal((await readHeard())[0]?.text, "Steve playing");
   t.mock.timers.tick(5000);
   assert.equal(store.state().mode, "unavailable");
   assert.equal(store.state().capabilities.listener?.reason, "the listener did not confirm that speech had stopped");
@@ -412,6 +418,107 @@ test("a missing ledger with an unreadable launch history keeps capture off", asy
   assert.equal((await holder.poll()).capture, true);
 });
 
+test("loss of all three recovery records during playback cannot make a used state home fresh", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.event(await audition(), "started")).status, 200);
+  assert.equal(statSync(used).mode & 0o777, 0o600);
+  const saved = join(home, "lost-voice");
+  renameSync(join(home, "voice"), saved);
+  store.reset();
+  await peer.hello();
+  assert.equal((await peer.poll()).capture, false);
+  renameSync(join(saved, "supervisor-keys"), join(home, "voice/supervisor-keys"));
+  assert.equal((await peer.report("started")).status, 503);
+  assert.equal((await holder.poll()).capture, false);
+  store.reset();
+  await peer.hello();
+  assert.equal((await peer.poll()).capture, false);
+  renameSync(join(saved, "supervised-instances.json"), inventory);
+  await holder.announce();
+  const stop = await holder.poll();
+  assert.equal(stop.speak.stop, true);
+  assert.equal(stop.capture, false);
+  assert.equal((await peer.event(stop.speak.id, "ended")).status, 409);
+  assert.equal((await holder.event(stop.speak.id, "ended")).status, 200);
+  assert.equal((await peer.poll()).capture, true);
+});
+
+test("a job cannot reach a listener if its prior-use marker cannot be written", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  mkdirSync(used);
+  try {
+    assert.equal((await post("/api/voice/speech/audition")).status, 503);
+    assert.equal((await holder.poll()).speak, null);
+    assert.equal((await holder.poll()).capture, true);
+  } finally {
+    rmSync(used, { recursive: true });
+  }
+});
+
+test("audition reports an immediate storage failure and publishes the terminal result of a queued failure", async t => {
+  const holder = player();
+  const results: string[] = [];
+  t.after(registry.subscribe(frame => {
+    if (frame.type === "voice_state" && frame.state.speech.lastAudition) {
+      const result = frame.state.speech.lastAudition;
+      results.push(result.id + "/" + result.state);
+    }
+  }));
+  await holder.announce(); await holder.hello();
+  const first = await audition();
+  assert.equal((await holder.event(first, "started")).status, 200);
+  const queued = await audition();
+  rmSync(ledger);
+  mkdirSync(ledger);
+  try {
+    assert.equal((await holder.event(first, "ended")).status, 200);
+    assert.equal(store.state().speech.job, null);
+    assert.deepEqual(registry.snapshot().voice?.speech.lastAudition, { id: queued, state: "failed" });
+    assert.deepEqual(results, [first + "/finished", queued + "/failed"]);
+    const response = await post("/api/voice/speech/audition");
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "audition_failed", reason: "The voice sample could not be prepared for playback." });
+    assert.equal((await holder.poll()).speak, null);
+    assert.equal((await holder.poll()).capture, true);
+  } finally {
+    rmSync(ledger, { recursive: true });
+  }
+});
+
+for (const proof of ["ended", "exited"] as const) {
+  test(`disabling Voice during playback delivers the stop and accepts only silence proof (${proof})`, async () => {
+    const holder = player(), peer = player(crypto.randomUUID());
+    await holder.announce(); await holder.hello();
+    const id = await audition();
+    assert.equal((await holder.event(id, "started")).status, 200);
+    const { revision } = await holder.poll();
+    const waiting = holder.request("/voice/listener/directive?revision=" + revision);
+    await new Promise(resolve => setImmediate(resolve));
+    toggle(false);
+    const stopped = await (await waiting).json();
+    assert.deepEqual(stopped.speak, { id, stop: true });
+    assert.equal(stopped.capture, false);
+    store.reset(); // Restart with Voice still off.
+    assert.deepEqual((await holder.poll()).speak, { id, stop: true });
+    assert.equal((await peer.request("/voice/listener/directive")).status, 404);
+    assert.equal((await post("/api/voice/speech/audition")).status, 404);
+    assert.equal((await holder.report("started")).status, 404);
+    assert.equal((await peer.report("exited")).status, 404);
+    assert.equal((await holder.event(id, "started")).status, 404);
+    assert.equal((await peer.event(id, "ended")).status, 409);
+    assert.equal((await holder.report("exited", holder.instance, "bad")).status, 403);
+    assert.equal((await holder.poll()).capture, false);
+    const end = proof === "ended" ? await holder.event(id, "ended") : await holder.report("exited");
+    assert.equal(end.status, 200);
+    assert.deepEqual(entries(), []);
+    assert.equal((await holder.request("/voice/listener/directive")).status, 404);
+    toggle(true); await peer.hello();
+    assert.equal((await peer.poll()).capture, true);
+  });
+}
+
 for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof of ["ended", "exited"] as const) {
   test(`restart with a playing holder and a second listener, ${ledgerState} ledger, ${proof} proof`, async () => {
     const holder = player(), second = player(crypto.randomUUID());
@@ -452,7 +559,7 @@ for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof 
     assert.equal((await second.request("/voice/utterances", { ...capture("Steve old"), capturedAt: 0 })).status, 200);
     assert.equal((await readHeard())[0]?.rule, "while-speaking");
     await post("/api/voice/mute", { muted: true }); toggle(false);
-    assert.equal((await holder.event(stop.id, "ended")).status, 404);
+    assert.equal((await holder.event(stop.id, "started")).status, 404);
     toggle(true); await post("/api/voice/mute", { muted: false });
     assert.equal((await second.poll()).capture, false);
     assert.equal((await second.poll()).speak, null);
@@ -531,15 +638,16 @@ test("a missing supervisor directory keeps every outstanding launch held until i
 });
 
 test("only the holder can fetch prepared audio, until stopping or completion", async () => {
+  const directory = join(home, "audio-test", "voice");
   const s = new VoiceStateStore({ now: Date.now, enabled: () => true, config: () => VOICE_CONFIG_DEFAULTS,
-    speechDirectory: join(home, "audio-test"), speechBackend: {
+    speechDirectory: directory, speechBackend: {
       model: () => ({ ...VOICE_MODEL_STATE_NONE, status: "ready" }),
       neural: () => [{ id: VOICE_SPEECH_DEFAULT_NEURAL, name: "F4", detail: "" }],
       synthesizer: { warm() {}, stop() {}, synthesize: async () => ({ durationMs: 42, wav: new Uint8Array([82, 73, 70, 70]) }) },
     } });
   const server = new Hono();
   registerVoiceRoutes(server, s);
-  const holder = player(listenerId, server, join(home, "audio-test")), other = player(crypto.randomUUID(), server, join(home, "audio-test"));
+  const holder = player(listenerId, server, directory), other = player(crypto.randomUUID(), server, directory);
   await holder.announce(); await holder.hello();
   const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
   const path = "/voice/speech/jobs/" + id + "/audio";

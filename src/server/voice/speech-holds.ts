@@ -15,10 +15,12 @@ const entry = z.union([
 ]);
 export type Hold = z.infer<typeof entry>;
 function missing(error: unknown, path: string) {
-  if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
   // Reading through a dangling symlink also gives ENOENT. Its contents are unknown.
-  try { lstatSync(path); return false; }
-  catch (probe) { return (probe as NodeJS.ErrnoException).code === "ENOENT"; }
+  return (error as NodeJS.ErrnoException).code === "ENOENT" && !mayExist(path);
+}
+function mayExist(path: string) {
+  try { lstatSync(path); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
 }
 
 export function announcementName(instance: string) {
@@ -29,9 +31,15 @@ export function announcementName(instance: string) {
 export class SpeechHolds {
   private readonly path: string;
   private readonly inventoryPath: string;
+  private readonly usedPath: string;
   constructor(private readonly directory: string) {
     this.path = join(directory, "speech-holds.json");
     this.inventoryPath = join(directory, "supervised-instances.json");
+    this.usedPath = join(dirname(directory), "voice-speech-used");
+  }
+
+  hasRecoveryEvidence(): boolean {
+    return [this.usedPath, this.path, this.inventoryPath, join(this.directory, "supervised")].some(mayExist);
   }
 
   supervisorRecord(name: string): string | undefined {
@@ -49,6 +57,8 @@ export class SpeechHolds {
     try {
       const holds = z.array(entry).parse(JSON.parse(readFileSync(this.path, "utf8")));
       if (new Set(holds.map(h => h.jobId)).size !== holds.length) throw new Error("Duplicate job");
+      // Older daemons could already have handed out one of these jobs before the marker existed.
+      if (holds.length && !mayExist(this.usedPath)) this.write(this.usedPath, true);
       return { holds, unknown: holds.some(h => "supervisor" in h) };
     } catch (error) {
       const ledgerMissing = missing(error, this.path);
@@ -71,8 +81,7 @@ export class SpeechHolds {
     try { records = this.processRecords(); }
     catch { if (!inventory) incomplete = true; }
     const launches = this.resolveLaunches([...(inventory ?? []), ...records]);
-    // On first use all three sources can be absent. A damaged ledger is evidence of prior use.
-    if (incomplete || (!ledgerMissing && !inventory && !records.length)) {
+    if (incomplete || ((!ledgerMissing || mayExist(this.usedPath)) && !inventory && !records.length)) {
       launches.set(SUPERVISOR_DIRECTORY, { supervisor: SUPERVISOR_DIRECTORY });
     }
     return [...launches.values()].map(launch => typeof launch === "string"
@@ -144,10 +153,12 @@ export class SpeechHolds {
   }
 
   save(holds: Hold[]): boolean {
+    // Keep proof of prior speech independent of all three sources of holder identities.
+    if (holds.length && !this.write(this.usedPath, true)) return false;
     return this.write(this.path, holds);
   }
 
-  private write(path: string, value: Hold[] | Launch[] | { instance: string }): boolean {
+  private write(path: string, value: Hold[] | Launch[] | { instance: string } | true): boolean {
     const temp = path + "." + randomUUID();
     try {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

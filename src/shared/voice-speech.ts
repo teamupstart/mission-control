@@ -25,6 +25,7 @@ export interface VoiceSpeechJob {
 export interface VoiceSpeechState {
   voice: VoiceSpeechVoice | null; reason: string | null; catalog: VoiceSpeechCatalog; model: VoiceModelState;
   job: Pick<VoiceSpeechJob, "id" | "purpose" | "state" | "cardId"> | null;
+  lastAudition: { id: string; state: "finished" | "stopped" | "failed" | "timed-out" } | null;
 }
 export type SpeakDirective = { id: string; stop: true } | { id: string; kind: "audio"; durationMs: number } |
   { id: string; kind: "system"; voiceId: string; text: string };

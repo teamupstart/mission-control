@@ -849,7 +849,7 @@ An unconfirmed stop can make the listener unavailable even while its hello is li
 
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
-- `POST /api/voice/speech/audition` queues a sample or returns 409 with the unavailable reason.
+- `POST /api/voice/speech/audition` returns the sample job ID when queued, 409 when no voice is available, or 503 when preparation fails before the response. The `voice_state` event and the reconnect snapshot expose the most recent terminal audition result as `speech.lastAudition` with its `id` and `state`.
 - `POST /api/voice/speech/stop` requests a stop. A card includes its job ID to avoid stopping a later job.
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
   Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
@@ -993,15 +993,18 @@ receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
 duration triggers a stop request. After 5 seconds without confirmation, the
 daemon reports the listener unavailable. Capture resumes only after the holder
-reports playback ended or its supervisor confirms process exit. Recently heard
-identifies utterances captured during playback as heard while speaking.
+reports playback ended or its supervisor confirms process exit. Switching off
+the preview still lets the holder poll for Stop and either party confirm silence,
+including after a daemon restart. New speech jobs require the preview to be on.
+Recently heard records playback-time utterances only from the capture lease owner.
 
 After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor
 records. Capture resumes once each outstanding listener confirms playback ended
 or its supervisor confirms exit. A fresh state home with no launch history can
-capture immediately. Changing settings or starting another listener cannot
-confirm silence.
+capture immediately. If all three sources disappear after speech has been used,
+the persisted usage marker keeps capture off until recovery can identify the
+listeners and obtain silence confirmation.
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
 Before starting a child it chooses an instance of the form `shell_<nonce>` or

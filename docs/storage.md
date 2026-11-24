@@ -178,6 +178,13 @@ the entry. Restart recovery may also record a supervisor name and job ID while
 its process record under `voice/supervised/` is unreadable. This runtime file
 contains no text or audio and stays outside settings exports.
 
+Before handing off a job, the daemon also writes an owner-only `voice-speech-used`
+marker containing only `true` at the root of the state home. It survives loss of
+the entire `voice/` directory and remains after playback ends. If the ledger,
+launch inventory and supervisor records all disappear, this marker distinguishes
+the used state home from a first boot. Capture stays off while the daemon cannot
+identify which listeners need to confirm silence.
+
 Each voice supervisor provisions its own random 32-byte binary signing key in
 `voice/supervisor-keys/shell.key` or `voice/supervisor-keys/dev.key` before
 its first announcement. Use an owner-only directory (0700) and file (0600).

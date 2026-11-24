@@ -491,7 +491,7 @@ export class PendingTurnManager {
     }
     const pendingTurn = createPendingTurn({
       id: `${idPrefix}${utteranceId ?? this.deps.id()}`,
-      ...(utteranceId !== undefined && { spokenWords: text }),
+      ...(utteranceId !== undefined && { spokenWords: text, spokenSessionId: session.id }),
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
@@ -724,6 +724,11 @@ export class PendingTurnManager {
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);
+    if (event.type === "review_upsert" && event.review.status === "pending" && event.review.filedByVoiceAt != null) {
+      // Filing a plan releases the call without changing the session’s pending review count.
+      const session = this.registry.getSession(event.review.sessionId);
+      if (session) this.scheduleDrain(noteKeyFor(session));
+    }
     if (event.type === "feature_flags") {
       for (const session of this.registry.liveSessions()) {
         if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));

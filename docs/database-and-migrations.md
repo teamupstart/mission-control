@@ -232,6 +232,10 @@ with `voice_conversion_blocked` because an older daemon may already have promise
 blocking answer. Issuing a call response or receiving a poll without the conversion
 capability sets that marker for the review. The hold lasts between polls and across restarts.
 
+A new spoken outbox row records the pending calls it encountered in `spoken_turn_review_waits`
+in the enqueue transaction. A capable child polling later can file its ask while those words
+are still queued in its conversation. Deleting the turn also deletes its review links.
+
 Schema 54 records the original words, composition time, and receiving work-cycle generation on
 spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
 and generation on the outbox row, alongside the time the transport reached its write guard.

@@ -2254,6 +2254,13 @@ function createSchemaObjects(d: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
       ON pending_turns(note_key) WHERE state = 'sending';
 
+    CREATE TABLE IF NOT EXISTS spoken_turn_review_waits (
+      review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL REFERENCES pending_turns(id) ON DELETE CASCADE,
+      PRIMARY KEY (review_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_spoken_turn_review_waits_turn ON spoken_turn_review_waits(turn_id);
+
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
       cwd             TEXT,               -- + branch: the re-attach hint when the key dies
@@ -6010,6 +6017,13 @@ export function blockReviewVoiceConversion(id: string): void {
   openDb().prepare(`UPDATE reviews SET voice_conversion_blocked = 1
     WHERE id = ? AND status = 'pending' AND voice_conversion_blocked = 0
       AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(id);
+}
+
+/** Speech queued for this conversation while this call was open, still awaiting delivery. */
+export function hasQueuedSpeechForReview(reviewId: string, noteKey: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM spoken_turn_review_waits w
+    JOIN pending_turns t ON t.id = w.turn_id
+    WHERE w.review_id = ? AND t.note_key = ? AND t.state = 'queued' LIMIT 1`).get(reviewId, noteKey));
 }
 
 /** File the pending ask and route its eventual answer through the outbox in the same write. */
@@ -15440,6 +15454,7 @@ export function listPendingTurns(noteKey: string): PendingTurn[] {
  */
 export function createPendingTurn(input: {
   spokenWords?: string;
+  spokenSessionId?: string;
   id: string;
   noteKey: string;
   text: string;
@@ -15466,6 +15481,13 @@ export function createPendingTurn(input: {
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at, spoken_words)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL, ?)`,
     ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now, input.spokenWords ?? null);
+    if (input.spokenWords !== undefined && input.spokenSessionId !== undefined) {
+      // Snapshot only asks that existed when these words were queued. A replay returns above;
+      // recalling or delivering the turn removes these links with its outbox row.
+      d.prepare(`INSERT INTO spoken_turn_review_waits(review_id, turn_id)
+        SELECT id, ? FROM reviews WHERE session_id = ? AND status = 'pending' AND wait_mode IS NULL
+          AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(input.id, input.spokenSessionId);
+    }
     d.exec("COMMIT");
     return {
       id: input.id,

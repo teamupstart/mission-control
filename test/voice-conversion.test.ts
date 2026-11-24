@@ -102,9 +102,11 @@ for (const asyncCapable of [false, true]) {
     assert.equal(loadReview(row.id)?.waitMode, undefined);
     assert.equal(registry.getSession(sessionId)?.pendingTurns.at(-1)?.state, "queued");
 
+    const retry = reviews.wait(row.id, 5000, undefined, true);
+    assert.equal(loadReview(row.id)?.waitMode, undefined, "a later capable poll still respects the legacy veto");
     const legacy = reviews.wait(row.id, 5000);
     reviews.resolve(row.id, "answer", "release-15");
-    for (const result of await Promise.all([capable, legacy])) {
+    for (const result of await Promise.all([capable, retry, legacy])) {
       assert.equal(result?.converted, undefined);
       assert.equal(result?.response, "release-15");
     }

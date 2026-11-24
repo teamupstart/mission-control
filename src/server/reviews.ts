@@ -22,10 +22,11 @@ import {
   snoozedInstructionText,
   type ReviewSnoozeMeanwhile,
 } from "@shared/review-snooze.ts";
-import type { Registry } from "./registry.ts";
+import { noteKeyFor, type Registry } from "./registry.ts";
 import {
   blockReviewVoiceConversion,
   fileReviewByVoice,
+  hasQueuedSpeechForReview,
   inTransaction,
   insertReview,
   loadReview,
@@ -943,7 +944,12 @@ export class ReviewManager {
       // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
       // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
       // closure that event triggers must be able to release this very call.
-      if (current.waitMode === "message") this.attachCall(current);
+      if (current.waitMode === "message") {
+        this.attachCall(current);
+      } else if (convertible && featureEnabled("voice")) {
+        const session = this.registry.getSession(current.sessionId);
+        if (session && hasQueuedSpeechForReview(id, noteKeyFor(session))) this.convertToFiled(id);
+      }
     });
   }
 

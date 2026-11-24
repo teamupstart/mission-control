@@ -434,3 +434,39 @@ test("replaying a queued utterance keeps a later question in its call", async t 
   reviews.resolve(question.id, "answer", "Yes");
   assert.equal((await wait)?.response, "Yes");
 });
+
+test("a plan's first compatible wait releases speech queued in the create-to-poll gap", async t => {
+  const id = "sdk:Will";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  const plan = reviews.create(id, "plan-decisions", "Release plan", "Choose a channel", null);
+  t.after(() => { reviews.resolve(plan.id, "dismiss", null); });
+  await say("Will, inspect the build", "before-first-poll");
+  await act("before-first-poll", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.equal(registry.getReview(plan.id)?.waitMode, undefined);
+  const call = reviews.wait(plan.id, 5000, undefined, true);
+  t.mock.timers.tick(5001);
+  assert.ok((await call)?.converted);
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.ok(send.mock.calls[0]!.arguments[1].text.includes(plan.id));
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
+test("recalling held speech removes the reason to file an ask on its next poll", async () => {
+  const id = "sdk:Will";
+  const ask = reviews.create(id, "input", "Which channel?", "Choose", null, { snoozable: true });
+  await say("Will, inspect the build", "recall-before-poll");
+  await act("recall-before-poll", "send-now");
+  const turn = registry.getSession(id)!.pendingTurns.at(-1)!;
+  assert.ok(pending.recall(id, turn.id, turn.revision));
+  const call = reviews.wait(ask.id, 1000, undefined, true);
+  reviews.resolve(ask.id, "answer", "nightly");
+  assert.equal((await call)?.response, "nightly");
+});

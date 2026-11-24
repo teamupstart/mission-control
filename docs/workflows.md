@@ -3146,6 +3146,9 @@ Persona, choose **Read-only repository access**, and save the setting. Publish y
 and bind the new version to use it. The setting defaults to **No repository access**. A built-in
 Persona stores its local access override separately from its shipped guidance. Version History
 shows the permission frozen at publication and identifies older snapshots as outdated.
+The editor retries an interrupted publish with the same request ID. The daemon returns
+the version it originally selected, even if another editor has since changed the draft
+or published a different grant. A separate publish gets a new request ID.
 
 Submitting starts an asynchronous capture. Once the submission is captured, later changes to
 the worktree cannot affect its review. Runs shows repository queries, denials, truncation and

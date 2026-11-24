@@ -32,6 +32,8 @@ daemon-owned materializer for a canonical artifact directory. The supervisor can
 or revoke its current workload lookup using `setActiveRequestLookup`. The service checks submission, workload, attempt,
 locator and digest, and requires the active SQLite claim and ready artifact before opening
 the artifact directory. The executor checks the returned identities again.
+If the supervisor rejects an event or the stream ends without a terminal result, it requests
+cancellation from the executor and waits for cleanup before the review attempt can retry.
 
 ## Sealing and retention
 

@@ -267,6 +267,46 @@ test("Publish is idempotent and immutable versions are readable", async () => {
   assert.equal(versionRead.status, 200);
   const versionBody = await versionRead.json() as Record<string, unknown>;
   assert.equal("graph" in versionBody, true);
+
+  const edit = await request(`/api/workflows/${valid.workflow.id}`, { method: "PATCH", body: JSON.stringify({ expectedDraftRevision: 1, description: "Next draft" }) });
+  assert.equal(edit.status, 200);
+  const replay = await request(`/api/workflows/${valid.workflow.id}/publish`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: 1 }) });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json() as typeof firstBody).version.id, firstBody.version.id);
+});
+
+test("lost publish responses replay the exact version after a grant change and a draft advance", async () => {
+  const { request, store } = fixture();
+  const { workflow } = await seedValid(request);
+  const publish = (requestId: string, expectedDraftRevision = 1) =>
+    request(`/api/workflows/${workflow.id}/publish`, { method: "POST", body: JSON.stringify({ expectedDraftRevision, requestId }) });
+  async function published(requestId: string, revision = 1) {
+    const response = await publish(requestId, revision);
+    assert.equal(response.status, 200);
+    return await response.json() as { version: { id: string }; idempotent: boolean };
+  }
+  const first = await published("original");
+  const identical = await published("same-snapshot");
+  assert.equal(identical.version.id, first.version.id);
+  assert.ok(identical.idempotent);
+  const judge = store.personaCatalog().find(p => p.name === "Judge")!;
+  assert.ok(judge.repositoryAccessRevision !== undefined);
+  assert.ok(store.setPersonaRepositoryAccess(judge.id, judge.repositoryAccessRevision, "read", 10).ok);
+  const read = await published("new-grant");
+  assert.notEqual(read.version.id, first.version.id);
+  assert.equal((await published("original")).version.id, first.version.id);
+  assert.equal(store.getWorkflow(workflow.id)?.currentVersionId, read.version.id);
+  assert.ok(store.updateWorkflowCas(workflow.id, 1, { description: "Another editor advanced the draft" }, 11).ok);
+  const latest = await published("next-draft", 2);
+  for (const [key, version] of [["original", first], ["same-snapshot", identical], ["new-grant", read]] as const) {
+    const retry = await published(key);
+    assert.ok(retry.idempotent);
+    assert.equal(retry.version.id, version.version.id);
+  }
+  assert.equal((await publish("unseen-stale-request")).status, 409);
+  assert.equal((await publish("original", 2)).status, 409);
+  assert.equal(store.getWorkflow(workflow.id)?.currentVersionId, latest.version.id);
+  assert.equal(store.listWorkflowVersions(workflow.id).length, 3);
 });
 
 test("a configured dispatch default cannot be archived or deleted", async () => {

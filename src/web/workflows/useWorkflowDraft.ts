@@ -202,6 +202,7 @@ export function useWorkflowDraft(
   const savedFingerprintRef = useRef(savedFingerprint);
   const conflictRef = useRef(currentConflict);
   const versionRefreshRef = useRef<string | null>(null);
+  const pendingPublish = useRef<{ workflowId: string; revision: number; requestId: string } | null>(null);
   const inFlight = useRef<Promise<boolean> | null>(null);
   // History contains editable fields only. The CAS revision is server metadata and must
   // stay current after autosave, otherwise the first Undo after a successful save would
@@ -397,12 +398,18 @@ export function useWorkflowDraft(
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;
     if (!current || dirty || saving || currentConflict) return null;
+    let intent = pendingPublish.current;
+    if (!intent || intent.workflowId !== current.id || intent.revision !== current.draftRevision) {
+      intent = { workflowId: current.id, revision: current.draftRevision, requestId: crypto.randomUUID() };
+      pendingPublish.current = intent;
+    }
     setError(null);
     try {
       const response = await workflowRequest<WorkflowPublishResponse>(`/api/workflows/${current.id}/publish`, {
         method: "POST",
-        body: JSON.stringify({ expectedDraftRevision: current.draftRevision }),
+        body: JSON.stringify({ expectedDraftRevision: current.draftRevision, requestId: intent.requestId }),
       });
+      if (pendingPublish.current === intent) pendingPublish.current = null;
       setWorkflow(response.workflow);
       workflowRef.current = response.workflow;
       const publishedFingerprint = editableFingerprint(response.workflow);
@@ -413,6 +420,9 @@ export function useWorkflowDraft(
         : [versionMetadata(response.version), ...items]);
       return response.version;
     } catch (caught) {
+      if (pendingPublish.current === intent && caught instanceof WorkflowApiError && caught.status < 500) {
+        pendingPublish.current = null;
+      }
       setError(caught instanceof Error ? caught.message : "Could not publish workflow");
       return null;
     }

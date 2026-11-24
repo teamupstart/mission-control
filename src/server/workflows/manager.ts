@@ -1118,8 +1118,8 @@ export class WorkflowManager {
     return { ok: true, workflow, ...result };
   }
 
-  publish(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowPublishMutation {
-    const result = this.store.publishWorkflow(id, expectedDraftRevision, randomUUID(), now);
+  publish(id: string, expectedDraftRevision: number, now = Date.now(), requestId?: string): WorkflowPublishMutation {
+    const result = this.store.publishWorkflow(id, expectedDraftRevision, randomUUID(), now, requestId);
     if (!result.ok) return result;
     const summary = this.store.summary(result.workflow);
     this.registry.upsertWorkflow(summary);

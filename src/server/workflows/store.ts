@@ -437,6 +437,7 @@ export const WORKFLOW_TABLES = [
   "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
+  "workflow_publish_requests",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
@@ -4854,6 +4855,7 @@ export class WorkflowStore {
     expectedDraftRevision: number,
     versionId: string,
     publishedAt = Date.now(),
+    requestId?: string,
   ): WorkflowPublishWrite {
     return this.mutate(() => {
       // A built-in arrives published. Refusing here rather than at the route is what stops a
@@ -4862,6 +4864,21 @@ export class WorkflowStore {
       if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const workflow = this.getWorkflowInTransaction(id);
       if (!workflow) return { ok: false, reason: "not_found", current: null };
+      if (requestId) {
+        const receipt = this.db.prepare(`SELECT v.* FROM workflow_publish_requests r
+          JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id
+          WHERE r.workflow_id=? AND r.request_id=?`).get(id, requestId);
+        if (receipt) {
+          const version = parseWorkflowVersionRow(receipt);
+          if (version.sourceDraftRevision !== expectedDraftRevision) return { ok: false, reason: "revision_conflict", current: workflow };
+          return { ok: true, workflow, version, idempotent: true };
+        }
+      } else if (workflow.draftRevision !== expectedDraftRevision || workflow.archivedAt !== null) {
+        // Older clients identify a publish by draft revision alone. Replay only an unambiguous result.
+        const versions = this.db.prepare(`SELECT * FROM workflow_versions
+          WHERE workflow_id=? AND source_draft_revision=? LIMIT 2`).all(id, expectedDraftRevision);
+        if (versions.length === 1) return { ok: true, workflow, version: parseWorkflowVersionRow(versions[0]), idempotent: true };
+      }
       if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
@@ -4917,6 +4934,11 @@ export class WorkflowStore {
         edges: workflow.draft.edges,
       };
       const fingerprint = workflowGraphFingerprint(graph);
+      const publishResult = (version: WorkflowVersion, idempotent: boolean) => {
+        if (requestId) this.db.prepare(`INSERT INTO workflow_publish_requests(workflow_id,request_id,version_id)
+          VALUES(?,?,?)`).run(id, requestId, version.id);
+        return { ok: true as const, workflow: this.mustWorkflow(id), version, idempotent };
+      };
       const existing = this.db.prepare(
         `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ? AND source_snapshot_fingerprint = ?`,
       ).get(id, expectedDraftRevision, fingerprint);
@@ -4925,7 +4947,7 @@ export class WorkflowStore {
         if (workflow.currentVersionId !== version.id) {
           this.db.prepare("UPDATE workflow_definitions SET current_version_id=?, updated_at=? WHERE id=?").run(version.id, publishedAt, id);
         }
-        return { ok: true, workflow: this.mustWorkflow(id), version, idempotent: true };
+        return publishResult(version, true);
       }
       const next = Number((this.db.prepare(
         `SELECT COALESCE(MAX(version), 0) AS value FROM workflow_versions WHERE workflow_id = ?`,
@@ -4954,12 +4976,7 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_definitions SET current_version_id = ?, updated_at = ? WHERE id = ?`,
       ).run(versionId, publishedAt, id);
-      return {
-        ok: true,
-        workflow: this.mustWorkflow(id),
-        version: this.mustWorkflowVersion(id, next),
-        idempotent: false,
-      };
+      return publishResult(this.mustWorkflowVersion(id, next), false);
     }, (result) => result.ok ? { kind: "version", id: result.version.id, now: publishedAt } : null);
   }
 

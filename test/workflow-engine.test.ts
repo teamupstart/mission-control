@@ -3232,7 +3232,7 @@ test("repository review verifies executor capability, event order, and attempt o
   applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
   type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
-  const scenarios = ["unsupported", "conflict", "gap", "equal replay", "stale"] as const;
+  const scenarios = ["unsupported", "conflict", "gap", "failed query", "equal replay", "stale"] as const;
   for (const [index, scenario] of scenarios.entries()) {
     const attempt = index + 1;
     const attemptId = randomUUID(), callId = randomUUID();
@@ -3242,6 +3242,8 @@ test("repository review verifies executor capability, event order, and attempt o
       runner: "claude", model: "fake-model", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
       durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
     let launches = 0;
+    const cancellations: { workloadId: string; generation: number }[] = [];
+    let cancellationRequested = false;
     const executor: Executor = {
       repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
       async *dispatch(request) {
@@ -3251,15 +3253,30 @@ test("repository review verifies executor capability, event order, and attempt o
         yield accepted;
         if (scenario === "conflict") yield { ...accepted, timestamp: 8 };
         if (scenario === "equal replay") yield accepted;
-        yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
+        try {
+          yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
+        } finally {
+          if (scenario === "gap") assert.ok(cancellationRequested, "cancel before closing the iterator");
+        }
         yield { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 };
+        if (scenario === "failed query") yield {
+          ...envelope, type: "repository_query", eventId: randomUUID(), sequence: 4, audit: {
+            workloadId: request.workloadId, attemptId, operationId: randomUUID(), operation: "read",
+            snapshotDigest: request.artifact.digest, inputHash: "1".repeat(64), status: "failed", code: "unavailable",
+            bytes: 0, items: 0, durationMs: 1, truncated: false, handles: [],
+          },
+        };
         if (scenario === "stale") store.cancelRun(runId, "operator cancelled", Date.now());
         yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
           result: { status: "completed", usage: {}, result: { kind: "persona_verdict", verdict: {
             verdict: "pass", approvalDetails: { reason: "Verified", evidence: [] }, summary: "Verified", confidence: 1,
           } } } };
       },
-      async cancel() {},
+      async cancel(workloadId, generation) {
+        cancellationRequested = true;
+        await new Promise<void>(resolve => setImmediate(resolve));
+        cancellations.push({ workloadId, generation });
+      },
       async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
     };
     const response = new RepositoryReview(store, executor).run({
@@ -3270,12 +3287,14 @@ test("repository review verifies executor capability, event order, and attempt o
     if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
     else await assert.rejects(response, {
       unsupported: /executor capability mismatch/i, conflict: /conflicting repository event/i,
-      gap: /sequence mismatch/i, stale: /ownership expired/i,
+      gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
     }[scenario]);
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
+    assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay"
+      ? [] : [{ workloadId: callId, generation: 1 }], scenario);
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
-      unsupported: [], conflict: [1], gap: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
+      unsupported: [], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
     }[scenario]);
   }
 });

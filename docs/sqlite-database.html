@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 137 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 138 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>137</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>138</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -603,7 +603,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>35 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>36 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot holding its optional repository-neutral default argv, run budget, timeout, skip-or-block policies, revision, and timestamps. Seeded on first open, so all five rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -612,6 +612,7 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_builtin_round_limits</code><p>The operator's maximum repair rounds for one built-in workflow, keyed by its stable id, the one setting a built-in takes without Duplicate. A NULL count is a reset to the shipped value; the row stays so its time still dates the definition.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
+                <div class="table-row"><code>workflow_publish_requests</code><p>Maps each publish request to the immutable version it returned, so a retry can retrieve that version after edits to the draft or Persona.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
                 <div class="table-row"><code>workflow_runs</code><p>One execution of a binding: status, phase, trigger identity, Inspector gate state, timestamps, and retention markers.</p></div>
                 <div class="table-row"><code>workflow_submissions</code><p>Immutable evidence snapshots scoped by run, repair round, and continuation segment.</p></div>

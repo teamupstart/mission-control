@@ -235,9 +235,23 @@ for (const { title, provider, marker } of scenarios) {
       const frozen = dashboard.getByText("Read-only repository access", { exact: true });
       await expect(frozen).toBeVisible();
       await captureState(dashboard, "frozen-outdated", frozen);
-      await dashboard.getByRole("button", { name: "Publish", exact: true }).click();
+      const publishRequests: string[] = [];
+      await dashboard.route(`**/api/workflows/${workflow.id}/publish`, async route => {
+        publishRequests.push(route.request().postDataJSON().requestId);
+        if (publishRequests.length === 1) {
+          await route.fulfill({ status: 503, json: { error: "Publish response unavailable" } });
+        } else {
+          await route.continue();
+        }
+      });
+      const publish = dashboard.getByRole("button", { name: "Publish", exact: true });
+      await publish.click();
+      await expect(dashboard.getByText("Publish response unavailable")).toBeVisible();
+      await publish.click();
       const second = dashboard.getByRole("button", { name: /^Version 2/ });
       await expect(second).toBeVisible();
+      expect(publishRequests[0]).toBeTruthy();
+      expect(publishRequests).toEqual([publishRequests[0], publishRequests[0]]);
       await second.click();
       const source = dashboard.getByText(/Repository reviewer · revision/);
       if (!await dashboard.getByText("No repository access", { exact: true }).isVisible()) await source.click();

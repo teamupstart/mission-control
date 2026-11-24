@@ -1391,6 +1391,12 @@ function createSchemaObjects(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_number
       ON workflow_versions(workflow_id, version);
+    CREATE TABLE IF NOT EXISTS workflow_publish_requests (
+      workflow_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+      PRIMARY KEY(workflow_id, request_id)
+    );
 
     -- repo_root is WHICH CHECKOUT this binding reviews, and the second column of the
     -- active-binding key. Empty string means "the session's own checkout" - every row ever

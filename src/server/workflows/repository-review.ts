@@ -89,11 +89,20 @@ export class RepositoryReview {
     if (signal.aborted) stop();
     let errorCode = "workload_interrupted";
     let terminal: Extract<PersonaWorkloadEvent, { type: "terminal" }> | undefined;
+    let events: AsyncIterator<PersonaWorkloadEvent> | undefined;
+    let streamFinished = false;
     let sequence = 0;
     let stage: "new" | "accepted" | "repository_verified" | "persona_started" | "cancelled" = "new";
     try {
-      for await (const raw of executor.dispatch(request, signal)) {
-        const event = PersonaWorkloadEventSchema.parse(raw);
+      signal.throwIfAborted();
+      events = executor.dispatch(request, signal)[Symbol.asyncIterator]();
+      while (true) {
+        const next = await events.next();
+        if (next.done) {
+          streamFinished = true;
+          break;
+        }
+        const event = PersonaWorkloadEventSchema.parse(next.value);
         if (event.workloadId !== id || event.attemptId !== input.attemptId) throw new Error("Repository event identity mismatch");
         const hash = createHash("sha256").update(canonicalJson(event)).digest("hex");
         if (event.sequence <= sequence) {
@@ -169,11 +178,16 @@ export class RepositoryReview {
       return JSON.stringify(verdict);
     } finally {
       clearInterval(timer);
+      // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
+      if (!streamFinished || !terminal) cancel.abort();
       signal.removeEventListener("abort", stop);
-      cancel.abort();
-      await stopping;
-      this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed',
-        error_code=?, cancellation_generation=cancellation_generation+1 WHERE id=? AND state='running'`).run(errorCode,id));
+      try {
+        if (!streamFinished) await events?.return?.();
+      } finally {
+        await stopping;
+        this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed',
+          error_code=?, cancellation_generation=cancellation_generation+1 WHERE id=? AND state='running'`).run(errorCode,id));
+      }
     }
   }
 }

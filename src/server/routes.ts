@@ -3073,7 +3073,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, PublishWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.publish(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const result = manager.publish(c.req.param("id"), parsed.data.expectedDraftRevision, undefined, parsed.data.requestId);
     if (!result.ok && result.reason === "validation") {
       return c.json({ error: "workflow validation failed", code: "workflow_validation", diagnostics: result.diagnostics ?? [] }, 422);
     }

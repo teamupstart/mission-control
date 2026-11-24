@@ -7667,7 +7667,7 @@ export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
 export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
 
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
-export const PublishWorkflowSchema = ValidateWorkflowSchema;
+export const PublishWorkflowSchema = ValidateWorkflowSchema.extend({ requestId: WorkflowIdSchema.optional() });
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
 export const UnarchiveWorkflowSchema = ValidateWorkflowSchema;
 export const DeleteWorkflowSchema = ValidateWorkflowSchema;

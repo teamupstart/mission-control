@@ -376,7 +376,7 @@ async function writeText(
 }
 
 /** The SDK can reject a queued send before it reaches its serialized write boundary. */
-export type PromptWriteGuard = (phase?: "preflight", receiptTarget?: Pick<SdkTurn, "clientMessageId">) => string | null;
+export type PromptWriteGuard = (phase?: "preflight" | "submit", receiptTarget?: Pick<SdkTurn, "clientMessageId">) => string | null;
 
 async function sendKeys(
   pane: BoundPane,
@@ -1099,7 +1099,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
+    () => injectPromptLocked(session, text, deps, phase => writeHold(session) ?? beforeWrite?.(phase) ?? null),
   );
 }
 
@@ -1177,7 +1177,7 @@ async function injectPromptLocked(
       pane,
       ["enter"],
       inModeAfterPasteError,
-      beforeWrite,
+      () => beforeWrite?.("submit") ?? null,
     ),
     pastePlaceholder,
     wasPending,

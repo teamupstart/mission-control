@@ -9249,6 +9249,7 @@ export class WorkflowStore {
                       ORDER BY sending.id DESC LIMIT 1
                    ), d.delivered_at) END AS legacy_start,
               json_extract(e.payload_json, '$.transcriptTurn.id') AS turn_id,
+              json_extract(e.payload_json, '$.transcriptTurn.fileId') AS turn_file_id,
               json_extract(e.payload_json, '$.transcriptTurn.ts') AS turn_ts,
               COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
                        json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
@@ -9263,7 +9264,8 @@ export class WorkflowStore {
           AND d.payload <> ''
           AND (json_type(e.payload_json, '$.transcriptStart') = 'integer'
             OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
-            OR json_type(e.payload_json, '$.clientMessageId') = 'text')
+            OR json_type(e.payload_json, '$.clientMessageId') = 'text'
+            OR json_type(e.payload_json, '$.transcriptTurn.id') = 'text')
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
@@ -9273,6 +9275,7 @@ export class WorkflowStore {
       legacy_start: number | null;
       transcript_path: string | null;
       turn_id: string | null;
+      turn_file_id: string | null;
       turn_ts: number | null;
       payload: string;
       transcript_anchor: number | null;
@@ -9282,7 +9285,8 @@ export class WorkflowStore {
       transcriptAnchor: row.transcript_anchor,
       ...(row.legacy_start !== null ? { legacySend: { start: row.legacy_start, end: row.delivered_at } } : {}),
       ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
-      ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts } } : {}),
+      ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts,
+        ...(row.turn_file_id ? { fileId: row.turn_file_id } : {}) } } : {}),
       ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
       ...(row.client_message_id ? { clientMessageId: row.client_message_id } : {}),
       ...(row.before_send ? { beforeSend: true as const } : {}),
@@ -9529,7 +9533,8 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
     transcriptStart: number | null = null,
-    attribution?: { clientMessageId?: string; transcriptPath?: string; unusableReceiptId?: string },
+    attribution?: { clientMessageId?: string; transcriptPath?: string; unusableReceiptId?: string;
+      terminalTurn?: { path: string; fileId: string; id: string; ts: number } | null },
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
       if (attribution?.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
@@ -9599,9 +9604,11 @@ export class WorkflowStore {
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
-        transcriptAnchor: attribution && !attribution.clientMessageId ? null : transcriptAnchor,
+        transcriptAnchor: attribution && !attribution.clientMessageId && !attribution.terminalTurn ? null : transcriptAnchor,
         transcriptStart,
         ...(attribution?.clientMessageId ? { clientMessageId: attribution.clientMessageId, transcriptPath: attribution.transcriptPath } : {}),
+        ...(attribution?.terminalTurn ? { transcriptPath: attribution.terminalTurn.path,
+          transcriptTurn: { id: attribution.terminalTurn.id, ts: attribution.terminalTurn.ts, fileId: attribution.terminalTurn.fileId } } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);

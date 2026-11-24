@@ -17,7 +17,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -180,6 +180,7 @@ interface HarnessOptions {
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
   clientMessageIds?: boolean;
+  terminal?: InjectDeps;
   submitVerified?: boolean;
   onInject?: (payload: string, clientMessageId?: string) => void | Promise<void>;
   beforeInjectWrite?: (payload: string) => void;
@@ -265,6 +266,12 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       _deps?: InjectDeps,
       beforeWrite?: PromptWriteGuard,
     ) => {
+      if (options.terminal) {
+        const { injectPrompt } = await import("../src/server/actions.ts");
+        const result = await injectPrompt(_session, payload, options.terminal, beforeWrite);
+        if (result.ok) injected.push(payload);
+        return result;
+      }
       if (options.beforeInjectWrite) {
         const refused = beforeWrite?.("preflight");
         if (refused) return { ok: false, error: refused, pasted: false, submitVerified: false };
@@ -2177,6 +2184,74 @@ for (const submitVerified of [false, true]) test(`a paste without a native recei
       .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["intervening-human"]);
   } finally { await h.stop(); }
 });
+
+for (const mode of ["packet echo", "hook before append", "human copy", "competing human send", "two matching turns"] as const) {
+  test(`verified terminal submission freezes only a corroborated native turn after restart: ${mode}`, async () => {
+    const { bindSession } = await import("../src/server/terminal/registry.ts");
+    const { stubRun } = await import("../src/server/util/exec.ts");
+    const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { forgetInjections } = await import("../src/server/injections.ts");
+    const { noteOtherSend } = await import("../src/server/delivery-ledgers.ts");
+    const sessionId = "terminal-submit-" + mode.replaceAll(" ", "-");
+    const path = join(home, sessionId + ".jsonl");
+    const append = (uuid: string, text: string) => appendFileSync(path, JSON.stringify({
+      type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content: text },
+    }) + "\n");
+    let packet = "";
+    let entered = false;
+    const h = await harness(sessionId, {
+      pullRequest: true,
+      terminal: {
+        pane: session => bindSession(session, async (_bin, args, opts) => {
+          if (args.includes("load-buffer") && opts?.input) packet = opts.input;
+          if (args.includes("send-keys") && args.at(-1) === "Enter") {
+            entered = true;
+            if (mode === "competing human send") {
+              const live = h.registry.getSession(sessionId)!;
+              noteOtherSend({ key: live.agentSessionId!, transcript: sessionMessages(live) }, packet);
+            }
+            if (mode !== "hook before append") append(mode === "human copy" || mode === "competing human send" ? "human" : "packet", packet);
+            if (mode !== "human copy") {
+              h.registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `agent-${sessionId}`,
+                cwd: "/repo", transcriptPath: path, env: { tmuxPane: `%${sessionId.length}` }, prompt: packet, ts: Date.now() });
+            }
+            if (mode === "hook before append") append("packet", packet);
+            if (mode === "two matching turns") append("other-copy", packet);
+          }
+          return stubRun({ stdout: "", stderr: "", code: 0 });
+        }),
+        capture: async () => entered ? "❯\n⏵⏵ auto mode on" : "❯ [Pasted text #1 +3 lines]",
+        sleep: async () => { append("human-before-enter", packet); },
+      },
+    });
+    try {
+      writeFileSync(path, "");
+      h.reportIdle(path);
+      const run = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(run).some(d => d.state === "delivered"), "terminal action was not delivered");
+      assert.equal(packet, h.store.listDeliveries(run)[0]!.payload);
+      const event = h.store.listEvents(run).find(e => e.kind === "delivery_delivered")!;
+      assert.equal((event.payload as { submitVerified: boolean }).submitVerified, true);
+      append("later-human-repeat", packet);
+      await h.restartWorkflowManager();
+      forgetInjections(h.sessionId);
+      const binding = h.store.getBinding(h.store.getRun(run)!.bindingId)!;
+      const anchors = h.store.listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+      const observed = mode === "packet echo" || mode === "hook before append";
+      assert.equal(anchors[0]?.turn?.id, observed ? "packet" : undefined);
+      const ids = readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+        .filter(d => d.source.kind === "transcript").map(d => d.source.id);
+      const duringSubmit = observed ? [] : mode === "two matching turns" ? ["packet", "other-copy"] : ["human"];
+      assert.deepEqual(ids, ["human-before-enter", ...duringSubmit, "later-human-repeat"]);
+      if (observed) {
+        renameSync(path, path + ".original");
+        writeFileSync(path, readFileSync(path + ".original"));
+        const replacement = readWorkflowIntentSnapshot(h.registry, binding, anchors)!;
+        assert.ok(replacement.decisions.some(d => d.source.id === "packet"), "a replacement file cannot spend the old receipt");
+      }
+    } finally { await h.stop(); }
+  });
+}
 
 test("a Code Quality Judge repair must pass before the verified pull request action can complete locally", async () => {
   const h = await harness("quality-judge-repair", { pullRequest: true, verdict: () => "fail" });

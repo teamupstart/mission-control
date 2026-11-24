@@ -351,8 +351,12 @@ const sendListeners: SendListener[] = [];
  * later turns of the same words (a steered review delivery's echo) settles it here, while the file
  * still holds only what was written before this send, so the new send's turn can never decide it.
  */
-export function onSend(listener: SendListener): void {
+export function onSend(listener: SendListener): () => void {
   sendListeners.push(listener);
+  return () => {
+    const index = sendListeners.indexOf(listener);
+    if (index >= 0) sendListeners.splice(index, 1);
+  };
 }
 
 function announceSend(conversation: DeliveryConversation, fingerprint: string): void {

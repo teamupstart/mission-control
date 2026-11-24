@@ -141,6 +141,7 @@ import {
   reserveInjection,
 } from "../injections.ts";
 import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
+import { onSend } from "../delivery-binding.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -169,6 +170,8 @@ import {
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
   probeMatchesRepositoryContent,
+  confirmedTerminalWorkflowTurn,
+  terminalSubmissionBoundary,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -7039,11 +7042,19 @@ export class WorkflowManager {
     let attributionRefused: string | null = null;
     let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
     let clientMessageId: string | undefined;
+    let terminalSubmit: ReturnType<typeof terminalSubmissionBoundary> = null;
+    let competingSend = false;
+    let stopObservingSends: (() => void) | undefined;
     const reserveAtWrite: PromptWriteGuard = (phase, receiptTarget) => {
       const block = this.deliveryBlock(sending, expectedPane)
         ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
           ? "inspector_feedback_superseded" : null);
-      if (block || phase === "preflight" || receipt) return block;
+      if (block || phase === "preflight") return block;
+      if (phase === "submit") {
+        terminalSubmit = receipt ? terminalSubmissionBoundary(sessionMessages(this.registry.getSession(session.id)!)) : null;
+        return null;
+      }
+      if (receipt) return null;
       // Sample after the pane mode check or SDK send queue, immediately before writing.
       // A human copy already in the transcript must stay on the earlier side of the offset.
       try {
@@ -7055,8 +7066,16 @@ export class WorkflowManager {
         if (receiptTarget) {
           clientMessageId = receipt.id;
           receiptTarget.clientMessageId = clientMessageId;
+        } else {
+          const fingerprint = receipt.fingerprint;
+          stopObservingSends = onSend((other, words) => {
+            if (other.key === sending.noteKey && words === fingerprint) competingSend = true;
+          });
         }
-        reserveInjection(session.id, sending.payload, "workflow", () => {
+        reserveInjection(session.id, sending.payload, "workflow", hook => {
+          if (hook?.transcriptPath && hook.transcriptPath === terminalSubmit?.transcript.path) {
+            terminalSubmit.hookAt = hook.ts ?? null;
+          }
           // The Registry consumes this receipt after recording the prompt's work episode.
           // A later human retype has no receipt, even when its text equals this packet.
           if (sending.kind !== "session_action") return;
@@ -7084,6 +7103,8 @@ export class WorkflowManager {
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
       return;
+    } finally {
+      stopObservingSends?.();
     }
     if (!result.ok) {
       if (result.pasted === false) {
@@ -7132,9 +7153,11 @@ export class WorkflowManager {
     const live = this.registry.getSession(sending.sessionId);
     const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
-    // A paste acknowledgment cannot distinguish a human's identical intervening turn.
-    // Only the id passed to the accepting transport can identify a delayed workflow echo.
+    // The SDK's client id can identify a delayed echo. A pane's acknowledgment alone cannot.
     const usableReceipt = clientMessageId && result.submitVerified ? receipt : undefined;
+    const terminalTurn = !usableReceipt && result.submitVerified && receipt && !receipt.contested && !competingSend
+      ? confirmedTerminalWorkflowTurn(terminalSubmit, receipt.fingerprint) : null;
+    terminalSubmit = null;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
@@ -7142,7 +7165,7 @@ export class WorkflowManager {
       Date.now(),
       usableReceipt?.transcriptOffset ?? null,
       usableReceipt ? { clientMessageId: usableReceipt.id, transcriptPath: usableReceipt.transcriptPath ?? transcript?.path }
-        : { unusableReceiptId: receipt?.id },
+        : { unusableReceiptId: receipt?.id, terminalTurn },
     );
     if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;

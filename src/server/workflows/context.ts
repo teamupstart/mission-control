@@ -444,9 +444,38 @@ export interface DeliveredWorkflowTranscriptAnchor {
   clientMessageId?: string;
   transcriptPath?: string;
   legacySend?: { start: number; end: number };
-  turn?: { id: string; ts: number };
+  turn?: { id: string; ts: number; fileId?: string };
   beforeSend?: true;
   receiptId?: string;
+}
+
+/** The transcript observed immediately before the terminal's Enter keystroke. */
+export function terminalSubmissionBoundary(transcript: ReturnType<typeof sessionMessages>) {
+  const snapshot = transcript?.read.snapshot?.(transcript.path);
+  return transcript && snapshot?.fileId ? {
+    transcript, fileId: snapshot.fileId, offset: snapshot.size, at: Date.now(), hookAt: null as number | null,
+  } : null;
+}
+
+/** A verified submit and its prompt hook must identify a single new turn in the same file. */
+export function confirmedTerminalWorkflowTurn(boundary: ReturnType<typeof terminalSubmissionBoundary>, fingerprint: string) {
+  const confirmedAt = Date.now();
+  if (!boundary || boundary.hookAt === null || boundary.hookAt < boundary.at || boundary.hookAt > confirmedAt) return null;
+  const { transcript: { path, read }, fileId, offset } = boundary;
+  try {
+    const end = read.snapshot?.(path);
+    if (end?.fileId !== fileId || end.size <= offset || end.size - offset > 256 * 1024) return null;
+    const page = read.after(path, offset, 12, "cooperative");
+    if (!page.atEnd || page.end !== end.size || page.skippedRecord || page.finishOversizedRecord
+      || read.snapshot?.(path)?.version !== end.version) return null;
+    const users = page.messages.filter(m => m.role === "user");
+    const turn = users[0];
+    if (users.length !== 1 || !turn || turn.ts < boundary.at || turn.ts > confirmedAt
+      || injectionFingerprint(turn.text) !== fingerprint) return null;
+    return { path, fileId, id: turn.id, ts: turn.ts };
+  } catch {
+    return null;
+  }
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -536,6 +565,7 @@ function deliveredWorkflowTurnIdentities(
     }
     const payloadFingerprint = injectionFingerprint(delivery.payload);
     if (delivery.turn) {
+      if (delivery.turn.fileId && located.read.snapshot?.(located.path)?.fileId !== delivery.turn.fileId) continue;
       identities.push({ ...delivery.turn, payloadFingerprint });
       continue;
     }

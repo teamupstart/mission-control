@@ -43,7 +43,7 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
-  private readonly delivering = new Map<string, OpenCard>();
+  private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
   private readonly recentIds = new Set<string>();
@@ -55,7 +55,9 @@ export class VoiceRouter {
     private readonly publish: (card: VoiceCard) => void,
   ) {}
 
-  activeCards(): VoiceCard[] { return Array.from(this.open.values(), ({ card }) => card); }
+  activeCards(): VoiceCard[] {
+    return [...Array.from(this.open.values(), ({ card }) => card), ...this.delivering.values()];
+  }
 
   private latestActionAt(capturedAt: number): PendingVoiceAction | undefined {
     let latest: PendingVoiceAction | undefined;
@@ -180,15 +182,19 @@ export class VoiceRouter {
     // A roster key can outlive the session shown on the pending card.
     const selected = part.target;
     const target = selected && roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
-    this.delivering.set(id, item);
+    const inFlight = { ...item.card, reason: "delivering", deadline: null };
+    this.delivering.set(id, inFlight);
     let result: DeliveryResult = "not-running";
     try {
-      if (target) result = await this.deliverer.deliver(target, part.text, id, item.command);
+      if (target) {
+        this.publish(inFlight);
+        result = await this.deliverer.deliver(target, part.text, id, item.command);
+      }
     } catch (error) {
       result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
     }
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
-    if (this.delivering.get(id) !== item) return true;
+    if (this.delivering.get(id) !== inFlight) return true;
     this.delivering.delete(id);
     const outcome = typeof result === "string" ? result : result.outcome;
     if (typeof result !== "string") item.entry.detail = result.detail;

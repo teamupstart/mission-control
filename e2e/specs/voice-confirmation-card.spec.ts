@@ -1,3 +1,4 @@
+import { forward } from "../fixtures/port-forward.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { allowStreamDisconnect, captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
@@ -309,39 +310,54 @@ test("a lost Send now response cannot keep its delivered outcome busy", async ({
 
 for (const connection of ["first", "reconnected"] as const) {
   test(`a delayed ${connection} snapshot cannot extend the daemon cancel window`, async ({ dashboard: page, daemon }) => {
-    await setupCards(page, daemon, 7);
+    await setupCards(page, daemon, connection === "reconnected" ? 12 : 7);
     await runningAgent(page, daemon, "Steve");
-    await say(daemon, "Steve, check the snapshot");
     await page.addInitScript(connection => {
-      const Native = window.EventSource;
-      window.EventSource = class extends Native {
+      window.EventSource = class extends EventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
           super(url, init);
+          let snapshots = 0;
+          this.addEventListener("error", () => { document.documentElement.dataset.streamDropped = "true"; });
           this.addEventListener("message", event => {
             if (!event.isTrusted) return;
             const frame = JSON.parse(event.data);
             if (frame.type === "voice_card") event.stopImmediatePropagation();
             if (frame.type !== "snapshot") return;
-            if (connection === "first") event.stopImmediatePropagation();
-            // Buffer the daemon's exact snapshot. For a reconnect, replay it after
-            // the dashboard already knows this card's original cancel window.
+            snapshots++;
+            if (connection === "reconnected" && snapshots === 1) return;
+            event.stopImmediatePropagation();
             setTimeout(() => {
               this.dispatchEvent(new MessageEvent("message", { data: event.data }));
-              document.documentElement.dataset.snapshotReleased = "true";
+              document.documentElement.dataset.releasedSnapshot = String(snapshots);
             }, 2200);
           });
         }
       };
     }, connection);
-    await page.reload();
-    const card = page.getByRole("status").filter({ hasText: "check the snapshot" });
-    await expect(page.locator("html")).toHaveAttribute("data-snapshot-released", "true");
-    await expect(card.getByRole("button", { name: "Cancel" })).toBeVisible();
-    await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
-      "SELECT count(*) AS n FROM session_spoken_turns WHERE spoken_words = ?",
-    ).get("check the snapshot")?.n), { timeout: 8000, intervals: [50] }).toBe(1);
-    await expect(card.getByRole("button", { name: "Cancel" })).toHaveCount(0, { timeout: 600 });
-    await expect(card).toContainText("Awaiting delivery confirmation");
+    const tunnel = connection === "reconnected" ? await forward(daemon.baseURL) : null;
+    try {
+      await say(daemon, "Steve, check the snapshot");
+      const card = page.getByRole("status").filter({ hasText: "check the snapshot" });
+      const cancel = card.getByRole("button", { name: "Cancel" });
+      if (tunnel) {
+        await page.goto(`http://127.0.0.1:${tunnel.port}/`);
+        await expect(cancel).toBeVisible();
+        tunnel.disconnect();
+        await expect(page.locator("html")).toHaveAttribute("data-stream-dropped", "true");
+      } else {
+        await page.reload();
+      }
+      await expect(page.locator("html")).toHaveAttribute("data-released-snapshot", tunnel ? "2" : "1");
+      await expect(cancel).toBeVisible();
+      await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
+        "SELECT count(*) AS n FROM session_spoken_turns WHERE spoken_words = ?",
+      ).get("check the snapshot")?.n), { timeout: 15_000, intervals: [50] }).toBe(1);
+      await expect(cancel).toHaveCount(0, { timeout: 600 });
+      await expect(card).toContainText("Awaiting delivery confirmation");
+      if (tunnel) await captureCard(card, "native-reconnect-expired-window");
+    } finally {
+      await tunnel?.stop();
+    }
   });
 }
 

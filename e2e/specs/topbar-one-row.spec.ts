@@ -524,6 +524,24 @@ test("the edge mute tab leaves busy title-bar controls clickable on one row", as
   await library.click({ position: { x: 8, y: 3 } });
   await expect(library).toHaveAttribute("aria-current", "page");
   await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  const bar = dashboard.locator("header.topbar");
+  const message = "Voice mute failed. The listener could not save your request. Try again after reconnecting the microphone.";
+  await dashboard.route("**/api/voice/mute", route => route.fulfill({ status: 503, json: { error: message } }), { times: 1 });
+  await bar.getByRole("button", { name: "Voice: listening. Mute" }).click();
+  const alert = dashboard.getByRole("alert").filter({ hasText: message });
+  await expect(alert).toBeInViewport({ ratio: 1 });
+  await expect(bar.getByRole("alert")).toHaveCount(0);
+  expect((await readBar(dashboard)).rows, "720 px with a long top-bar mute error").toBe(1);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    await dashboard.mouse.move(0, 200);
+    await bar.getByRole("button", { name: "Voice: listening. Mute" }).blur();
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+    const bounds = (await alert.boundingBox())!;
+    await dashboard.screenshot({ path: join(mkdtempSync(join(root, "mute-alert-")), "title-bar.png"),
+      clip: { x: 0, y: 0, width: 720, height: Math.ceil(bounds.y + bounds.height) + 5 } });
+  }
   await edge.click();
   await expect(dashboard.locator("button.vi-status-line")).toHaveAccessibleName("Voice: muted. Unmute");
+  await expect(alert).toHaveCount(0);
 });

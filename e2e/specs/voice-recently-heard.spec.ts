@@ -88,22 +88,44 @@ test("a failed history read shows an alert and retains entries until a successfu
   await expect(error).toHaveCount(0);
 });
 
-test("an initial history failure replaces Loading with an unavailable state until polling recovers", async ({ dashboard: page, daemon }) => {
-  await enableVoice(daemon);
-  await page.route("**/api/voice/heard", route => route.fulfill({ status: 503 }));
-  await page.goto(daemon.baseURL + "/#/settings/voice");
-  const history = page.getByRole("region", { name: "Recently heard" });
-  await expect(history.getByRole("alert")).toHaveText("Could not read recent utterances.");
-  await expect(history.getByRole("cell", { name: "History unavailable." })).toBeVisible();
-  await expect(history.getByText("Loading…")).toHaveCount(0);
-  await expect(history.getByRole("button", { name: "Clear" })).toBeDisabled();
-  if (process.env.MC_E2E_EVIDENCE) {
-    const root = artifactsDir("voice-window");
-    mkdirSync(root, { recursive: true });
-    await history.screenshot({ path: join(mkdtempSync(join(root, "initial-read-")), "unavailable.png") });
-  }
-  expect((await say(daemon, "History is readable again")).ok).toBe(true);
-  await page.unroute("**/api/voice/heard");
-  await expect(history.getByRole("cell", { name: "History is readable again" })).toBeVisible();
-  await expect(history.getByRole("alert")).toHaveCount(0);
-});
+for (const previouslyEmpty of [false, true]) {
+  const failure = previouslyEmpty ? "after an empty read" : "on the initial read";
+  test(`Clear deletes retained speech when history is unavailable ${failure} and polling recovers`, async ({ dashboard: page, daemon }) => {
+    await enableVoice(daemon);
+    const endpoint = daemon.baseURL + "/api/voice/heard";
+    const history = page.getByRole("region", { name: "Recently heard" });
+    const clear = history.getByRole("button", { name: "Clear" });
+    if (previouslyEmpty) {
+      await page.goto(daemon.baseURL + "/#/settings/voice");
+      await expect(history).toContainText("Nothing heard yet.");
+      await expect(clear).toBeDisabled();
+    }
+    await page.route("**/api/voice/heard", route => route.request().method() === "GET"
+      ? route.fulfill({ status: 503 })
+      : route.continue());
+    expect((await say(daemon, "Speech retained during the outage")).ok).toBe(true);
+    if (!previouslyEmpty) await page.goto(daemon.baseURL + "/#/settings/voice");
+
+    await expect(history.getByRole("alert")).toHaveText("Could not read recent utterances.");
+    await expect(history.getByRole("cell", { name: "History unavailable." })).toBeVisible();
+    await expect(clear).toBeEnabled();
+    if (process.env.MC_E2E_EVIDENCE && !previouslyEmpty) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await history.screenshot({ path: join(mkdtempSync(join(root, "unread-clear-")), "unavailable.png") });
+    }
+
+    const entries = async () => (await (await page.request.get(endpoint)).json()).entries;
+    expect(await entries()).toEqual([expect.objectContaining({ text: "Speech retained during the outage" })]);
+    const deletion = page.waitForResponse(response => response.url() === endpoint && response.request().method() === "DELETE");
+    await clear.click();
+    expect((await deletion).ok()).toBe(true);
+    expect(await entries()).toEqual([]);
+
+    expect((await say(daemon, "History is readable again")).ok).toBe(true);
+    await page.unroute("**/api/voice/heard");
+    await expect(history.getByRole("cell", { name: "History is readable again" })).toBeVisible();
+    await expect(history.getByRole("cell", { name: "Speech retained during the outage" })).toHaveCount(0);
+    await expect(history.getByRole("alert")).toHaveCount(0);
+  });
+}

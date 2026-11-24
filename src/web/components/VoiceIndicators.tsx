@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import {
   voiceCapable, VOICE_INDICATOR_IDS, type VoiceConfig, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
@@ -12,6 +13,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export const VoiceWindow = createContext<{
   state: VoiceState;
   settings: VoiceConfigState;
+  topbarFeedback: RefObject<HTMLDivElement | null>;
   openSetup(): void;
 } | null>(null);
 
@@ -19,10 +21,19 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   state: VoiceState | null; enabled: boolean; openSetup(): void; children: ReactNode;
 }) {
   const { config, update, error } = useVoiceConfig(enabled);
+  const topbarFeedback = useRef<HTMLDivElement>(null);
   const value = useMemo(() => enabled && state ? {
-    state, settings: { config, update, error }, openSetup,
+    state, settings: { config, update, error }, openSetup, topbarFeedback,
   } : null, [enabled, state, config, update, error, openSetup]);
   return <VoiceWindow.Provider value={value}>{children}</VoiceWindow.Provider>;
+}
+
+/** The title bar measures every child. Its error belongs below that row. */
+export function VoiceTopbarFeedback() {
+  const voice = useContext(VoiceWindow);
+  const ui = useUiConfig();
+  if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes("topbar")) return null;
+  return <div ref={voice.topbarFeedback} className="vi-topbar-feedback" />;
 }
 
 export function hotkeyShown(state: VoiceState, config: VoiceConfig | null): boolean {
@@ -109,8 +120,9 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
     const response = await api.setVoiceMuted(muted);
     setError(response.ok ? null : { muted, message: response.error ?? "Could not change voice mute." });
   };
+  const alert = error && <span className="settings-error" role="alert">{error.message}</span>;
   return <><VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={() => void activate()} />
-    {error && <span className="settings-error" role="alert">{error.message}</span>}</>;
+    {id === "topbar" && alert ? voice.topbarFeedback.current && createPortal(alert, voice.topbarFeedback.current) : alert}</>;
 }
 
 const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as const;

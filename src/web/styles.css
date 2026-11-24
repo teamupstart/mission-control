@@ -43139,6 +43139,8 @@ button.vi { cursor: pointer; }
   stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
 }
 .vi-topbar .tb-label { color: var(--muted); }
+.vi-topbar-feedback:empty { display: none; }
+.vi-topbar-feedback { flex: none; padding: 6px 14px; overflow-wrap: anywhere; }
 .vi-topbar:hover { background: color-mix(in oklab, var(--vi) 12%, transparent); }
 .vi-status-line {
   display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px;

@@ -67,6 +67,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     const result = await api.clearRecentlyHeard();
     if (result.ok) {
       setEntries([]);
+      setReadError("");
       setClearError("");
     } else {
       setClearError(result.error ?? "Could not clear recent utterances.");
@@ -74,17 +75,18 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     setClearing(false);
   }
   const now = Date.now();
-  const initialStatus = readError ? "History unavailable." : "Loading…";
+  const knownEmpty = !readError && entries?.length === 0;
+  const readStatus = readError ? "History unavailable." : "Loading…";
   return <section aria-label="Recently heard" className="rh-dialog" data-anchor="voice/heard">
-    <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && `${entries.length} recent`}</span>
-      <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={!entries?.length || clearing} onClick={() => void clear()}>Clear</button></Tooltip>
+    <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && !readError && `${entries.length} recent`}</span>
+      <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={knownEmpty || clearing} onClick={() => void clear()}>Clear</button></Tooltip>
     </header>
     {clearError && <p role="alert" className="settings-error">{clearError}</p>}
     {readError && <p role="alert" className="settings-error">{readError}</p>}
     <div className="rh-scroll"><table className="rh-table" aria-label="Recently heard utterances">
       <thead><tr>{["Ago", "Heard", "Matched", "Decided by", "Outcome"].map(title => <th scope="col" key={title}>{title}</th>)}</tr></thead>
       <tbody>{entries?.length ? entries.map(entry => <HeardRow key={entry.id} entry={entry} now={now} roster={roster} />) :
-        <tr><td colSpan={5} className="rh-empty-cell">{entries ? <p className="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p> : initialStatus}</td></tr>}</tbody>
+        <tr><td colSpan={5} className="rh-empty-cell">{knownEmpty ? <p className="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p> : readStatus}</td></tr>}</tbody>
     </table></div>
     <footer className="rh-dialog-foot"><p className="rh-privacy">Kept in memory, cleared when Mission Control quits. Audio is not stored.</p></footer>
   </section>;

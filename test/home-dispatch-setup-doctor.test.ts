@@ -827,6 +827,9 @@ test("the daemon check says what actually happened: refused, timed out, an error
 
   const broken = await reading(async () => ({ ok: false, status: 500, json: async () => ({}) }));
   assert.match(broken.message, /\(HTTP 500\)/);
+  const stalledBody = await reading(async () => ({ ok: true, status: 200, json: async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }); } }));
+  assert.match(stalledBody.message, /did not give a usable answer \(the reply did not finish within 3 s\)/, "a stalled body is a timeout, not bad JSON");
+  assert.match(stalledBody.fix!, /busy or stuck/);
   const garbled = await reading(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token"); } }));
   assert.match(garbled.message, /\(the reply was not JSON\)/);
   const other = await reading(async () => ({ ok: true, status: 200, json: async () => ({ service: "something-else" }) }));

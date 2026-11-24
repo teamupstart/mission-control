@@ -108,6 +108,11 @@ export interface HealthReading {
 
 const HEALTH_TIMEOUT_MS = 3000;
 
+function isTimeout(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
 export async function fetchHealth(deps: SetupDeps): Promise<HealthReading> {
   // One `mctl setup` run reads the daemon from three steps; with a cache they share one answer.
   if (!deps.healthCache) return readHealth(deps);
@@ -119,15 +124,16 @@ async function readHealth(deps: SetupDeps): Promise<HealthReading> {
   try {
     reply = await deps.fetch(`${daemonBaseUrl(deps.env)}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
   } catch (error) {
-    const name = error instanceof Error ? error.name : "";
-    if (name === "TimeoutError" || name === "AbortError") return { body: null, problem: { kind: "timeout", detail: `no answer within ${HEALTH_TIMEOUT_MS / 1000} s` } };
+    if (isTimeout(error)) return { body: null, problem: { kind: "timeout", detail: `no answer within ${HEALTH_TIMEOUT_MS / 1000} s` } };
     const cause = error instanceof Error ? (error.cause as { code?: string } | undefined)?.code ?? error.message : String(error);
     return { body: null, problem: { kind: "unreachable", detail: String(cause) } };
   }
   if (!reply.ok) return { body: null, problem: { kind: "http", detail: `HTTP ${reply.status}` } };
   try {
     return { body: await reply.json(), problem: null };
-  } catch {
+  } catch (error) {
+    // The deadline also covers reading the body: a daemon that sent headers and then stalled is slow, not wrong.
+    if (isTimeout(error)) return { body: null, problem: { kind: "timeout", detail: `the reply did not finish within ${HEALTH_TIMEOUT_MS / 1000} s` } };
     return { body: null, problem: { kind: "not-json", detail: "the reply was not JSON" } };
   }
 }

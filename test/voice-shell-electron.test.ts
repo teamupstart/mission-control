@@ -18,7 +18,7 @@ import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 import { formatChord } from "../src/shared/keyboard-chords.ts";
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {
-  skip: process.platform !== "darwin", timeout: 60_000,
+  skip: process.platform !== "darwin", timeout: 75_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
   const root = mkdtempSync(join(tmpdir(), "voice-shell-"));
@@ -61,6 +61,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let holdReport = false;
   let refuseReport = false;
   let heldReport: ServerResponse | undefined;
+  let interceptRelease: ((report: VoiceShellReport, res: ServerResponse) => boolean) | undefined;
   const publicRequests: { path?: string; credential: boolean }[] = [];
   const server = createServer((req, res) => {
     publicRequests.push({ path: req.url, credential: !!req.headers["x-harness-token"] });
@@ -115,7 +116,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }
     if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
       if (refuseReport) { res.writeHead(503).end(); return; }
-      reports.push(JSON.parse(body));
+      const report: VoiceShellReport = JSON.parse(body);
+      if (!report.pushToTalk && report.pushToTalkReleasedAtHostUs !== undefined && interceptRelease?.(report, res)) return;
+      reports.push(report);
       if (holdReport) {
         holdReport = false;
         heldReport = res;
@@ -261,12 +264,12 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
     assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
 
+    const call = (value: boolean) => app.evaluate((_, value) =>
+      (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
+    const post = (down: boolean) => app.evaluate((_, down) =>
+      (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
     await t.test("key-up reaches the daemon while both the press and routine report responses are stalled", async t => {
       if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
-      const call = (value: boolean) => app.evaluate((_, value) =>
-        (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
-      const post = (down: boolean) => app.evaluate((_, down) =>
-        (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
       await call(true);
       publish(reserved, "auto-muted");
       await until(async () => !!reports.at(-1)?.callActive && (await read()).mode === "auto-muted");
@@ -299,6 +302,54 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         heldReport = undefined;
         routine.end();
         await check;
+        await call(false);
+      }
+    });
+
+    await t.test("a lost key-up retries the same snapshot promptly, with a bound and supersession by a new hold", async t => {
+      if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
+      await call(true);
+      publish(reserved, "auto-muted");
+      await until(async () => !!reports.at(-1)?.callActive && (await read()).mode === "auto-muted");
+      async function press() {
+        const start = reports.length;
+        await post(true);
+        await until(() => reports.slice(start).some(r => r.pushToTalk));
+      }
+      async function loseRelease(drop: (attempt: number, res: ServerResponse) => boolean) {
+        await press();
+        const attempts: VoiceShellReport[] = [];
+        interceptRelease = (report, res) => {
+          // Count retries of this observation only. A fresh heartbeat has its own timestamp.
+          if (attempts.length && report.reportedAtHostUs !== attempts[0]!.reportedAtHostUs) return false;
+          attempts.push(report);
+          return drop(attempts.length, res);
+        };
+        await post(false);
+        await until(() => attempts.length > 0);
+        return attempts;
+      }
+      try {
+        // Lose the original request before applying it and leave its connection unanswered.
+        const recovered = await loseRelease(attempt => attempt === 1);
+        await until(() => reports.some(r => r.reportedAtHostUs === recovered[0]!.reportedAtHostUs), 1500);
+        assert.deepEqual(recovered, [recovered[0], recovered[0]]);
+
+        const exhausted = await loseRelease((_, res) => { res.destroy(); return true; });
+        await until(() => exhausted.length === 3, 1500);
+        await new Promise(resolve => setTimeout(resolve, 700));
+        assert.deepEqual(exhausted, [exhausted[0], exhausted[0], exhausted[0]]);
+
+        let unanswered: ServerResponse | undefined;
+        const superseded = await loseRelease((_, res) => { unanswered = res; return true; });
+        await press();
+        // Let the failed response reach the shell only after it has reported the new hold.
+        unanswered!.destroy();
+        await new Promise(resolve => setTimeout(resolve, 700));
+        assert.equal(superseded.length, 1);
+        await post(false);
+      } finally {
+        interceptRelease = undefined;
         await call(false);
       }
     });

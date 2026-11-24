@@ -3,6 +3,7 @@ import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
 import { macVoiceHardware, type VoiceHardware } from "./voice-hardware.ts";
 import { dirname, isAbsolute } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
@@ -66,7 +67,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let lastReportUs = -1;
   const disabled = () => state.mode === "off";
 
-  let lastHeld = false;
+  let lastEdge: VoiceShellReport | undefined;
 
   function makeReport(owner: VoiceHardware): VoiceShellReport {
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
@@ -84,10 +85,10 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     };
   }
 
-  async function deliver(current: NonNullable<typeof connection>, owner: VoiceHardware, report: VoiceShellReport) {
+  async function deliver(current: NonNullable<typeof connection>, owner: VoiceHardware, report: VoiceShellReport, timeoutMs = 3000) {
     if (connection !== current || hardware !== owner || disabled()) return false;
     const response = await current.postStatus("/voice/shell-report", report,
-      AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs)]));
     const accepted = response?.ok ?? false;
     if (connection === current && hardware === owner) {
       if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
@@ -109,12 +110,22 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     }
   }
 
+  async function sendEdge(current: NonNullable<typeof connection>, owner: VoiceHardware) {
+    const edge = lastEdge = makeReport(owner);
+    if (edge.pushToTalk) return deliver(current, owner, edge);
+    // Key-up closes capture. Bound both the wait for a lost reply and the retries.
+    // Reuse the original timestamp so even an in-flight retry cannot end a newer hold.
+    for (const backoffMs of [0, 100, 250]) {
+      if (backoffMs) await delay(backoffMs);
+      if (edge !== lastEdge) return false;
+      if (await deliver(current, owner, edge, 500)) return true;
+    }
+    return false;
+  }
+
   function requestReport(): Promise<boolean> {
-    if (hardware && connection && hardware.holdingToTalk !== lastHeld) {
-      lastHeld = hardware.holdingToTalk;
-      // Dispatch both edges immediately. The daemon orders snapshots by observation
-      // time, so a press arriving after its release cannot reopen capture.
-      return deliver(connection, hardware, makeReport(hardware));
+    if (hardware && connection && hardware.holdingToTalk !== (lastEdge?.pushToTalk ?? false)) {
+      return sendEdge(connection, hardware);
     }
     reportRequested = true;
     return sending ??= Promise.resolve().then(sendReports);
@@ -133,7 +144,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     layoutSubscription = undefined;
     hardware?.stop();
     hardware = undefined;
-    lastHeld = false;
+    lastEdge = undefined;
   }
 
   async function sync() {

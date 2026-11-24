@@ -14,6 +14,19 @@ snapshot has no `voice` field, and neither the Settings category, the Setup fami
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
 
+## Listening from the desktop app
+
+Enable Voice addressing and its required previews in Settings. In Setup, download the speech
+model and choose **Ask macOS** to grant the microphone. The app also asks automatically when
+the verified model and listener are available. After a denial, **Open System Settings** opens
+the microphone privacy pane. Allow Mission Control, then choose **Check again**.
+
+You can minimize the window while speaking. The menu-bar microphone means listening, and a
+struck microphone means muted or unavailable. Right-click for the status and existing app
+commands. Left-click to mute or unmute. The handset and microphone with waves represent the
+call and push-to-talk modes when the daemon reports them. The need-you count stays beside the
+icon in every mode.
+
 ## Running the listener on a development Mac
 
 Build the helper with `npm run build:voice-listener`. Start the daemon, enable the four previews, download

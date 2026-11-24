@@ -8,6 +8,10 @@ import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 
+import { join } from "node:path";
+import { voiceTray } from "./voice-tray.ts";
+import type { VoiceState } from "../shared/voice.ts";
+
 interface ReportCounts {
   needsYou: number;
   working: number;
@@ -16,11 +20,25 @@ interface ReportCounts {
 }
 
 export interface TrayHandlers {
+  setMuted: (muted: boolean) => void;
   onOpen: () => void;
   onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
   onRemoveIntegrations: () => void;
   onQuit: () => void;
+}
+
+let presentation: ReturnType<typeof voiceTray> = null;
+let menu: Menu | null = null;
+let updateImage: ((image: string | undefined) => void) | null = null;
+let refreshMenu: (() => void) | null = null;
+
+export function setTrayVoice(state: VoiceState): void {
+  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
+  if (presentation?.image !== next?.image) updateImage?.(next?.image);
+  if (presentation?.status === next?.status && presentation?.action === next?.action) return;
+  presentation = next;
+  refreshMenu?.();
 }
 
 let tray: Tray | null = null;
@@ -67,7 +85,16 @@ function render(handlers: TrayHandlers): void {
     { type: "separator" },
     { label: "Quit Mission Control", click: () => handlers.onQuit() },
   ];
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  if (presentation) {
+    const { status, action, nextMuted } = presentation;
+    template.splice(3, 0,
+      { label: status, enabled: false },
+      { label: action, click: () => handlers.setMuted(nextMuted) },
+      { type: "separator" },
+    );
+  }
+  menu = Menu.buildFromTemplate(template);
+  tray.setContextMenu(presentation ? null : menu);
 }
 
 async function refresh(handlers: TrayHandlers): Promise<void> {
@@ -91,9 +118,17 @@ async function refresh(handlers: TrayHandlers): Promise<void> {
   }
 }
 
-export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
+export function createTray(iconPath: string, voiceImageDir: string, handlers: TrayHandlers): Tray {
   tray = new Tray(trayImage(iconPath));
-  tray.on("click", () => handlers.onOpen());
+  updateImage = image => tray?.setImage(trayImage(image ? join(voiceImageDir, image) : iconPath));
+  refreshMenu = () => render(handlers);
+  tray.on("click", () => {
+    if (presentation) handlers.setMuted(presentation.nextMuted);
+    else handlers.onOpen();
+  });
+  tray.on("right-click", () => {
+    if (presentation && menu) tray?.popUpContextMenu(menu);
+  });
   render(handlers);
   void refresh(handlers);
   poll = setInterval(() => void refresh(handlers), 3000);
@@ -103,6 +138,9 @@ export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
 export function destroyTray(): void {
   if (poll) clearInterval(poll);
   poll = null;
+  menu = null;
+  presentation = null;
+  updateImage = refreshMenu = null;
   tray?.destroy();
   tray = null;
 }

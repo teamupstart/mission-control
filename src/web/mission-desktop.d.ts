@@ -11,6 +11,7 @@ export {};
 declare global {
   interface MissionDesktop {
     isDesktop: boolean;
+    fixVoiceMicrophone?(): Promise<void>;
     version(): Promise<string>;
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;

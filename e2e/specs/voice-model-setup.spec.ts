@@ -5,7 +5,7 @@ import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
+import { beListener, voiceToken, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
 
 // Voice addressing's speech model and microphone in Setup (Phase 8), end to end: the Voice family's
 // speech model row reads missing, Download shows a progress bar with its figures and Cancel and
@@ -222,4 +222,42 @@ test("the microphone row reads not checked until a listener reports, and the inp
   } finally {
     listener?.stop();
   }
+});
+
+test("desktop Setup asks for microphone access, reflects a shell grant and offers System Settings after denial", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const report = async (microphone: string) => {
+    const response = await fetch(daemon.baseURL + "/voice/shell-report", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      body: JSON.stringify({ microphone, capabilities: { microphone: { available: microphone === "granted" } } }),
+    });
+    expect(response.ok).toBe(true);
+  };
+  let repairs = 0;
+  await page.exposeFunction("fixtureMicrophone", async () => {
+    repairs++;
+    if (repairs === 1) await report("granted");
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "missionDesktop", {value: {
+      ...window.missionDesktop, onOpenSettings: () => () => {}, fixVoiceMicrophone: () => Reflect.get(window, "fixtureMicrophone")(),
+    }, configurable: true});
+  });
+  await page.reload(); // Install the fixture preload before hash-only Settings navigation.
+  await report("not-determined");
+  await openVoiceSetup(page, daemon);
+  const row = setupRow(page, MICROPHONE_ROW);
+  await row.getByRole("button", {name: "Ask macOS"}).click();
+  await expectRowStatus(page, MICROPHONE_ROW, "Ready");
+  await expect(row).toContainText("Allowed, as the desktop app reports");
+  await report("denied");
+  await expectRowStatus(page, MICROPHONE_ROW, "Needs setup");
+  await expect(row.getByRole("button", {name: "Check again"})).toBeVisible();
+  await row.getByRole("button", {name: "Open System Settings"}).click();
+  await expect.poll(() => repairs).toBe(2);
+  await expect(row.getByRole("button", {name: "Open System Settings"})).toBeEnabled();
+  await capture(page, "shell-microphone-denied");
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await expect(page.getByRole("status", { name: "Voice mode" })).toContainText("microphone access is denied");
 });

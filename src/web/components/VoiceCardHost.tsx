@@ -41,8 +41,17 @@ function Card({ card, actions, notify, sound, notifications }: {
         return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
       }
       const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
-      note.onclick = () => { window.focus(); note.close(); };
-      return () => note.close();
+      let timer: number | undefined;
+      const close = () => {
+        if (timer === undefined) return;
+        window.clearTimeout(timer);
+        timer = undefined;
+        note.onclick = null;
+        note.close();
+      };
+      timer = window.setTimeout(close, Math.max(0, deadline - Date.now()));
+      note.onclick = () => { window.focus(); close(); };
+      return close;
     } catch { /* A browser may require a service worker for system notifications. */ }
   }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications]);
   return <VoiceCardView card={card} actions={actions} />;
@@ -56,8 +65,14 @@ export function VoiceCardHost({ cards, actions, surface, sound, notifications }:
   // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
   if (surface && surface !== voice.confirmation) return null;
   const newestFirst = [...cards.values()].reverse();
+  let visible = newestFirst;
+  if (surface) {
+    const now = Date.now();
+    const pending = newestFirst.find(card => card.state === "pending" && card.deadline !== null && card.deadline > now);
+    visible = pending ? [pending] : newestFirst.slice(0, 1);
+  }
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {(surface ? newestFirst.slice(0, 1) : newestFirst).map(card => <Card key={card.id} card={card} actions={actions}
+    {visible.map(card => <Card key={card.id} card={card} actions={actions}
       notify={!surface} sound={sound} notifications={notifications} />)}
   </div>;
 }

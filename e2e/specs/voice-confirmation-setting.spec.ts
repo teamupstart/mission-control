@@ -33,25 +33,26 @@ test("three placement previews persist across reload, with a toast fallback and 
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
-  test(`the ${label} route restores the older pending card when the newer result expires`, async ({ dashboard: page, daemon }) => {
+  test(`the ${label} route immediately restores an older cancel window ahead of a newer outcome`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
-    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 7 } } })).ok()).toBe(true);
     expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
     await page.goto(daemon.baseURL + "/#/voice/" + placement);
     const card = page.getByRole("status");
-    await say(daemon, "Steve, inspect the older message");
+    await say(daemon, "Steve, inspect the older message", { id: "older" });
     await expect(card).toContainText("inspect the older message");
     await say(daemon, "Steve, inspect the newer message");
     await expect(card).toContainText("inspect the newer message");
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(card).toContainText("Cancelled");
+    await expect(card).toContainText("inspect the older message", { timeout: 2000 });
     await page.mouse.move(640, 400);
-    await expect(card).toContainText("inspect the older message", { timeout: 12_000 });
-    await captureCard(card, "restored-older-" + placement);
+    await captureCard(card, "priority-older-" + placement);
+    const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/older/cancel"));
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect((await cancelled).ok()).toBe(true);
     await expect(card).toContainText("Cancelled");
   });
 

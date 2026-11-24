@@ -79,3 +79,44 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
   await expect(page.getByRole("status").filter({ hasText: "Steve · Cancelled" })).toContainText("Stop sent to Will");
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["inspect native-send-now"]);
 });
+
+test("a browser notice closes at the deadline even if the stream disconnects", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 5);
+  const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
+  expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: {
+    alerts: { ...config.alerts, notifications: true, sound: false },
+  } })).ok()).toBe(true);
+  await page.addInitScript(() => {
+    document.hasFocus = () => false;
+    const closed: string[] = [];
+    Object.defineProperty(window, "Notification", { value: class {
+      static permission = "granted";
+      constructor(_title: string, readonly options: NotificationOptions) {
+        document.documentElement.dataset.openNotice = options.tag;
+      }
+      close() {
+        closed.push(this.options.tag!);
+        document.documentElement.dataset.closedNotices = closed.join(",");
+      }
+    } });
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        window.addEventListener("disconnect-fixture-stream", () => this.close(), { once: true });
+      }
+    };
+  });
+  await page.reload();
+  await runningAgent(page, daemon, "Steve");
+  const notices = page.locator("html");
+  await say(daemon, "Steve, drop this", { id: "early-close" });
+  await expect(notices).toHaveAttribute("data-open-notice", "voice-early-close");
+  await page.getByRole("status").filter({ hasText: "drop this" }).getByRole("button", { name: "Cancel" }).click();
+  await expect(notices).toHaveAttribute("data-closed-notices", "voice-early-close");
+  await say(daemon, "Steve, deliver this", { id: "disconnected" });
+  await expect(notices).toHaveAttribute("data-open-notice", "voice-disconnected");
+  await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+  await expect.poll(() => withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["deliver this"]);
+  await expect(notices).toHaveAttribute("data-closed-notices", "voice-early-close,voice-disconnected", { timeout: 2000 });
+  await expect(page.getByRole("status").filter({ hasText: "deliver this" })).toContainText("To Steve");
+});

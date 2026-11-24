@@ -1103,7 +1103,7 @@ The dashboard reports focus immediately and refines a slow clock sample with a s
 Before starting the countdown, the daemon requests a fresh focus report for “reply” and for named
 answers that depend on an open card. If the transcript overtakes a focus update, the daemon
 checks the question that was drawn at capture against the newly confirmed report.
-On load or reconnect, a dashboard can confirm a reply while its first card report is still in transit.
+The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
 A reply waiting for calibration stays bound to the observed question and can be cancelled.
 Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,

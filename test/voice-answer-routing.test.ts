@@ -885,6 +885,46 @@ test("only a fresh confirmation from the requested live dashboard can arm a repl
   assert.equal(answers()[0]?.id, "next-reply");
 });
 
+test("a cached background dashboard that already gained focus can confirm the spoken reply", async t => {
+  const first = question();
+  const second = question("Which cache?");
+  const router = registry.voiceRouter!;
+  const now = Date.now();
+  const start = performance.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  t.mock.method(performance, "now", () => start + (Date.now() - now));
+  t.after(router.openCards.connect("first"));
+  t.after(router.openCards.connect("second"));
+  const report = (id: string, focused: boolean, headers: Record<string, string> = {}) => put("/api/voice/open-cards", {
+    windowId: id, focused, cards: [{ kind: "question", id: id === "first" ? first.id : second.id, focused }],
+  }, headers);
+  const requests = new Map<string, number>();
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") requests.set(event.windowId, event.sequence);
+    else publish(event);
+  });
+  for (const beforeSpeech of [true, false]) {
+    await report("second", false);
+    assert.equal((await report("first", true, { "x-voice-calibrating": "1", "x-voice-observation-id": "1" })).status, 200);
+    requests.clear();
+    t.mock.timers.tick(100);
+    const capturedAt = Date.now();
+    const reply = router.accept({ id: "switch-" + beforeSpeech, text: "reply, tomorrow", capturedAt, backend: "fluidaudio", words: [] });
+    assert.deepEqual([...requests.keys()].sort(), ["first", "second"]);
+    t.mock.timers.tick(100);
+    const observed = start + (capturedAt - now) + (beforeSpeech ? -50 : 50);
+    await report("second", true, { "x-voice-confirm-focus": String(requests.get("second")), "x-voice-cards-observed-at-ms": String(Math.floor(observed)) });
+    await report("first", false, { "x-voice-confirm-focus": String(requests.get("first")) });
+    await reply;
+    if (beforeSpeech) {
+      assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
+      await say("cancel");
+    } else assert.deepEqual(answers(), []);
+    assert.equal(registry.getReview(first.id)?.status, "pending");
+  }
+});
+
 test("a reply before the first dashboard report requires a fresh card visible at speech capture", async t => {
   const q = question();
   const router = registry.voiceRouter!;

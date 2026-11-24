@@ -317,6 +317,64 @@ test("a reloaded dashboard can answer before its first card report reaches the d
   } finally { release.resolve(); }
 });
 
+test("a previously background dashboard receives a reply before the focus handoff reaches the daemon", async ({ dashboard: first, daemon }) => {
+  await setupCards(first, daemon, 30);
+  const steve = await runningAgent(first, daemon, "Steve");
+  const oldQuestion = await file(first, daemon, steve.cwd, "Which database?");
+  const newQuestion = await file(first, daemon, steve.cwd, "Which cache?");
+  const second = await first.context().newPage();
+  const release = Promise.withResolvers<void>();
+  const observed = Promise.withResolvers<number>();
+  const inbox = (page: Page) => page.getByRole("dialog", { name: "Attention inbox" });
+  const field = (page: Page, id: string) => inbox(page).locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+  // Set the OS focus reported by each test page independently of Playwright's
+  // own tab activation. The production listeners still read the real card DOM.
+  const focus = (page: Page, active: boolean) => page.evaluate(active => {
+    Object.defineProperty(document, "hasFocus", { configurable: true, value: () => active });
+    window.dispatchEvent(new Event(active ? "focus" : "blur"));
+  }, active);
+  try {
+    await second.goto(daemon.baseURL + "/#/fleet");
+    for (const page of [first, second]) {
+      await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+      await expectContentClearsBorder(inbox(page));
+    }
+    await field(second, newQuestion).focus();
+    const background = second.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && !r.request().postDataJSON().focused);
+    await focus(second, false);
+    await background;
+    const foreground = first.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && r.request().postDataJSON().focused &&
+      r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.id === oldQuestion && c.focused));
+    await focus(first, true);
+    await field(first, oldQuestion).focus();
+    await foreground;
+    for (const page of [first, second]) {
+      await page.route("**/api/voice/open-cards", async route => {
+        const headers = route.request().headers();
+        if (!headers["x-voice-confirm-focus"]) {
+          if (page === second && route.request().postDataJSON().focused && headers["x-voice-cards-observed-at-ms"]) {
+            observed.resolve(Number(headers["x-voice-cards-observed-at-ms"]));
+          }
+          await release.promise;
+        }
+        await route.continue().catch(() => {});
+      });
+    }
+    await focus(first, false);
+    await focus(second, true);
+    const latest = await observed.promise;
+    await expect.poll(async () => Number((await second.request.head(daemon.baseURL + "/api/voice/config")).headers()["x-voice-monotonic-time-ms"])).toBeGreaterThan(latest + 1);
+    await say(daemon, "reply, tomorrow");
+    await expect(field(first, oldQuestion)).toBeEmpty();
+    await expect(field(second, newQuestion)).toHaveValue("tomorrow");
+    await inbox(second).getByRole("button", { name: "Submit now" }).click();
+    await expect.poll(async () => (await (await second.request.get(daemon.baseURL + "/api/reviews/" + newQuestion)).json()).response).toBe("tomorrow");
+  } finally {
+    release.resolve();
+    await second.close();
+  }
+});
+
 test("a focused multi-decision form blocks replies to its single-decision neighbor", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");

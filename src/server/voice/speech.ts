@@ -36,12 +36,17 @@ interface Playback {
   onStop?: "failed" | "stopped" | "timed-out" | "finished";
 }
 
+const MAX_PENDING_JOBS = 2;
+// The listener can buffer 120 seconds of capture and retry its POST for another 55 seconds.
+const PLAYBACK_HISTORY_MS = 180_000;
+
 export class VoiceSpeechManager {
   readonly announced = new Set<string>();
   lastAudition: VoiceSpeechState["lastAudition"] = null;
   private readonly ledger: SpeechHolds;
   private readonly jobs = new Map<string, Playback>();
   private readonly history: { from: number; until: number }[] = [];
+  private discardedThrough = -Infinity;
   private unknown = false;
   private enabled = true;
   private readonly synth: VoiceSynthesizer;
@@ -92,15 +97,26 @@ export class VoiceSpeechManager {
     for (const { job } of this.items().reverse()) if (!purpose || job.purpose === purpose) this.stop(job.id);
   }
   get held() { return this.items().some(i => i.hold); }
-  awaitsExit(instance: string) {
-    return this.items().some(item => item.hold && (item.job.holder === instance || "supervisor" in item.hold));
+  canRetireLaunch(instance: string) {
+    return this.announced.has(instance) || this.ledger.knowsLaunch(instance) ||
+      this.items().some(item => item.hold && (item.job.holder === instance || "supervisor" in item.hold));
   }
   get listenerFailure() {
     if (this.unknown) return "the record of unfinished speech could not be read";
     return this.items().some(i => i.unanswered) ? "the listener did not confirm that speech had stopped" : null;
   }
-  during(time: number) {
-    return this.items().some(i => i.hold && time >= i.since) || this.history.some(h => time >= h.from && time <= h.until);
+  private pruneHistory(now: number) {
+    const cutoff = now - PLAYBACK_HISTORY_MS;
+    let count = 0;
+    while (count < this.history.length && this.history[count]!.until < cutoff) {
+      this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.until);
+    }
+    if (count) this.history.splice(0, count);
+  }
+  captureConflict(time: number): "while-speaking" | "stale" | null {
+    this.pruneHistory(this.deps.now());
+    if (this.items().some(i => i.hold && time >= i.since) || this.history.some(h => time >= h.from && time <= h.until)) return "while-speaking";
+    return time <= this.discardedThrough ? "stale" : null;
   }
   private holds() { return this.items().flatMap(item => item.hold ? [item.hold] : []); }
   private save() { return this.ledger.save(this.holds()); }
@@ -162,6 +178,7 @@ export class VoiceSpeechManager {
   }
 
   open(purpose: VoiceSpeechJob["purpose"], text: string, cardId: string | null) {
+    if (this.live?.state === "stopping" || this.jobs.size >= 1 + MAX_PENDING_JOBS) return null;
     const job: VoiceSpeechJob = { id: randomUUID(), purpose, text, cardId, state: "preparing",
       holder: null, voice: null, durationMs: null };
     this.jobs.set(job.id, { job, since: Infinity });
@@ -242,7 +259,9 @@ export class VoiceSpeechManager {
     item.job.state = state;
     this.jobs.delete(item.job.id);
     if (item.hold) {
-      this.history.push({ from: item.since, until: this.deps.now() });
+      const until = this.deps.now();
+      this.pruneHistory(until);
+      this.history.push({ from: item.since, until });
       if (!this.held) this.unknown = false;
     }
     if (item.job.purpose === "audition") this.lastAudition = { id: item.job.id, state };
@@ -256,8 +275,13 @@ export class VoiceSpeechManager {
     item.confirmBy ??= this.deps.now() + VOICE_SPEECH_CONFIRM_LIMIT_MS;
     if (!this.enabled) return;
     const remaining = item.confirmBy - this.deps.now();
-    if (remaining <= 0) item.unanswered = true;
-    else this.arm(item, remaining, () => { item.unanswered = true; this.deps.changed(); });
+    const unanswered = () => {
+      item.unanswered = true;
+      for (const queued of this.items()) if (!queued.hold) this.finish(queued, "failed");
+      this.deps.changed();
+    };
+    if (remaining <= 0) unanswered();
+    else this.arm(item, remaining, unanswered);
   }
   private arm(item: Playback, ms: number, fn: () => void) {
     this.clear(item);

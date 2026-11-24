@@ -6,7 +6,7 @@ import test, { afterEach } from "node:test";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, voiceStateStore as store } from "./helpers/voice-http.ts";
+import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
 import { VOICE_CONFIG_DEFAULTS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_MODEL_STATE_NONE } from "../src/shared/voice.ts";
@@ -97,7 +97,7 @@ test("timers request a stop, only the capture owner logs playback-time utterance
   t.mock.timers.tick(1);
   assert.deepEqual((await (await waiting).json()).speak, { id, stop: true });
   assert.equal(job.state, "stopping");
-  const second = await audition();
+  assert.equal((await post("/api/voice/speech/audition")).status, 409);
   await other.announce();
   await other.hello(); // Phase 9 may refuse the capture lease. Speech ownership is independent.
   const stopped = await holder.poll();
@@ -123,6 +123,8 @@ test("timers request a stop, only the capture owner logs playback-time utterance
   assert.equal((await holder.poll()).capture, false);
   assert.equal((await holder.event(id, "ended")).status, 200);
   assert.equal(job.state, "timed-out");
+  assert.equal((await holder.poll()).capture, true);
+  const second = await audition();
   assert.equal((await holder.poll()).speak.id, second);
   await holder.event(second, "ended");
   assert.equal((await holder.poll()).capture, true);
@@ -147,6 +149,59 @@ test("speech hello selects its holder from the header alone", async () => {
   assert.equal((await other.poll()).speak, null);
   assert.equal((await other.event(id, "ended")).status, 409);
   assert.equal((await sender.event(id, "ended")).status, 200);
+});
+
+test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const playing = await audition();
+  await holder.event(playing, "started");
+  const waiting = [await audition(), await audition()];
+  assert.ok(waiting.every(id => typeof id === "string"));
+  const expectBusy = async () => {
+    const response = await post("/api/voice/speech/audition");
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, "speech_busy");
+  };
+  await expectBusy();
+  await post("/api/voice/speech/stop", { id: waiting[1] });
+  assert.deepEqual(store.state().speech.lastAudition, { id: waiting[1], state: "stopped" });
+  await post("/api/voice/speech/stop", { id: playing });
+  await expectBusy(); // There is room, but the holder already has a Stop directive.
+  t.mock.timers.tick(4999);
+  assert.deepEqual(store.state().speech.lastAudition, { id: waiting[1], state: "stopped" });
+  t.mock.timers.tick(1);
+  assert.deepEqual(store.state().speech.lastAudition, { id: waiting[0], state: "failed" });
+  const held = await holder.poll();
+  assert.equal(held.capture, false);
+  assert.deepEqual(held.speak, { id: playing, stop: true });
+  await holder.event(playing, "ended");
+  assert.equal((await holder.poll()).capture, true);
+  assert.equal(store.speech.live, null);
+});
+
+test("delayed utterances are logged within the playback history window and discarded after it", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const early = Date.now();
+  await holder.event(await audition(), "ended");
+  t.mock.timers.tick(180_000);
+  await holder.hello();
+  const send = (time: number, text: string) => holder.request(utterancePath(), { ...capture(text), capturedAt: time });
+  assert.deepEqual(await (await send(early, "Steve delayed")).json(), { accepted: false });
+  assert.equal((await readHeard())[0]?.text, "Steve delayed");
+  const recent = Date.now();
+  await holder.event(await audition(), "ended");
+  t.mock.timers.tick(1);
+  const before = await readHeard();
+  assert.deepEqual(await (await send(early, "Steve too late")).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), before);
+  assert.deepEqual(await (await send(recent, "Steve recent playback")).json(), { accepted: false });
+  assert.equal((await readHeard())[0]?.rule, "while-speaking");
+  assert.equal((await readHeard())[0]?.text, "Steve recent playback");
+  assert.equal((await (await send(Date.now(), "Steve fresh capture")).json()).accepted, true);
 });
 
 test("a start that cannot be recorded grants no speech authority", async () => {
@@ -448,7 +503,7 @@ test("a late start or a stop before pickup waits for the holder; muting permits 
     await p.event(ask.id, "ended");
     assert.equal(ask.state, "stopped");
   }
-  assert.equal(store.speech.open("ask", "Muted?", "muted").state, "failed");
+  assert.equal(store.speech.open("ask", "Muted?", "muted")?.state, "failed");
   const id = await audition();
   const job = store.speech.live!;
   assert.equal(job.state, "ready");
@@ -604,6 +659,27 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal((await peer.poll()).capture, true);
   });
 }
+
+test("with Voice off a signed exit retires a recorded launch after its last playback hold ended", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  toggle(false);
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  assert.deepEqual(entries(), []);
+  store.reset(); // Only durable records identify the launch now.
+  assert.equal((await peer.report("exited")).status, 404);
+  assert.equal((await holder.report("started")).status, 404);
+  assert.equal((await peer.report("exited", holder.instance)).status, 403);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), [holder.instance]);
+  assert.equal((await holder.report("exited")).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  assert.equal((await holder.report("exited")).status, 200);
+  rmSync(ledger);
+  store.reset(); toggle(true); await peer.hello();
+  assert.equal((await peer.poll()).capture, true);
+});
 
 for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof of ["ended", "exited"] as const) {
   test(`restart with a playing holder and a second listener, ${ledgerState} ledger, ${proof} proof`, async () => {

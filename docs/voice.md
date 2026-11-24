@@ -849,7 +849,7 @@ An unconfirmed stop can make the listener unavailable even while its hello is li
 
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
-- `POST /api/voice/speech/audition` returns the sample job ID when queued, 409 when no voice is available, or 503 when preparation fails before the response. The `voice_state` event and the reconnect snapshot expose the most recent terminal audition result as `speech.lastAudition` with its `id` and `state`.
+- `POST /api/voice/speech/audition` returns the sample job ID when queued. It returns 409 when no voice is available, two jobs are already waiting, or playback is stopping. An immediate preparation failure returns 503. The `voice_state` event and the reconnect snapshot expose the most recent terminal audition result as `speech.lastAudition` with its `id` and `state`.
 - `POST /api/voice/speech/stop` requests a stop. A card includes its job ID to avoid stopping a later job.
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
   Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
@@ -982,7 +982,8 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 ### Ask aloud
 
 When routing is unsure, **Ask aloud** asks one question using the two or three
-candidate names. The card shows the question and a Stop button. Selecting a
+candidate names. The card shows the question and a Stop button. The operator can
+choose a row during playback or wait for playback to finish and answer aloud. Selecting a
 candidate, cancelling the card or muting also requests a stop. Asking requires
 listening mode and a supervised listener with a ready voice. The setting keeps
 its saved value when unavailable and the usual on-screen choices still work.
@@ -992,11 +993,14 @@ All listeners pause capture before the daemon offers the job. Only its holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
 duration triggers a stop request. After 5 seconds without confirmation, the
-daemon reports the listener unavailable. Capture resumes only after the holder
+daemon reports the listener unavailable and fails jobs still waiting to play. Capture resumes only after the holder
 reports playback ended or its supervisor confirms process exit. Switching off
 the preview still lets the holder poll for Stop and either party confirm silence,
-including after a daemon restart. New speech jobs require the preview to be on.
+including after a daemon restart. A supervisor can still retire its recorded launch
+after the last playback hold ends. New speech jobs require the preview to be on.
 Recently heard records playback-time utterances only from the capture lease owner.
+The daemon keeps completed playback intervals for three minutes to identify delayed
+utterances. It discards captures at or before the end of an expired interval.
 
 After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor

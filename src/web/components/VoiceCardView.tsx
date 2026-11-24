@@ -150,6 +150,7 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
 
   const job = actions.speechJob;
   const asking = job?.cardId === card.id && (job.state === "ready" || job.state === "speaking");
+  const waitingForSilence = asking || (job?.cardId === card.id && job.state === "stopping");
   let body: ReactNode;
   switch (card.state) {
     case "resolving": body = <b>Working out who this is for</b>; break;
@@ -164,7 +165,7 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", c.id))} disabled={busy} />;
         })}
-        <div className="vc-row"><span className="vc-grow vc-hint">{asking ? "Answer with the name. The rows stay clickable." : <>Say the name again, or click a row. <q>Cancel</q> drops it.</>}</span>{cancel}</div></>;
+        <div className="vc-row"><span className="vc-grow vc-hint">{waitingForSilence ? "Pick a row now, or speak once playback ends." : <>Say the name again, or click a row. <q>Cancel</q> drops it.</>}</span>{cancel}</div></>;
       break;
     case "pending": {
       const mention = !!card.mentions?.length;

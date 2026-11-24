@@ -52,6 +52,7 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
   const first = manager.open("ask", "First?", "A");
   const dropped = manager.open("ask", "Dropped?", "B");
   const last = manager.open("audition", "Last?", null);
+  assert.ok(first && dropped && last);
   manager.stopCard("B");
   assert.equal(dropped.state, "stopped");
   complete();
@@ -72,6 +73,7 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
   assert.equal(last.state, "failed");
   assert.deepEqual(JSON.parse(readFileSync(join(directory, "speech-holds.json"), "utf8")), []);
   const neverPlayed = manager.open("ask", "Preparing?", "C");
+  assert.ok(neverPlayed);
   manager.stopCard("C");
   complete(); await Promise.resolve();
   assert.equal(neverPlayed.state, "stopped");
@@ -82,6 +84,7 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
   rmSync(blocked);
   mkdirSync(blocked);
   const failed = manager.open("audition", "Cannot persist", null);
+  assert.ok(failed);
   complete(); await Promise.resolve();
   assert.equal(failed.state, "failed");
   assert.equal(manager.speak(instance), null);

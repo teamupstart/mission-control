@@ -122,10 +122,13 @@ export function registerVoiceRoutes(
 ): void {
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
-  const drainGate: MiddlewareHandler = async (c, next) => {
-    if (featureEnabled(VOICE_FLAG) || (authed(c.req.header("x-harness-token")) && store.hasDisabledSpeechHold())) return next();
+  const allowDrain = (supervisorReport = false): MiddlewareHandler => async (c, next) => {
+    if (featureEnabled(VOICE_FLAG)) return next();
+    const manager = authed(c.req.header("x-harness-token")) && store.disabledSpeech();
+    if (manager && (manager.held || supervisorReport)) return next();
     return disabledFeatureResponse(c, VOICE_FLAG);
   };
+  const drainGate = allowDrain();
 
   let snapshotOrder = 0;
   const dashboardSnapshot = () => ({
@@ -244,6 +247,7 @@ export function registerVoiceRoutes(
     if (!state.speech.voice) return c.json({ reason: state.speech.reason }, 409);
     const text = askSentence(state.roster.slice(0, 2).map(v => v.name)) ?? "Steve or Stephen?";
     const job = store.speech.open("audition", text, null);
+    if (!job) return c.json({ error: "speech_busy", reason: "Speech is busy. Try again after playback ends." }, 409);
     if (job.state === "failed") return c.json({ error: "audition_failed", reason: "The voice sample could not be prepared for playback." }, 503);
     return c.json({ id: job.id });
   });
@@ -255,12 +259,12 @@ export function registerVoiceRoutes(
     store.speech.stop(parsed.data.id);
     return c.json({ ok: true });
   });
-  app.post("/voice/listener/supervised", drainGate, limitBody, async c => {
+  app.post("/voice/listener/supervised", allowDrain(true), limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.object({ instance: SpeechInstanceSchema, state: z.enum(["started", "exited"]) }));
     if (!parsed.ok) return c.json({ error: "invalid_supervisor_report" }, 400);
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled && (parsed.data.state !== "exited" || !store.speech.awaitsExit(parsed.data.instance))) return disabled;
+    if (disabled && (parsed.data.state !== "exited" || !store.disabledSpeech()?.canRetireLaunch(parsed.data.instance))) return disabled;
     const result = store.speech.supervised(parsed.data.instance, parsed.data.state, c.req.header(VOICE_SUPERVISOR_PROOF_HEADER));
     if (result === "unauthorized") return c.json({ error: "unauthorized_supervisor" }, 403);
     if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
@@ -281,7 +285,7 @@ export function registerVoiceRoutes(
     ]));
     if (!parsed.ok) return parsed.res;
     const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (disabled && (parsed.data.type !== "ended" || !store.hasDisabledSpeechHold())) return disabled;
+    if (disabled && (parsed.data.type !== "ended" || !store.disabledSpeech()?.held)) return disabled;
     const event = parsed.data;
     const result = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
       event.type === "ended" ? event.outcome : undefined);
@@ -363,7 +367,9 @@ export function registerVoiceUtteranceRoutes(
     if (disabled) return disabled;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
-    if (voiceStateStore.speech.during(parsed.data.capturedAt)) {
+    const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt);
+    if (conflict === "stale") return c.json({ accepted: false });
+    if (conflict === "while-speaking") {
       const { id, capturedAt, text } = parsed.data;
       router.heard.record({ id, time: capturedAt, text, outcome: "ignored", matchedName: null,
         pauseMs: null, rule: "while-speaking", detail: "Heard while speaking" });

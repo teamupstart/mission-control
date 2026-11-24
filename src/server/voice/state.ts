@@ -94,11 +94,11 @@ export class VoiceStateStore {
   private get speechDirectory() { return this.deps.speechDirectory ?? join(stateDir(), "voice"); }
 
   /** An authenticated drain request can be the first request after restarting with Voice off. */
-  hasDisabledSpeechHold(): boolean {
-    if (!this.manager && !new SpeechHolds(this.speechDirectory).hasRecoveryEvidence()) return false;
+  disabledSpeech(): VoiceSpeechManager | undefined {
+    if (!this.manager && !new SpeechHolds(this.speechDirectory).hasRecoveryEvidence()) return;
     const manager = this.speech;
     manager.setEnabled(false);
-    return manager.held;
+    return manager;
   }
 
   get speech(): VoiceSpeechManager {

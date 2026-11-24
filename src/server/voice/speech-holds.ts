@@ -61,6 +61,17 @@ export class SpeechHolds {
     catch (error) { return missing(error, path) ? false : undefined; }
   }
 
+  knowsLaunch(instance: string): boolean {
+    const name = announcementName(instance);
+    if (this.supervisorRecord(name) === instance || this.exitRecorded(name)) return true;
+    try {
+      return (this.readInventory() ?? this.lastInventory ?? []).some(launch => typeof launch === "string"
+        ? launch === instance : launch.supervisor === name || this.supervisorRecord(launch.supervisor) === instance);
+    } catch {
+      return false;
+    }
+  }
+
   load(): { holds: Hold[]; unknown: boolean } {
     try {
       const holds = z.array(entry).parse(JSON.parse(readFileSync(this.path, "utf8")));

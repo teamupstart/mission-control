@@ -9005,6 +9005,16 @@ export class WorkflowStore {
     ).all(submissionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
   }
 
+  /** Newest first. Attempts that could not start return their execution claim. */
+  listCheckAttemptsWithExecutionClaim(runId: string, nodeId: string, slot: WorkflowCheckSlot): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+        WHERE s.run_id = ? AND a.node_id = ? AND a.check_run_slot = ?
+        ORDER BY s.round DESC, s.segment DESC, a.created_at DESC, a.attempt DESC`,
+    ).all(runId, nodeId, slot) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
   listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
     const attempts = (this.db.prepare(

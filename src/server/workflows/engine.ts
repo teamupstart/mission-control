@@ -251,13 +251,13 @@ function edgesFrom(
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
 }
 
-function latestCodeRabbitReview(attempts: WorkflowNodeAttempt[], nodeId: string) {
-  // Keep the original execution as provenance across any number of reused passes.
-  for (const attempt of attempts.reverse()) {
+function latestCodeRabbitReview(attemptsWithExecutionClaims: readonly WorkflowNodeAttempt[]) {
+  // A refusal before launch and a reused pass both leave the actual review history intact.
+  for (const attempt of attemptsWithExecutionClaims) {
     const { output } = attempt;
-    if (attempt.nodeId !== nodeId || !output || typeof output !== "object" || Array.isArray(output)) continue;
+    if (!output || typeof output !== "object" || Array.isArray(output)) continue;
     const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
-    if (!parsed.success || parsed.data.status === "skipped" || output.command === null) continue;
+    if (!parsed.success || parsed.data.status === "skipped") continue;
     return { attempt, review: parsed.data };
   }
 }
@@ -1555,7 +1555,7 @@ export class WorkflowEngine {
           ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
       : catalogCommand;
     const previousReview = node.slot === "coderabbit"
-      ? latestCodeRabbitReview(this.store.listAttemptsForRun(run.id), node.id)
+      ? latestCodeRabbitReview(this.store.listCheckAttemptsWithExecutionClaim(run.id, node.id, node.slot))
       : undefined;
     const priorCleanReview = previousReview?.attempt.state === "completed"
       && previousReview.attempt.submissionId !== submission.id

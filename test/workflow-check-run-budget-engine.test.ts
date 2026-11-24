@@ -737,6 +737,7 @@ for (const maxRuns of [10, 2, 3]) test(
   };
   capture(`submission-${id}`);
   let executions = 0, probes = 0;
+  let checksEnabled = true;
   const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
   const registry = new Registry();
   // A comparison performs five sequential Git reads, each with its own production
@@ -755,7 +756,7 @@ for (const maxRuns of [10, 2, 3]) test(
     }
   };
   const manager = new WorkflowManager(registry, store, { engine: {
-    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }),
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root], checksEnabled }),
     workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot), maxRuns }),
     runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
     checkDeps: () => ({
@@ -787,22 +788,33 @@ for (const maxRuns of [10, 2, 3]) test(
       capture(next, `Clarified verification in round ${round}`);
       assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
       assert.equal(git("status", "--porcelain"), "");
+      const denyBeforeRetry = maxRuns === 3 && round === 3;
+      if (denyBeforeRetry) checksEnabled = false;
       manager.engine.activateSubmission(next);
+      if (denyBeforeRetry) {
+        await waitForState("blocked");
+        const refused = store.listAttempts(next).find(a => a.nodeId === "gate")!;
+        assert.match(refused.error ?? "", /Workflow Commands are switched off/);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2, "policy denial spends no execution");
+        checksEnabled = true;
+        assert.ok(manager.retry(`run-${id}`, { requestId: "retry-after-policy-denial", nodeAttemptId: refused.id }).ok);
+      }
       await waitForState("waiting_for_session");
       assert.equal(executions, 2, "A PR-description-only repair must not execute CodeRabbit again");
       assert.equal(probes, 2);
-      const outcome = gateOutcome(store, next);
+      const attempts = store.listAttempts(next);
+      const gate = attempts.find(a => a.nodeId === "gate" && a.state === "completed")!;
+      const outcome = gate.output as Record<string, unknown>;
       assert.equal(outcome.status, "passed");
       assert.equal((outcome.review as { remainingRuns: number }).remainingRuns, maxRuns - 2);
       assert.equal(outcome.command, null);
       assert.match(String(outcome.note), new RegExp(source.id));
-      const attempts = store.listAttempts(next);
       const [evidence] = personaCheckEvidence(graph, "p1", attempts, store.listReceipts(next), comparisons[1]!.head);
       assert.equal(evidence?.status, "passed");
       assert.equal(evidence?.note, outcome.note);
       assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2);
       const submittedAt = store.getSubmission(next)!.createdAt;
-      const codeRabbitFinishedAt = attempts.find((attempt) => attempt.nodeId === "gate")?.finishedAt;
+      const codeRabbitFinishedAt = gate.finishedAt;
       const persona = attempts.find((attempt) => attempt.nodeId === "p1");
       assert.equal(persona?.state, "completed");
       assert.ok(codeRabbitFinishedAt && persona.startedAt && persona.finishedAt);
